@@ -204,15 +204,16 @@ fi
 # Otherwise, we use -0.
 
 if "$darwin"; then
-    xargs_args=("-n")
-else
-    xargs_args=("-0")
-fi
-
-eval "set -- $(
+    xargs -n "$(
         printf '%s\n' "$DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS" |
-        xargs "${xargs_args[@]}" |
         tr '\n' ' '
     )" '"$@"'
+else
+    eval "set -- $(
+        printf '%s\n' "$DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS" |
+        xargs -0 |
+        tr '\n' ' '
+    )" '"$@"'
+fi
 
 exec "$JAVACMD" "$@"
