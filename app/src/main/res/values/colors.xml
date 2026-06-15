@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary_dark">#0f3460</color>
+    <color name="accent">#e94560</color>
+    <color name="background_dark">#1a1a2e</color>
+    <color name="text_primary">#eaeaea</color>
+    <color name="text_secondary">#a0a0a0</color>
+    <color name="card_dark">#16213e</color>
+    <color name="border_dark">#0f3460</color>
+    <color name="success">#4ecca3</color>
+    <color name="warning">#f4d03f</color>
+    <color name="divider">#2a2a4a</color>
+</resources>

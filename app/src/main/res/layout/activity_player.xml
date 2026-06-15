@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="@color/background_dark" android:padding="16dp">
+    <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingVertical="16dp">
+        <ImageButton android:id="@+id/btn_close" android:layout_width="48dp" android:layout_height="48dp" android:layout_alignParentStart="true" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_close" android:contentDescription="Close" />
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerInParent="true" android:orientation="vertical" android:gravity="center">
+            <TextView android:id="@+id/tv_station_name" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text_primary" android:textSize="18sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end" />
+            <TextView android:id="@+id/tv_episode_title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text_secondary" android:textSize="14sp" android:maxLines="1" android:ellipsize="end" />
+        </LinearLayout>
+        <ImageButton android:id="@+id/btn_generate_subtitle" android:layout_width="48dp" android:layout_height="48dp" android:layout_alignParentEnd="true" android:background="?attr/selectableItemBackgroundBorderless" android:src="@android:drawable/ic_menu_edit" android:contentDescription="Generate Subtitle" />
+    </RelativeLayout>
+    <TextView android:id="@+id/tv_live_indicator" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center" android:text="● 直播模式" android:textColor="#FF4444" android:textSize="16sp" android:textStyle="bold" android:visibility="gone" android:layout_marginBottom="8dp" />
+    <TextView android:id="@+id/tv_subtitle_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="点击生成字幕" android:textColor="@color/accent" android:textSize="14sp" android:gravity="center" android:padding="8dp" android:background="@drawable/bg_card" android:layout_marginBottom="8dp" android:visibility="gone" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginBottom="16dp">
+        <SeekBar android:id="@+id/seek_bar" android:layout_width="match_parent" android:layout_height="wrap_content" android:progressDrawable="@drawable/seekbar_progress" android:thumb="@drawable/seekbar_thumb" />
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp">
+            <TextView android:id="@+id/tv_current_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentStart="true" android:text="0:00" android:textColor="@color/text_secondary" android:textSize="12sp" />
+            <TextView android:id="@+id/tv_total_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentEnd="true" android:text="0:00" android:textColor="@color/text_secondary" android:textSize="12sp" />
+        </RelativeLayout>
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="16dp">
+        <ImageButton android:id="@+id/btn_skip_backward" android:layout_width="56dp" android:layout_height="56dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_skip_backward" android:contentDescription="Backward" />
+        <ImageButton android:id="@+id/btn_play_pause" android:layout_width="72dp" android:layout_height="72dp" android:layout_marginHorizontal="16dp" android:background="@drawable/bg_play_button" android:src="@drawable/ic_play" android:contentDescription="Play" />
+        <ImageButton android:id="@+id/btn_skip_forward" android:layout_width="56dp" android:layout_height="56dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_skip_forward" android:contentDescription="Forward" />
+    </LinearLayout>
+    <com.radio.app.views.SubtitleView android:id="@+id/subtitle_view" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" />
+</LinearLayout>

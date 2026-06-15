@@ -1,0 +1,1 @@
+-keep class com.radio.app.models.** { *; }
