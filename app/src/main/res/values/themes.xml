@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.RadioApp" parent="Theme.MaterialComponents.Dark.NoActionBar">
+    <style name="Theme.RadioApp" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/primary_dark</item>
         <item name="colorPrimaryVariant">@color/primary_dark</item>
         <item name="colorAccent">@color/accent</item>
