@@ -1,10 +1,83 @@
 package com.radio.app.models;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+
+import org.json.JSONArray;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 public class AppSettings {
+    private static final String PREFS_NAME = "radio_app_settings";
+    private static AppSettings instance;
+
+    public static synchronized AppSettings getInstance(Context context) {
+        if (instance == null) {
+            instance = new AppSettings();
+            instance.load(context);
+        }
+        return instance;
+    }
+
+    private void load(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN);
+        asrProvider = prefs.getString("asr_provider", ASR_BAIDU);
+        uiTheme = prefs.getString("ui_theme", THEME_DARK);
+        preloadCache = prefs.getBoolean("preload_cache", false);
+        preloadCacheCount = prefs.getInt("preload_cache_count", 1);
+        enablePreprocessing = prefs.getBoolean("enable_preprocessing", false);
+        preprocessingCount = prefs.getInt("preprocessing_count", 1);
+        audioFocus = prefs.getBoolean("audio_focus", true);
+        continuousPlay = prefs.getBoolean("continuous_play", true);
+        String dislikedJson = prefs.getString("disliked_episodes", "[]");
+        try {
+            JSONArray arr = new JSONArray(dislikedJson);
+            dislikedEpisodes.clear();
+            for (int i = 0; i < arr.length(); i++) {
+                dislikedEpisodes.add(arr.getString(i));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void save(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString("ai_model", aiModel);
+        editor.putString("asr_provider", asrProvider);
+        editor.putString("ui_theme", uiTheme);
+        editor.putBoolean("preload_cache", preloadCache);
+        editor.putInt("preload_cache_count", preloadCacheCount);
+        editor.putBoolean("enable_preprocessing", enablePreprocessing);
+        editor.putInt("preprocessing_count", preprocessingCount);
+        editor.putBoolean("audio_focus", audioFocus);
+        editor.putBoolean("continuous_play", continuousPlay);
+        JSONArray arr = new JSONArray();
+        for (String id : dislikedEpisodes) arr.put(id);
+        editor.putString("disliked_episodes", arr.toString());
+        editor.apply();
+    }
+
+    public void addDislikedEpisode(Context context, String episodeId) {
+        if (!dislikedEpisodes.contains(episodeId)) {
+            dislikedEpisodes.add(episodeId);
+            save(context);
+        }
+    }
+
+    public void removeDislikedEpisode(Context context, String episodeId) {
+        dislikedEpisodes.remove(episodeId);
+        save(context);
+    }
+
+    public boolean isDisliked(String episodeId) {
+        return dislikedEpisodes.contains(episodeId);
+    }
+
     public static final String AI_MODEL_WENXIN = "wenxin";
     public static final String AI_MODEL_DEEPSEEK = "deepseek";
     public static final String AI_MODEL_QWEN = "qwen";

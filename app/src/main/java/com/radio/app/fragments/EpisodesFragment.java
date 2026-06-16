@@ -213,10 +213,10 @@ public class EpisodesFragment extends Fragment implements EpisodeAdapter.OnEpiso
                 .setTitle(episode.getTitle())
                 .setItems(new String[]{"标记为不喜欢", "取消不喜欢"}, (dialog, which) -> {
                     if (which == 0) {
-                        AppSettings.getInstance(requireContext()).addDislikedEpisode(episode.getId());
+                        AppSettings.getInstance(requireContext()).addDislikedEpisode(requireContext(), episode.getId());
                         Toast.makeText(getContext(), "已标记为不喜欢", Toast.LENGTH_SHORT).show();
                     } else {
-                        AppSettings.getInstance(requireContext()).removeDislikedEpisode(episode.getId());
+                        AppSettings.getInstance(requireContext()).removeDislikedEpisode(requireContext(), episode.getId());
                         Toast.makeText(getContext(), "已取消不喜欢", Toast.LENGTH_SHORT).show();
                     }
                 })
