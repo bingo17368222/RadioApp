@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:id="@+id/nav_home" android:icon="@drawable/ic_home" android:title="首页" />
+    <item android:id="@+id/nav_home" android:icon="@drawable/ic_home" android:title="直播" />
     <item android:id="@+id/nav_episodes" android:icon="@drawable/ic_calendar" android:title="往期节目" />
     <item android:id="@+id/nav_search" android:icon="@drawable/ic_search" android:title="搜索" />
     <item android:id="@+id/nav_settings" android:icon="@drawable/ic_settings" android:title="设置" />

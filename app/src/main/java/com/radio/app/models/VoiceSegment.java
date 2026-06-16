@@ -3,7 +3,9 @@ package com.radio.app.models;
 import android.os.Parcel;
 import android.os.Parcelable;
 
-public class VoiceSegment implements Parcelable {
+import java.io.Serializable;
+
+public class VoiceSegment implements Parcelable, Serializable {
     private long start;
     private long end;
     private boolean hasVoice;

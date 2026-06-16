@@ -24,12 +24,15 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.radio.app.R;
 import com.radio.app.adapters.VoiceSegmentAdapter;
 import com.radio.app.managers.SubtitleManager;
+import com.radio.app.models.Episode;
+import com.radio.app.models.RadioStation;
 import com.radio.app.models.Transcript;
 import com.radio.app.models.VoiceSegment;
 import com.radio.app.services.RadioPlaybackService;
 import com.radio.app.services.SubtitleGeneratorService;
 import com.radio.app.views.SubtitleView;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class PlayerActivity extends AppCompatActivity {
@@ -49,6 +52,13 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean generating = false;
     private boolean showingSegments = true;
 
+    // Intent extras
+    private String stationId, stationName, streamUrl, episodeId, episodeTitle, audioUrl;
+    private boolean isLive;
+    private long duration;
+    private ArrayList<VoiceSegment> voiceSegments;
+    private ArrayList<Transcript> transcripts;
+
     private ServiceConnection conn = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder s) {
@@ -59,6 +69,8 @@ public class PlayerActivity extends AppCompatActivity {
                 @Override public void onPositionChanged(long pos, long dur) { updateProgress(pos, dur); }
                 @Override public void onBufferUpdate(int percent) { updateBufferProgress(percent); }
             });
+            // Start playback based on intent
+            startPlayback();
             updateUI();
             loadSubtitles();
             loadSegments();
@@ -83,6 +95,20 @@ public class PlayerActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_player);
+
+        // Parse intent extras
+        Intent intent = getIntent();
+        isLive = intent.getBooleanExtra("is_live", false);
+        stationId = intent.getStringExtra("station_id");
+        stationName = intent.getStringExtra("station_name");
+        streamUrl = intent.getStringExtra("stream_url");
+        episodeId = intent.getStringExtra("episode_id");
+        episodeTitle = intent.getStringExtra("title");
+        audioUrl = intent.getStringExtra("audio_url");
+        duration = intent.getLongExtra("duration", 0);
+        voiceSegments = (ArrayList<VoiceSegment>) intent.getSerializableExtra("voice_segments");
+        transcripts = (ArrayList<Transcript>) intent.getSerializableExtra("transcripts");
+
         initViews();
         setupListeners();
         startProgress();
@@ -94,6 +120,27 @@ public class PlayerActivity extends AppCompatActivity {
         filter.addAction(RadioPlaybackService.BROADCAST_BUFFER_UPDATE);
         filter.addAction(RadioPlaybackService.BROADCAST_STATE_CHANGED);
         LocalBroadcastManager.getInstance(this).registerReceiver(broadcastReceiver, filter);
+    }
+
+    private void startPlayback() {
+        if (playbackService == null) return;
+        if (isLive && streamUrl != null) {
+            RadioStation station = new RadioStation();
+            station.setId(stationId != null ? stationId : "live");
+            station.setName(stationName != null ? stationName : "直播");
+            station.setStreamUrl(streamUrl);
+            playbackService.playStation(station);
+        } else if (audioUrl != null) {
+            Episode episode = new Episode();
+            episode.setId(episodeId != null ? episodeId : "ep");
+            episode.setTitle(episodeTitle != null ? episodeTitle : "节目");
+            episode.setAudioUrl(audioUrl);
+            episode.setStationName(stationName != null ? stationName : "电台");
+            episode.setDuration(duration);
+            if (voiceSegments != null) episode.setVoiceSegments(voiceSegments);
+            if (transcripts != null) episode.setTranscripts(transcripts);
+            playbackService.playEpisode(episode, false);
+        }
     }
 
     private void initViews() {
@@ -194,6 +241,9 @@ public class PlayerActivity extends AppCompatActivity {
         if (playbackService.getCurrentEpisode() != null) {
             tvStationName.setText(playbackService.getCurrentEpisode().getStationName());
             tvEpisodeTitle.setText(playbackService.getCurrentEpisode().getTitle());
+        } else if (playbackService.getCurrentStation() != null) {
+            tvStationName.setText(playbackService.getCurrentStation().getName());
+            tvEpisodeTitle.setText("直播中");
         }
         boolean live = playbackService.isLive();
         tvLiveIndicator.setVisibility(live ? View.VISIBLE : View.GONE);

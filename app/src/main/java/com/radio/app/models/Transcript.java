@@ -1,6 +1,8 @@
 package com.radio.app.models;
 
-public class Transcript {
+import java.io.Serializable;
+
+public class Transcript implements Serializable {
     private String episodeId;
     private long segmentStart;
     private long segmentEnd;
