@@ -13,6 +13,7 @@ import android.widget.PopupMenu;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.radio.app.R;
@@ -80,15 +81,15 @@ public class VoiceSegmentAdapter extends RecyclerView.Adapter<VoiceSegmentAdapte
         // 类型标签
         if (isDry) {
             holder.tvType.setText("干货");
-            holder.tvType.setTextColor(context.getResources().getColor(R.color.success));
+            holder.tvType.setTextColor(ContextCompat.getColor(context, R.color.success));
         } else {
             holder.tvType.setText("水分");
-            holder.tvType.setTextColor(context.getResources().getColor(R.color.accent));
+            holder.tvType.setTextColor(ContextCompat.getColor(context, R.color.accent));
         }
 
         // 背景颜色
         if (isCurrent) {
-            holder.container.setBackgroundColor(context.getResources().getColor(R.color.primary_dark));
+            holder.container.setBackgroundColor(ContextCompat.getColor(context, R.color.primary_dark));
         } else if (isDry) {
             holder.container.setBackgroundColor(Color.parseColor("#1a3a2a"));
         } else {

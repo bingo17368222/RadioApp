@@ -82,20 +82,13 @@ public class SearchFragment extends Fragment implements SearchResultAdapter.OnSe
         progressBar.setVisibility(View.VISIBLE);
         tvEmpty.setVisibility(View.GONE);
 
-        EpisodeApiService.getInstance().search(query.trim(), new EpisodeApiService.ApiCallback<List<Episode>>() {
+        EpisodeApiService.getInstance().search(query.trim(), new EpisodeApiService.ApiCallback<List<SearchResult>>() {
             @Override
-            public void onSuccess(List<Episode> episodes) {
+            public void onSuccess(List<SearchResult> searchResults) {
                 if (getActivity() == null) return;
                 progressBar.setVisibility(View.GONE);
                 results.clear();
-
-                for (Episode e : episodes) {
-                    SearchResult r = new SearchResult();
-                    r.setType(SearchResult.Type.EPISODE);
-                    r.setEpisode(e);
-                    r.setMatchedText(e.getDescription());
-                    results.add(r);
-                }
+                results.addAll(searchResults);
 
                 adapter.notifyDataSetChanged();
                 if (results.isEmpty()) {

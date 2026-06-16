@@ -10,7 +10,6 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.annotation.ArrayRes;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.radio.app.R;
@@ -102,7 +101,7 @@ public class KeywordSettingsActivity extends AppCompatActivity {
     }
 
     private void simulateAiExtract(EditText editText, String type) {
-        Button btn = (Button) editText.getTag(R.id.tag_ai_btn);
+        Button btn = null;
         // 找到对应的按钮
         if (editText == etDryKeywords) btn = findViewById(R.id.btn_ai_dry);
         else if (editText == etWaterKeywords) btn = findViewById(R.id.btn_ai_water);

@@ -100,7 +100,7 @@ public class EpisodesFragment extends Fragment implements EpisodeAdapter.OnEpiso
                 cal.get(Calendar.MONTH) + 1,
                 cal.get(Calendar.DAY_OF_MONTH));
 
-        EpisodeApiService.getInstance().getEpisodesByDate(dateStr, new EpisodeApiService.ApiCallback<List<Episode>>() {
+        EpisodeApiService.getInstance().getEpisodesByDate("henan-1", dateStr, new EpisodeApiService.ApiCallback<List<Episode>>() {
             @Override
             public void onSuccess(List<Episode> episodes) {
                 if (getActivity() == null) return;

@@ -11,6 +11,8 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import androidx.core.content.ContextCompat;
+
 import com.radio.app.R;
 
 import java.util.HashMap;
@@ -61,7 +63,7 @@ public class OfflineEngineActivity extends AppCompatActivity {
                 progress.setVisibility(View.VISIBLE);
                 progress.setProgress(0);
                 tvStatus.setText("下载中...");
-                tvStatus.setTextColor(getResources().getColor(R.color.accent));
+                tvStatus.setTextColor(ContextCompat.getColor(this, R.color.accent));
 
                 executor.execute(() -> {
                     for (int i = 0; i <= 100; i += 5) {
@@ -86,15 +88,15 @@ public class OfflineEngineActivity extends AppCompatActivity {
     private void updateEngineUI(Button btn, TextView tvStatus, ProgressBar progress, boolean isInstalled) {
         if (isInstalled) {
             btn.setText("删除");
-            btn.setBackgroundTintList(getResources().getColorStateList(R.color.accent));
+            btn.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.accent));
             tvStatus.setText("已下载");
-            tvStatus.setTextColor(getResources().getColor(R.color.success));
+            tvStatus.setTextColor(ContextCompat.getColor(this, R.color.success));
             progress.setVisibility(View.GONE);
         } else {
             btn.setText("安装");
-            btn.setBackgroundTintList(getResources().getColorStateList(R.color.success));
+            btn.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.success));
             tvStatus.setText("未下载");
-            tvStatus.setTextColor(getResources().getColor(R.color.warning));
+            tvStatus.setTextColor(ContextCompat.getColor(this, R.color.warning));
             progress.setVisibility(View.GONE);
         }
     }

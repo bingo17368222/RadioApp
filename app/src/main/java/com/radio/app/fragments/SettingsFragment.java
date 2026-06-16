@@ -22,6 +22,8 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
+import androidx.core.content.ContextCompat;
+
 import com.radio.app.R;
 import com.radio.app.activities.DislikedEpisodesActivity;
 import com.radio.app.activities.KeywordSettingsActivity;
@@ -199,12 +201,12 @@ public class SettingsFragment extends Fragment {
         for (int i = 0; i < labels.length; i++) {
             TextView tv = new TextView(requireContext());
             tv.setText(labels[i] + " (当前: " + values[i] + ")");
-            tv.setTextColor(getResources().getColor(R.color.text_primary));
+            tv.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_primary));
             layout.addView(tv);
 
             EditText et = new EditText(requireContext());
             et.setText(values[i]);
-            et.setTextColor(getResources().getColor(R.color.text_primary));
+            et.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_primary));
             edits[i] = et;
             layout.addView(et);
         }
