@@ -353,7 +353,7 @@ public class RadioPlaybackService extends Service
             player.reset();
         }
         abandonAudioFocus();
-        stopForeground(true);
+        stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
         sendStateChangedBroadcast(false);
     }

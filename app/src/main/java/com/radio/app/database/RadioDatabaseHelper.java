@@ -182,7 +182,7 @@ public class RadioDatabaseHelper extends SQLiteOpenHelper {
             segment.setStart(cursor.getLong(1));
             segment.setEnd(cursor.getLong(2));
             segment.setHasVoice(cursor.getInt(3) == 1);
-            segment.setManualMarked(true);
+            segment.setManuallyMarked(true);
             segment.setLabel(segment.isHasVoice() ? "手动标记-干货" : "手动标记-水分");
             segments.add(segment);
         }
