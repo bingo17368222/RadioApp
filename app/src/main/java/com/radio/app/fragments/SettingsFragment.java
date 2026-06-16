@@ -169,12 +169,12 @@ public class SettingsFragment extends Fragment {
     }
 
     private void applyTheme() {
-        // 只在主题真正改变时才recreate Activity，避免不必要的重建
         String currentTheme = settings.getUiTheme();
         if (previousTheme != null && !previousTheme.equals(currentTheme)) {
             previousTheme = currentTheme;
             if (getActivity() != null) {
-                getActivity().recreate();
+                try { getActivity().recreate(); }
+                catch (Exception e) { e.printStackTrace(); }
             }
         }
     }
@@ -208,12 +208,31 @@ public class SettingsFragment extends Fragment {
             et.setTextColor(getResources().getColor(R.color.text_primary));
             edits[i] = et;
             layout.addView(et);
+
+            LinearLayout presetRow = new LinearLayout(requireContext());
+            presetRow.setOrientation(LinearLayout.HORIZONTAL);
+            String[][] presets = {
+                {"#FF5722", "#E91E63", "#9C27B0", "#673AB7"},
+                {"#3F51B5", "#2196F3", "#03A9F4", "#00BCD4"},
+                {"#009688", "#4CAF50", "#8BC34A", "#CDDC39"},
+                {"#FFEB3B", "#FFC107", "#FF9800", "#795548"}
+            };
+            for (String[] row : presets) {
+                for (String color : row) {
+                    Button btn = new Button(requireContext());
+                    btn.setLayoutParams(new LinearLayout.LayoutParams(80, 80));
+                    btn.setBackgroundColor(android.graphics.Color.parseColor(color));
+                    btn.setOnClickListener(v -> et.setText(color));
+                    presetRow.addView(btn);
+                }
+            }
+            layout.addView(presetRow);
         }
 
         new AlertDialog.Builder(requireContext())
-            .setTitle("自定义颜色")
+            .setTitle("自定义颜色 - 点击色块快速选择")
             .setView(layout)
-            .setPositiveButton("保存", (d, w) -> {
+            .setPositiveButton("应用", (d, w) -> {
                 colors.setPrimary(edits[0].getText().toString());
                 colors.setAccent(edits[1].getText().toString());
                 colors.setBackground(edits[2].getText().toString());
@@ -224,8 +243,9 @@ public class SettingsFragment extends Fragment {
                 colors.setWarning(edits[7].getText().toString());
                 settings.setCustomColors(colors);
                 save();
+                previousTheme = "_force_";
                 applyTheme();
-                Toast.makeText(requireContext(), "颜色已保存", Toast.LENGTH_SHORT).show();
+                Toast.makeText(requireContext(), "颜色已应用", Toast.LENGTH_SHORT).show();
             })
             .setNegativeButton("取消", null)
             .show();
@@ -233,17 +253,19 @@ public class SettingsFragment extends Fragment {
 
     private void showClearCacheDialog() {
         java.io.File cacheDir = requireContext().getCacheDir();
-        java.io.File[] files = cacheDir.listFiles();
+        java.util.List<java.io.File> allFiles = new java.util.ArrayList<>();
+        scanFilesRecursive(cacheDir, allFiles);
 
-        if (files == null || files.length == 0) {
+        if (allFiles.isEmpty()) {
             Toast.makeText(requireContext(), "暂无缓存文件", Toast.LENGTH_SHORT).show();
             return;
         }
 
+        java.io.File[] files = allFiles.toArray(new java.io.File[0]);
         String[] fileNames = new String[files.length];
         boolean[] checked = new boolean[files.length];
         for (int i = 0; i < files.length; i++) {
-            fileNames[i] = files[i].getName() + " (" + formatSize(files[i].length()) + ")";
+            fileNames[i] = files[i].getAbsolutePath().replace(cacheDir.getAbsolutePath(), "...") + " (" + formatSize(files[i].length()) + ")";
             checked[i] = true;
         }
 
@@ -301,6 +323,15 @@ public class SettingsFragment extends Fragment {
         if (size < 1024) return size + " B";
         if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
         return String.format("%.1f MB", size / (1024.0 * 1024));
+    }
+
+    private void scanFilesRecursive(java.io.File dir, java.util.List<java.io.File> result) {
+        java.io.File[] files = dir.listFiles();
+        if (files == null) return;
+        for (java.io.File f : files) {
+            if (f.isDirectory()) scanFilesRecursive(f, result);
+            else result.add(f);
+        }
     }
 
     private void loadSettings(String[] aiVals, String[] asrVals, String[] themeVals) {
