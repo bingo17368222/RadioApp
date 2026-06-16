@@ -68,6 +68,8 @@ public class RadioPlaybackService extends Service implements
     private int bufferPercent = 0;
     private boolean prepared = false;
     private String currentStreamUrl = "";
+    private Handler progressHandler;
+    private Runnable progressRunnable;
 
     public interface Callback {
         void onStateChanged(boolean playing);
@@ -93,7 +95,28 @@ public class RadioPlaybackService extends Service implements
         player.setOnErrorListener(this);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         autoSkipHandler = new Handler(Looper.getMainLooper());
+        progressHandler = new Handler(Looper.getMainLooper());
         loadSettings();
+        startProgressPolling();
+    }
+
+    private void startProgressPolling() {
+        progressRunnable = () -> {
+            if (player != null && prepared && callback != null) {
+                long pos = player.getCurrentPosition();
+                long dur = player.getDuration();
+                callback.onPositionChanged(pos, dur);
+                try {
+                    int bp = player.getBufferPercentage();
+                    if (bp > 0 && bp != bufferPercent) {
+                        bufferPercent = bp;
+                        callback.onBufferUpdate(bp);
+                    }
+                } catch (Exception e) { /* ignore */ }
+            }
+            progressHandler.postDelayed(progressRunnable, 500);
+        };
+        progressHandler.post(progressRunnable);
     }
 
     private void loadSettings() {
@@ -552,11 +575,9 @@ public class RadioPlaybackService extends Service implements
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (progressHandler != null && progressRunnable != null) progressHandler.removeCallbacks(progressRunnable);
         stopAutoSkipCheck();
         abandonAudioFocus();
-        if (player != null) {
-            player.release();
-            player = null;
-        }
+        if (player != null) { player.release(); player = null; }
     }
 }
