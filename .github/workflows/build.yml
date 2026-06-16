@@ -53,9 +53,13 @@ jobs:
             app/build/reports/
           retention-days: 7
 
+      - name: Find APK
+        run: find app/build/outputs -name "*.apk" -ls 2>/dev/null || echo "No APK found"
+
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/
           retention-days: 30
+          if-no-files-found: error
