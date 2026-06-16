@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class PlayerActivity extends AppCompatActivity {
+    private boolean isUserSeeking = false;
     private TextView tvStationName, tvEpisodeTitle, tvCurrentTime, tvTotalTime, tvLiveIndicator, tvSubtitleStatus;
     private TextView tvAiProgress, tvNetworkUrl, tvCacheUrl;
     private SeekBar seekBar, seekBarCache;
@@ -219,10 +220,13 @@ public class PlayerActivity extends AppCompatActivity {
         btnSubtitleToggle.setOnClickListener(v -> toggleSubtitleView());
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
-                if (fromUser && playbackService != null && !playbackService.isLive()) playbackService.seekTo(p);
+                if (fromUser) { isUserSeeking = true; tvCurrentTime.setText(fmtTime(p)); }
             }
-            @Override public void onStartTrackingTouch(SeekBar sb) {}
-            @Override public void onStopTrackingTouch(SeekBar sb) {}
+            @Override public void onStartTrackingTouch(SeekBar sb) { isUserSeeking = true; }
+            @Override public void onStopTrackingTouch(SeekBar sb) {
+                if (playbackService != null && !playbackService.isLive()) playbackService.seekTo(sb.getProgress());
+                isUserSeeking = false;
+            }
         });
     }
 
@@ -294,8 +298,7 @@ public class PlayerActivity extends AppCompatActivity {
         } else {
             tvCurrentTime.setText(fmtTime(pos));
             tvTotalTime.setText(fmtTime(dur));
-            seekBar.setMax((int) dur);
-            seekBar.setProgress((int) pos);
+            if (!isUserSeeking) { seekBar.setMax((int) dur); seekBar.setProgress((int) pos); }
         }
         if (subtitleView != null && subtitleView.getVisibility() == View.VISIBLE) subtitleView.highlightSubtitle(pos / 1000);
 
@@ -371,7 +374,10 @@ public class PlayerActivity extends AppCompatActivity {
                         runOnUiThread(() -> subtitleView.addRealtimeSubtitle(t));
                     }
                     @Override public void onProgressUpdate(int p, int t) {
-                        runOnUiThread(() -> tvSubtitleStatus.setText(String.format("生成字幕: %d/%d", p, t)));
+                        runOnUiThread(() -> {
+                            tvSubtitleStatus.setText(String.format("生成字幕: %d/%d", p, t));
+                            if (p >= t) { generating = false; btnGenerateSubtitle.setEnabled(true); tvSubtitleStatus.setText("字幕生成完成"); }
+                        });
                     }
                     @Override public void onError(String e) {
                         runOnUiThread(() -> {
