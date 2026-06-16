@@ -29,7 +29,9 @@ public class AppSettings {
     private CustomColors customColors = new CustomColors();
     private KeywordConfig keywordConfig = new KeywordConfig();
     private boolean preloadCache = false;
+    private int preloadCacheCount = 1;
     private boolean enablePreprocessing = false;
+    private int preprocessingCount = 1;
     private boolean audioFocus = true;
     private List<String> dislikedEpisodes = new ArrayList<>();
 
@@ -45,8 +47,12 @@ public class AppSettings {
     public void setKeywordConfig(KeywordConfig keywordConfig) { this.keywordConfig = keywordConfig; }
     public boolean isPreloadCache() { return preloadCache; }
     public void setPreloadCache(boolean preloadCache) { this.preloadCache = preloadCache; }
+    public int getPreloadCacheCount() { return preloadCacheCount; }
+    public void setPreloadCacheCount(int preloadCacheCount) { this.preloadCacheCount = preloadCacheCount; }
     public boolean isEnablePreprocessing() { return enablePreprocessing; }
     public void setEnablePreprocessing(boolean enablePreprocessing) { this.enablePreprocessing = enablePreprocessing; }
+    public int getPreprocessingCount() { return preprocessingCount; }
+    public void setPreprocessingCount(int preprocessingCount) { this.preprocessingCount = preprocessingCount; }
     public boolean isAudioFocus() { return audioFocus; }
     public void setAudioFocus(boolean audioFocus) { this.audioFocus = audioFocus; }
     public List<String> getDislikedEpisodes() { return dislikedEpisodes; }

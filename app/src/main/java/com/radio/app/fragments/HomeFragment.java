@@ -44,12 +44,12 @@ public class HomeFragment extends Fragment implements StationAdapter.OnStationCl
 
     private void loadStations() {
         progressBar.setVisibility(View.VISIBLE);
-        RadioApiService.getInstance().getChineseStations(50, 0, new RadioApiService.ApiCallback<List<RadioStation>>() {
+        RadioApiService.getInstance().getAllStations(new RadioApiService.ApiCallback<List<RadioStation>>() {
             @Override public void onSuccess(List<RadioStation> stations) {
                 if (getActivity() == null) return;
                 progressBar.setVisibility(View.GONE);
                 stationList.clear();
-                for (RadioStation s : stations) { if (s.isLastCheckOk()) { s.setCurrentProgram("Live Stream"); stationList.add(s); } }
+                stationList.addAll(stations);
                 adapter.notifyDataSetChanged();
             }
             @Override public void onError(String error) {

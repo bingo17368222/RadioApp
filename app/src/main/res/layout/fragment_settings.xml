@@ -13,6 +13,8 @@
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="界面风格" android:textColor="@color/text_primary" android:textSize="16sp" />
             <Spinner android:id="@+id/spinner_theme" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
+            <TextView android:id="@+id/tv_custom_colors" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="自定义颜色" android:textColor="@color/accent" android:textSize="16sp" android:padding="8dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" android:visibility="gone" />
         </LinearLayout>
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="功能设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
@@ -20,10 +22,18 @@
                 <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用预缓存" android:textColor="@color/text_primary" android:textSize="16sp" />
                 <Switch android:id="@+id/switch_preload_cache" android:layout_width="wrap_content" android:layout_height="wrap_content" />
             </LinearLayout>
+            <LinearLayout android:id="@+id/layout_preload_count" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:padding="8dp" android:layout_marginTop="4dp" android:visibility="gone">
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="预缓存个数" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                <TextView android:id="@+id/tv_preload_count" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" android:padding="8dp" android:background="@drawable/bg_card" />
+            </LinearLayout>
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                 <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用预处理" android:textColor="@color/text_primary" android:textSize="16sp" />
                 <Switch android:id="@+id/switch_enable_preprocessing" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/layout_preprocess_count" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:padding="8dp" android:layout_marginTop="4dp" android:visibility="gone">
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="预处理个数" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                <TextView android:id="@+id/tv_preprocess_count" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" android:padding="8dp" android:background="@drawable/bg_card" />
             </LinearLayout>
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
