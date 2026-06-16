@@ -42,24 +42,17 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -100
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload Build Log
+      - name: List build outputs
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: |
-            app/build/reports/
-          retention-days: 7
-
-      - name: Find APK
-        run: find app/build/outputs -name "*.apk" -ls 2>/dev/null || echo "No APK found"
+        run: find app/build/outputs -type f 2>/dev/null || echo "No outputs found"
 
       - name: Upload Debug APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-debug
           path: app/build/outputs/apk/debug/
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
