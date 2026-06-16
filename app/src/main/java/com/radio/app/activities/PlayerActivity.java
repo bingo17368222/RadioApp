@@ -90,6 +90,10 @@ public class PlayerActivity extends AppCompatActivity {
             } else if (RadioPlaybackService.BROADCAST_STATE_CHANGED.equals(intent.getAction())) {
                 boolean playing = intent.getBooleanExtra(RadioPlaybackService.EXTRA_IS_PLAYING, false);
                 updatePlayBtn();
+            } else if ("com.radio.app.CACHE_UPDATE".equals(intent.getAction())) {
+                int percent = intent.getIntExtra("cache_percent", 0);
+                String path = intent.getStringExtra("cache_path");
+                updateCacheDisplay(percent, path);
             }
         }
     };
@@ -122,6 +126,7 @@ public class PlayerActivity extends AppCompatActivity {
         IntentFilter filter = new IntentFilter();
         filter.addAction(RadioPlaybackService.BROADCAST_BUFFER_UPDATE);
         filter.addAction(RadioPlaybackService.BROADCAST_STATE_CHANGED);
+        filter.addAction("com.radio.app.CACHE_UPDATE");
         LocalBroadcastManager.getInstance(this).registerReceiver(broadcastReceiver, filter);
     }
 
@@ -323,16 +328,18 @@ public class PlayerActivity extends AppCompatActivity {
                 seekBarCache.setMax((int) dur);
                 seekBarCache.setProgress((int) (dur * percent / 100));
             }
-            // 更新缓存进度条
             if (progressBuffer != null && progressBuffer.getVisibility() == View.VISIBLE) {
                 progressBuffer.setProgress(percent);
             }
-            // 更新缓存URL显示
-            if (tvCacheUrl != null && tvCacheUrl.getVisibility() == View.VISIBLE) {
-                String url = playbackService.getCurrentStreamUrl();
-                if (url != null && !url.isEmpty()) {
-                    tvCacheUrl.setText("缓存: " + percent + "% - " + url);
-                }
+        }
+    }
+
+    private void updateCacheDisplay(int percent, String localPath) {
+        if (tvCacheUrl != null && tvCacheUrl.getVisibility() == View.VISIBLE) {
+            if (localPath != null && !localPath.isEmpty()) {
+                tvCacheUrl.setText("本地: " + localPath);
+            } else {
+                tvCacheUrl.setText("缓存下载: " + percent + "%");
             }
         }
     }
