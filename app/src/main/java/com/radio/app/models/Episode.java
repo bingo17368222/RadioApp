@@ -15,6 +15,8 @@ public class Episode implements Serializable {
     private boolean isLive;
     private List<VoiceSegment> voiceSegments;
     private List<Transcript> transcripts;
+    private boolean isDisliked;
+    private boolean isCached;
 
     // Getters and setters
     public String getId() { return id; }
@@ -39,4 +41,8 @@ public class Episode implements Serializable {
     public void setVoiceSegments(List<VoiceSegment> voiceSegments) { this.voiceSegments = voiceSegments; }
     public List<Transcript> getTranscripts() { return transcripts; }
     public void setTranscripts(List<Transcript> transcripts) { this.transcripts = transcripts; }
+    public boolean isDisliked() { return isDisliked; }
+    public void setDisliked(boolean disliked) { isDisliked = disliked; }
+    public boolean isCached() { return isCached; }
+    public void setCached(boolean cached) { isCached = cached; }
 }

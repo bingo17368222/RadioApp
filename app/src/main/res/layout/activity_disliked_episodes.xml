@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="@color/background_dark">
+
+    <!-- 标题 -->
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="不喜欢的节目" android:textColor="@color/text_primary" android:textSize="22sp" android:textStyle="bold" android:padding="16dp" />
+
+    <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+        <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler_view" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:clipToPadding="false" />
+
+        <!-- 空状态 -->
+        <LinearLayout android:id="@+id/layout_empty" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:visibility="gone">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无不喜欢的节目" android:textColor="@color/text_secondary" android:textSize="16sp" />
+        </LinearLayout>
+    </FrameLayout>
+
+</LinearLayout>

@@ -33,6 +33,7 @@ public class AppSettings {
     private boolean enablePreprocessing = false;
     private int preprocessingCount = 1;
     private boolean audioFocus = true;
+    private boolean continuousPlay = true;
     private List<String> dislikedEpisodes = new ArrayList<>();
 
     public String getAiModel() { return aiModel; }
@@ -55,6 +56,8 @@ public class AppSettings {
     public void setPreprocessingCount(int preprocessingCount) { this.preprocessingCount = preprocessingCount; }
     public boolean isAudioFocus() { return audioFocus; }
     public void setAudioFocus(boolean audioFocus) { this.audioFocus = audioFocus; }
+    public boolean isContinuousPlay() { return continuousPlay; }
+    public void setContinuousPlay(boolean continuousPlay) { this.continuousPlay = continuousPlay; }
     public List<String> getDislikedEpisodes() { return dislikedEpisodes; }
     public void setDislikedEpisodes(List<String> dislikedEpisodes) { this.dislikedEpisodes = dislikedEpisodes; }
 

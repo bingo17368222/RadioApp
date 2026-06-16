@@ -4,5 +4,8 @@
         <TextView android:id="@+id/tv_selected_date" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:textColor="@color/text_primary" android:textSize="18sp" android:textStyle="bold" />
         <Button android:id="@+id/btn_select_date" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="选择日期" android:textColor="@android:color/white" android:backgroundTint="@color/accent" />
     </LinearLayout>
-    <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler_view" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:clipToPadding="false" />
+    <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+        <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler_view" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:clipToPadding="false" />
+        <ProgressBar android:id="@+id/progress_bar" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center" android:visibility="gone" />
+    </FrameLayout>
 </LinearLayout>

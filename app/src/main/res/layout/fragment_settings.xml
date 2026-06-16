@@ -9,6 +9,7 @@
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ASR方案" android:textColor="@color/text_primary" android:textSize="16sp" />
             <Spinner android:id="@+id/spinner_asr_provider" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
         </LinearLayout>
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="界面设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="界面风格" android:textColor="@color/text_primary" android:textSize="16sp" />
@@ -16,8 +17,16 @@
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
             <TextView android:id="@+id/tv_custom_colors" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="自定义颜色" android:textColor="@color/accent" android:textSize="16sp" android:padding="8dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" android:visibility="gone" />
         </LinearLayout>
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="功能设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
+            <!-- 连续播放 -->
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="连续播放" android:textColor="@color/text_primary" android:textSize="16sp" />
+                <Switch android:id="@+id/switch_continuous_play" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
+            </LinearLayout>
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
+            <!-- 预缓存 -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                 <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用预缓存" android:textColor="@color/text_primary" android:textSize="16sp" />
                 <Switch android:id="@+id/switch_preload_cache" android:layout_width="wrap_content" android:layout_height="wrap_content" />
@@ -27,6 +36,7 @@
                 <TextView android:id="@+id/tv_preload_count" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" android:padding="8dp" android:background="@drawable/bg_card" />
             </LinearLayout>
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
+            <!-- 预处理 -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                 <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用预处理" android:textColor="@color/text_primary" android:textSize="16sp" />
                 <Switch android:id="@+id/switch_enable_preprocessing" android:layout_width="wrap_content" android:layout_height="wrap_content" />
@@ -36,11 +46,27 @@
                 <TextView android:id="@+id/tv_preprocess_count" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" android:padding="8dp" android:background="@drawable/bg_card" />
             </LinearLayout>
             <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
+            <!-- 音频焦点 -->
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
                 <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用音频焦点" android:textColor="@color/text_primary" android:textSize="16sp" />
                 <Switch android:id="@+id/switch_audio_focus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
             </LinearLayout>
         </LinearLayout>
+
+        <!-- 管理入口 -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="数据管理" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
+            <!-- 不喜欢节目管理 -->
+            <TextView android:id="@+id/tv_disliked_episodes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="不喜欢的节目" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="4dp" />
+            <!-- 关键词设置 -->
+            <TextView android:id="@+id/tv_keyword_settings" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="片段分析关键词" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
+            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="4dp" />
+            <!-- 离线引擎管理 -->
+            <TextView android:id="@+id/tv_offline_engine" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="离线引擎管理" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
+        </LinearLayout>
+
+        <!-- 清理缓存 -->
         <TextView android:id="@+id/tv_clear_cache" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="清理缓存" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
     </LinearLayout>
 </ScrollView>

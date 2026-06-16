@@ -11,6 +11,7 @@ public class RadioStation {
     private int bitrate;
     private boolean lastCheckOk;
     private String currentProgram;
+    private boolean isLive = true;
 
     public static RadioStation fromJson(JSONObject json) {
         RadioStation station = new RadioStation();
@@ -45,4 +46,6 @@ public class RadioStation {
     public void setLastCheckOk(boolean lastCheckOk) { this.lastCheckOk = lastCheckOk; }
     public String getCurrentProgram() { return currentProgram; }
     public void setCurrentProgram(String currentProgram) { this.currentProgram = currentProgram; }
+    public boolean isLive() { return isLive; }
+    public void setLive(boolean live) { isLive = live; }
 }

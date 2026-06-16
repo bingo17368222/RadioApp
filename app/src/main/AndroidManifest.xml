@@ -29,6 +29,21 @@
             android:name=".activities.PlayerActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".activities.KeywordSettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.RadioApp" />
+
+        <activity
+            android:name=".activities.OfflineEngineActivity"
+            android:exported="false"
+            android:theme="@style/Theme.RadioApp" />
+
+        <activity
+            android:name=".activities.DislikedEpisodesActivity"
+            android:exported="false"
+            android:theme="@style/Theme.RadioApp" />
+
         <service
             android:name=".services.RadioPlaybackService"
             android:exported="false"

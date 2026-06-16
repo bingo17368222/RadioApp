@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="logic_options">
+        <item>或 (OR)</item>
+        <item>与 (AND)</item>
+    </string-array>
+</resources>

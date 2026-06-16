@@ -13,4 +13,8 @@ public class RetrofitClient {
     public RadioApiService getApiService() {
         return RadioApiService.getInstance();
     }
+
+    public EpisodeApiService getEpisodeApiService() {
+        return EpisodeApiService.getInstance();
+    }
 }
