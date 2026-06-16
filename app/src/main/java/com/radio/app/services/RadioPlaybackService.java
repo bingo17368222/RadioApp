@@ -28,7 +28,14 @@ import com.radio.app.models.RadioStation;
 import com.radio.app.models.VoiceSegment;
 import com.radio.app.utils.PreferenceManager;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import android.util.Log;
 
@@ -70,6 +77,11 @@ public class RadioPlaybackService extends Service implements
     private String currentStreamUrl = "";
     private Handler progressHandler;
     private Runnable progressRunnable;
+    private int skipSeconds = 15;
+    private String localCachePath = "";
+    private boolean caching = false;
+    private int cacheProgress = 0;
+    private ExecutorService cacheExecutor = Executors.newSingleThreadExecutor();
 
     public interface Callback {
         void onStateChanged(boolean playing);
@@ -253,6 +265,8 @@ public class RadioPlaybackService extends Service implements
         this.isLive = live;
         this.prepared = false;
         this.currentStreamUrl = episode.getAudioUrl();
+        this.localCachePath = "";
+        this.caching = false;
         stopAutoSkipCheck();
         try {
             player.reset();
@@ -286,11 +300,67 @@ public class RadioPlaybackService extends Service implements
             requestAudioFocus();
             startForegroundNotification();
             startAutoSkipCheck();
+            if (!live && episode.getAudioUrl() != null) startCaching(episode.getAudioUrl());
         } catch (Exception e) {
             Log.e(TAG, "playEpisode failed", e);
             prepared = false;
         }
     }
+
+    private void startCaching(String url) {
+        if (url == null || url.isEmpty()) return;
+        caching = true;
+        cacheProgress = 0;
+        cacheExecutor.execute(() -> {
+            try {
+                String fileName = String.valueOf(Math.abs(url.hashCode())) + ".mp3";
+                File cacheDir = new File(getCacheDir(), "audio");
+                if (!cacheDir.exists()) cacheDir.mkdirs();
+                File cacheFile = new File(cacheDir, fileName);
+                URL downloadUrl = new URL(url);
+                HttpURLConnection conn = (HttpURLConnection) downloadUrl.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                conn.setInstanceFollowRedirects(false);
+                int rc = conn.getResponseCode();
+                if (rc == 301 || rc == 302) {
+                    String newUrl = conn.getHeaderField("Location");
+                    conn.disconnect();
+                    conn = (HttpURLConnection) new URL(newUrl).openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(30000);
+                }
+                int totalSize = conn.getContentLength();
+                InputStream is = conn.getInputStream();
+                FileOutputStream fos = new FileOutputStream(cacheFile);
+                byte[] buffer = new byte[8192];
+                int len;
+                int downloaded = 0;
+                while ((len = is.read(buffer)) != -1) {
+                    fos.write(buffer, 0, len);
+                    downloaded += len;
+                    if (totalSize > 0) cacheProgress = (int) (downloaded * 100 / totalSize);
+                }
+                fos.close();
+                is.close();
+                conn.disconnect();
+                localCachePath = cacheFile.getAbsolutePath();
+                caching = false;
+                cacheProgress = 100;
+                Log.d(TAG, "Cache complete: " + localCachePath);
+            } catch (Exception e) {
+                Log.e(TAG, "Caching failed: " + e.getMessage());
+                caching = false;
+                cacheProgress = 0;
+            }
+        });
+    }
+
+    public String getLocalCachePath() { return localCachePath; }
+    public boolean isCaching() { return caching; }
+    public int getCacheProgress() { return cacheProgress; }
 
     public void play() {
         if (player != null && !player.isPlaying()) {
@@ -326,15 +396,15 @@ public class RadioPlaybackService extends Service implements
 
     public void skipForward() {
         if (player == null || isLive) return;
-        long p = player.getCurrentPosition() + 15000;
+        long p = player.getCurrentPosition() + skipSeconds * 1000;
         long dur = player.getDuration();
-        if (p > dur) p = dur;
+        if (dur > 0 && p > dur) p = dur;
         player.seekTo((int) p);
     }
 
     public void skipBackward() {
         if (player == null || isLive) return;
-        player.seekTo(Math.max(0, player.getCurrentPosition() - 15000));
+        player.seekTo(Math.max(0, player.getCurrentPosition() - skipSeconds * 1000));
     }
 
     public boolean isPlaying() { return player != null && player.isPlaying(); }
@@ -578,6 +648,7 @@ public class RadioPlaybackService extends Service implements
         if (progressHandler != null && progressRunnable != null) progressHandler.removeCallbacks(progressRunnable);
         stopAutoSkipCheck();
         abandonAudioFocus();
+        if (cacheExecutor != null) cacheExecutor.shutdownNow();
         if (player != null) { player.release(); player = null; }
     }
 }
