@@ -1,8 +1,9 @@
 package com.radio.app.fragments;
 
-import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,47 +27,59 @@ import java.util.List;
 
 public class HomeFragment extends Fragment implements StationAdapter.OnStationClickListener {
     private RecyclerView recyclerView;
-    private StationAdapter adapter;
     private ProgressBar progressBar;
-    private List<RadioStation> stationList = new ArrayList<>();
+    private StationAdapter adapter;
+    private final List<RadioStation> stations = new ArrayList<>();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    @Nullable @Override
+    @Nullable
+    @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
-        View view = inflater.inflate(R.layout.fragment_home, container, false);
-        recyclerView = view.findViewById(R.id.recycler_view);
-        progressBar = view.findViewById(R.id.progress_bar);
-        adapter = new StationAdapter(getContext(), stationList, this);
+        View v = inflater.inflate(R.layout.fragment_home, container, false);
+        recyclerView = v.findViewById(R.id.recycler_view);
+        progressBar = v.findViewById(R.id.progress_bar);
         recyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
+        adapter = new StationAdapter(getContext(), stations, this);
         recyclerView.setAdapter(adapter);
         loadStations();
-        return view;
+        return v;
     }
 
     private void loadStations() {
         progressBar.setVisibility(View.VISIBLE);
         RadioApiService.getInstance().getAllStations(new RadioApiService.ApiCallback<List<RadioStation>>() {
-            @Override public void onSuccess(List<RadioStation> stations) {
-                if (getActivity() == null) return;
-                progressBar.setVisibility(View.GONE);
-                stationList.clear();
-                stationList.addAll(stations);
-                adapter.notifyDataSetChanged();
+            @Override
+            public void onSuccess(List<RadioStation> result) {
+                // 切回主线程更新UI
+                mainHandler.post(() -> {
+                    progressBar.setVisibility(View.GONE);
+                    stations.clear();
+                    stations.addAll(result);
+                    adapter.notifyDataSetChanged();
+                });
             }
-            @Override public void onError(String error) {
-                if (getActivity() == null) return;
-                progressBar.setVisibility(View.GONE);
-                Toast.makeText(getContext(), error, Toast.LENGTH_SHORT).show();
+            @Override
+            public void onError(String error) {
+                mainHandler.post(() -> {
+                    progressBar.setVisibility(View.GONE);
+                    Toast.makeText(getContext(), error, Toast.LENGTH_SHORT).show();
+                });
             }
         });
     }
 
-    @Override public void onStationClick(RadioStation station) {
-        if (getActivity() instanceof com.radio.app.activities.MainActivity) {
-            com.radio.app.activities.MainActivity a = (com.radio.app.activities.MainActivity) getActivity();
-            if (a.isServiceBound() && a.getPlaybackService() != null) a.getPlaybackService().playStation(station);
-        }
-        startActivity(new Intent(getContext(), PlayerActivity.class));
+    @Override
+    public void onStationClick(RadioStation s) {
+        Intent intent = new Intent(getContext(), PlayerActivity.class);
+        intent.putExtra("station_id", s.getId());
+        intent.putExtra("station_name", s.getName());
+        intent.putExtra("stream_url", s.getStreamUrl());
+        intent.putExtra("is_live", true);
+        startActivity(intent);
     }
 
-    @Override public void onStationLongClick(RadioStation station) {}
+    @Override
+    public void onStationLongClick(RadioStation s) {
+        // 长按可添加收藏等操作
+    }
 }

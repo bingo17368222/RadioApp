@@ -36,17 +36,22 @@ public class RadioApiService {
         executor.execute(() -> {
             List<RadioStation> allStations = new ArrayList<>();
             
-            // 添加内置河南电台
-            allStations.addAll(getBuiltinHenanStations());
+            // 添加内置电台（不依赖网络，立即显示）
+            allStations.addAll(getBuiltinStations());
             
-            // 从API获取中文电台
+            // 先返回内置电台，让用户立即看到内容
+            if (!allStations.isEmpty()) {
+                callback.onSuccess(allStations);
+            }
+            
+            // 从API获取中文电台（后台补充）
             try {
-                URL url = new URL(BASE_URL + "json/stations/bylanguage/chinese?limit=100&offset=0");
+                URL url = new URL(BASE_URL + "json/stations/bylanguage/chinese?limit=50&offset=0");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setRequestProperty("User-Agent", "RadioApp/1.0");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(10000);
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
 
                 if (conn.getResponseCode() == 200) {
                     BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
@@ -71,12 +76,12 @@ public class RadioApiService {
             
             // 从API获取河南电台
             try {
-                URL url = new URL(BASE_URL + "json/stations/search?country=China&state=Henan&limit=50");
+                URL url = new URL(BASE_URL + "json/stations/search?country=China&state=Henan&limit=30");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setRequestProperty("User-Agent", "RadioApp/1.0");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(10000);
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
 
                 if (conn.getResponseCode() == 200) {
                     BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
@@ -99,15 +104,14 @@ public class RadioApiService {
                 e.printStackTrace();
             }
             
-            if (allStations.isEmpty()) {
-                callback.onError("无法获取电台列表，请检查网络");
-            } else {
+            // 网络请求完成后再次回调（更新完整列表）
+            if (allStations.size() > getBuiltinStations().size()) {
                 callback.onSuccess(allStations);
             }
         });
     }
     
-    private List<RadioStation> getBuiltinHenanStations() {
+    private List<RadioStation> getBuiltinStations() {
         List<RadioStation> list = new ArrayList<>();
         
         // 河南人民广播电台
