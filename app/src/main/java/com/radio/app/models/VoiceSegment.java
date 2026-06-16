@@ -8,8 +8,8 @@ public class VoiceSegment implements Parcelable {
     private long end;
     private boolean hasVoice;
     private String label;
-    private boolean manuallyMarked;
-    private boolean skipThisTime; // 本次不跳过标记
+    private boolean manuallyMarked = false;
+    private boolean skipThisTime = false;
 
     public VoiceSegment() {}
 
@@ -20,15 +20,6 @@ public class VoiceSegment implements Parcelable {
         this.label = label;
     }
 
-    public VoiceSegment(long start, long end, boolean hasVoice, String label, boolean manuallyMarked) {
-        this.start = start;
-        this.end = end;
-        this.hasVoice = hasVoice;
-        this.label = label;
-        this.manuallyMarked = manuallyMarked;
-    }
-
-    // Parcelable implementation
     protected VoiceSegment(Parcel in) {
         start = in.readLong();
         end = in.readLong();
@@ -43,7 +34,6 @@ public class VoiceSegment implements Parcelable {
         public VoiceSegment createFromParcel(Parcel in) {
             return new VoiceSegment(in);
         }
-
         @Override
         public VoiceSegment[] newArray(int size) {
             return new VoiceSegment[size];
@@ -65,7 +55,6 @@ public class VoiceSegment implements Parcelable {
         dest.writeByte((byte) (skipThisTime ? 1 : 0));
     }
 
-    // Getters and setters
     public long getStart() { return start; }
     public void setStart(long start) { this.start = start; }
     public long getEnd() { return end; }
@@ -80,19 +69,23 @@ public class VoiceSegment implements Parcelable {
     public void setSkipThisTime(boolean skipThisTime) { this.skipThisTime = skipThisTime; }
 
     /**
-     * 判断该片段是否应被视为干货。
-     * 手动标记的优先级最高，其次是AI标记的hasVoice。
+     * Effective dry check: manually marked takes highest priority.
+     * If manually marked as dry -> dry. If manually marked as water -> water.
+     * Otherwise, fall back to AI-detected hasVoice.
      */
     public boolean isEffectiveDry() {
-        if (manuallyMarked) return hasVoice;
+        if (manuallyMarked) {
+            return hasVoice;
+        }
         return hasVoice;
     }
 
     /**
-     * 判断该片段是否应被自动跳过。
-     * 如果是水分片段且没有设置"本次不跳过"，则应被跳过。
+     * Whether this segment should be auto-skipped.
+     * Skip if: skipThisTime is set, or if it's water (not dry) content.
      */
     public boolean shouldAutoSkip() {
-        return !isEffectiveDry() && !skipThisTime;
+        if (skipThisTime) return true;
+        return !isEffectiveDry();
     }
 }

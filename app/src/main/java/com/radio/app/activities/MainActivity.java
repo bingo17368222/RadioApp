@@ -20,7 +20,7 @@ import com.radio.app.fragments.SearchFragment;
 import com.radio.app.fragments.SettingsFragment;
 import com.radio.app.services.RadioPlaybackService;
 
-public class MainActivity extends AppCompatActivity implements BottomNavigationView.OnItemSelectedListener {
+public class MainActivity extends AppCompatActivity implements BottomNavigationView.OnNavigationItemSelectedListener {
     private RadioPlaybackService playbackService;
     private boolean serviceBound = false;
 
@@ -39,7 +39,7 @@ public class MainActivity extends AppCompatActivity implements BottomNavigationV
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         BottomNavigationView nav = findViewById(R.id.bottom_navigation);
-        nav.setOnItemSelectedListener(this);
+        nav.setOnNavigationItemSelectedListener(this);
         if (savedInstanceState == null) loadFragment(new HomeFragment());
         bindService(new Intent(this, RadioPlaybackService.class), conn, Context.BIND_AUTO_CREATE);
     }

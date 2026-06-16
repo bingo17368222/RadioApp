@@ -8,7 +8,6 @@ import android.database.sqlite.SQLiteOpenHelper;
 
 import com.radio.app.models.PlayProgress;
 import com.radio.app.models.Transcript;
-import com.radio.app.models.VoiceSegment;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,7 +48,7 @@ public class RadioDatabaseHelper extends SQLiteOpenHelper {
         }
     }
 
-    // ==================== 播放进度 ====================
+    // ===== Play Progress =====
 
     public void savePlayProgress(PlayProgress progress) {
         SQLiteDatabase db = getWritableDatabase();
@@ -74,7 +73,7 @@ public class RadioDatabaseHelper extends SQLiteOpenHelper {
         return progress;
     }
 
-    // ==================== 字幕 ====================
+    // ===== Transcripts =====
 
     public void saveTranscript(Transcript transcript) {
         SQLiteDatabase db = getWritableDatabase();
@@ -107,11 +106,8 @@ public class RadioDatabaseHelper extends SQLiteOpenHelper {
         db.delete(TABLE_TRANSCRIPTS, null, null);
     }
 
-    // ==================== 不喜欢节目 ====================
+    // ===== Disliked Episodes =====
 
-    /**
-     * 添加不喜欢节目
-     */
     public void addDislikedEpisode(String episodeId, String title, String stationName) {
         SQLiteDatabase db = getWritableDatabase();
         ContentValues values = new ContentValues();
@@ -122,44 +118,35 @@ public class RadioDatabaseHelper extends SQLiteOpenHelper {
         db.replace(TABLE_DISLIKED_EPISODES, null, values);
     }
 
-    /**
-     * 移除不喜欢节目
-     */
     public void removeDislikedEpisode(String episodeId) {
         SQLiteDatabase db = getWritableDatabase();
         db.delete(TABLE_DISLIKED_EPISODES, "episode_id = ?", new String[]{episodeId});
     }
 
-    /**
-     * 获取所有不喜欢节目ID列表
-     */
-    public List<String> getAllDislikedEpisodes() {
-        List<String> episodeIds = new ArrayList<>();
+    public List<PlayProgress> getAllDislikedEpisodes() {
+        List<PlayProgress> list = new ArrayList<>();
         SQLiteDatabase db = getReadableDatabase();
-        Cursor cursor = db.query(TABLE_DISLIKED_EPISODES, new String[]{"episode_id"}, null, null, null, null, "created_at DESC");
+        Cursor cursor = db.query(TABLE_DISLIKED_EPISODES, null, null, null, null, null, "created_at DESC");
         while (cursor.moveToNext()) {
-            episodeIds.add(cursor.getString(0));
+            PlayProgress p = new PlayProgress();
+            p.setEpisodeId(cursor.getString(0));
+            p.setRecordedAt(cursor.getLong(3));
+            list.add(p);
         }
         cursor.close();
-        return episodeIds;
+        return list;
     }
 
-    /**
-     * 判断节目是否已被标记为不喜欢
-     */
     public boolean isEpisodeDisliked(String episodeId) {
         SQLiteDatabase db = getReadableDatabase();
-        Cursor cursor = db.query(TABLE_DISLIKED_EPISODES, new String[]{"episode_id"}, "episode_id = ?", new String[]{episodeId}, null, null, null);
-        boolean exists = cursor.getCount() > 0;
+        Cursor cursor = db.query(TABLE_DISLIKED_EPISODES, null, "episode_id = ?", new String[]{episodeId}, null, null, null);
+        boolean exists = cursor.moveToFirst();
         cursor.close();
         return exists;
     }
 
-    // ==================== 手动语音分段标记 ====================
+    // ===== Manual Segment Marks =====
 
-    /**
-     * 保存手动语音分段标记
-     */
     public void saveManualSegmentMark(String episodeId, long segmentStart, long segmentEnd, boolean hasVoice) {
         SQLiteDatabase db = getWritableDatabase();
         ContentValues values = new ContentValues();
@@ -170,40 +157,13 @@ public class RadioDatabaseHelper extends SQLiteOpenHelper {
         db.replace(TABLE_VOICE_SEGMENTS_MANUAL, null, values);
     }
 
-    /**
-     * 获取某个节目的所有手动分段标记
-     */
-    public List<VoiceSegment> getManualSegmentMarks(String episodeId) {
-        List<VoiceSegment> segments = new ArrayList<>();
+    public Cursor getManualSegmentMarks(String episodeId) {
         SQLiteDatabase db = getReadableDatabase();
-        Cursor cursor = db.query(TABLE_VOICE_SEGMENTS_MANUAL, null, "episode_id = ?", new String[]{episodeId}, null, null, "segment_start ASC");
-        while (cursor.moveToNext()) {
-            VoiceSegment segment = new VoiceSegment();
-            segment.setStart(cursor.getLong(1));
-            segment.setEnd(cursor.getLong(2));
-            segment.setHasVoice(cursor.getInt(3) == 1);
-            segment.setManuallyMarked(true);
-            segment.setLabel(segment.isHasVoice() ? "手动标记-干货" : "手动标记-水分");
-            segments.add(segment);
-        }
-        cursor.close();
-        return segments;
+        return db.query(TABLE_VOICE_SEGMENTS_MANUAL, null, "episode_id = ?", new String[]{episodeId}, null, null, "segment_start ASC");
     }
 
-    /**
-     * 移除某个节目的所有手动分段标记
-     */
     public void removeManualSegmentMarks(String episodeId) {
         SQLiteDatabase db = getWritableDatabase();
         db.delete(TABLE_VOICE_SEGMENTS_MANUAL, "episode_id = ?", new String[]{episodeId});
-    }
-
-    /**
-     * 移除某个节目的特定手动分段标记
-     */
-    public void removeManualSegmentMark(String episodeId, long segmentStart) {
-        SQLiteDatabase db = getWritableDatabase();
-        db.delete(TABLE_VOICE_SEGMENTS_MANUAL, "episode_id = ? AND segment_start = ?",
-                new String[]{episodeId, String.valueOf(segmentStart)});
     }
 }

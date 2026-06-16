@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:id="@+id/card_view" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="12dp" app:cardBackgroundColor="@color/card_dark" app:cardCornerRadius="16dp" app:cardElevation="2dp">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
-        <TextView android:id="@+id/tv_title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
-            <TextView android:id="@+id/tv_station" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:textColor="@color/text_secondary" android:textSize="13sp" android:maxLines="1" android:ellipsize="end" />
-            <TextView android:id="@+id/tv_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text_secondary" android:textSize="13sp" />
-        </LinearLayout>
-        <Button android:id="@+id/btn_undislike" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="取消标记" android:textColor="@android:color/white" android:backgroundTint="@color/warning" android:layout_marginTop="12dp" android:layout_gravity="end" android:minHeight="36dp" android:paddingHorizontal="16dp" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@drawable/bg_card"
+    android:padding="12dp"
+    android:layout_marginBottom="8dp"
+    android:gravity="center_vertical">
+
+    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+        <TextView android:id="@+id/tv_title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" />
+        <TextView android:id="@+id/tv_station" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/text_secondary" android:textSize="12sp" android:layout_marginTop="2dp" />
     </LinearLayout>
-</androidx.cardview.widget.CardView>
+
+    <Button android:id="@+id/btn_remove" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="取消" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:textSize="12sp" android:paddingHorizontal="12dp" />
+</LinearLayout>

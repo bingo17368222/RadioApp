@@ -5,6 +5,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.AlphaAnimation;
+import android.view.animation.Animation;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -16,15 +17,13 @@ import com.radio.app.models.Episode;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 public class EpisodeAdapter extends RecyclerView.Adapter<EpisodeAdapter.ViewHolder> {
     private final Context ctx;
     private final List<Episode> episodes;
     private final OnEpisodeClickListener listener;
-    private final Set<String> dislikedIds = new HashSet<>();
 
     public interface OnEpisodeClickListener {
         void onEpisodeClick(Episode e);
@@ -37,24 +36,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<EpisodeAdapter.ViewHold
         this.listener = listener;
     }
 
-    public void setDislikedIds(Set<String> ids) {
-        dislikedIds.clear();
-        if (ids != null) dislikedIds.addAll(ids);
-        notifyDataSetChanged();
-    }
-
-    public void addDislikedId(String id) {
-        dislikedIds.add(id);
-        notifyDataSetChanged();
-    }
-
-    public void removeDislikedId(String id) {
-        dislikedIds.remove(id);
-        notifyDataSetChanged();
-    }
-
-    @NonNull
-    @Override
+    @NonNull @Override
     public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         return new ViewHolder(LayoutInflater.from(ctx).inflate(R.layout.item_episode, parent, false));
     }
@@ -70,48 +52,40 @@ public class EpisodeAdapter extends RecyclerView.Adapter<EpisodeAdapter.ViewHold
             SimpleDateFormat out = new SimpleDateFormat("HH:mm", Locale.getDefault());
             Date d = in.parse(e.getBroadcastAt());
             h.tvTime.setText(out.format(d));
-        } catch (Exception ex) {
-            h.tvTime.setText(e.getBroadcastAt());
-        }
+        } catch (Exception ex) { h.tvTime.setText(e.getBroadcastAt()); }
         h.tvDuration.setText(String.format(Locale.getDefault(), "%02d:%02d", e.getDuration() / 60, e.getDuration() % 60));
 
-        // 直播中标签
+        // Live indicator with blinking animation
         if (e.isLive()) {
             h.tvLive.setVisibility(View.VISIBLE);
-            // 红色闪烁动画
+            h.tvLive.setText("LIVE");
+            h.tvLive.setBackgroundResource(R.drawable.bg_live_indicator);
             AlphaAnimation blink = new AlphaAnimation(1.0f, 0.3f);
             blink.setDuration(800);
-            blink.setRepeatCount(AlphaAnimation.INFINITE);
-            blink.setRepeatMode(AlphaAnimation.REVERSE);
+            blink.setRepeatMode(Animation.REVERSE);
+            blink.setRepeatCount(Animation.INFINITE);
             h.tvLive.startAnimation(blink);
         } else {
             h.tvLive.setVisibility(View.GONE);
             h.tvLive.clearAnimation();
         }
 
-        // 不喜欢节目降低透明度
-        if (dislikedIds.contains(e.getId())) {
+        // Disliked episode - reduce opacity
+        if (e.isDisliked()) {
             h.card.setAlpha(0.5f);
         } else {
             h.card.setAlpha(1.0f);
         }
 
-        h.card.setOnClickListener(v -> {
-            if (listener != null) listener.onEpisodeClick(e);
-        });
-        h.card.setOnLongClickListener(v -> {
-            if (listener != null) listener.onEpisodeLongClick(e);
-            return true;
-        });
+        h.card.setOnClickListener(v -> { if (listener != null) listener.onEpisodeClick(e); });
+        h.card.setOnLongClickListener(v -> { if (listener != null) listener.onEpisodeLongClick(e); return true; });
     }
 
-    @Override
-    public int getItemCount() { return episodes.size(); }
+    @Override public int getItemCount() { return episodes.size(); }
 
     static class ViewHolder extends RecyclerView.ViewHolder {
         CardView card;
         TextView tvTitle, tvDescription, tvStation, tvTime, tvDuration, tvLive;
-
         ViewHolder(@NonNull View v) {
             super(v);
             card = v.findViewById(R.id.card_view);

@@ -13,10 +13,10 @@ public class Episode implements Serializable {
     private String stationName;
     private String audioUrl;
     private boolean isLive;
+    private boolean isDisliked = false;
+    private boolean isCached = false;
     private List<VoiceSegment> voiceSegments;
     private List<Transcript> transcripts;
-    private boolean isDisliked;
-    private boolean isCached;
 
     // Getters and setters
     public String getId() { return id; }
@@ -37,12 +37,12 @@ public class Episode implements Serializable {
     public void setAudioUrl(String audioUrl) { this.audioUrl = audioUrl; }
     public boolean isLive() { return isLive; }
     public void setLive(boolean live) { isLive = live; }
-    public List<VoiceSegment> getVoiceSegments() { return voiceSegments; }
-    public void setVoiceSegments(List<VoiceSegment> voiceSegments) { this.voiceSegments = voiceSegments; }
-    public List<Transcript> getTranscripts() { return transcripts; }
-    public void setTranscripts(List<Transcript> transcripts) { this.transcripts = transcripts; }
     public boolean isDisliked() { return isDisliked; }
     public void setDisliked(boolean disliked) { isDisliked = disliked; }
     public boolean isCached() { return isCached; }
     public void setCached(boolean cached) { isCached = cached; }
+    public List<VoiceSegment> getVoiceSegments() { return voiceSegments; }
+    public void setVoiceSegments(List<VoiceSegment> voiceSegments) { this.voiceSegments = voiceSegments; }
+    public List<Transcript> getTranscripts() { return transcripts; }
+    public void setTranscripts(List<Transcript> transcripts) { this.transcripts = transcripts; }
 }

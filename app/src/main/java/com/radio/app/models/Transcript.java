@@ -5,6 +5,7 @@ public class Transcript {
     private long segmentStart;
     private long segmentEnd;
     private String text;
+    private double confidence;
 
     public Transcript() {}
 
@@ -21,6 +22,12 @@ public class Transcript {
     public void setSegmentStart(long segmentStart) { this.segmentStart = segmentStart; }
     public long getSegmentEnd() { return segmentEnd; }
     public void setSegmentEnd(long segmentEnd) { this.segmentEnd = segmentEnd; }
+    public long getStartTime() { return segmentStart; }
+    public void setStartTime(long startTime) { this.segmentStart = startTime; }
+    public long getEndTime() { return segmentEnd; }
+    public void setEndTime(long endTime) { this.segmentEnd = endTime; }
     public String getText() { return text; }
     public void setText(String text) { this.text = text; }
+    public double getConfidence() { return confidence; }
+    public void setConfidence(double confidence) { this.confidence = confidence; }
 }

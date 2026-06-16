@@ -32,17 +32,17 @@
         <activity
             android:name=".activities.KeywordSettingsActivity"
             android:exported="false"
-            android:theme="@style/Theme.RadioApp" />
+            android:parentActivityName=".activities.MainActivity" />
 
         <activity
             android:name=".activities.OfflineEngineActivity"
             android:exported="false"
-            android:theme="@style/Theme.RadioApp" />
+            android:parentActivityName=".activities.MainActivity" />
 
         <activity
             android:name=".activities.DislikedEpisodesActivity"
             android:exported="false"
-            android:theme="@style/Theme.RadioApp" />
+            android:parentActivityName=".activities.MainActivity" />
 
         <service
             android:name=".services.RadioPlaybackService"

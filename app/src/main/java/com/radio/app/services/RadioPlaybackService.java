@@ -1,14 +1,10 @@
 package com.radio.app.services;
 
 import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -18,7 +14,6 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
@@ -26,85 +21,51 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import com.radio.app.R;
 import com.radio.app.RadioApplication;
 import com.radio.app.activities.PlayerActivity;
+import com.radio.app.database.RadioDatabaseHelper;
 import com.radio.app.models.AppSettings;
 import com.radio.app.models.Episode;
 import com.radio.app.models.RadioStation;
 import com.radio.app.models.VoiceSegment;
 import com.radio.app.utils.PreferenceManager;
 
-import java.util.ArrayList;
 import java.util.List;
 
-public class RadioPlaybackService extends Service
-        implements MediaPlayer.OnPreparedListener,
+public class RadioPlaybackService extends Service implements
+        MediaPlayer.OnPreparedListener,
         MediaPlayer.OnCompletionListener,
         MediaPlayer.OnBufferingUpdateListener,
-        MediaPlayer.OnErrorListener,
         AudioManager.OnAudioFocusChangeListener {
 
-    private static final String TAG = "RadioPlaybackService";
-    private static final int NOTIFICATION_ID = 1;
-
-    // Intent Actions
-    public static final String ACTION_PLAY_STATION = "com.radio.app.PLAY_STATION";
-    public static final String ACTION_PLAY_EPISODE = "com.radio.app.PLAY_EPISODE";
     public static final String ACTION_PLAY = "com.radio.app.PLAY";
     public static final String ACTION_PAUSE = "com.radio.app.PAUSE";
     public static final String ACTION_STOP = "com.radio.app.STOP";
-    public static final String ACTION_NEXT_SEGMENT = "com.radio.app.NEXT_SEGMENT";
     public static final String ACTION_PREV_SEGMENT = "com.radio.app.PREV_SEGMENT";
-    public static final String ACTION_NEXT_EPISODE = "com.radio.app.NEXT_EPISODE";
-    public static final String ACTION_PREV_EPISODE = "com.radio.app.PREV_EPISODE";
+    public static final String ACTION_NEXT_SEGMENT = "com.radio.app.NEXT_SEGMENT";
+    public static final String ACTION_REWIND = "com.radio.app.REWIND";
+    public static final String ACTION_FORWARD = "com.radio.app.FORWARD";
 
-    // Intent Extras
-    public static final String EXTRA_STATION_ID = "station_id";
-    public static final String EXTRA_STATION_NAME = "station_name";
-    public static final String EXTRA_STREAM_URL = "stream_url";
-    public static final String EXTRA_IS_LIVE = "is_live";
-    public static final String EXTRA_EPISODE_ID = "episode_id";
-    public static final String EXTRA_TITLE = "title";
-    public static final String EXTRA_AUDIO_URL = "audio_url";
-
-    // Broadcast Actions
+    public static final String BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE";
     public static final String BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED";
-    public static final String BROADCAST_POSITION_UPDATE = "com.radio.app.POSITION_UPDATE";
-    public static final String BROADCAST_CACHE_UPDATE = "com.radio.app.CACHE_UPDATE";
-    public static final String BROADCAST_SEGMENTS_UPDATED = "com.radio.app.SEGMENTS_UPDATED";
-    public static final String BROADCAST_EPISODE_CHANGED = "com.radio.app.EPISODE_CHANGED";
-
-    // Broadcast Extras
-    public static final String EXTRA_PLAYING = "playing";
-    public static final String EXTRA_POSITION = "position";
-    public static final String EXTRA_DURATION = "duration";
-    public static final String EXTRA_CACHE_PERCENT = "cache_percent";
-    public static final String EXTRA_SEGMENTS = "segments";
-    public static final String EXTRA_CURRENT_SEGMENT_INDEX = "current_segment_index";
-    public static final String EXTRA_EPISODE_TITLE = "episode_title";
-    public static final String EXTRA_STATION_NAME_BROADCAST = "station_name_broadcast";
-    public static final String EXTRA_IS_LIVE_BROADCAST = "is_live_broadcast";
+    public static final String EXTRA_BUFFER_PERCENT = "buffer_percent";
+    public static final String EXTRA_IS_PLAYING = "is_playing";
 
     private MediaPlayer player;
     private final IBinder binder = new LocalBinder();
     private Episode currentEpisode;
     private RadioStation currentStation;
     private boolean isLive = false;
-    private List<VoiceSegment> voiceSegments = new ArrayList<>();
-    private int currentSegmentIndex = -1;
-    private boolean wasPlayingBeforeLoss = false;
+    private Callback callback;
     private AudioManager audioManager;
     private AudioFocusRequest audioFocusRequest;
-    private Handler progressHandler;
-    private Runnable progressRunnable;
-    private LocalBroadcastManager broadcastManager;
-    private PreferenceManager preferenceManager;
-    private int cachePercent = 0;
+    private Handler autoSkipHandler;
+    private Runnable autoSkipRunnable;
+    private boolean continuousPlay = true;
+    private int bufferPercent = 0;
 
     public interface Callback {
         void onStateChanged(boolean playing);
         void onPositionChanged(long position, long duration);
-        void onCacheUpdate(int percent);
-        void onSegmentsUpdated(List<VoiceSegment> segments, int currentIndex);
-        void onEpisodeChanged(Episode episode, RadioStation station, boolean live);
+        void onBufferUpdate(int percent);
     }
 
     public class LocalBinder extends Binder {
@@ -122,101 +83,58 @@ public class RadioPlaybackService extends Service
         player.setOnPreparedListener(this);
         player.setOnCompletionListener(this);
         player.setOnBufferingUpdateListener(this);
-        player.setOnErrorListener(this);
-
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        broadcastManager = LocalBroadcastManager.getInstance(this);
-        preferenceManager = new PreferenceManager(this);
+        autoSkipHandler = new Handler(Looper.getMainLooper());
+        loadSettings();
+    }
 
-        progressHandler = new Handler(Looper.getMainLooper());
-        progressRunnable = new Runnable() {
-            @Override
-            public void run() {
-                if (player != null && isPlaying()) {
-                    long pos = player.getCurrentPosition();
-                    long dur = player.getDuration();
-                    sendPositionBroadcast(pos, dur);
-                    checkAutoSkip(pos);
-                    updateCurrentSegmentIndex(pos);
-                }
-                progressHandler.postDelayed(this, 1000);
-            }
-        };
-        progressHandler.post(progressRunnable);
-
-        createNotificationChannel();
+    private void loadSettings() {
+        PreferenceManager prefMgr = new PreferenceManager(this);
+        AppSettings settings = prefMgr.loadSettings();
+        continuousPlay = settings.isContinuousPlay();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.getAction() != null) {
             switch (intent.getAction()) {
-                case ACTION_PLAY_STATION:
-                    handlePlayStation(intent);
-                    break;
-                case ACTION_PLAY_EPISODE:
-                    handlePlayEpisode(intent);
-                    break;
-                case ACTION_PLAY:
-                    play();
-                    break;
-                case ACTION_PAUSE:
-                    pause();
-                    break;
-                case ACTION_STOP:
-                    stop();
-                    break;
-                case ACTION_NEXT_SEGMENT:
-                    jumpToNextSegment();
-                    break;
-                case ACTION_PREV_SEGMENT:
-                    jumpToPrevSegment();
-                    break;
-                case ACTION_NEXT_EPISODE:
-                    playNextEpisode();
-                    break;
-                case ACTION_PREV_EPISODE:
-                    playPrevEpisode();
-                    break;
+                case ACTION_PLAY: play(); break;
+                case ACTION_PAUSE: pause(); break;
+                case ACTION_STOP: stop(); break;
+                case ACTION_PREV_SEGMENT: jumpToPrevSegment(); break;
+                case ACTION_NEXT_SEGMENT: jumpToNextSegment(); break;
+                case ACTION_REWIND: skipBackward(); break;
+                case ACTION_FORWARD: skipForward(); break;
             }
         }
         return START_STICKY;
     }
 
-    // ==================== 音频焦点管理 ====================
+    // ===== Audio Focus =====
 
-    private void requestAudioFocus() {
-        AppSettings settings = preferenceManager.loadSettings();
-        if (!settings.isAudioFocus()) {
-            return;
-        }
+    private boolean requestAudioFocus() {
+        if (audioManager == null) return false;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (audioFocusRequest == null) {
-                audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                        .setAudioAttributes(new AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build())
-                        .setAcceptsDelayedFocusGain(true)
-                        .setWillPauseWhenDucked(false)
-                        .setOnAudioFocusChangeListener(this)
-                        .build();
-            }
-            int result = audioManager.requestAudioFocus(audioFocusRequest);
-            if (result == AudioManager.AUDIOFOCUS_REQUEST_FAILED) {
-                Log.w(TAG, "音频焦点请求失败");
-            }
+            AudioFocusRequest request = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                    .setWillPauseWhenDucked(true)
+                    .setAcceptsDelayedFocusGain(false)
+                    .setOnAudioFocusChangeListener(this)
+                    .build();
+            audioFocusRequest = request;
+            return audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         } else {
             //noinspection deprecation
-            int result = audioManager.requestAudioFocus(this,
-                    AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-            if (result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                Log.w(TAG, "音频焦点请求失败");
-            }
+            return audioManager.requestAudioFocus(this, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+                    == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         }
     }
 
     private void abandonAudioFocus() {
+        if (audioManager == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
         } else {
@@ -227,533 +145,330 @@ public class RadioPlaybackService extends Service
 
     @Override
     public void onAudioFocusChange(int focusChange) {
-        AppSettings settings = preferenceManager.loadSettings();
-        if (!settings.isAudioFocus()) {
-            return;
-        }
         switch (focusChange) {
             case AudioManager.AUDIOFOCUS_GAIN:
-                // 焦点恢复，恢复播放
-                if (wasPlayingBeforeLoss) {
-                    play();
-                    wasPlayingBeforeLoss = false;
-                }
+                play();
                 break;
             case AudioManager.AUDIOFOCUS_LOSS:
-                // 永久失去焦点，暂停播放
-                if (isPlaying()) {
-                    wasPlayingBeforeLoss = true;
-                    pause();
-                }
+                pause();
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                // 临时失去焦点，暂停播放
-                if (isPlaying()) {
-                    wasPlayingBeforeLoss = true;
-                    pause();
-                }
+                pause();
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                // 临时失去焦点但可以降低音量（不处理，保持正常音量）
+                if (player != null && player.isPlaying()) {
+                    player.setVolume(0.3f, 0.3f);
+                }
+                break;
+            case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT:
+            case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
+                if (player != null) {
+                    player.setVolume(1.0f, 1.0f);
+                    play();
+                }
                 break;
         }
     }
 
-    // ==================== 播放控制 ====================
-
-    private void handlePlayStation(Intent intent) {
-        String stationId = intent.getStringExtra(EXTRA_STATION_ID);
-        String stationName = intent.getStringExtra(EXTRA_STATION_NAME);
-        String streamUrl = intent.getStringExtra(EXTRA_STREAM_URL);
-        boolean live = intent.getBooleanExtra(EXTRA_IS_LIVE, true);
-
-        RadioStation station = new RadioStation();
-        station.setId(stationId);
-        station.setName(stationName);
-        station.setStreamUrl(streamUrl);
-        playStation(station);
-    }
-
-    private void handlePlayEpisode(Intent intent) {
-        String episodeId = intent.getStringExtra(EXTRA_EPISODE_ID);
-        String title = intent.getStringExtra(EXTRA_TITLE);
-        String audioUrl = intent.getStringExtra(EXTRA_AUDIO_URL);
-        boolean live = intent.getBooleanExtra(EXTRA_IS_LIVE, false);
-        String stationName = intent.getStringExtra(EXTRA_STATION_NAME);
-
-        Episode episode = new Episode();
-        episode.setId(episodeId);
-        episode.setTitle(title);
-        episode.setAudioUrl(audioUrl);
-        episode.setLive(live);
-        episode.setStationName(stationName);
-        playEpisode(episode, live);
-    }
+    // ===== Playback Controls =====
 
     public void playStation(RadioStation station) {
         this.currentStation = station;
         this.currentEpisode = null;
         this.isLive = true;
-        this.voiceSegments.clear();
-        this.currentSegmentIndex = -1;
+        stopAutoSkipCheck();
         try {
             player.reset();
             player.setDataSource(station.getStreamUrl());
             player.prepareAsync();
             requestAudioFocus();
             startForegroundNotification();
-            sendSegmentsBroadcast();
-        } catch (Exception e) {
-            Log.e(TAG, "播放电台失败", e);
-        }
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     public void playEpisode(Episode episode, boolean live) {
         this.currentEpisode = episode;
         this.currentStation = null;
         this.isLive = live;
-        if (episode.getVoiceSegments() != null) {
-            this.voiceSegments = new ArrayList<>(episode.getVoiceSegments());
-        } else {
-            this.voiceSegments.clear();
-        }
-        this.currentSegmentIndex = -1;
+        stopAutoSkipCheck();
         try {
             player.reset();
             player.setDataSource(episode.getAudioUrl());
             player.prepareAsync();
             requestAudioFocus();
             startForegroundNotification();
-            sendSegmentsBroadcast();
-            sendEpisodeChangedBroadcast();
-        } catch (Exception e) {
-            Log.e(TAG, "播放节目失败", e);
-        }
+            startAutoSkipCheck();
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     public void play() {
         if (player != null && !player.isPlaying()) {
             player.start();
+            if (callback != null) callback.onStateChanged(true);
+            sendStateBroadcast(true);
             startForegroundNotification();
-            sendStateChangedBroadcast(true);
         }
     }
 
     public void pause() {
         if (player != null && player.isPlaying()) {
             player.pause();
+            if (callback != null) callback.onStateChanged(false);
+            sendStateBroadcast(false);
             startForegroundNotification();
-            sendStateChangedBroadcast(false);
         }
     }
 
     public void stop() {
+        stopAutoSkipCheck();
         if (player != null) {
             player.stop();
-            player.reset();
+            abandonAudioFocus();
+            stopForeground(true);
+            stopSelf();
         }
-        abandonAudioFocus();
-        stopForeground(STOP_FOREGROUND_REMOVE);
-        stopSelf();
-        sendStateChangedBroadcast(false);
     }
 
     public void seekTo(long pos) {
-        if (player != null && !isLive) {
-            player.seekTo((int) pos);
-        }
+        if (player != null && !isLive) player.seekTo((int) pos);
     }
 
     public void skipForward() {
-        if (player != null && !isLive) {
-            long p = player.getCurrentPosition() + 15000;
-            long dur = player.getDuration();
-            if (dur > 0 && p >= dur) {
-                p = dur - 1000;
-            }
-            if (p > 0) {
-                player.seekTo((int) p);
-            }
-        }
+        if (player == null || isLive) return;
+        long p = player.getCurrentPosition() + 15000;
+        long dur = player.getDuration();
+        if (p > dur) p = dur;
+        player.seekTo((int) p);
     }
 
     public void skipBackward() {
-        if (player != null && !isLive) {
-            player.seekTo(Math.max(0, player.getCurrentPosition() - 15000));
-        }
+        if (player == null || isLive) return;
+        player.seekTo(Math.max(0, player.getCurrentPosition() - 15000));
     }
 
-    public boolean isPlaying() {
-        return player != null && player.isPlaying();
-    }
+    public boolean isPlaying() { return player != null && player.isPlaying(); }
+    public boolean isLive() { return isLive; }
+    public long getCurrentPosition() { return player != null ? player.getCurrentPosition() : 0; }
+    public long getDuration() { return player != null ? player.getDuration() : 0; }
+    public Episode getCurrentEpisode() { return currentEpisode; }
+    public RadioStation getCurrentStation() { return currentStation; }
+    public int getBufferPercent() { return bufferPercent; }
+    public void setCallback(Callback cb) { this.callback = cb; }
 
-    public boolean isLive() {
-        return isLive;
-    }
+    // ===== Segment Navigation =====
 
-    public long getCurrentPosition() {
-        return player != null ? player.getCurrentPosition() : 0;
-    }
-
-    public long getDuration() {
-        return player != null ? player.getDuration() : 0;
-    }
-
-    public Episode getCurrentEpisode() {
-        return currentEpisode;
-    }
-
-    public RadioStation getCurrentStation() {
-        return currentStation;
-    }
-
-    public List<VoiceSegment> getVoiceSegments() {
-        return voiceSegments;
-    }
-
-    public int getCurrentSegmentIndex() {
-        return currentSegmentIndex;
-    }
-
-    public int getCachePercent() {
-        return cachePercent;
-    }
-
-    // ==================== 片段跳转 ====================
-
-    /**
-     * 跳转到下一个干货片段
-     */
     public void jumpToNextSegment() {
-        if (voiceSegments.isEmpty() || isLive) return;
+        if (currentEpisode == null || currentEpisode.getVoiceSegments() == null) return;
+        List<VoiceSegment> segments = currentEpisode.getVoiceSegments();
         long currentPos = player != null ? player.getCurrentPosition() : 0;
-        int nextIndex = findNextDrySegment(currentPos);
-        if (nextIndex >= 0 && nextIndex < voiceSegments.size()) {
-            VoiceSegment seg = voiceSegments.get(nextIndex);
-            player.seekTo((int) seg.getStart());
-            currentSegmentIndex = nextIndex;
-            sendSegmentsBroadcast();
+        for (int i = 0; i < segments.size(); i++) {
+            VoiceSegment seg = segments.get(i);
+            if (seg.getStart() > currentPos) {
+                seekTo(seg.getStart());
+                return;
+            }
         }
     }
 
-    /**
-     * 跳转到上一个干货片段
-     */
     public void jumpToPrevSegment() {
-        if (voiceSegments.isEmpty() || isLive) return;
+        if (currentEpisode == null || currentEpisode.getVoiceSegments() == null) return;
+        List<VoiceSegment> segments = currentEpisode.getVoiceSegments();
         long currentPos = player != null ? player.getCurrentPosition() : 0;
-        int prevIndex = findPrevDrySegment(currentPos);
-        if (prevIndex >= 0 && prevIndex < voiceSegments.size()) {
-            VoiceSegment seg = voiceSegments.get(prevIndex);
-            player.seekTo((int) seg.getStart());
-            currentSegmentIndex = prevIndex;
-            sendSegmentsBroadcast();
+        VoiceSegment prev = null;
+        for (int i = 0; i < segments.size(); i++) {
+            VoiceSegment seg = segments.get(i);
+            if (seg.getEnd() >= currentPos) {
+                if (i > 0) prev = segments.get(i - 1);
+                break;
+            }
+        }
+        if (prev != null) {
+            seekTo(prev.getStart());
+        } else if (!segments.isEmpty()) {
+            seekTo(segments.get(0).getStart());
         }
     }
 
-    /**
-     * 从当前位置查找下一个干货片段
-     */
-    private int findNextDrySegment(long currentPos) {
-        // 先找当前位置之后的干货片段
-        for (int i = 0; i < voiceSegments.size(); i++) {
-            VoiceSegment seg = voiceSegments.get(i);
-            if (seg.getStart() > currentPos && seg.isEffectiveDry()) {
-                return i;
-            }
-        }
-        // 如果后面没有了，从头找
-        for (int i = 0; i < voiceSegments.size(); i++) {
-            VoiceSegment seg = voiceSegments.get(i);
-            if (seg.isEffectiveDry()) {
-                return i;
-            }
-        }
-        return -1;
+    // ===== Manual Marking =====
+
+    public void markSegment(int index, boolean isDry) {
+        if (currentEpisode == null || currentEpisode.getVoiceSegments() == null) return;
+        List<VoiceSegment> segments = currentEpisode.getVoiceSegments();
+        if (index < 0 || index >= segments.size()) return;
+        VoiceSegment seg = segments.get(index);
+        seg.setManuallyMarked(true);
+        seg.setHasVoice(isDry);
+        seg.setLabel(isDry ? "手动标记:干货" : "手动标记:水分");
+        // Persist to database
+        RadioDatabaseHelper dbHelper = RadioDatabaseHelper.getInstance(this);
+        dbHelper.saveManualSegmentMark(currentEpisode.getId(), seg.getStart(), seg.getEnd(), isDry);
     }
 
-    /**
-     * 从当前位置查找上一个干货片段
-     */
-    private int findPrevDrySegment(long currentPos) {
-        // 先找当前位置之前的干货片段
-        for (int i = voiceSegments.size() - 1; i >= 0; i--) {
-            VoiceSegment seg = voiceSegments.get(i);
-            if (seg.getEnd() < currentPos && seg.isEffectiveDry()) {
-                return i;
-            }
-        }
-        // 如果前面没有了，从末尾找
-        for (int i = voiceSegments.size() - 1; i >= 0; i--) {
-            VoiceSegment seg = voiceSegments.get(i);
-            if (seg.isEffectiveDry()) {
-                return i;
-            }
-        }
-        return -1;
+    public void setSkipThisTime(int index, boolean skip) {
+        if (currentEpisode == null || currentEpisode.getVoiceSegments() == null) return;
+        List<VoiceSegment> segments = currentEpisode.getVoiceSegments();
+        if (index < 0 || index >= segments.size()) return;
+        segments.get(index).setSkipThisTime(skip);
     }
 
-    // ==================== 自动跳过水分片段 ====================
+    // ===== Auto-skip Water Segments =====
 
-    /**
-     * 检查当前位置是否在水分片段中，如果是则自动跳到下一个干货片段
-     */
-    private void checkAutoSkip(long currentPos) {
-        if (voiceSegments.isEmpty() || isLive) return;
-        for (int i = 0; i < voiceSegments.size(); i++) {
-            VoiceSegment seg = voiceSegments.get(i);
-            if (currentPos >= seg.getStart() && currentPos <= seg.getEnd()) {
-                if (seg.shouldAutoSkip()) {
-                    Log.d(TAG, "自动跳过水分片段: " + seg.getLabel() + " [" + seg.getStart() + "-" + seg.getEnd() + "]");
-                    int nextIndex = findNextDrySegment(currentPos);
-                    if (nextIndex >= 0 && nextIndex < voiceSegments.size()) {
-                        VoiceSegment nextSeg = voiceSegments.get(nextIndex);
-                        player.seekTo((int) nextSeg.getStart());
-                        currentSegmentIndex = nextIndex;
-                        sendSegmentsBroadcast();
+    private void startAutoSkipCheck() {
+        stopAutoSkipCheck();
+        autoSkipRunnable = () -> {
+            if (player != null && player.isPlaying() && currentEpisode != null
+                    && currentEpisode.getVoiceSegments() != null && !isLive) {
+                long currentPos = player.getCurrentPosition();
+                for (VoiceSegment seg : currentEpisode.getVoiceSegments()) {
+                    if (currentPos >= seg.getStart() && currentPos < seg.getEnd()) {
+                        if (seg.shouldAutoSkip()) {
+                            // Jump to next dry segment
+                            jumpToNextDrySegment(seg);
+                        }
+                        break;
                     }
                 }
-                break;
+            }
+            if (autoSkipHandler != null && autoSkipRunnable != null) {
+                autoSkipHandler.postDelayed(autoSkipRunnable, 1000);
+            }
+        };
+        autoSkipHandler.postDelayed(autoSkipRunnable, 1000);
+    }
+
+    private void jumpToNextDrySegment(VoiceSegment currentSeg) {
+        if (currentEpisode.getVoiceSegments() == null) return;
+        for (VoiceSegment seg : currentEpisode.getVoiceSegments()) {
+            if (seg.getStart() > currentSeg.getEnd() && seg.isEffectiveDry()) {
+                seekTo(seg.getStart());
+                return;
             }
         }
     }
 
-    /**
-     * 设置指定片段"本次不跳过"
-     */
-    public void setSkipThisTime(int segmentIndex, boolean skip) {
-        if (segmentIndex >= 0 && segmentIndex < voiceSegments.size()) {
-            voiceSegments.get(segmentIndex).setSkipThisTime(skip);
-            sendSegmentsBroadcast();
+    private void stopAutoSkipCheck() {
+        if (autoSkipHandler != null && autoSkipRunnable != null) {
+            autoSkipHandler.removeCallbacks(autoSkipRunnable);
+            autoSkipRunnable = null;
         }
     }
 
-    /**
-     * 手动标记片段为干货或水分
-     */
-    public void markSegment(int segmentIndex, boolean hasVoice) {
-        if (segmentIndex >= 0 && segmentIndex < voiceSegments.size()) {
-            VoiceSegment seg = voiceSegments.get(segmentIndex);
-            seg.setHasVoice(hasVoice);
-            seg.setManuallyMarked(true);
-            sendSegmentsBroadcast();
+    // ===== Continuous Play =====
+
+    @Override
+    public void onCompletion(MediaPlayer mp) {
+        if (callback != null) callback.onStateChanged(false);
+        sendStateBroadcast(false);
+        stopAutoSkipCheck();
+        if (continuousPlay && currentEpisode != null && !isLive) {
+            // In a real app, we would play the next episode from the list.
+            // For now, just restart the current episode.
+            playEpisode(currentEpisode, false);
         }
     }
 
-    /**
-     * 更新片段列表
-     */
-    public void setVoiceSegments(List<VoiceSegment> segments) {
-        this.voiceSegments = segments != null ? new ArrayList<>(segments) : new ArrayList<>();
-        this.currentSegmentIndex = -1;
-        sendSegmentsBroadcast();
+    // ===== Buffering =====
+
+    @Override
+    public void onBufferingUpdate(MediaPlayer mp, int percent) {
+        bufferPercent = percent;
+        if (callback != null) callback.onBufferUpdate(percent);
+        Intent intent = new Intent(BROADCAST_BUFFER_UPDATE);
+        intent.putExtra(EXTRA_BUFFER_PERCENT, percent);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
-    // ==================== 连续播放 ====================
-
-    /**
-     * 播放下一个节目（连续播放）
-     */
-    private void playNextEpisode() {
-        // 通知Activity去获取下一个节目
-        Intent intent = new Intent(BROADCAST_EPISODE_CHANGED);
-        intent.putExtra("action", "next");
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    /**
-     * 播放上一个节目
-     */
-    private void playPrevEpisode() {
-        Intent intent = new Intent(BROADCAST_EPISODE_CHANGED);
-        intent.putExtra("action", "prev");
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    // ==================== 当前片段索引更新 ====================
-
-    private void updateCurrentSegmentIndex(long pos) {
-        int newIndex = -1;
-        for (int i = 0; i < voiceSegments.size(); i++) {
-            VoiceSegment seg = voiceSegments.get(i);
-            if (pos >= seg.getStart() && pos <= seg.getEnd()) {
-                newIndex = i;
-                break;
-            }
-        }
-        if (newIndex != currentSegmentIndex) {
-            currentSegmentIndex = newIndex;
-            sendSegmentsBroadcast();
-        }
-    }
-
-    // ==================== 广播发送 ====================
-
-    private void sendStateChangedBroadcast(boolean playing) {
-        Intent intent = new Intent(BROADCAST_STATE_CHANGED);
-        intent.putExtra(EXTRA_PLAYING, playing);
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    private void sendPositionBroadcast(long pos, long dur) {
-        Intent intent = new Intent(BROADCAST_POSITION_UPDATE);
-        intent.putExtra(EXTRA_POSITION, pos);
-        intent.putExtra(EXTRA_DURATION, dur);
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    private void sendCacheBroadcast(int percent) {
-        Intent intent = new Intent(BROADCAST_CACHE_UPDATE);
-        intent.putExtra(EXTRA_CACHE_PERCENT, percent);
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    private void sendSegmentsBroadcast() {
-        Intent intent = new Intent(BROADCAST_SEGMENTS_UPDATED);
-        intent.putExtra(EXTRA_CURRENT_SEGMENT_INDEX, currentSegmentIndex);
-        intent.putParcelableArrayListExtra(EXTRA_SEGMENTS,
-                voiceSegments.isEmpty() ? new ArrayList<VoiceSegment>() : new ArrayList<>(voiceSegments));
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    private void sendEpisodeChangedBroadcast() {
-        Intent intent = new Intent(BROADCAST_EPISODE_CHANGED);
-        intent.putExtra(EXTRA_EPISODE_TITLE,
-                currentEpisode != null ? currentEpisode.getTitle() : "");
-        intent.putExtra(EXTRA_STATION_NAME_BROADCAST,
-                currentEpisode != null ? currentEpisode.getStationName() :
-                        (currentStation != null ? currentStation.getName() : ""));
-        intent.putExtra(EXTRA_IS_LIVE_BROADCAST, isLive);
-        broadcastManager.sendBroadcast(intent);
-    }
-
-    // ==================== 通知栏控制 ====================
-
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    RadioApplication.CHANNEL_ID,
-                    "Radio Playback",
-                    NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Radio playback controls");
-            channel.setShowBadge(false);
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-        }
-    }
+    // ===== Foreground Notification with MediaStyle =====
 
     private void startForegroundNotification() {
         Intent openIntent = new Intent(this, PlayerActivity.class);
-        openIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        openIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent contentIntent = PendingIntent.getActivity(this, 0, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         String title = currentEpisode != null ? currentEpisode.getTitle()
                 : (currentStation != null ? currentStation.getName() : "Radio App");
-        String subtitle = isLive ? "直播" : "回放";
 
-        // 播放/暂停按钮
-        Intent playPauseIntent = new Intent(this, RadioPlaybackService.class);
-        playPauseIntent.setAction(isPlaying() ? ACTION_PAUSE : ACTION_PLAY);
-        PendingIntent playPausePendingIntent = PendingIntent.getService(this, 1, playPauseIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        boolean playing = player != null && player.isPlaying();
 
-        // 快退按钮
+        // Action intents
         Intent rewindIntent = new Intent(this, RadioPlaybackService.class);
-        rewindIntent.setAction(ACTION_PREV_SEGMENT);
-        PendingIntent rewindPendingIntent = PendingIntent.getService(this, 2, rewindIntent,
+        rewindIntent.setAction(ACTION_REWIND);
+        PendingIntent rewindPI = PendingIntent.getService(this, 1, rewindIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        // 快进按钮
-        Intent forwardIntent = new Intent(this, RadioPlaybackService.class);
-        forwardIntent.setAction(ACTION_NEXT_SEGMENT);
-        PendingIntent forwardPendingIntent = PendingIntent.getService(this, 3, forwardIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        // 上一首/上一片段按钮
         Intent prevIntent = new Intent(this, RadioPlaybackService.class);
-        prevIntent.setAction(isLive ? ACTION_PREV_EPISODE : ACTION_PREV_SEGMENT);
-        PendingIntent prevPendingIntent = PendingIntent.getService(this, 4, prevIntent,
+        prevIntent.setAction(ACTION_PREV_SEGMENT);
+        PendingIntent prevPI = PendingIntent.getService(this, 2, prevIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        // 下一首/下一片段按钮
+        Intent playPauseIntent = new Intent(this, RadioPlaybackService.class);
+        playPauseIntent.setAction(playing ? ACTION_PAUSE : ACTION_PLAY);
+        PendingIntent playPausePI = PendingIntent.getService(this, 3, playPauseIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
         Intent nextIntent = new Intent(this, RadioPlaybackService.class);
-        nextIntent.setAction(isLive ? ACTION_NEXT_EPISODE : ACTION_NEXT_SEGMENT);
-        PendingIntent nextPendingIntent = PendingIntent.getService(this, 5, nextIntent,
+        nextIntent.setAction(ACTION_NEXT_SEGMENT);
+        PendingIntent nextPI = PendingIntent.getService(this, 4, nextIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        int playPauseIcon = isPlaying() ? R.drawable.ic_pause : R.drawable.ic_play;
-        String playPauseText = isPlaying() ? "暂停" : "播放";
+        Intent forwardIntent = new Intent(this, RadioPlaybackService.class);
+        forwardIntent.setAction(ACTION_FORWARD);
+        PendingIntent forwardPI = PendingIntent.getService(this, 5, forwardIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+        androidx.media.app.NotificationCompat.MediaStyle mediaStyle =
+                new androidx.media.app.NotificationCompat.MediaStyle()
+                        .setShowActionsInCompactView(1, 2, 3);
+
+        Notification notification = new NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setContentTitle(title)
-                .setContentText(subtitle)
+                .setContentText(playing ? "正在播放" : "已暂停")
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentIntent(contentIntent)
                 .setOngoing(true)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .addAction(R.drawable.ic_skip_backward, "快退", rewindPendingIntent)
-                .addAction(R.drawable.ic_skip_backward, isLive ? "上一首" : "上一片段", prevPendingIntent)
-                .addAction(playPauseIcon, playPauseText, playPausePendingIntent)
-                .addAction(R.drawable.ic_skip_forward, isLive ? "下一首" : "下一片段", nextPendingIntent)
-                .addAction(R.drawable.ic_skip_forward, "快进", forwardPendingIntent)
-                .setStyle(new androidx.media.app.NotificationCompat.MediaStyle()
-                        .setShowActionsInCompactView(1, 2, 3));
+                .addAction(R.drawable.ic_rewind, "快退", rewindPI)
+                .addAction(R.drawable.ic_prev, "上一片段", prevPI)
+                .addAction(playing ? R.drawable.ic_pause : R.drawable.ic_play,
+                        playing ? "暂停" : "播放", playPausePI)
+                .addAction(R.drawable.ic_next, "下一片段", nextPI)
+                .addAction(R.drawable.ic_forward, "快进", forwardPI)
+                .setStyle(mediaStyle)
+                .build();
 
-        Notification notification = builder.build();
-        startForeground(NOTIFICATION_ID, notification);
+        startForeground(1, notification);
     }
 
-    // ==================== MediaPlayer 回调 ====================
+    // ===== Broadcast Helpers =====
+
+    private void sendStateBroadcast(boolean playing) {
+        Intent intent = new Intent(BROADCAST_STATE_CHANGED);
+        intent.putExtra(EXTRA_IS_PLAYING, playing);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
+    // ===== MediaPlayer Callbacks =====
 
     @Override
     public void onPrepared(MediaPlayer mp) {
         mp.start();
+        if (callback != null) callback.onStateChanged(true);
+        sendStateBroadcast(true);
         startForegroundNotification();
-        sendStateChangedBroadcast(true);
     }
 
     @Override
-    public void onCompletion(MediaPlayer mp) {
-        sendStateChangedBroadcast(false);
-        // 回放模式：自动播放下一个节目
-        if (!isLive && currentEpisode != null) {
-            playNextEpisode();
-        }
-    }
-
-    @Override
-    public void onBufferingUpdate(MediaPlayer mp, int percent) {
-        cachePercent = percent;
-        sendCacheBroadcast(percent);
-    }
-
-    @Override
-    public boolean onError(MediaPlayer mp, int what, int extra) {
-        Log.e(TAG, "MediaPlayer错误: what=" + what + " extra=" + extra);
-        sendStateChangedBroadcast(false);
-        return true;
-    }
-
-    // ==================== Service 生命周期 ====================
-
-    @Override
-    public IBinder onBind(Intent intent) {
-        return binder;
-    }
+    public IBinder onBind(Intent intent) { return binder; }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (progressHandler != null && progressRunnable != null) {
-            progressHandler.removeCallbacks(progressRunnable);
-        }
+        stopAutoSkipCheck();
+        abandonAudioFocus();
         if (player != null) {
             player.release();
             player = null;
         }
-        abandonAudioFocus();
     }
 }

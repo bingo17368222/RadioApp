@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="logic_options">
-        <item>或 (OR)</item>
-        <item>与 (AND)</item>
+        <item>或（任一匹配）</item>
+        <item>与（全部匹配）</item>
     </string-array>
 </resources>

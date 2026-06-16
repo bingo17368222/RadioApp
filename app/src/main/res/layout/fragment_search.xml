@@ -1,9 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="@color/background_dark">
     <EditText android:id="@+id/et_search" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_margin="16dp" android:hint="搜索节目..." android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_search" android:padding="16dp" android:drawableStart="@drawable/ic_search" android:drawablePadding="12dp" />
-    <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-        <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler_view" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:clipToPadding="false" />
-        <ProgressBar android:id="@+id/progress_bar" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center" android:visibility="gone" />
-        <TextView android:id="@+id/tv_empty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="center" android:text="搜索节目..." android:textColor="@color/text_secondary" android:textSize="16sp" android:visibility="gone" />
-    </FrameLayout>
+    <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler_view" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:clipToPadding="false" />
 </LinearLayout>

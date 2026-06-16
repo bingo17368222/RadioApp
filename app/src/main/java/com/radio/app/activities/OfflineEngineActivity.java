@@ -1,115 +1,61 @@
 package com.radio.app.activities;
 
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import androidx.core.content.ContextCompat;
-
 import com.radio.app.R;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 public class OfflineEngineActivity extends AppCompatActivity {
-    private Handler handler = new Handler(Looper.getMainLooper());
-    private ExecutorService executor = Executors.newSingleThreadExecutor();
-    private Map<String, Boolean> engineStatus = new HashMap<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_offline_engine);
-
         getSupportActionBar().setDisplayHomeAsUpEnabled(true);
         getSupportActionBar().setTitle("离线引擎管理");
 
-        // 初始化引擎状态（模拟）
-        engineStatus.put("whisper", false);
-        engineStatus.put("vosk", false);
-        engineStatus.put("pocketsphinx", false);
-
-        setupEngine("whisper", R.id.btn_whisper_action, R.id.tv_whisper_status, R.id.progress_whisper, "Whisper");
-        setupEngine("vosk", R.id.btn_vosk_action, R.id.tv_vosk_status, R.id.progress_vosk, "Vosk");
-        setupEngine("pocketsphinx", R.id.btn_pocketsphinx_action, R.id.tv_pocketsphinx_status, R.id.progress_pocketsphinx, "PocketSphinx");
+        setupEngineCard("Whisper", "OpenAI语音识别模型", "约75MB", false);
+        setupEngineCard("Vosk", "轻量级离线语音识别", "约50MB", false);
+        setupEngineCard("PocketSphinx", "CMU离线语音识别", "约30MB", false);
     }
 
-    private void setupEngine(String engineId, int btnId, int statusId, int progressId, String name) {
-        Button btn = findViewById(btnId);
-        TextView tvStatus = findViewById(statusId);
-        ProgressBar progress = findViewById(progressId);
+    private void setupEngineCard(String name, String description, String size, boolean installed) {
+        View card = LayoutInflater.from(this).inflate(R.layout.item_engine_card, null, false);
+        TextView tvName = card.findViewById(R.id.tv_engine_name);
+        TextView tvDesc = card.findViewById(R.id.tv_engine_desc);
+        TextView tvSize = card.findViewById(R.id.tv_engine_size);
+        Button btnAction = card.findViewById(R.id.btn_engine_action);
 
-        updateEngineUI(btn, tvStatus, progress, engineStatus.get(engineId));
+        tvName.setText(name);
+        tvDesc.setText(description);
+        tvSize.setText(size);
 
-        btn.setOnClickListener(v -> {
-            boolean isInstalled = engineStatus.get(engineId);
-            if (isInstalled) {
-                // 模拟删除
-                engineStatus.put(engineId, false);
-                updateEngineUI(btn, tvStatus, progress, false);
+        if (installed) {
+            btnAction.setText("删除");
+            btnAction.setOnClickListener(v -> {
+                btnAction.setText("安装");
                 Toast.makeText(this, name + " 已删除", Toast.LENGTH_SHORT).show();
-            } else {
-                // 模拟安装
-                btn.setEnabled(false);
-                progress.setVisibility(View.VISIBLE);
-                progress.setProgress(0);
-                tvStatus.setText("下载中...");
-                tvStatus.setTextColor(ContextCompat.getColor(this, R.color.accent));
-
-                executor.execute(() -> {
-                    for (int i = 0; i <= 100; i += 5) {
-                        try { Thread.sleep(50); } catch (InterruptedException e) { break; }
-                        int finalProgress = i;
-                        handler.post(() -> {
-                            progress.setProgress(finalProgress);
-                            tvStatus.setText("下载中... " + finalProgress + "%");
-                        });
-                    }
-                    handler.post(() -> {
-                        engineStatus.put(engineId, true);
-                        updateEngineUI(btn, tvStatus, progress, true);
-                        btn.setEnabled(true);
-                        Toast.makeText(this, name + " 安装完成", Toast.LENGTH_SHORT).show();
-                    });
-                });
-            }
-        });
-    }
-
-    private void updateEngineUI(Button btn, TextView tvStatus, ProgressBar progress, boolean isInstalled) {
-        if (isInstalled) {
-            btn.setText("删除");
-            btn.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.accent));
-            tvStatus.setText("已下载");
-            tvStatus.setTextColor(ContextCompat.getColor(this, R.color.success));
-            progress.setVisibility(View.GONE);
+            });
         } else {
-            btn.setText("安装");
-            btn.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.success));
-            tvStatus.setText("未下载");
-            tvStatus.setTextColor(ContextCompat.getColor(this, R.color.warning));
-            progress.setVisibility(View.GONE);
+            btnAction.setText("安装");
+            btnAction.setOnClickListener(v -> {
+                btnAction.setText("删除");
+                Toast.makeText(this, name + " 安装完成（模拟）", Toast.LENGTH_SHORT).show();
+            });
         }
+
+        ((android.widget.LinearLayout) findViewById(R.id.engine_container)).addView(card);
     }
 
     @Override
     public boolean onSupportNavigateUp() {
         finish();
         return true;
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        handler.removeCallbacksAndMessages(null);
     }
 }

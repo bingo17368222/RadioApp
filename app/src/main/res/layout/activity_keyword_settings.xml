@@ -2,55 +2,50 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/background_dark">
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
 
-        <!-- 标题 -->
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="关键词设置" android:textColor="@color/text_primary" android:textSize="22sp" android:textStyle="bold" android:layout_marginBottom="16dp" />
-
-        <!-- 卡片1: 干货关键词 -->
+        <!-- 干货关键词 -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="干货关键词" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="干货关键词" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" />
-            <EditText android:id="@+id/et_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="80dp" android:hint="用逗号分隔，如：新闻,资讯,报道" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_search" android:padding="12dp" android:inputType="text" android:gravity="top" android:layout_marginTop="8dp" />
+            <EditText android:id="@+id/et_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔，如：新闻,资讯,报道" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="逻辑关系" android:textColor="@color/text_secondary" android:textSize="14sp" />
-                <Spinner android:id="@+id/spinner_dry_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" android:entries="@array/logic_options" />
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                <Spinner android:id="@+id/spinner_dry_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
             </LinearLayout>
-            <Button android:id="@+id/btn_ai_dry" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AI提取" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" android:layout_gravity="end" />
+            <Button android:id="@+id/btn_ai_extract_dry" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" />
         </LinearLayout>
 
-        <!-- 卡片2: 水分关键词 -->
+        <!-- 水分关键词 -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="水分关键词" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="水分关键词" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" />
-            <EditText android:id="@+id/et_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="80dp" android:hint="用逗号分隔，如：广告,音乐,歌曲" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_search" android:padding="12dp" android:inputType="text" android:gravity="top" android:layout_marginTop="8dp" />
+            <EditText android:id="@+id/et_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔，如：广告,音乐,歌曲" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="逻辑关系" android:textColor="@color/text_secondary" android:textSize="14sp" />
-                <Spinner android:id="@+id/spinner_water_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" android:entries="@array/logic_options" />
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                <Spinner android:id="@+id/spinner_water_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
             </LinearLayout>
-            <Button android:id="@+id/btn_ai_water" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AI提取" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" android:layout_gravity="end" />
+            <Button android:id="@+id/btn_ai_extract_water" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" />
         </LinearLayout>
 
-        <!-- 卡片3: 内容干货关键词 -->
+        <!-- 内容干货关键词 -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="内容干货关键词" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="内容干货关键词" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" />
-            <EditText android:id="@+id/et_content_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="80dp" android:hint="用逗号分隔，如：分析,解读,观点" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_search" android:padding="12dp" android:inputType="text" android:gravity="top" android:layout_marginTop="8dp" />
+            <EditText android:id="@+id/et_content_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="逻辑关系" android:textColor="@color/text_secondary" android:textSize="14sp" />
-                <Spinner android:id="@+id/spinner_content_dry_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" android:entries="@array/logic_options" />
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                <Spinner android:id="@+id/spinner_content_dry_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
             </LinearLayout>
-            <Button android:id="@+id/btn_ai_content_dry" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AI提取" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" android:layout_gravity="end" />
+            <Button android:id="@+id/btn_ai_extract_content_dry" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" />
         </LinearLayout>
 
-        <!-- 卡片4: 内容水分关键词 -->
+        <!-- 内容水分关键词 -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="内容水分关键词" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="内容水分关键词" android:textColor="@color/accent" android:textSize="16sp" android:textStyle="bold" />
-            <EditText android:id="@+id/et_content_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="80dp" android:hint="用逗号分隔，如：重复,废话,填充" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_search" android:padding="12dp" android:inputType="text" android:gravity="top" android:layout_marginTop="8dp" />
+            <EditText android:id="@+id/et_content_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="逻辑关系" android:textColor="@color/text_secondary" android:textSize="14sp" />
-                <Spinner android:id="@+id/spinner_content_water_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" android:entries="@array/logic_options" />
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="@color/text_secondary" android:textSize="14sp" />
+                <Spinner android:id="@+id/spinner_content_water_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
             </LinearLayout>
-            <Button android:id="@+id/btn_ai_content_water" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AI提取" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" android:layout_gravity="end" />
+            <Button android:id="@+id/btn_ai_extract_content_water" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:layout_marginTop="8dp" />
         </LinearLayout>
 
-        <!-- 保存按钮 -->
-        <Button android:id="@+id/btn_save" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="保存设置" android:textColor="@android:color/white" android:backgroundTint="@color/accent" android:padding="16dp" android:textSize="16sp" android:layout_marginTop="8dp" />
-
+        <Button android:id="@+id/btn_save" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="保存设置" android:textColor="@android:color/white" android:backgroundTint="@color/success" android:padding="16dp" android:textSize="16sp" />
     </LinearLayout>
 </ScrollView>

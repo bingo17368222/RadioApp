@@ -2,7 +2,6 @@ package com.radio.app.fragments;
 
 import android.app.AlertDialog;
 import android.content.Intent;
-import android.graphics.Color;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -22,8 +21,6 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
-import androidx.core.content.ContextCompat;
-
 import com.radio.app.R;
 import com.radio.app.activities.DislikedEpisodesActivity;
 import com.radio.app.activities.KeywordSettingsActivity;
@@ -34,7 +31,7 @@ import com.radio.app.utils.ThemeManager;
 
 public class SettingsFragment extends Fragment {
     private Spinner spinnerAiModel, spinnerAsr, spinnerTheme;
-    private Switch swContinuousPlay, swPreload, swPreprocess, swAudioFocus;
+    private Switch swPreload, swPreprocess, swAudioFocus, swContinuousPlay;
     private TextView tvCustomColors;
     private TextView tvPreloadCount, tvPreprocessCount;
     private LinearLayout layoutPreloadCount, layoutPreprocessCount;
@@ -42,8 +39,7 @@ public class SettingsFragment extends Fragment {
     private ThemeManager themeMgr;
     private AppSettings settings;
 
-    @Nullable
-    @Override
+    @Nullable @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_settings, container, false);
         prefMgr = new PreferenceManager(requireContext());
@@ -53,10 +49,10 @@ public class SettingsFragment extends Fragment {
         spinnerAiModel = view.findViewById(R.id.spinner_ai_model);
         spinnerAsr = view.findViewById(R.id.spinner_asr_provider);
         spinnerTheme = view.findViewById(R.id.spinner_theme);
-        swContinuousPlay = view.findViewById(R.id.switch_continuous_play);
         swPreload = view.findViewById(R.id.switch_preload_cache);
         swPreprocess = view.findViewById(R.id.switch_enable_preprocessing);
         swAudioFocus = view.findViewById(R.id.switch_audio_focus);
+        swContinuousPlay = view.findViewById(R.id.switch_continuous_play);
         tvCustomColors = view.findViewById(R.id.tv_custom_colors);
         tvPreloadCount = view.findViewById(R.id.tv_preload_count);
         tvPreprocessCount = view.findViewById(R.id.tv_preprocess_count);
@@ -110,17 +106,12 @@ public class SettingsFragment extends Fragment {
         tvCustomColors.setOnClickListener(v -> showCustomColorDialog());
         updateCustomColorsVisibility();
 
-        // 连续播放开关
-        swContinuousPlay.setChecked(settings.isContinuousPlay());
-        swContinuousPlay.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            settings.setContinuousPlay(isChecked);
-            save();
-        });
-
         // 开关
         swPreload.setChecked(settings.isPreloadCache());
         swPreprocess.setChecked(settings.isEnablePreprocessing());
         swAudioFocus.setChecked(settings.isAudioFocus());
+        swContinuousPlay.setChecked(settings.isContinuousPlay());
+
         swPreload.setOnCheckedChangeListener((b, c) -> {
             settings.setPreloadCache(c);
             save();
@@ -136,6 +127,10 @@ public class SettingsFragment extends Fragment {
             settings.setAudioFocus(c);
             save();
         });
+        swContinuousPlay.setOnCheckedChangeListener((b, c) -> {
+            settings.setContinuousPlay(c);
+            save();
+        });
 
         // 个数设置点击
         layoutPreloadCount.setOnClickListener(v -> showCountPicker("预缓存个数", 1, 10, settings.getPreloadCacheCount(), count -> {
@@ -149,23 +144,20 @@ public class SettingsFragment extends Fragment {
             updateCountDisplay();
         }));
 
-        // 不喜欢节目管理
-        view.findViewById(R.id.tv_disliked_episodes).setOnClickListener(v -> {
-            startActivity(new Intent(getContext(), DislikedEpisodesActivity.class));
-        });
-
-        // 关键词设置
-        view.findViewById(R.id.tv_keyword_settings).setOnClickListener(v -> {
-            startActivity(new Intent(getContext(), KeywordSettingsActivity.class));
-        });
-
-        // 离线引擎管理
-        view.findViewById(R.id.tv_offline_engine).setOnClickListener(v -> {
-            startActivity(new Intent(getContext(), OfflineEngineActivity.class));
-        });
-
         // 清理缓存
         view.findViewById(R.id.tv_clear_cache).setOnClickListener(v -> showClearCacheDialog());
+
+        // 不喜欢的节目
+        view.findViewById(R.id.tv_disliked_episodes).setOnClickListener(v ->
+            startActivity(new Intent(getContext(), DislikedEpisodesActivity.class)));
+
+        // 关键词设置
+        view.findViewById(R.id.tv_keyword_settings).setOnClickListener(v ->
+            startActivity(new Intent(getContext(), KeywordSettingsActivity.class)));
+
+        // 离线引擎管理
+        view.findViewById(R.id.tv_offline_engine).setOnClickListener(v ->
+            startActivity(new Intent(getContext(), OfflineEngineActivity.class)));
 
         // 加载当前设置
         loadSettings(aiVals, asrVals, themeVals);
@@ -174,7 +166,6 @@ public class SettingsFragment extends Fragment {
     }
 
     private void applyTheme() {
-        // 重新创建Activity以应用主题
         Intent intent = getActivity().getIntent();
         getActivity().finish();
         startActivity(intent);
@@ -201,12 +192,12 @@ public class SettingsFragment extends Fragment {
         for (int i = 0; i < labels.length; i++) {
             TextView tv = new TextView(requireContext());
             tv.setText(labels[i] + " (当前: " + values[i] + ")");
-            tv.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_primary));
+            tv.setTextColor(getResources().getColor(R.color.text_primary));
             layout.addView(tv);
 
             EditText et = new EditText(requireContext());
             et.setText(values[i]);
-            et.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_primary));
+            et.setTextColor(getResources().getColor(R.color.text_primary));
             edits[i] = et;
             layout.addView(et);
         }
@@ -233,7 +224,6 @@ public class SettingsFragment extends Fragment {
     }
 
     private void showClearCacheDialog() {
-        // 获取缓存文件列表
         java.io.File cacheDir = requireContext().getCacheDir();
         java.io.File[] files = cacheDir.listFiles();
 
@@ -253,11 +243,6 @@ public class SettingsFragment extends Fragment {
         builder.setTitle("清理缓存");
         builder.setMultiChoiceItems(fileNames, checked, (d, which, isChecked) -> checked[which] = isChecked);
 
-        LinearLayout btnLayout = new LinearLayout(requireContext());
-        btnLayout.setOrientation(LinearLayout.HORIZONTAL);
-        btnLayout.setGravity(android.view.Gravity.CENTER);
-        btnLayout.setPadding(0, 16, 0, 0);
-
         builder.setPositiveButton("删除选中", (d, w) -> {
             int count = 0;
             for (int i = 0; i < files.length; i++) {
@@ -270,7 +255,6 @@ public class SettingsFragment extends Fragment {
         AlertDialog dialog = builder.create();
         dialog.show();
 
-        // 添加全选/全不选/反选按钮
         android.view.ViewGroup parent = (android.view.ViewGroup) dialog.getButton(AlertDialog.BUTTON_POSITIVE).getParent();
 
         Button btnSelectAll = new Button(requireContext());

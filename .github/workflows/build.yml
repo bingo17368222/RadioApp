@@ -44,10 +44,6 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: List build outputs
-        if: always()
-        run: find app/build/outputs -type f 2>/dev/null || echo "No outputs found"
-
       - name: Upload Debug APK
         if: success()
         uses: actions/upload-artifact@v4
@@ -55,4 +51,3 @@ jobs:
           name: radio-app-debug
           path: app/build/outputs/apk/debug/
           retention-days: 30
-          if-no-files-found: warn
