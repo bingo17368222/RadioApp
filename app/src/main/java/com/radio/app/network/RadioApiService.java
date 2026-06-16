@@ -35,9 +35,10 @@ public class RadioApiService {
     public void getAllStations(ApiCallback<List<RadioStation>> callback) {
         executor.execute(() -> {
             List<RadioStation> allStations = new ArrayList<>();
+            List<RadioStation> builtin = getBuiltinStations();
             
             // 添加内置电台（不依赖网络，立即显示）
-            allStations.addAll(getBuiltinStations());
+            allStations.addAll(builtin);
             
             // 先返回内置电台，让用户立即看到内容
             if (!allStations.isEmpty()) {
@@ -105,7 +106,7 @@ public class RadioApiService {
             }
             
             // 网络请求完成后再次回调（更新完整列表）
-            if (allStations.size() > getBuiltinStations().size()) {
+            if (allStations.size() > builtin.size()) {
                 callback.onSuccess(allStations);
             }
         });
