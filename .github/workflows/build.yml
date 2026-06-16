@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -44,10 +46,23 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload Debug APK
+      - name: Get APK info
         if: success()
-        uses: actions/upload-artifact@v4
+        id: apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          APK_NAME=$(basename "$APK_PATH")
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload to GitHub Release
+        if: success() && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
         with:
-          name: radio-app-debug
-          path: app/build/outputs/apk/debug/
-          retention-days: 30
+          tag_name: debug-latest
+          name: Debug Build (Latest)
+          body: "Auto-generated debug APK from commit ${{ github.sha }}"
+          files: ${{ steps.apk.outputs.apk_path }}
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
