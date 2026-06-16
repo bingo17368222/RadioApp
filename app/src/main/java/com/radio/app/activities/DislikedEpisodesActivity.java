@@ -5,6 +5,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -25,13 +26,20 @@ public class DislikedEpisodesActivity extends AppCompatActivity {
     private DislikedAdapter adapter;
     private RadioDatabaseHelper dbHelper;
     private List<String[]> dislikedList = new ArrayList<>();
+    private TextView tvTitle;
+    private ImageButton btnBack;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_disliked_episodes);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-        getSupportActionBar().setTitle("不喜欢的节目");
+
+        tvTitle = findViewById(R.id.tv_title);
+        btnBack = findViewById(R.id.btn_back);
+        if (tvTitle != null) tvTitle.setText("不喜欢的节目");
+        if (btnBack != null) {
+            btnBack.setOnClickListener(v -> finish());
+        }
 
         dbHelper = RadioDatabaseHelper.getInstance(this);
         recyclerView = findViewById(R.id.recycler_view);
@@ -54,10 +62,9 @@ public class DislikedEpisodesActivity extends AppCompatActivity {
         cursor.close();
         adapter.notifyDataSetChanged();
 
-        if (dislikedList.isEmpty()) {
-            findViewById(R.id.tv_empty).setVisibility(View.VISIBLE);
-        } else {
-            findViewById(R.id.tv_empty).setVisibility(View.GONE);
+        View tvEmpty = findViewById(R.id.tv_empty);
+        if (tvEmpty != null) {
+            tvEmpty.setVisibility(dislikedList.isEmpty() ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -79,7 +86,8 @@ public class DislikedEpisodesActivity extends AppCompatActivity {
                 notifyDataSetChanged();
                 Toast.makeText(DislikedEpisodesActivity.this, "已取消不喜欢", Toast.LENGTH_SHORT).show();
                 if (dislikedList.isEmpty()) {
-                    findViewById(R.id.tv_empty).setVisibility(View.VISIBLE);
+                    View tvEmpty = findViewById(R.id.tv_empty);
+                    if (tvEmpty != null) tvEmpty.setVisibility(View.VISIBLE);
                 }
             });
         }
@@ -96,11 +104,5 @@ public class DislikedEpisodesActivity extends AppCompatActivity {
                 btnRemove = v.findViewById(R.id.btn_remove);
             }
         }
-    }
-
-    @Override
-    public boolean onSupportNavigateUp() {
-        finish();
-        return true;
     }
 }

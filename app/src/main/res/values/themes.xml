@@ -11,4 +11,40 @@
         <item name="android:statusBarColor">@color/background_dark</item>
         <item name="android:navigationBarColor">@color/background_dark</item>
     </style>
+
+    <style name="Theme.RadioApp.Fresh" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">#2ecc71</item>
+        <item name="colorPrimaryVariant">#27ae60</item>
+        <item name="colorAccent">#1abc9c</item>
+        <item name="android:colorBackground">#f8f9fa</item>
+        <item name="android:textColorPrimary">#2c3e50</item>
+        <item name="android:textColorSecondary">#7f8c8d</item>
+        <item name="colorSurface">#ffffff</item>
+        <item name="android:statusBarColor">#f8f9fa</item>
+        <item name="android:navigationBarColor">#f8f9fa</item>
+    </style>
+
+    <style name="Theme.RadioApp.Classic" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">#3498db</item>
+        <item name="colorPrimaryVariant">#2980b9</item>
+        <item name="colorAccent">#2980b9</item>
+        <item name="android:colorBackground">#ecf0f1</item>
+        <item name="android:textColorPrimary">#2c3e50</item>
+        <item name="android:textColorSecondary">#7f8c8d</item>
+        <item name="colorSurface">#ffffff</item>
+        <item name="android:statusBarColor">#ecf0f1</item>
+        <item name="android:navigationBarColor">#ecf0f1</item>
+    </style>
+
+    <style name="Theme.RadioApp.Minimal" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">#000000</item>
+        <item name="colorPrimaryVariant">#333333</item>
+        <item name="colorAccent">#333333</item>
+        <item name="android:colorBackground">#ffffff</item>
+        <item name="android:textColorPrimary">#000000</item>
+        <item name="android:textColorSecondary">#666666</item>
+        <item name="colorSurface">#f5f5f5</item>
+        <item name="android:statusBarColor">#ffffff</item>
+        <item name="android:navigationBarColor">#ffffff</item>
+    </style>
 </resources>

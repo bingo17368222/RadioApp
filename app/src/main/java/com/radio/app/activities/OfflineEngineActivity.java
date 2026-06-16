@@ -4,6 +4,8 @@ import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -13,12 +15,18 @@ import com.radio.app.R;
 
 public class OfflineEngineActivity extends AppCompatActivity {
 
+    private TextView tvTitle;
+    private ImageButton btnBack;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_offline_engine);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-        getSupportActionBar().setTitle("离线引擎管理");
+
+        tvTitle = findViewById(R.id.tv_title);
+        btnBack = findViewById(R.id.btn_back);
+        if (tvTitle != null) tvTitle.setText("离线引擎管理");
+        if (btnBack != null) btnBack.setOnClickListener(v -> finish());
 
         setupEngineCard("Whisper", "OpenAI语音识别模型", "约75MB", false);
         setupEngineCard("Vosk", "轻量级离线语音识别", "约50MB", false);
@@ -50,12 +58,7 @@ public class OfflineEngineActivity extends AppCompatActivity {
             });
         }
 
-        ((android.widget.LinearLayout) findViewById(R.id.engine_container)).addView(card);
-    }
-
-    @Override
-    public boolean onSupportNavigateUp() {
-        finish();
-        return true;
+        LinearLayout container = findViewById(R.id.engine_container);
+        if (container != null) container.addView(card);
     }
 }

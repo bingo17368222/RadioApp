@@ -436,10 +436,12 @@ public class RadioPlaybackService extends Service implements
         if (callback != null) callback.onStateChanged(false);
         sendStateBroadcast(false);
         stopAutoSkipCheck();
+        // 直播流不应该触发onCompletion重播，HLS流可能因网络问题触发
+        // 只有非直播的回放节目才在结束时自动播放下一个
         if (continuousPlay && currentEpisode != null && !isLive) {
-            // In a real app, we would play the next episode from the list.
-            // For now, just restart the current episode.
-            playEpisode(currentEpisode, false);
+            // 回放节目播放完毕，可以播放下一个
+            // 当前只是暂停，不自动重播同一集
+            if (callback != null) callback.onStateChanged(false);
         }
     }
 

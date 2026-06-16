@@ -5,6 +5,7 @@ import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -21,13 +22,18 @@ public class KeywordSettingsActivity extends AppCompatActivity {
     private Spinner spinnerDryLogic, spinnerWaterLogic, spinnerContentDryLogic, spinnerContentWaterLogic;
     private PreferenceManager prefMgr;
     private AppSettings settings;
+    private TextView tvTitle;
+    private ImageButton btnBack;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_keyword_settings);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-        getSupportActionBar().setTitle("关键词设置");
+
+        tvTitle = findViewById(R.id.tv_title);
+        btnBack = findViewById(R.id.btn_back);
+        if (tvTitle != null) tvTitle.setText("关键词设置");
+        if (btnBack != null) btnBack.setOnClickListener(v -> finish());
 
         prefMgr = new PreferenceManager(this);
         settings = prefMgr.loadSettings();
@@ -109,11 +115,5 @@ public class KeywordSettingsActivity extends AppCompatActivity {
 
     private void simulateAiExtract(String type) {
         Toast.makeText(this, "AI提取功能（模拟）- " + type, Toast.LENGTH_SHORT).show();
-    }
-
-    @Override
-    public boolean onSupportNavigateUp() {
-        finish();
-        return true;
     }
 }
