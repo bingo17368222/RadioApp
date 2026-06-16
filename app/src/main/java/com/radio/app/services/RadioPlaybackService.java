@@ -30,11 +30,16 @@ import com.radio.app.utils.PreferenceManager;
 
 import java.util.List;
 
+import android.util.Log;
+
 public class RadioPlaybackService extends Service implements
         MediaPlayer.OnPreparedListener,
         MediaPlayer.OnCompletionListener,
         MediaPlayer.OnBufferingUpdateListener,
+        MediaPlayer.OnErrorListener,
         AudioManager.OnAudioFocusChangeListener {
+
+    private static final String TAG = "RadioPlaybackService";
 
     public static final String ACTION_PLAY = "com.radio.app.PLAY";
     public static final String ACTION_PAUSE = "com.radio.app.PAUSE";
@@ -61,6 +66,8 @@ public class RadioPlaybackService extends Service implements
     private Runnable autoSkipRunnable;
     private boolean continuousPlay = true;
     private int bufferPercent = 0;
+    private boolean prepared = false;
+    private String currentStreamUrl = "";
 
     public interface Callback {
         void onStateChanged(boolean playing);
@@ -83,6 +90,7 @@ public class RadioPlaybackService extends Service implements
         player.setOnPreparedListener(this);
         player.setOnCompletionListener(this);
         player.setOnBufferingUpdateListener(this);
+        player.setOnErrorListener(this);
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         autoSkipHandler = new Handler(Looper.getMainLooper());
         loadSettings();
@@ -176,29 +184,89 @@ public class RadioPlaybackService extends Service implements
         this.currentStation = station;
         this.currentEpisode = null;
         this.isLive = true;
+        this.prepared = false;
+        this.currentStreamUrl = station.getStreamUrl();
         stopAutoSkipCheck();
         try {
             player.reset();
             player.setDataSource(station.getStreamUrl());
+            player.setOnPreparedListener(mp -> {
+                prepared = true;
+                mp.start();
+                if (callback != null) callback.onStateChanged(true);
+                sendStateBroadcast(true);
+                startForegroundNotification();
+            });
+            player.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "MediaPlayer error in playStation: what=" + what + " extra=" + extra);
+                prepared = false;
+                if (callback != null) callback.onStateChanged(false);
+                sendStateBroadcast(false);
+                // 尝试恢复：延迟后重新连接
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    try {
+                        Log.i(TAG, "Attempting recovery for station: " + station.getName());
+                        player.reset();
+                        player.setDataSource(station.getStreamUrl());
+                        player.prepareAsync();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Recovery failed", e);
+                    }
+                }, 3000);
+                return true; // 错误已处理
+            });
             player.prepareAsync();
             requestAudioFocus();
             startForegroundNotification();
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) {
+            Log.e(TAG, "playStation failed", e);
+            prepared = false;
+        }
     }
 
     public void playEpisode(Episode episode, boolean live) {
         this.currentEpisode = episode;
         this.currentStation = null;
         this.isLive = live;
+        this.prepared = false;
+        this.currentStreamUrl = episode.getAudioUrl();
         stopAutoSkipCheck();
         try {
             player.reset();
             player.setDataSource(episode.getAudioUrl());
+            player.setOnPreparedListener(mp -> {
+                prepared = true;
+                mp.start();
+                if (callback != null) callback.onStateChanged(true);
+                sendStateBroadcast(true);
+                startForegroundNotification();
+            });
+            player.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "MediaPlayer error in playEpisode: what=" + what + " extra=" + extra);
+                prepared = false;
+                if (callback != null) callback.onStateChanged(false);
+                sendStateBroadcast(false);
+                // 尝试恢复：延迟后重新连接
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    try {
+                        Log.i(TAG, "Attempting recovery for episode: " + episode.getTitle());
+                        player.reset();
+                        player.setDataSource(episode.getAudioUrl());
+                        player.prepareAsync();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Recovery failed", e);
+                    }
+                }, 3000);
+                return true; // 错误已处理
+            });
             player.prepareAsync();
             requestAudioFocus();
             startForegroundNotification();
             startAutoSkipCheck();
-        } catch (Exception e) { e.printStackTrace(); }
+        } catch (Exception e) {
+            Log.e(TAG, "playEpisode failed", e);
+            prepared = false;
+        }
     }
 
     public void play() {
@@ -248,8 +316,16 @@ public class RadioPlaybackService extends Service implements
 
     public boolean isPlaying() { return player != null && player.isPlaying(); }
     public boolean isLive() { return isLive; }
+    public boolean isPrepared() { return prepared; }
+    public String getCurrentStreamUrl() { return currentStreamUrl; }
     public long getCurrentPosition() { return player != null ? player.getCurrentPosition() : 0; }
-    public long getDuration() { return player != null ? player.getDuration() : 0; }
+    public long getDuration() {
+        if (player == null) return 0;
+        // 对于直播流(HLS)，getDuration()返回-1是正常的
+        long dur = player.getDuration();
+        if (dur <= 0 && isLive) return -1; // 返回-1表示直播流，无固定时长
+        return dur > 0 ? dur : 0;
+    }
     public Episode getCurrentEpisode() { return currentEpisode; }
     public RadioStation getCurrentStation() { return currentStation; }
     public int getBufferPercent() { return bufferPercent; }
@@ -452,10 +528,20 @@ public class RadioPlaybackService extends Service implements
 
     @Override
     public void onPrepared(MediaPlayer mp) {
+        prepared = true;
         mp.start();
         if (callback != null) callback.onStateChanged(true);
         sendStateBroadcast(true);
         startForegroundNotification();
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int what, int extra) {
+        Log.e(TAG, "MediaPlayer global onError: what=" + what + " extra=" + extra);
+        prepared = false;
+        if (callback != null) callback.onStateChanged(false);
+        sendStateBroadcast(false);
+        return true; // 错误已处理，避免调用onCompletion
     }
 
     @Override

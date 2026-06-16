@@ -39,12 +39,15 @@ public class SettingsFragment extends Fragment {
     private ThemeManager themeMgr;
     private AppSettings settings;
 
+    private String previousTheme;
+
     @Nullable @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_settings, container, false);
         prefMgr = new PreferenceManager(requireContext());
         themeMgr = new ThemeManager(requireContext());
         settings = prefMgr.loadSettings();
+        previousTheme = settings.getUiTheme();
 
         spinnerAiModel = view.findViewById(R.id.spinner_ai_model);
         spinnerAsr = view.findViewById(R.id.spinner_asr_provider);
@@ -166,9 +169,14 @@ public class SettingsFragment extends Fragment {
     }
 
     private void applyTheme() {
-        Intent intent = getActivity().getIntent();
-        getActivity().finish();
-        startActivity(intent);
+        // 只在主题真正改变时才recreate Activity，避免不必要的重建
+        String currentTheme = settings.getUiTheme();
+        if (previousTheme != null && !previousTheme.equals(currentTheme)) {
+            previousTheme = currentTheme;
+            if (getActivity() != null) {
+                getActivity().recreate();
+            }
+        }
     }
 
     private void updateCustomColorsVisibility() {

@@ -15,18 +15,25 @@ public class EpisodeApiService {
     private static volatile EpisodeApiService instance;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
-    // 真实的节目音频URL（使用公开可用的音频样本）
-    private static final String[] REAL_AUDIO_URLS = {
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-13.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-15.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-16.mp3"
+    // 节目回放使用真实电台的M3U8流URL（模拟回放模式）
+    private static final String[] STATION_STREAM_URLS = {
+        "https://stream.hndt.com/live/xinwen/playlist.m3u8",   // henan-1 河南新闻广播
+        "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-2 河南音乐广播
+        "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-3 河南交通广播
+        "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-4 河南经济广播
+        "http://ls.qingting.fm/live/5022051.m3u8",            // henan-5 郑州新闻广播
+        "http://ls.qingting.fm/live/5022055.m3u8",            // henan-6 洛阳交通广播
+        "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8",       // cnr-1 中国之声
+        "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8",       // cnr-2 经济之声
+        "http://live.xmcdn.com/live/95/64.m3u8",              // cnr-3 音乐之声
+        "http://live.xmcdn.com/live/91/64.m3u8",              // other-1 北京新闻广播
+        "http://ls.qingting.fm/live/270.m3u8",               // other-2 上海新闻广播
+        "http://ls.qingting.fm/live/1260.m3u8"               // other-3 广东新闻广播
+    };
+
+    private static final String[] STATION_IDS = {
+        "henan-1", "henan-2", "henan-3", "henan-4", "henan-5", "henan-6",
+        "cnr-1", "cnr-2", "cnr-3", "other-1", "other-2", "other-3"
     };
 
     public interface ApiCallback<T> {
@@ -76,10 +83,13 @@ public class EpisodeApiService {
                     ep.setDescription(prog[3]);
                     ep.setStationId(stationId);
                     ep.setStationName(getStationName(stationId));
-                    // 使用真实可播放的音频URL
-                    ep.setAudioUrl(REAL_AUDIO_URLS[i % REAL_AUDIO_URLS.length]);
+                    // 使用该电台的直播流URL模拟回放
+                    String streamUrl = getStationStreamUrl(stationId);
+                    ep.setAudioUrl(streamUrl != null ? streamUrl : STATION_STREAM_URLS[0]);
                     ep.setLive(false);
                     ep.setDisliked(false);
+                    // 标注为回放模式，添加时间偏移信息
+                    ep.setDescription(prog[3] + " [回放模式]");
 
                     // Generate voice segments (simulated dry/water analysis)
                     List<VoiceSegment> segments = new ArrayList<>();
@@ -133,6 +143,15 @@ public class EpisodeApiService {
             case "other-3": return "广东新闻广播";
             default: return "电台节目";
         }
+    }
+
+    private String getStationStreamUrl(String stationId) {
+        for (int i = 0; i < STATION_IDS.length; i++) {
+            if (STATION_IDS[i].equals(stationId)) {
+                return STATION_STREAM_URLS[i];
+            }
+        }
+        return null;
     }
 
     private String getSampleText(Random random, int index) {

@@ -12,6 +12,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.view.View;
 import android.widget.ImageButton;
+import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -37,8 +38,9 @@ import java.util.List;
 
 public class PlayerActivity extends AppCompatActivity {
     private TextView tvStationName, tvEpisodeTitle, tvCurrentTime, tvTotalTime, tvLiveIndicator, tvSubtitleStatus;
-    private TextView tvAiProgress;
+    private TextView tvAiProgress, tvNetworkUrl, tvCacheUrl;
     private SeekBar seekBar, seekBarCache;
+    private ProgressBar progressBuffer;
     private ImageButton btnPlayPause, btnSkipBackward, btnSkipForward, btnClose, btnGenerateSubtitle;
     private ImageButton btnPrevSegment, btnNextSegment, btnSubtitleToggle;
     private RecyclerView recyclerSegments;
@@ -124,22 +126,36 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void startPlayback() {
         if (playbackService == null) return;
-        if (isLive && streamUrl != null) {
-            RadioStation station = new RadioStation();
-            station.setId(stationId != null ? stationId : "live");
-            station.setName(stationName != null ? stationName : "直播");
-            station.setStreamUrl(streamUrl);
-            playbackService.playStation(station);
-        } else if (audioUrl != null) {
-            Episode episode = new Episode();
-            episode.setId(episodeId != null ? episodeId : "ep");
-            episode.setTitle(episodeTitle != null ? episodeTitle : "节目");
-            episode.setAudioUrl(audioUrl);
-            episode.setStationName(stationName != null ? stationName : "电台");
-            episode.setDuration(duration);
-            if (voiceSegments != null) episode.setVoiceSegments(voiceSegments);
-            if (transcripts != null) episode.setTranscripts(transcripts);
-            playbackService.playEpisode(episode, false);
+        try {
+            if (isLive && streamUrl != null) {
+                RadioStation station = new RadioStation();
+                station.setId(stationId != null ? stationId : "live");
+                station.setName(stationName != null ? stationName : "直播");
+                station.setStreamUrl(streamUrl);
+                playbackService.playStation(station);
+                // 直播模式隐藏缓存进度条和URL
+                tvNetworkUrl.setVisibility(View.GONE);
+                tvCacheUrl.setVisibility(View.GONE);
+                progressBuffer.setVisibility(View.GONE);
+            } else if (audioUrl != null) {
+                Episode episode = new Episode();
+                episode.setId(episodeId != null ? episodeId : "ep");
+                episode.setTitle(episodeTitle != null ? episodeTitle : "节目");
+                episode.setAudioUrl(audioUrl);
+                episode.setStationName(stationName != null ? stationName : "电台");
+                episode.setDuration(duration);
+                if (voiceSegments != null) episode.setVoiceSegments(voiceSegments);
+                if (transcripts != null) episode.setTranscripts(transcripts);
+                playbackService.playEpisode(episode, false);
+                // 非直播模式显示网络URL
+                tvNetworkUrl.setText("网络: " + audioUrl);
+                tvNetworkUrl.setVisibility(View.VISIBLE);
+                tvCacheUrl.setVisibility(View.VISIBLE);
+                progressBuffer.setVisibility(View.VISIBLE);
+                tvCacheUrl.setText("缓存: 等待中...");
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "播放失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -151,6 +167,9 @@ public class PlayerActivity extends AppCompatActivity {
         tvLiveIndicator = findViewById(R.id.tv_live_indicator);
         tvSubtitleStatus = findViewById(R.id.tv_subtitle_status);
         tvAiProgress = findViewById(R.id.tv_ai_progress);
+        tvNetworkUrl = findViewById(R.id.tv_network_url);
+        tvCacheUrl = findViewById(R.id.tv_cache_url);
+        progressBuffer = findViewById(R.id.progress_buffer);
         seekBar = findViewById(R.id.seek_bar);
         seekBarCache = findViewById(R.id.seek_bar_cache);
         btnPlayPause = findViewById(R.id.btn_play_pause);
@@ -262,9 +281,22 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void updateProgress(long pos, long dur) {
-        tvCurrentTime.setText(fmtTime(pos));
-        tvTotalTime.setText(fmtTime(dur));
-        if (dur > 0) { seekBar.setMax((int) dur); seekBar.setProgress((int) pos); }
+        if (dur <= 0) {
+            // 直播模式：显示"直播中"
+            if (playbackService != null && playbackService.isLive()) {
+                tvCurrentTime.setText("直播中");
+                tvTotalTime.setText("");
+            } else {
+                // 非直播模式：显示"缓冲中..."
+                tvCurrentTime.setText("缓冲中...");
+                tvTotalTime.setText("");
+            }
+        } else {
+            tvCurrentTime.setText(fmtTime(pos));
+            tvTotalTime.setText(fmtTime(dur));
+            seekBar.setMax((int) dur);
+            seekBar.setProgress((int) pos);
+        }
         if (subtitleView != null && subtitleView.getVisibility() == View.VISIBLE) subtitleView.highlightSubtitle(pos / 1000);
 
         // Update current segment highlight
@@ -287,6 +319,17 @@ public class PlayerActivity extends AppCompatActivity {
             if (dur > 0) {
                 seekBarCache.setMax((int) dur);
                 seekBarCache.setProgress((int) (dur * percent / 100));
+            }
+            // 更新缓存进度条
+            if (progressBuffer != null && progressBuffer.getVisibility() == View.VISIBLE) {
+                progressBuffer.setProgress(percent);
+            }
+            // 更新缓存URL显示
+            if (tvCacheUrl != null && tvCacheUrl.getVisibility() == View.VISIBLE) {
+                String url = playbackService.getCurrentStreamUrl();
+                if (url != null && !url.isEmpty()) {
+                    tvCacheUrl.setText("缓存: " + percent + "% - " + url);
+                }
             }
         }
     }

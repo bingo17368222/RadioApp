@@ -115,11 +115,11 @@ public class RadioApiService {
     private List<RadioStation> getBuiltinStations() {
         List<RadioStation> list = new ArrayList<>();
 
-        // 河南人民广播电台 - 使用真实可用的网络流
+        // 河南人民广播电台 - 使用真实M3U8流地址
         RadioStation s1 = new RadioStation();
         s1.setId("henan-1");
         s1.setName("河南新闻广播");
-        s1.setStreamUrl("http://stream.zeno.fm/0r0xg904kkeuv");
+        s1.setStreamUrl("https://stream.hndt.com/live/xinwen/playlist.m3u8");
         s1.setCountry("China");
         s1.setBitrate(64);
         s1.setLastCheckOk(true);
@@ -129,7 +129,7 @@ public class RadioApiService {
         RadioStation s2 = new RadioStation();
         s2.setId("henan-2");
         s2.setName("河南音乐广播");
-        s2.setStreamUrl("http://stream.zeno.fm/5y5c4r5q4kkeuv");
+        s2.setStreamUrl("https://stream.hndt.com/live/yinyue/playlist.m3u8");
         s2.setCountry("China");
         s2.setBitrate(64);
         s2.setLastCheckOk(true);
@@ -139,7 +139,7 @@ public class RadioApiService {
         RadioStation s3 = new RadioStation();
         s3.setId("henan-3");
         s3.setName("河南交通广播");
-        s3.setStreamUrl("http://stream.zeno.fm/8wv0d8q4kkeuv");
+        s3.setStreamUrl("https://stream.hndt.com/live/jiaotong/playlist.m3u8");
         s3.setCountry("China");
         s3.setBitrate(64);
         s3.setLastCheckOk(true);
@@ -149,7 +149,7 @@ public class RadioApiService {
         RadioStation s4 = new RadioStation();
         s4.setId("henan-4");
         s4.setName("河南经济广播");
-        s4.setStreamUrl("http://stream.zeno.fm/1q1c8r5q4kkeuv");
+        s4.setStreamUrl("https://stream.hndt.com/live/jingji/playlist.m3u8");
         s4.setCountry("China");
         s4.setBitrate(64);
         s4.setLastCheckOk(true);
@@ -159,7 +159,7 @@ public class RadioApiService {
         RadioStation s5 = new RadioStation();
         s5.setId("henan-5");
         s5.setName("郑州新闻广播");
-        s5.setStreamUrl("http://stream.zeno.fm/3q3c8r5q4kkeuv");
+        s5.setStreamUrl("http://ls.qingting.fm/live/5022051.m3u8");
         s5.setCountry("China");
         s5.setBitrate(64);
         s5.setLastCheckOk(true);
@@ -169,18 +169,18 @@ public class RadioApiService {
         RadioStation s6 = new RadioStation();
         s6.setId("henan-6");
         s6.setName("洛阳交通广播");
-        s6.setStreamUrl("http://stream.zeno.fm/6y6c4r5q4kkeuv");
+        s6.setStreamUrl("http://ls.qingting.fm/live/5022055.m3u8");
         s6.setCountry("China");
         s6.setBitrate(64);
         s6.setLastCheckOk(true);
         s6.setCurrentProgram("洛阳交通");
         list.add(s6);
 
-        // 央广电台 - 使用真实可用的网络流
+        // 央广电台 - 使用真实M3U8流地址
         RadioStation s7 = new RadioStation();
         s7.setId("cnr-1");
         s7.setName("中国之声");
-        s7.setStreamUrl("http://ngcdn001.cnr.cn/live/zgzs/index.m3u8");
+        s7.setStreamUrl("https://ngcdn001.cnr.cn/live/zgzs/index.m3u8");
         s7.setCountry("China");
         s7.setBitrate(128);
         s7.setLastCheckOk(true);
@@ -190,7 +190,7 @@ public class RadioApiService {
         RadioStation s8 = new RadioStation();
         s8.setId("cnr-2");
         s8.setName("经济之声");
-        s8.setStreamUrl("http://ngcdn002.cnr.cn/live/jjzs/index.m3u8");
+        s8.setStreamUrl("https://ngcdn002.cnr.cn/live/jjzs/index.m3u8");
         s8.setCountry("China");
         s8.setBitrate(128);
         s8.setLastCheckOk(true);
@@ -200,18 +200,18 @@ public class RadioApiService {
         RadioStation s9 = new RadioStation();
         s9.setId("cnr-3");
         s9.setName("音乐之声");
-        s9.setStreamUrl("http://ngcdn003.cnr.cn/live/yyzs/index.m3u8");
+        s9.setStreamUrl("http://live.xmcdn.com/live/95/64.m3u8");
         s9.setCountry("China");
         s9.setBitrate(128);
         s9.setLastCheckOk(true);
         s9.setCurrentProgram("音乐之声");
         list.add(s9);
 
-        // 其他省台 - 使用真实可用的网络流
+        // 其他省台 - 使用真实M3U8流地址
         RadioStation s10 = new RadioStation();
         s10.setId("other-1");
         s10.setName("北京新闻广播");
-        s10.setStreamUrl("http://ngcdn004.cnr.cn/live/bjxw/index.m3u8");
+        s10.setStreamUrl("http://live.xmcdn.com/live/91/64.m3u8");
         s10.setCountry("China");
         s10.setBitrate(128);
         s10.setLastCheckOk(true);
@@ -221,7 +221,7 @@ public class RadioApiService {
         RadioStation s11 = new RadioStation();
         s11.setId("other-2");
         s11.setName("上海新闻广播");
-        s11.setStreamUrl("http://ngcdn005.cnr.cn/live/shxw/index.m3u8");
+        s11.setStreamUrl("http://ls.qingting.fm/live/270.m3u8");
         s11.setCountry("China");
         s11.setBitrate(128);
         s11.setLastCheckOk(true);
@@ -231,7 +231,7 @@ public class RadioApiService {
         RadioStation s12 = new RadioStation();
         s12.setId("other-3");
         s12.setName("广东新闻广播");
-        s12.setStreamUrl("http://ngcdn006.cnr.cn/live/gdxw/index.m3u8");
+        s12.setStreamUrl("http://ls.qingting.fm/live/1260.m3u8");
         s12.setCountry("China");
         s12.setBitrate(128);
         s12.setLastCheckOk(true);
