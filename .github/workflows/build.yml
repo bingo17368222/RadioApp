@@ -46,15 +46,24 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
-      - name: Rename APK with build number
+      - name: Find and rename APK
         if: success()
         run: |
-          APK_FILE=$(find app/build -name "*.apk" -type f | head -1)
-          if [ -n "$APK_FILE" ]; then
-            mv "$APK_FILE" "app/build/outputs/apk/debug/radio-app-v1.1-${{ github.run_number }}.apk"
-            echo "Renamed to: radio-app-v1.1-${{ github.run_number }}.apk"
+          echo "=== Searching for APK ==="
+          find . -name "*.apk" -type f
+          echo "=== app/build contents ==="
+          ls -laR app/build/outputs/ 2>/dev/null || echo "outputs dir not found"
+          
+          APK_FILE=$(find . -name "*.apk" -type f | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: No APK found!"
+            exit 1
           fi
-          ls -la app/build/outputs/apk/debug/
+          
+          echo "Found APK: $APK_FILE"
+          mkdir -p apk-release
+          cp "$APK_FILE" "apk-release/radio-app-v1.1-${{ github.run_number }}.apk"
+          ls -la apk-release/
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -63,7 +72,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: app/build/outputs/apk/debug/*.apk
+          files: apk-release/*.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
