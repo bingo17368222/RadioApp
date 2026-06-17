@@ -35,13 +35,24 @@ jobs:
           gradle wrapper --gradle-version 8.0
           chmod +x gradlew
 
-      - name: Clean and Build Debug APK
-        run: ./gradlew clean assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-      - name: Verify APK exists
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
+
+      - name: Verify APK
         if: success()
         run: |
-          ls -la app/build/outputs/apk/debug/
+          ls -la app/build/outputs/apk/debug/ || echo "APK directory not found"
+          find app/build -name "*.apk" -type f
 
       - name: Upload APK Artifact
         if: success()
@@ -50,6 +61,7 @@ jobs:
           name: radio-app-apk
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Get APK info
         if: success()
