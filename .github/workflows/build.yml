@@ -35,33 +35,42 @@ jobs:
           gradle wrapper --gradle-version 8.0
           chmod +x gradlew
 
-      - name: Clean and Build Debug APK
-        run: ./gradlew clean assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-      - name: Verify APK
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
+
+      - name: Verify and copy APK
         if: success()
         run: |
-          echo "=== APK Output Directory ==="
-          ls -la app/build/outputs/apk/debug/ || echo "APK directory not found"
-          echo "=== All APK files ==="
+          echo "=== Finding APK ==="
           find app/build -name "*.apk" -type f
-          echo "=== APK Info ==="
-          $ANDROID_HOME/build-tools/34.0.0/aapt dump badging app/build/outputs/apk/debug/*.apk 2>/dev/null | grep -E "package|version" | head -3 || echo "aapt not available"
+          mkdir -p apk-output
+          APK_FILE=$(find app/build -name "*.apk" -type f | head -1)
+          if [ -n "$APK_FILE" ]; then
+            cp "$APK_FILE" apk-output/radio-app-v1.1-${{ github.run_number }}.apk
+            echo "APK copied to apk-output/"
+          else
+            echo "No APK found!"
+            exit 1
+          fi
+          ls -la apk-output/
 
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: apk-output/*.apk
           retention-days: 30
-
-      - name: Rename APK with version
-        if: success()
-        run: |
-          mkdir -p apk-release
-          cp app/build/outputs/apk/debug/app-debug.apk apk-release/radio-app-v1.1-${{ github.run_number }}.apk
-          ls -la apk-release/
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -70,7 +79,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: apk-release/*.apk
+          files: apk-output/*.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
