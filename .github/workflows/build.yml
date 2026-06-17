@@ -34,36 +34,14 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        run: |
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-          BUILD_STATUS=${PIPESTATUS[0]}
-          echo ""
-          echo "=== Build exit code: $BUILD_STATUS ==="
-          echo "=== Listing APK files ==="
-          find app/build -name "*.apk" -type f 2>/dev/null || echo "No APK in app/build"
-          echo "=== Listing all outputs ==="
-          ls -laR app/build/outputs/ 2>/dev/null || echo "No outputs dir"
-          if [ $BUILD_STATUS -ne 0 ]; then
-            echo "=== BUILD FAILED ==="
-            tail -200 build.log
-            exit 1
-          fi
-
-      - name: Copy APK to workspace
-        if: success()
-        run: |
-          mkdir -p apk-output
-          find app/build -name "*.apk" -type f -exec cp {} apk-output/ \;
-          echo "=== apk-output contents ==="
-          ls -la apk-output/
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: apk-output/*.apk
-          if-no-files-found: error
+          path: app/build/outputs/apk/debug/*.apk
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -71,8 +49,8 @@ jobs:
         with:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
-          body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: apk-output/*.apk
+          body: "Auto-generated debug APK v${{ github.run_number }}"
+          files: app/build/outputs/apk/debug/*.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
