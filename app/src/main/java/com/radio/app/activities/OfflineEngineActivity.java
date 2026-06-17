@@ -1,12 +1,15 @@
 package com.radio.app.activities;
 
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -31,6 +34,7 @@ public class OfflineEngineActivity extends AppCompatActivity {
     private TextView tvTitle;
     private ImageButton btnBack;
     private ExecutorService downloadExecutor = Executors.newSingleThreadExecutor();
+    private Handler uiHandler = new Handler(Looper.getMainLooper());
 
     private static class EngineInfo {
         String name, desc, size, downloadUrl, modelDir;
@@ -73,14 +77,16 @@ public class OfflineEngineActivity extends AppCompatActivity {
         TextView tvDesc = card.findViewById(R.id.tv_engine_desc);
         TextView tvSize = card.findViewById(R.id.tv_engine_size);
         Button btnAction = card.findViewById(R.id.btn_engine_action);
+        ProgressBar progressBar = card.findViewById(R.id.progress_engine);
 
         tvName.setText(engine.name);
         tvDesc.setText(engine.desc);
         tvSize.setText(engine.size);
+        if (progressBar != null) progressBar.setVisibility(View.GONE);
 
         File modelsDir = getExternalFilesDir("models");
         File modelDir = modelsDir != null ? new File(modelsDir, engine.modelDir) : null;
-        boolean installed = modelDir != null && modelDir.exists();
+        boolean installed = modelDir != null && modelDir.exists() && modelDir.isDirectory();
 
         if (installed) {
             btnAction.setText("已安装(删除)");
@@ -93,8 +99,12 @@ public class OfflineEngineActivity extends AppCompatActivity {
             btnAction.setText("安装");
             btnAction.setOnClickListener(v -> {
                 btnAction.setEnabled(false);
-                btnAction.setText("下载中...");
-                downloadModel(engine, btnAction);
+                btnAction.setText("准备下载...");
+                if (progressBar != null) {
+                    progressBar.setVisibility(View.VISIBLE);
+                    progressBar.setProgress(0);
+                }
+                downloadModel(engine, btnAction, progressBar);
             });
         }
 
@@ -102,14 +112,18 @@ public class OfflineEngineActivity extends AppCompatActivity {
         if (container != null) container.addView(card);
     }
 
-    private void downloadModel(EngineInfo engine, Button btn) {
+    private void downloadModel(EngineInfo engine, Button btn, ProgressBar progressBar) {
         downloadExecutor.execute(() -> {
+            HttpURLConnection conn = null;
+            InputStream is = null;
+            FileOutputStream fos = null;
             try {
                 File modelsDir = getExternalFilesDir("models");
                 if (modelsDir == null) {
-                    runOnUiThread(() -> {
+                    uiHandler.post(() -> {
                         btn.setEnabled(true);
                         btn.setText("安装");
+                        if (progressBar != null) progressBar.setVisibility(View.GONE);
                         Toast.makeText(this, "无法访问存储", Toast.LENGTH_SHORT).show();
                     });
                     return;
@@ -119,47 +133,61 @@ public class OfflineEngineActivity extends AppCompatActivity {
                 String fileName = engine.downloadUrl.substring(engine.downloadUrl.lastIndexOf('/') + 1);
                 File zipFile = new File(modelsDir, fileName);
 
+                uiHandler.post(() -> btn.setText("连接中..."));
                 URL url = new URL(engine.downloadUrl);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setConnectTimeout(30000);
                 conn.setReadTimeout(60000);
                 conn.setInstanceFollowRedirects(true);
 
                 int totalSize = conn.getContentLength();
-                InputStream is = conn.getInputStream();
-                FileOutputStream fos = new FileOutputStream(zipFile);
+                is = conn.getInputStream();
+                fos = new FileOutputStream(zipFile);
+
                 byte[] buffer = new byte[8192];
-                int len, downloaded = 0;
+                int len;
+                int downloaded = 0;
+                long lastUpdate = System.currentTimeMillis();
                 while ((len = is.read(buffer)) != -1) {
                     fos.write(buffer, 0, len);
                     downloaded += len;
-                    int progress = totalSize > 0 ? (int) (downloaded * 100 / totalSize) : 0;
-                    int fp = progress;
-                    runOnUiThread(() -> btn.setText("下载: " + fp + "%"));
+                    long now = System.currentTimeMillis();
+                    if (now - lastUpdate > 500) {
+                        lastUpdate = now;
+                        int progress = totalSize > 0 ? (int) (downloaded * 100 / totalSize) : 0;
+                        int fp = progress;
+                        uiHandler.post(() -> {
+                            btn.setText("下载: " + fp + "%");
+                            if (progressBar != null) progressBar.setProgress(fp);
+                        });
+                    }
                 }
-                fos.close();
-                is.close();
-                conn.disconnect();
+                uiHandler.post(() -> btn.setText("下载完成，解压中..."));
 
-                runOnUiThread(() -> btn.setText("解压中..."));
                 if (fileName.endsWith(".zip")) {
                     unzipFile(zipFile, modelsDir);
                 }
                 zipFile.delete();
 
-                runOnUiThread(() -> {
+                uiHandler.post(() -> {
                     btn.setEnabled(true);
                     btn.setText("已安装(删除)");
+                    if (progressBar != null) progressBar.setVisibility(View.GONE);
                     Toast.makeText(this, engine.name + " 安装完成", Toast.LENGTH_SHORT).show();
                 });
             } catch (Exception e) {
                 Log.e(TAG, "Download failed: " + e.getMessage());
-                runOnUiThread(() -> {
+                uiHandler.post(() -> {
                     btn.setEnabled(true);
                     btn.setText("安装(重试)");
+                    if (progressBar != null) progressBar.setVisibility(View.GONE);
                     Toast.makeText(this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
                 });
+            } finally {
+                try { if (fos != null) fos.close(); } catch (Exception ignored) {}
+                try { if (is != null) is.close(); } catch (Exception ignored) {}
+                if (conn != null) conn.disconnect();
             }
         });
     }

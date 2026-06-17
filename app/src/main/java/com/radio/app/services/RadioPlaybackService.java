@@ -58,8 +58,11 @@ public class RadioPlaybackService extends Service implements
 
     public static final String BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE";
     public static final String BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED";
+    public static final String BROADCAST_CACHE_UPDATE = "com.radio.app.CACHE_UPDATE";
     public static final String EXTRA_BUFFER_PERCENT = "buffer_percent";
     public static final String EXTRA_IS_PLAYING = "is_playing";
+    public static final String EXTRA_CACHE_PERCENT = "cache_percent";
+    public static final String EXTRA_CACHE_PATH = "cache_path";
 
     private MediaPlayer player;
     private final IBinder binder = new LocalBinder();
@@ -82,6 +85,8 @@ public class RadioPlaybackService extends Service implements
     private boolean caching = false;
     private int cacheProgress = 0;
     private ExecutorService cacheExecutor = Executors.newSingleThreadExecutor();
+    private int errorRetryCount = 0;
+    private static final int MAX_ERROR_RETRY = 2;
 
     public interface Callback {
         void onStateChanged(boolean playing);
@@ -114,17 +119,31 @@ public class RadioPlaybackService extends Service implements
 
     private void startProgressPolling() {
         progressRunnable = () -> {
-            if (player != null && prepared && callback != null) {
+            if (player != null && callback != null) {
                 long pos = player.getCurrentPosition();
                 long dur = player.getDuration();
                 callback.onPositionChanged(pos, dur);
-                try {
-                    int bp = player.getBufferPercentage();
-                    if (bp > 0 && bp != bufferPercent) {
-                        bufferPercent = bp;
-                        callback.onBufferUpdate(bp);
-                    }
-                } catch (Exception e) { /* ignore */ }
+                if (prepared) {
+                    try {
+                        int bp = player.getBufferPercentage();
+                        if (bp > 0 && bp != bufferPercent) {
+                            bufferPercent = bp;
+                            callback.onBufferUpdate(bp);
+                        }
+                    } catch (Exception e) { /* ignore */ }
+                }
+            }
+            // 发送缓存广播
+            if (caching) {
+                Intent ci = new Intent(BROADCAST_CACHE_UPDATE);
+                ci.putExtra(EXTRA_CACHE_PERCENT, cacheProgress);
+                ci.putExtra(EXTRA_CACHE_PATH, "");
+                LocalBroadcastManager.getInstance(this).sendBroadcast(ci);
+            } else if (localCachePath != null && !localCachePath.isEmpty()) {
+                Intent ci = new Intent(BROADCAST_CACHE_UPDATE);
+                ci.putExtra(EXTRA_CACHE_PERCENT, 100);
+                ci.putExtra(EXTRA_CACHE_PATH, localCachePath);
+                LocalBroadcastManager.getInstance(this).sendBroadcast(ci);
             }
             progressHandler.postDelayed(progressRunnable, 500);
         };
@@ -153,8 +172,6 @@ public class RadioPlaybackService extends Service implements
         return START_STICKY;
     }
 
-    // ===== Audio Focus =====
-
     private boolean requestAudioFocus() {
         if (audioManager == null) return false;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -170,7 +187,6 @@ public class RadioPlaybackService extends Service implements
             audioFocusRequest = request;
             return audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         } else {
-            //noinspection deprecation
             return audioManager.requestAudioFocus(this, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
                     == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         }
@@ -181,7 +197,6 @@ public class RadioPlaybackService extends Service implements
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
             audioManager.abandonAudioFocusRequest(audioFocusRequest);
         } else {
-            //noinspection deprecation
             audioManager.abandonAudioFocus(this);
         }
     }
@@ -189,31 +204,16 @@ public class RadioPlaybackService extends Service implements
     @Override
     public void onAudioFocusChange(int focusChange) {
         switch (focusChange) {
-            case AudioManager.AUDIOFOCUS_GAIN:
-                play();
-                break;
-            case AudioManager.AUDIOFOCUS_LOSS:
-                pause();
-                break;
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                pause();
-                break;
+            case AudioManager.AUDIOFOCUS_GAIN: play(); break;
+            case AudioManager.AUDIOFOCUS_LOSS: pause(); break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT: pause(); break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                if (player != null && player.isPlaying()) {
-                    player.setVolume(0.3f, 0.3f);
-                }
-                break;
+                if (player != null && player.isPlaying()) player.setVolume(0.3f, 0.3f); break;
             case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT:
             case AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
-                if (player != null) {
-                    player.setVolume(1.0f, 1.0f);
-                    play();
-                }
-                break;
+                if (player != null) { player.setVolume(1.0f, 1.0f); play(); } break;
         }
     }
-
-    // ===== Playback Controls =====
 
     public void playStation(RadioStation station) {
         this.currentStation = station;
@@ -221,35 +221,11 @@ public class RadioPlaybackService extends Service implements
         this.isLive = true;
         this.prepared = false;
         this.currentStreamUrl = station.getStreamUrl();
+        this.errorRetryCount = 0;
         stopAutoSkipCheck();
         try {
             player.reset();
             player.setDataSource(station.getStreamUrl());
-            player.setOnPreparedListener(mp -> {
-                prepared = true;
-                mp.start();
-                if (callback != null) callback.onStateChanged(true);
-                sendStateBroadcast(true);
-                startForegroundNotification();
-            });
-            player.setOnErrorListener((mp, what, extra) -> {
-                Log.e(TAG, "MediaPlayer error in playStation: what=" + what + " extra=" + extra);
-                prepared = false;
-                if (callback != null) callback.onStateChanged(false);
-                sendStateBroadcast(false);
-                // 尝试恢复：延迟后重新连接
-                new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                    try {
-                        Log.i(TAG, "Attempting recovery for station: " + station.getName());
-                        player.reset();
-                        player.setDataSource(station.getStreamUrl());
-                        player.prepareAsync();
-                    } catch (Exception e) {
-                        Log.e(TAG, "Recovery failed", e);
-                    }
-                }, 3000);
-                return true; // 错误已处理
-            });
             player.prepareAsync();
             requestAudioFocus();
             startForegroundNotification();
@@ -267,35 +243,11 @@ public class RadioPlaybackService extends Service implements
         this.currentStreamUrl = episode.getAudioUrl();
         this.localCachePath = "";
         this.caching = false;
+        this.errorRetryCount = 0;
         stopAutoSkipCheck();
         try {
             player.reset();
             player.setDataSource(episode.getAudioUrl());
-            player.setOnPreparedListener(mp -> {
-                prepared = true;
-                mp.start();
-                if (callback != null) callback.onStateChanged(true);
-                sendStateBroadcast(true);
-                startForegroundNotification();
-            });
-            player.setOnErrorListener((mp, what, extra) -> {
-                Log.e(TAG, "MediaPlayer error in playEpisode: what=" + what + " extra=" + extra);
-                prepared = false;
-                if (callback != null) callback.onStateChanged(false);
-                sendStateBroadcast(false);
-                // 尝试恢复：延迟后重新连接
-                new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                    try {
-                        Log.i(TAG, "Attempting recovery for episode: " + episode.getTitle());
-                        player.reset();
-                        player.setDataSource(episode.getAudioUrl());
-                        player.prepareAsync();
-                    } catch (Exception e) {
-                        Log.e(TAG, "Recovery failed", e);
-                    }
-                }, 3000);
-                return true; // 错误已处理
-            });
             player.prepareAsync();
             requestAudioFocus();
             startForegroundNotification();
@@ -312,17 +264,22 @@ public class RadioPlaybackService extends Service implements
         caching = true;
         cacheProgress = 0;
         cacheExecutor.execute(() -> {
+            HttpURLConnection conn = null;
+            InputStream is = null;
+            FileOutputStream fos = null;
             try {
                 String fileName = String.valueOf(Math.abs(url.hashCode())) + ".mp3";
                 File cacheDir = new File(getCacheDir(), "audio");
                 if (!cacheDir.exists()) cacheDir.mkdirs();
                 File cacheFile = new File(cacheDir, fileName);
+
                 URL downloadUrl = new URL(url);
-                HttpURLConnection conn = (HttpURLConnection) downloadUrl.openConnection();
+                conn = (HttpURLConnection) downloadUrl.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setConnectTimeout(15000);
                 conn.setReadTimeout(30000);
                 conn.setInstanceFollowRedirects(false);
+
                 int rc = conn.getResponseCode();
                 if (rc == 301 || rc == 302) {
                     String newUrl = conn.getHeaderField("Location");
@@ -332,9 +289,10 @@ public class RadioPlaybackService extends Service implements
                     conn.setConnectTimeout(15000);
                     conn.setReadTimeout(30000);
                 }
+
                 int totalSize = conn.getContentLength();
-                InputStream is = conn.getInputStream();
-                FileOutputStream fos = new FileOutputStream(cacheFile);
+                is = conn.getInputStream();
+                fos = new FileOutputStream(cacheFile);
                 byte[] buffer = new byte[8192];
                 int len;
                 int downloaded = 0;
@@ -343,17 +301,18 @@ public class RadioPlaybackService extends Service implements
                     downloaded += len;
                     if (totalSize > 0) cacheProgress = (int) (downloaded * 100 / totalSize);
                 }
-                fos.close();
-                is.close();
-                conn.disconnect();
                 localCachePath = cacheFile.getAbsolutePath();
                 caching = false;
                 cacheProgress = 100;
-                Log.d(TAG, "Cache complete: " + localCachePath);
+                Log.d(TAG, "Cache complete: " + localCachePath + " size=" + cacheFile.length());
             } catch (Exception e) {
                 Log.e(TAG, "Caching failed: " + e.getMessage());
                 caching = false;
                 cacheProgress = 0;
+            } finally {
+                try { if (fos != null) fos.close(); } catch (Exception ignored) {}
+                try { if (is != null) is.close(); } catch (Exception ignored) {}
+                if (conn != null) conn.disconnect();
             }
         });
     }
@@ -382,17 +341,10 @@ public class RadioPlaybackService extends Service implements
 
     public void stop() {
         stopAutoSkipCheck();
-        if (player != null) {
-            player.stop();
-            abandonAudioFocus();
-            stopForeground(true);
-            stopSelf();
-        }
+        if (player != null) { player.stop(); abandonAudioFocus(); stopForeground(true); stopSelf(); }
     }
 
-    public void seekTo(long pos) {
-        if (player != null && !isLive) player.seekTo((int) pos);
-    }
+    public void seekTo(long pos) { if (player != null && !isLive) player.seekTo((int) pos); }
 
     public void skipForward() {
         if (player == null || isLive) return;
@@ -414,9 +366,8 @@ public class RadioPlaybackService extends Service implements
     public long getCurrentPosition() { return player != null ? player.getCurrentPosition() : 0; }
     public long getDuration() {
         if (player == null) return 0;
-        // 对于直播流(HLS)，getDuration()返回-1是正常的
         long dur = player.getDuration();
-        if (dur <= 0 && isLive) return -1; // 返回-1表示直播流，无固定时长
+        if (dur <= 0 && isLive) return -1;
         return dur > 0 ? dur : 0;
     }
     public Episode getCurrentEpisode() { return currentEpisode; }
@@ -424,19 +375,11 @@ public class RadioPlaybackService extends Service implements
     public int getBufferPercent() { return bufferPercent; }
     public void setCallback(Callback cb) { this.callback = cb; }
 
-    // ===== Segment Navigation =====
-
     public void jumpToNextSegment() {
         if (currentEpisode == null || currentEpisode.getVoiceSegments() == null) return;
         List<VoiceSegment> segments = currentEpisode.getVoiceSegments();
         long currentPos = player != null ? player.getCurrentPosition() : 0;
-        for (int i = 0; i < segments.size(); i++) {
-            VoiceSegment seg = segments.get(i);
-            if (seg.getStart() > currentPos) {
-                seekTo(seg.getStart());
-                return;
-            }
-        }
+        for (VoiceSegment seg : segments) { if (seg.getStart() > currentPos) { seekTo(seg.getStart()); return; } }
     }
 
     public void jumpToPrevSegment() {
@@ -445,20 +388,11 @@ public class RadioPlaybackService extends Service implements
         long currentPos = player != null ? player.getCurrentPosition() : 0;
         VoiceSegment prev = null;
         for (int i = 0; i < segments.size(); i++) {
-            VoiceSegment seg = segments.get(i);
-            if (seg.getEnd() >= currentPos) {
-                if (i > 0) prev = segments.get(i - 1);
-                break;
-            }
+            if (segments.get(i).getEnd() >= currentPos) { if (i > 0) prev = segments.get(i - 1); break; }
         }
-        if (prev != null) {
-            seekTo(prev.getStart());
-        } else if (!segments.isEmpty()) {
-            seekTo(segments.get(0).getStart());
-        }
+        if (prev != null) seekTo(prev.getStart());
+        else if (!segments.isEmpty()) seekTo(segments.get(0).getStart());
     }
-
-    // ===== Manual Marking =====
 
     public void markSegment(int index, boolean isDry) {
         if (currentEpisode == null || currentEpisode.getVoiceSegments() == null) return;
@@ -468,9 +402,7 @@ public class RadioPlaybackService extends Service implements
         seg.setManuallyMarked(true);
         seg.setHasVoice(isDry);
         seg.setLabel(isDry ? "手动标记:干货" : "手动标记:水分");
-        // Persist to database
-        RadioDatabaseHelper dbHelper = RadioDatabaseHelper.getInstance(this);
-        dbHelper.saveManualSegmentMark(currentEpisode.getId(), seg.getStart(), seg.getEnd(), isDry);
+        RadioDatabaseHelper.getInstance(this).saveManualSegmentMark(currentEpisode.getId(), seg.getStart(), seg.getEnd(), isDry);
     }
 
     public void setSkipThisTime(int index, boolean skip) {
@@ -480,8 +412,6 @@ public class RadioPlaybackService extends Service implements
         segments.get(index).setSkipThisTime(skip);
     }
 
-    // ===== Auto-skip Water Segments =====
-
     private void startAutoSkipCheck() {
         stopAutoSkipCheck();
         autoSkipRunnable = () -> {
@@ -490,17 +420,13 @@ public class RadioPlaybackService extends Service implements
                 long currentPos = player.getCurrentPosition();
                 for (VoiceSegment seg : currentEpisode.getVoiceSegments()) {
                     if (currentPos >= seg.getStart() && currentPos < seg.getEnd()) {
-                        if (seg.shouldAutoSkip()) {
-                            // Jump to next dry segment
-                            jumpToNextDrySegment(seg);
-                        }
+                        if (seg.shouldAutoSkip()) jumpToNextDrySegment(seg);
                         break;
                     }
                 }
             }
-            if (autoSkipHandler != null && autoSkipRunnable != null) {
+            if (autoSkipHandler != null && autoSkipRunnable != null)
                 autoSkipHandler.postDelayed(autoSkipRunnable, 1000);
-            }
         };
         autoSkipHandler.postDelayed(autoSkipRunnable, 1000);
     }
@@ -508,10 +434,7 @@ public class RadioPlaybackService extends Service implements
     private void jumpToNextDrySegment(VoiceSegment currentSeg) {
         if (currentEpisode.getVoiceSegments() == null) return;
         for (VoiceSegment seg : currentEpisode.getVoiceSegments()) {
-            if (seg.getStart() > currentSeg.getEnd() && seg.isEffectiveDry()) {
-                seekTo(seg.getStart());
-                return;
-            }
+            if (seg.getStart() > currentSeg.getEnd() && seg.isEffectiveDry()) { seekTo(seg.getStart()); return; }
         }
     }
 
@@ -522,23 +445,13 @@ public class RadioPlaybackService extends Service implements
         }
     }
 
-    // ===== Continuous Play =====
-
     @Override
     public void onCompletion(MediaPlayer mp) {
+        Log.d(TAG, "onCompletion, isLive=" + isLive);
         if (callback != null) callback.onStateChanged(false);
         sendStateBroadcast(false);
         stopAutoSkipCheck();
-        // 直播流不应该触发onCompletion重播，HLS流可能因网络问题触发
-        // 只有非直播的回放节目才在结束时自动播放下一个
-        if (continuousPlay && currentEpisode != null && !isLive) {
-            // 回放节目播放完毕，可以播放下一个
-            // 当前只是暂停，不自动重播同一集
-            if (callback != null) callback.onStateChanged(false);
-        }
     }
-
-    // ===== Buffering =====
 
     @Override
     public void onBufferingUpdate(MediaPlayer mp, int percent) {
@@ -549,77 +462,52 @@ public class RadioPlaybackService extends Service implements
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
-    // ===== Foreground Notification with MediaStyle =====
-
     private void startForegroundNotification() {
         Intent openIntent = new Intent(this, PlayerActivity.class);
         openIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent contentIntent = PendingIntent.getActivity(this, 0, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
         String title = currentEpisode != null ? currentEpisode.getTitle()
                 : (currentStation != null ? currentStation.getName() : "Radio App");
-
         boolean playing = player != null && player.isPlaying();
 
-        // Action intents
         Intent rewindIntent = new Intent(this, RadioPlaybackService.class);
         rewindIntent.setAction(ACTION_REWIND);
-        PendingIntent rewindPI = PendingIntent.getService(this, 1, rewindIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
+        PendingIntent rewindPI = PendingIntent.getService(this, 1, rewindIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Intent prevIntent = new Intent(this, RadioPlaybackService.class);
         prevIntent.setAction(ACTION_PREV_SEGMENT);
-        PendingIntent prevPI = PendingIntent.getService(this, 2, prevIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
+        PendingIntent prevPI = PendingIntent.getService(this, 2, prevIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Intent playPauseIntent = new Intent(this, RadioPlaybackService.class);
         playPauseIntent.setAction(playing ? ACTION_PAUSE : ACTION_PLAY);
-        PendingIntent playPausePI = PendingIntent.getService(this, 3, playPauseIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
+        PendingIntent playPausePI = PendingIntent.getService(this, 3, playPauseIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Intent nextIntent = new Intent(this, RadioPlaybackService.class);
         nextIntent.setAction(ACTION_NEXT_SEGMENT);
-        PendingIntent nextPI = PendingIntent.getService(this, 4, nextIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
+        PendingIntent nextPI = PendingIntent.getService(this, 4, nextIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Intent forwardIntent = new Intent(this, RadioPlaybackService.class);
         forwardIntent.setAction(ACTION_FORWARD);
-        PendingIntent forwardPI = PendingIntent.getService(this, 5, forwardIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent forwardPI = PendingIntent.getService(this, 5, forwardIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         androidx.media.app.NotificationCompat.MediaStyle mediaStyle =
-                new androidx.media.app.NotificationCompat.MediaStyle()
-                        .setShowActionsInCompactView(1, 2, 3);
+                new androidx.media.app.NotificationCompat.MediaStyle().setShowActionsInCompactView(1, 2, 3);
 
         Notification notification = new NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
-                .setContentTitle(title)
-                .setContentText(playing ? "正在播放" : "已暂停")
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentIntent(contentIntent)
-                .setOngoing(true)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setContentTitle(title).setContentText(playing ? "正在播放" : "已暂停")
+                .setSmallIcon(R.drawable.ic_notification).setContentIntent(contentIntent)
+                .setOngoing(true).setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .addAction(R.drawable.ic_rewind, "快退", rewindPI)
                 .addAction(R.drawable.ic_prev, "上一片段", prevPI)
-                .addAction(playing ? R.drawable.ic_pause : R.drawable.ic_play,
-                        playing ? "暂停" : "播放", playPausePI)
+                .addAction(playing ? R.drawable.ic_pause : R.drawable.ic_play, playing ? "暂停" : "播放", playPausePI)
                 .addAction(R.drawable.ic_next, "下一片段", nextPI)
                 .addAction(R.drawable.ic_forward, "快进", forwardPI)
-                .setStyle(mediaStyle)
-                .build();
-
+                .setStyle(mediaStyle).build();
         startForeground(1, notification);
     }
-
-    // ===== Broadcast Helpers =====
 
     private void sendStateBroadcast(boolean playing) {
         Intent intent = new Intent(BROADCAST_STATE_CHANGED);
         intent.putExtra(EXTRA_IS_PLAYING, playing);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
-
-    // ===== MediaPlayer Callbacks =====
 
     @Override
     public void onPrepared(MediaPlayer mp) {
@@ -632,11 +520,21 @@ public class RadioPlaybackService extends Service implements
 
     @Override
     public boolean onError(MediaPlayer mp, int what, int extra) {
-        Log.e(TAG, "MediaPlayer global onError: what=" + what + " extra=" + extra);
+        Log.e(TAG, "MediaPlayer onError: what=" + what + " extra=" + extra + " retry=" + errorRetryCount);
         prepared = false;
         if (callback != null) callback.onStateChanged(false);
         sendStateBroadcast(false);
-        return true; // 错误已处理，避免调用onCompletion
+        errorRetryCount++;
+        if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl != null && !currentStreamUrl.isEmpty()) {
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    player.reset();
+                    player.setDataSource(currentStreamUrl);
+                    player.prepareAsync();
+                } catch (Exception e) { Log.e(TAG, "Retry failed", e); }
+            }, 2000);
+        }
+        return true;
     }
 
     @Override

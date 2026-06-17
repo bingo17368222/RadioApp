@@ -2,6 +2,7 @@ package com.radio.app.fragments;
 
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -12,7 +13,6 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
-import android.widget.NumberPicker;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -22,184 +22,202 @@ import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
 import com.radio.app.R;
-import com.radio.app.activities.DislikedEpisodesActivity;
-import com.radio.app.activities.KeywordSettingsActivity;
-import com.radio.app.activities.OfflineEngineActivity;
 import com.radio.app.models.AppSettings;
 import com.radio.app.utils.PreferenceManager;
-import com.radio.app.utils.ThemeManager;
+import com.radio.app.activities.OfflineEngineActivity;
+
+import java.io.File;
 
 public class SettingsFragment extends Fragment {
-    private Spinner spinnerAiModel, spinnerAsr, spinnerTheme;
-    private Switch swPreload, swPreprocess, swAudioFocus, swContinuousPlay;
-    private TextView tvCustomColors;
-    private TextView tvPreloadCount, tvPreprocessCount;
-    private LinearLayout layoutPreloadCount, layoutPreprocessCount;
-    private PreferenceManager prefMgr;
-    private ThemeManager themeMgr;
-    private AppSettings settings;
 
+    private PreferenceManager prefManager;
+    private AppSettings settings;
     private String previousTheme;
 
-    @Nullable @Override
+    private Switch switchAutoSkip, switchContinuousPlay, switchAutoDownload, switchAutoCache;
+    private Spinner spinnerTheme, spinnerSubtitleSize, spinnerSubtitleLang, spinnerVoiceLang;
+    private TextView tvCacheSize;
+    private Button btnClearCache, btnManageOfflineEngine, btnCustomizeColors;
+
+    @Nullable
+    @Override
     public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         View view = inflater.inflate(R.layout.fragment_settings, container, false);
-        prefMgr = new PreferenceManager(requireContext());
-        themeMgr = new ThemeManager(requireContext());
-        settings = prefMgr.loadSettings();
+        prefManager = new PreferenceManager(requireContext());
+        settings = prefManager.loadSettings();
         previousTheme = settings.getUiTheme();
 
-        spinnerAiModel = view.findViewById(R.id.spinner_ai_model);
-        spinnerAsr = view.findViewById(R.id.spinner_asr_provider);
-        spinnerTheme = view.findViewById(R.id.spinner_theme);
-        swPreload = view.findViewById(R.id.switch_preload_cache);
-        swPreprocess = view.findViewById(R.id.switch_enable_preprocessing);
-        swAudioFocus = view.findViewById(R.id.switch_audio_focus);
-        swContinuousPlay = view.findViewById(R.id.switch_continuous_play);
-        tvCustomColors = view.findViewById(R.id.tv_custom_colors);
-        tvPreloadCount = view.findViewById(R.id.tv_preload_count);
-        tvPreprocessCount = view.findViewById(R.id.tv_preprocess_count);
-        layoutPreloadCount = view.findViewById(R.id.layout_preload_count);
-        layoutPreprocessCount = view.findViewById(R.id.layout_preprocess_count);
-
-        // AI模型
-        String[] aiModels = {"文心 ERNIE", "DeepSeek", "通义千问 Qwen", "FunASR", "Whisper", "就AI听"};
-        String[] aiVals = {AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING};
-        ArrayAdapter<String> aiAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, aiModels);
-        aiAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinnerAiModel.setAdapter(aiAdapter);
-        spinnerAiModel.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int i, long id) {
-                settings.setAiModel(aiVals[i]);
-                save();
-            }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
-        });
-
-        // ASR
-        String[] asrNames = {"百度ASR", "FunASR", "Whisper", "Vosk"};
-        String[] asrVals = {AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK};
-        ArrayAdapter<String> asrAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, asrNames);
-        asrAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinnerAsr.setAdapter(asrAdapter);
-        spinnerAsr.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int i, long id) {
-                settings.setAsrProvider(asrVals[i]);
-                save();
-            }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
-        });
-
-        // 主题
-        String[] themes = {"默认暗色", "清新风格", "经典蓝", "简约黑白", "自定义"};
-        String[] themeVals = {AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM};
-        ArrayAdapter<String> themeAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, themes);
-        themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinnerTheme.setAdapter(themeAdapter);
-        spinnerTheme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> p, View v, int i, long id) {
-                settings.setUiTheme(themeVals[i]);
-                save();
-                applyTheme();
-            }
-            @Override public void onNothingSelected(AdapterView<?> p) {}
-        });
-
-        // 自定义颜色按钮
-        tvCustomColors.setOnClickListener(v -> showCustomColorDialog());
-        updateCustomColorsVisibility();
-
-        // 开关
-        swPreload.setChecked(settings.isPreloadCache());
-        swPreprocess.setChecked(settings.isEnablePreprocessing());
-        swAudioFocus.setChecked(settings.isAudioFocus());
-        swContinuousPlay.setChecked(settings.isContinuousPlay());
-
-        swPreload.setOnCheckedChangeListener((b, c) -> {
-            settings.setPreloadCache(c);
-            save();
-            swPreprocess.setEnabled(c);
-            updateCountVisibility();
-        });
-        swPreprocess.setOnCheckedChangeListener((b, c) -> {
-            settings.setEnablePreprocessing(c);
-            save();
-            updateCountVisibility();
-        });
-        swAudioFocus.setOnCheckedChangeListener((b, c) -> {
-            settings.setAudioFocus(c);
-            save();
-        });
-        swContinuousPlay.setOnCheckedChangeListener((b, c) -> {
-            settings.setContinuousPlay(c);
-            save();
-        });
-
-        // 个数设置点击
-        layoutPreloadCount.setOnClickListener(v -> showCountPicker("预缓存个数", 1, 10, settings.getPreloadCacheCount(), count -> {
-            settings.setPreloadCacheCount(count);
-            save();
-            updateCountDisplay();
-        }));
-        layoutPreprocessCount.setOnClickListener(v -> showCountPicker("预处理个数", 1, 10, settings.getPreprocessingCount(), count -> {
-            settings.setPreprocessingCount(count);
-            save();
-            updateCountDisplay();
-        }));
-
-        // 清理缓存
-        view.findViewById(R.id.tv_clear_cache).setOnClickListener(v -> showClearCacheDialog());
-
-        // 不喜欢的节目
-        view.findViewById(R.id.tv_disliked_episodes).setOnClickListener(v ->
-            startActivity(new Intent(getContext(), DislikedEpisodesActivity.class)));
-
-        // 关键词设置
-        view.findViewById(R.id.tv_keyword_settings).setOnClickListener(v ->
-            startActivity(new Intent(getContext(), KeywordSettingsActivity.class)));
-
-        // 离线引擎管理
-        view.findViewById(R.id.tv_offline_engine).setOnClickListener(v ->
-            startActivity(new Intent(getContext(), OfflineEngineActivity.class)));
-
-        // 加载当前设置
-        loadSettings(aiVals, asrVals, themeVals);
-
+        initViews(view);
+        setupListeners();
+        updateUI();
         return view;
     }
 
-    private void applyTheme() {
-        String currentTheme = settings.getUiTheme();
-        if (previousTheme != null && !previousTheme.equals(currentTheme)) {
-            previousTheme = currentTheme;
-            if (getActivity() != null) {
-                try { getActivity().recreate(); }
-                catch (Exception e) { e.printStackTrace(); }
+    private void initViews(View view) {
+        switchAutoSkip = view.findViewById(R.id.switch_auto_skip);
+        switchContinuousPlay = view.findViewById(R.id.switch_continuous_play);
+        switchAutoDownload = view.findViewById(R.id.switch_auto_download);
+        switchAutoCache = view.findViewById(R.id.switch_auto_cache);
+        spinnerTheme = view.findViewById(R.id.spinner_theme);
+        spinnerSubtitleSize = view.findViewById(R.id.spinner_subtitle_size);
+        spinnerSubtitleLang = view.findViewById(R.id.spinner_subtitle_lang);
+        spinnerVoiceLang = view.findViewById(R.id.spinner_voice_lang);
+        tvCacheSize = view.findViewById(R.id.tv_cache_size);
+        btnClearCache = view.findViewById(R.id.btn_clear_cache);
+        btnManageOfflineEngine = view.findViewById(R.id.btn_manage_offline_engine);
+        btnCustomizeColors = view.findViewById(R.id.btn_customize_colors);
+    }
+
+    private void setupListeners() {
+        switchAutoSkip.setOnCheckedChangeListener((buttonView, isChecked) -> { settings.setAutoSkipWater(isChecked); save(); });
+        switchContinuousPlay.setOnCheckedChangeListener((buttonView, isChecked) -> { settings.setContinuousPlay(isChecked); save(); });
+        switchAutoDownload.setOnCheckedChangeListener((buttonView, isChecked) -> { settings.setAutoDownload(isChecked); save(); });
+        switchAutoCache.setOnCheckedChangeListener((buttonView, isChecked) -> { settings.setAutoCache(isChecked); save(); });
+
+        spinnerTheme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String[] themes = {AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM};
+                settings.setUiTheme(themes[position]);
+                save();
+                applyTheme();
             }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+        spinnerSubtitleSize.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String[] sizes = {AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE};
+                settings.setSubtitleSize(sizes[position]);
+                save();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+        spinnerSubtitleLang.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String[] langs = {AppSettings.LANG_CN, AppSettings.LANG_EN};
+                settings.setSubtitleLanguage(langs[position]);
+                save();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+        spinnerVoiceLang.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String[] langs = {AppSettings.LANG_CN, AppSettings.LANG_EN};
+                settings.setVoiceLanguage(langs[position]);
+                save();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+        btnClearCache.setOnClickListener(v -> showClearCacheDialog());
+        btnManageOfflineEngine.setOnClickListener(v -> startActivity(new Intent(requireContext(), OfflineEngineActivity.class)));
+        btnCustomizeColors.setOnClickListener(v -> showColorPickerDialog());
+    }
+
+    private void updateUI() {
+        switchAutoSkip.setChecked(settings.isAutoSkipWater());
+        switchContinuousPlay.setChecked(settings.isContinuousPlay());
+        switchAutoDownload.setChecked(settings.isAutoDownload());
+        switchAutoCache.setChecked(settings.isAutoCache());
+
+        String[] themes = {AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM};
+        for (int i = 0; i < themes.length; i++) { if (themes[i].equals(settings.getUiTheme())) { spinnerTheme.setSelection(i); break; } }
+
+        String[] sizes = {AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE};
+        for (int i = 0; i < sizes.length; i++) { if (sizes[i].equals(settings.getSubtitleSize())) { spinnerSubtitleSize.setSelection(i); break; } }
+
+        String[] langs = {AppSettings.LANG_CN, AppSettings.LANG_EN};
+        for (int i = 0; i < langs.length; i++) { if (langs[i].equals(settings.getSubtitleLanguage())) { spinnerSubtitleLang.setSelection(i); break; } }
+        for (int i = 0; i < langs.length; i++) { if (langs[i].equals(settings.getVoiceLanguage())) { spinnerVoiceLang.setSelection(i); break; } }
+
+        long cacheSize = calculateCacheSize();
+        tvCacheSize.setText("缓存大小: " + formatSize(cacheSize));
+    }
+
+    private long calculateCacheSize() {
+        File cacheDir = requireContext().getCacheDir();
+        return calculateDirSize(cacheDir);
+    }
+
+    private long calculateDirSize(File dir) {
+        if (dir == null || !dir.exists()) return 0;
+        long size = 0;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isDirectory()) size += calculateDirSize(file);
+                else size += file.length();
+            }
+        }
+        return size;
+    }
+
+    private void showClearCacheDialog() {
+        java.io.File cacheDir = requireContext().getCacheDir();
+        java.util.List<java.io.File> allFiles = new java.util.ArrayList<>();
+        scanFilesRecursive(cacheDir, allFiles);
+
+        if (allFiles.isEmpty()) {
+            Toast.makeText(requireContext(), "暂无缓存文件", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        java.io.File[] files = allFiles.toArray(new java.io.File[0]);
+        String[] fileNames = new String[files.length];
+        boolean[] checked = new boolean[files.length];
+        for (int i = 0; i < files.length; i++) {
+            fileNames[i] = files[i].getAbsolutePath().replace(cacheDir.getAbsolutePath(), "...") + " (" + formatSize(files[i].length()) + ")";
+            checked[i] = true;
+        }
+
+        new AlertDialog.Builder(requireContext())
+            .setTitle("选择要删除的缓存文件")
+            .setMultiChoiceItems(fileNames, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+            .setPositiveButton("删除选中", (dialog, which) -> {
+                long deletedSize = 0;
+                for (int i = 0; i < files.length; i++) {
+                    if (checked[i] && files[i].delete()) deletedSize += files[i].length();
+                }
+                Toast.makeText(requireContext(), "已删除 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show();
+                updateUI();
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+
+    private void scanFilesRecursive(java.io.File dir, java.util.List<java.io.File> result) {
+        java.io.File[] files = dir.listFiles();
+        if (files == null) return;
+        for (java.io.File f : files) {
+            if (f.isDirectory()) scanFilesRecursive(f, result);
+            else result.add(f);
         }
     }
 
-    private void updateCustomColorsVisibility() {
-        tvCustomColors.setVisibility(
-            AppSettings.THEME_CUSTOM.equals(settings.getUiTheme()) ? View.VISIBLE : View.GONE
-        );
+    private String formatSize(long size) {
+        if (size < 1024) return size + " B";
+        if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
+        return String.format("%.1f MB", size / (1024.0 * 1024));
     }
 
-    private void showCustomColorDialog() {
+    private void showColorPickerDialog() {
         AppSettings.CustomColors colors = settings.getCustomColors();
+        if (colors == null) colors = new AppSettings.CustomColors();
+
         LinearLayout layout = new LinearLayout(requireContext());
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(32, 16, 32, 16);
+        layout.setPadding(40, 20, 40, 20);
 
         String[] labels = {"主色", "强调色", "背景色", "文字色", "卡片色", "边框色", "成功色", "警告色"};
-        String[] keys = {"primary", "accent", "background", "text", "card", "border", "success", "warning"};
         String[] values = {colors.getPrimary(), colors.getAccent(), colors.getBackground(), colors.getText(),
-                          colors.getCard(), colors.getBorder(), colors.getSuccess(), colors.getWarning()};
+                colors.getCard(), colors.getBorder(), colors.getSuccess(), colors.getWarning()};
+        final EditText[] edits = new EditText[labels.length];
 
-        EditText[] edits = new EditText[labels.length];
         for (int i = 0; i < labels.length; i++) {
             TextView tv = new TextView(requireContext());
-            tv.setText(labels[i] + " (当前: " + values[i] + ")");
+            tv.setText(labels[i]);
             tv.setTextColor(getResources().getColor(R.color.text_primary));
             layout.addView(tv);
 
@@ -209,6 +227,7 @@ public class SettingsFragment extends Fragment {
             edits[i] = et;
             layout.addView(et);
 
+            // 预设颜色按钮
             LinearLayout presetRow = new LinearLayout(requireContext());
             presetRow.setOrientation(LinearLayout.HORIZONTAL);
             String[][] presets = {
@@ -221,7 +240,7 @@ public class SettingsFragment extends Fragment {
                 for (String color : row) {
                     Button btn = new Button(requireContext());
                     btn.setLayoutParams(new LinearLayout.LayoutParams(80, 80));
-                    btn.setBackgroundColor(android.graphics.Color.parseColor(color));
+                    btn.setBackgroundColor(Color.parseColor(color));
                     btn.setOnClickListener(v -> et.setText(color));
                     presetRow.addView(btn);
                 }
@@ -243,140 +262,32 @@ public class SettingsFragment extends Fragment {
                 colors.setWarning(edits[7].getText().toString());
                 settings.setCustomColors(colors);
                 save();
+                // 强制应用自定义主题
+                settings.setUiTheme(AppSettings.THEME_CUSTOM);
+                save();
                 previousTheme = "_force_";
                 applyTheme();
-                Toast.makeText(requireContext(), "颜色已应用", Toast.LENGTH_SHORT).show();
+                Toast.makeText(requireContext(), "颜色已应用，主题已切换为自定义", Toast.LENGTH_SHORT).show();
             })
             .setNegativeButton("取消", null)
             .show();
     }
 
-    private void showClearCacheDialog() {
-        java.io.File cacheDir = requireContext().getCacheDir();
-        java.util.List<java.io.File> allFiles = new java.util.ArrayList<>();
-        scanFilesRecursive(cacheDir, allFiles);
-
-        if (allFiles.isEmpty()) {
-            Toast.makeText(requireContext(), "暂无缓存文件", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        java.io.File[] files = allFiles.toArray(new java.io.File[0]);
-        String[] fileNames = new String[files.length];
-        boolean[] checked = new boolean[files.length];
-        for (int i = 0; i < files.length; i++) {
-            fileNames[i] = files[i].getAbsolutePath().replace(cacheDir.getAbsolutePath(), "...") + " (" + formatSize(files[i].length()) + ")";
-            checked[i] = true;
-        }
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(requireContext());
-        builder.setTitle("清理缓存");
-        builder.setMultiChoiceItems(fileNames, checked, (d, which, isChecked) -> checked[which] = isChecked);
-
-        builder.setPositiveButton("删除选中", (d, w) -> {
-            int count = 0;
-            for (int i = 0; i < files.length; i++) {
-                if (checked[i] && files[i].delete()) count++;
+    private void applyTheme() {
+        String currentTheme = settings.getUiTheme();
+        if (previousTheme != null && !previousTheme.equals(currentTheme)) {
+            previousTheme = currentTheme;
+            if (getActivity() != null) {
+                try {
+                    getActivity().recreate();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
-            Toast.makeText(requireContext(), "已删除 " + count + " 个文件", Toast.LENGTH_SHORT).show();
-        });
-        builder.setNegativeButton("取消", null);
-
-        AlertDialog dialog = builder.create();
-        dialog.show();
-
-        android.view.ViewGroup parent = (android.view.ViewGroup) dialog.getButton(AlertDialog.BUTTON_POSITIVE).getParent();
-
-        Button btnSelectAll = new Button(requireContext());
-        btnSelectAll.setText("全选");
-        btnSelectAll.setOnClickListener(v -> {
-            for (int i = 0; i < checked.length; i++) {
-                checked[i] = true;
-                dialog.getListView().setItemChecked(i, true);
-            }
-        });
-
-        Button btnSelectNone = new Button(requireContext());
-        btnSelectNone.setText("全不选");
-        btnSelectNone.setOnClickListener(v -> {
-            for (int i = 0; i < checked.length; i++) {
-                checked[i] = false;
-                dialog.getListView().setItemChecked(i, false);
-            }
-        });
-
-        Button btnInvert = new Button(requireContext());
-        btnInvert.setText("反选");
-        btnInvert.setOnClickListener(v -> {
-            for (int i = 0; i < checked.length; i++) {
-                checked[i] = !checked[i];
-                dialog.getListView().setItemChecked(i, checked[i]);
-            }
-        });
-
-        parent.addView(btnSelectAll, 0);
-        parent.addView(btnSelectNone, 1);
-        parent.addView(btnInvert, 2);
-    }
-
-    private String formatSize(long size) {
-        if (size < 1024) return size + " B";
-        if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
-        return String.format("%.1f MB", size / (1024.0 * 1024));
-    }
-
-    private void scanFilesRecursive(java.io.File dir, java.util.List<java.io.File> result) {
-        java.io.File[] files = dir.listFiles();
-        if (files == null) return;
-        for (java.io.File f : files) {
-            if (f.isDirectory()) scanFilesRecursive(f, result);
-            else result.add(f);
         }
-    }
-
-    private void loadSettings(String[] aiVals, String[] asrVals, String[] themeVals) {
-        for (int i = 0; i < aiVals.length; i++) {
-            if (aiVals[i].equals(settings.getAiModel())) { spinnerAiModel.setSelection(i); break; }
-        }
-        for (int i = 0; i < asrVals.length; i++) {
-            if (asrVals[i].equals(settings.getAsrProvider())) { spinnerAsr.setSelection(i); break; }
-        }
-        for (int i = 0; i < themeVals.length; i++) {
-            if (themeVals[i].equals(settings.getUiTheme())) { spinnerTheme.setSelection(i); break; }
-        }
-        updateCustomColorsVisibility();
-        updateCountDisplay();
-        updateCountVisibility();
-    }
-
-    private void updateCountDisplay() {
-        tvPreloadCount.setText(String.valueOf(settings.getPreloadCacheCount()));
-        tvPreprocessCount.setText(String.valueOf(settings.getPreprocessingCount()));
-    }
-
-    private void updateCountVisibility() {
-        layoutPreloadCount.setVisibility(settings.isPreloadCache() ? View.VISIBLE : View.GONE);
-        layoutPreprocessCount.setVisibility(settings.isEnablePreprocessing() ? View.VISIBLE : View.GONE);
-    }
-
-    private void showCountPicker(String title, int min, int max, int current, CountCallback callback) {
-        NumberPicker picker = new NumberPicker(requireContext());
-        picker.setMinValue(min);
-        picker.setMaxValue(max);
-        picker.setValue(current);
-        new AlertDialog.Builder(requireContext())
-            .setTitle(title)
-            .setView(picker)
-            .setPositiveButton("确定", (d, w) -> callback.onCountSelected(picker.getValue()))
-            .setNegativeButton("取消", null)
-            .show();
-    }
-
-    private interface CountCallback {
-        void onCountSelected(int count);
     }
 
     private void save() {
-        prefMgr.saveSettings(settings);
+        prefManager.saveSettings(settings);
     }
 }

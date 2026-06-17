@@ -33,6 +33,7 @@ import com.radio.app.services.RadioPlaybackService;
 import com.radio.app.services.SubtitleGeneratorService;
 import com.radio.app.views.SubtitleView;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -72,7 +73,6 @@ public class PlayerActivity extends AppCompatActivity {
                 @Override public void onPositionChanged(long pos, long dur) { updateProgress(pos, dur); }
                 @Override public void onBufferUpdate(int percent) { updateBufferProgress(percent); }
             });
-            // Start playback based on intent
             startPlayback();
             updateUI();
             loadSubtitles();
@@ -90,9 +90,9 @@ public class PlayerActivity extends AppCompatActivity {
             } else if (RadioPlaybackService.BROADCAST_STATE_CHANGED.equals(intent.getAction())) {
                 boolean playing = intent.getBooleanExtra(RadioPlaybackService.EXTRA_IS_PLAYING, false);
                 updatePlayBtn();
-            } else if ("com.radio.app.CACHE_UPDATE".equals(intent.getAction())) {
-                int percent = intent.getIntExtra("cache_percent", 0);
-                String path = intent.getStringExtra("cache_path");
+            } else if (RadioPlaybackService.BROADCAST_CACHE_UPDATE.equals(intent.getAction())) {
+                int percent = intent.getIntExtra(RadioPlaybackService.EXTRA_CACHE_PERCENT, 0);
+                String path = intent.getStringExtra(RadioPlaybackService.EXTRA_CACHE_PATH);
                 updateCacheDisplay(percent, path);
             }
         }
@@ -103,7 +103,6 @@ public class PlayerActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_player);
 
-        // Parse intent extras
         Intent intent = getIntent();
         isLive = intent.getBooleanExtra("is_live", false);
         stationId = intent.getStringExtra("station_id");
@@ -122,11 +121,10 @@ public class PlayerActivity extends AppCompatActivity {
         subtitleManager = new SubtitleManager(this);
         bindService(new Intent(this, RadioPlaybackService.class), conn, Context.BIND_AUTO_CREATE);
 
-        // Register for broadcasts
         IntentFilter filter = new IntentFilter();
         filter.addAction(RadioPlaybackService.BROADCAST_BUFFER_UPDATE);
         filter.addAction(RadioPlaybackService.BROADCAST_STATE_CHANGED);
-        filter.addAction("com.radio.app.CACHE_UPDATE");
+        filter.addAction(RadioPlaybackService.BROADCAST_CACHE_UPDATE);
         LocalBroadcastManager.getInstance(this).registerReceiver(broadcastReceiver, filter);
     }
 
@@ -139,7 +137,6 @@ public class PlayerActivity extends AppCompatActivity {
                 station.setName(stationName != null ? stationName : "直播");
                 station.setStreamUrl(streamUrl);
                 playbackService.playStation(station);
-                // 直播模式隐藏缓存进度条和URL
                 tvNetworkUrl.setVisibility(View.GONE);
                 tvCacheUrl.setVisibility(View.GONE);
                 progressBuffer.setVisibility(View.GONE);
@@ -153,7 +150,6 @@ public class PlayerActivity extends AppCompatActivity {
                 if (voiceSegments != null) episode.setVoiceSegments(voiceSegments);
                 if (transcripts != null) episode.setTranscripts(transcripts);
                 playbackService.playEpisode(episode, false);
-                // 非直播模式显示网络URL
                 tvNetworkUrl.setText("网络: " + audioUrl);
                 tvNetworkUrl.setVisibility(View.VISIBLE);
                 tvCacheUrl.setVisibility(View.VISIBLE);
@@ -291,12 +287,10 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void updateProgress(long pos, long dur) {
         if (dur <= 0) {
-            // 直播模式：显示"直播中"
             if (playbackService != null && playbackService.isLive()) {
                 tvCurrentTime.setText("直播中");
                 tvTotalTime.setText("");
             } else {
-                // 非直播模式：显示"缓冲中..."
                 tvCurrentTime.setText("缓冲中...");
                 tvTotalTime.setText("");
             }
@@ -307,7 +301,6 @@ public class PlayerActivity extends AppCompatActivity {
         }
         if (subtitleView != null && subtitleView.getVisibility() == View.VISIBLE) subtitleView.highlightSubtitle(pos / 1000);
 
-        // Update current segment highlight
         if (playbackService != null && playbackService.getCurrentEpisode() != null
                 && playbackService.getCurrentEpisode().getVoiceSegments() != null) {
             List<VoiceSegment> segments = playbackService.getCurrentEpisode().getVoiceSegments();
@@ -337,11 +330,19 @@ public class PlayerActivity extends AppCompatActivity {
     private void updateCacheDisplay(int percent, String localPath) {
         if (tvCacheUrl != null && tvCacheUrl.getVisibility() == View.VISIBLE) {
             if (localPath != null && !localPath.isEmpty()) {
-                tvCacheUrl.setText("本地: " + localPath);
+                File f = new File(localPath);
+                String sizeStr = f.exists() ? " (" + formatFileSize(f.length()) + ")" : "";
+                tvCacheUrl.setText("本地: " + localPath + sizeStr);
             } else {
                 tvCacheUrl.setText("缓存下载: " + percent + "%");
             }
         }
+    }
+
+    private String formatFileSize(long size) {
+        if (size < 1024) return size + " B";
+        if (size < 1024 * 1024) return String.format("%.1f KB", size / 1024.0);
+        return String.format("%.1f MB", size / (1024.0 * 1024));
     }
 
     private void startProgress() {
