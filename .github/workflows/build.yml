@@ -23,21 +23,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.0'
-
-      - name: Generate Gradle Wrapper
-        run: |
-          gradle wrapper --gradle-version 8.0
-          chmod +x gradlew
-
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-        continue-on-error: true
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Show Build Errors
+        if: failure()
         run: |
           echo "=== BUILD LOG (last 200 lines) ==="
           tail -200 build.log || true
@@ -46,13 +38,10 @@ jobs:
 
       - name: Verify APK
         run: |
-          echo "=== Searching for APK files ==="
-          find . -name "*.apk" -type f 2>/dev/null
-          echo "=== APK file size ==="
+          echo "=== APK files ==="
           find . -name "*.apk" -type f -exec ls -la {} \;
 
       - name: Upload APK Artifact
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
@@ -60,7 +49,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload to GitHub Release
-        if: success() && github.event_name == 'push'
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: debug-latest
