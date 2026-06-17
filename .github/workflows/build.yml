@@ -55,26 +55,29 @@ jobs:
           echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
           echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
 
-      - name: Upload to GitHub Release with unique name
+      - name: Delete old release and create new
+        if: success() && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get release ID
+          RELEASE_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/tags/debug-latest")
+          RELEASE_ID=$(echo "$RELEASE_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+          if [ -n "$RELEASE_ID" ]; then
+            # Delete all assets first
+            ASSETS=$(echo "$RELEASE_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join([str(a['id']) for a in d.get('assets',[])]))")
+            for ASSET_ID in $ASSETS; do
+              curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID"
+            done
+          fi
+
+      - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: ${{ steps.apk.outputs.apk_path }}
-          prerelease: true
-          make_latest: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload versioned APK
-        if: success() && github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "Release v${{ github.run_number }}"
-          body: "Versioned APK release v${{ github.run_number }}"
           files: ${{ steps.apk.outputs.apk_path }}
           prerelease: true
         env:
