@@ -7,11 +7,13 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout code
@@ -52,7 +54,7 @@ jobs:
         with:
           name: radio-app-apk
           path: app/build/outputs/apk/debug/*.apk
-          retention-days: 5
+          retention-days: 30
 
       - name: Get APK info
         if: success()
