@@ -245,19 +245,20 @@ public class SettingsFragment extends Fragment {
             layout.addView(presetRow);
         }
 
+        final ThemeColors finalColors = colors;
         new AlertDialog.Builder(requireContext())
             .setTitle("自定义颜色 - 点击色块快速选择")
             .setView(layout)
             .setPositiveButton("应用", (d, w) -> {
-                colors.setPrimary(edits[0].getText().toString());
-                colors.setAccent(edits[1].getText().toString());
-                colors.setBackground(edits[2].getText().toString());
-                colors.setText(edits[3].getText().toString());
-                colors.setCard(edits[4].getText().toString());
-                colors.setBorder(edits[5].getText().toString());
-                colors.setSuccess(edits[6].getText().toString());
-                colors.setWarning(edits[7].getText().toString());
-                settings.setCustomColors(colors);
+                finalColors.setPrimary(edits[0].getText().toString());
+                finalColors.setAccent(edits[1].getText().toString());
+                finalColors.setBackground(edits[2].getText().toString());
+                finalColors.setText(edits[3].getText().toString());
+                finalColors.setCard(edits[4].getText().toString());
+                finalColors.setBorder(edits[5].getText().toString());
+                finalColors.setSuccess(edits[6].getText().toString());
+                finalColors.setWarning(edits[7].getText().toString());
+                settings.setCustomColors(finalColors);
                 settings.setUiTheme(AppSettings.THEME_CUSTOM);
                 save();
                 previousTheme = "_force_";
