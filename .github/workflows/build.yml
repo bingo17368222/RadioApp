@@ -48,11 +48,7 @@ jobs:
 
       - name: Rename APK with version
         if: success()
-        run: |
-          VERSION=$(grep 'versionName' app/build.gradle | head -1 | sed "s/.*'\([^']*\)'.*/\1/")
-          BUILD_NUM=${{ github.run_number }}
-          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/radio-app-v${VERSION}-${BUILD_NUM}.apk
-          echo "APK: radio-app-v${VERSION}-${BUILD_NUM}.apk"
+        run: mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/radio-app-v1.1-${{ github.run_number }}.apk
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
