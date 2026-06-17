@@ -34,7 +34,7 @@ public class PlayerActivity extends AppCompatActivity {
             RadioPlaybackService.LocalBinder binder = (RadioPlaybackService.LocalBinder) service;
             playbackService = binder.getService();
             serviceBound = true;
-            playbackService.setPlaybackCallback(playbackCallback);
+            playbackService.setCallback(playbackCallback);
             updateUI();
         }
 
@@ -201,7 +201,7 @@ public class PlayerActivity extends AppCompatActivity {
         super.onDestroy();
         if (serviceBound) {
             if (playbackService != null) {
-                playbackService.setPlaybackCallback(null);
+                playbackService.setCallback(null);
             }
             unbindService(serviceConnection);
             serviceBound = false;
