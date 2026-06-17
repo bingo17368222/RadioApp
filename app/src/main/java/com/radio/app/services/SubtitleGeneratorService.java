@@ -40,7 +40,7 @@ public class SubtitleGeneratorService extends Service {
     /**
      * 使用Vosk离线引擎生成字幕。
      * Vosk模型已集成在APK的assets目录中，无需用户下载。
-     * 如果Vosk不可用，回退到ML Kit音频分析。
+     * 如果Vosk不可用，回退到模拟生成。
      */
     public void generateSubtitlesForEpisode(String episodeId, String audioUrl, SubtitleCallback callback) {
         executor.execute(() -> {
@@ -48,8 +48,8 @@ public class SubtitleGeneratorService extends Service {
                 // 尝试使用Vosk离线识别
                 boolean voskSuccess = generateWithVosk(episodeId, audioUrl, callback);
                 if (!voskSuccess) {
-                    // 回退到ML Kit音频分析
-                    generateWithMlKit(episodeId, audioUrl, callback);
+                    // 回退到模拟生成
+                    generateFallback(episodeId, callback);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Subtitle generation failed", e);
@@ -182,51 +182,6 @@ public class SubtitleGeneratorService extends Service {
     private long getAudioDurationEstimate(java.io.File audioFile) {
         // 简单估算：假设128kbps MP3
         return audioFile.length() * 8 / 128000 * 1000;
-    }
-
-    private void generateWithMlKit(String episodeId, String audioUrl, SubtitleCallback callback) {
-        try {
-            Log.d(TAG, "Using ML Kit audio analysis for " + episodeId);
-            callback.onProgressUpdate(0, 100);
-
-            // Google ML Kit音频分析 - 基于音频能量检测语音活动
-            java.io.File audioFile = downloadAudio(audioUrl);
-            if (audioFile == null) {
-                // 最终回退：模拟生成
-                generateFallback(episodeId, callback);
-                return;
-            }
-
-            long fileSize = audioFile.length();
-            long estimatedDuration = fileSize * 8 / 128000; // 128kbps
-            int segmentCount = Math.max(1, (int)(estimatedDuration / 30));
-
-            String[] sampleTexts = {
-                "欢迎各位听众朋友收听本节目。",
-                "下面请看详细报道。",
-                "据最新消息报道。",
-                "接下来是财经资讯。",
-                "以上是本时段新闻内容。"
-            };
-
-            for (int i = 0; i < segmentCount; i++) {
-                Transcript t = new Transcript();
-                t.setEpisodeId(episodeId);
-                t.setSegmentStart(i * 30);
-                t.setSegmentEnd((i + 1) * 30);
-                t.setText("[ML Kit分析] " + sampleTexts[i % sampleTexts.length]);
-                t.setConfidence(0.7 + Math.random() * 0.2);
-                dbHelper.saveTranscript(t);
-                callback.onSubtitleGenerated(t);
-                callback.onProgressUpdate((i + 1) * 100 / segmentCount, 100);
-                Thread.sleep(200);
-            }
-
-            audioFile.delete();
-        } catch (Exception e) {
-            Log.e(TAG, "ML Kit generation failed", e);
-            generateFallback(episodeId, callback);
-        }
     }
 
     private void generateFallback(String episodeId, SubtitleCallback callback) {

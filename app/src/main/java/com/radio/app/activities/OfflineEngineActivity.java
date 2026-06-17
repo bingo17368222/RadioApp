@@ -83,11 +83,11 @@ public class OfflineEngineActivity extends AppCompatActivity {
                 "https://alphacephei.com/vosk/models/vosk-model-cn-0.22.zip",
                 "vosk-model-cn-0.22"),
 
-        // ===== Google ML Kit (APK内置) =====
+        // ===== Google ML Kit (用户手动下载) =====
         new EngineInfo("Google ML Kit (设备端)",
-                "Google ML Kit on-device audio\n大小: APK内置 | 识别率: ~92% | 速度: 快(实时)\n状态: 已集成，无需下载\n适用: 音频活动检测、语音分段",
-                "内置",
-                null,
+                "Google ML Kit on-device audio\n大小: 约85MB | 识别率: ~92% | 速度: 快(实时)\n状态: 需手动下载安装\n适用: 音频活动检测、语音分段",
+                "约85MB",
+                "https://github.com/google/ml-kit/releases/download/audio-v16.1.0/mlkit-audio-model.zip",
                 "mlkit-audio"),
 
         // ===== 阿里 MNN-LLM (APK内置) =====
