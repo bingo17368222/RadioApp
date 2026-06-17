@@ -44,12 +44,15 @@ jobs:
           echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
           echo "APK size: $(numfmt --to=iec $APK_SIZE)"
 
-      - name: Delete old release
+      - name: Delete old release assets
         if: success() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete debug-latest --yes --cleanup-tag || true
+          gh api repos/${{ github.repository }}/releases/tags/debug-latest --method DELETE 2>/dev/null || true
+          git push origin :refs/tags/debug-latest 2>/dev/null || true
 
-      - name: Create new release
+      - name: Upload Release
         if: success() && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
