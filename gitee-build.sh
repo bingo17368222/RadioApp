@@ -1,4 +1,9 @@
+#!/bin/bash
 # Gitee Go 构建：自动安装 Android SDK 并编译 APK
+
+# 使用绝对路径
+cd /root/workspace/bingostudio/RadioApp || cd "$(dirname "$0")"
+
 export ANDROID_HOME=/opt/android-sdk
 
 # 如果 SDK 不存在，则下载安装
@@ -19,9 +24,11 @@ if [ ! -d "$ANDROID_HOME/platforms/android-33" ]; then
         "platform-tools" \
         "build-tools;33.0.2"
     
-    cd $WORKSPACE
     echo "=== Android SDK installed ==="
 fi
+
+# 回到项目目录
+cd /root/workspace/bingostudio/RadioApp || cd "$(dirname "$0")"
 
 # 生成 local.properties
 echo "sdk.dir=$ANDROID_HOME" > local.properties
