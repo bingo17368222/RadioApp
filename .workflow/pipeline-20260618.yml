@@ -1,0 +1,34 @@
+version: '1.0'
+name: pipeline-20260618
+displayName: pipeline-20260618
+triggers:
+  trigger: auto
+  push:
+    branches:
+      precise:
+        - main
+stages:
+  - name: stage-7b249ebe
+    displayName: 未命名
+    strategy: naturally
+    trigger: auto
+    executor: []
+    steps:
+      - step: build@gradle
+        name: build_gradle
+        displayName: Gradle 构建
+        jdkVersion: '11'
+        gradleVersion: '7.6'
+        commands:
+          - '# Gradle默认构建命令'
+          - chmod +x ./gradlew
+          - ./gradlew assembleDebug --no-daemon --stacktrace
+        artifacts:
+          - name: BUILD_ARTIFACT
+            path:
+              - ./app/build/outputs/apk/debug
+        caches:
+          - ~/.gradle/caches
+        notify: []
+        strategy:
+          retry: '0'
