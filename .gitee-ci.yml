@@ -1,0 +1,32 @@
+stages:
+  - build
+
+build_apk:
+  stage: build
+  image: openjdk:17-jdk
+  script:
+    - apt-get update -qq && apt-get install -y -qq wget unzip > /dev/null
+    # 安装Android SDK
+    - mkdir -p /opt/android-sdk
+    - cd /opt/android-sdk
+    - wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+    - unzip -q commandlinetools-linux-11076708_latest.zip
+    - mkdir -p cmdline-tools/latest
+    - mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
+    - export ANDROID_HOME=/opt/android-sdk
+    - export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/build-tools/34.0.0
+    - yes | sdkmanager --licenses > /dev/null 2>&1
+    - sdkmanager "build-tools;34.0.0" "platforms;android-34" > /dev/null 2>&1
+    # 编译APK
+    - cd $CI_PROJECT_DIR
+    - gradle wrapper --gradle-version 8.0
+    - chmod +x gradlew
+    - ./gradlew assembleDebug --no-daemon --stacktrace
+    # 复制APK到产物目录
+    - mkdir -p apk-output
+    - find app/build -name "*.apk" -type f -exec cp {} apk-output/ \;
+    - ls -la apk-output/
+  artifacts:
+    paths:
+      - apk-output/*.apk
+    expire_in: 30 days
