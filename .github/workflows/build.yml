@@ -46,22 +46,19 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
-      - name: Get APK info
+      - name: Copy APK to workspace
         if: success()
-        id: apk
         run: |
-          APK_PATH=$(find app/build -name "*.apk" -type f | head -1)
-          APK_NAME=$(basename "$APK_PATH")
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          mkdir -p apk-output
+          find app/build -name "*.apk" -type f -exec cp {} apk-output/ \;
+          ls -la apk-output/
 
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: ${{ steps.apk.outputs.apk_path }}
-          if-no-files-found: warn
+          path: apk-output/*.apk
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -70,7 +67,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: ${{ steps.apk.outputs.apk_path }}
+          files: apk-output/*.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
