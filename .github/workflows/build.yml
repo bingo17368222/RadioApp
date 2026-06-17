@@ -50,12 +50,11 @@ jobs:
 
       - name: Upload to GitHub Release
         if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: debug-latest
-          name: "Debug Build v${{ github.run_number }}"
-          body: "Auto-generated debug APK v${{ github.run_number }}"
-          files: '**/*.apk'
-          prerelease: true
+        run: |
+          # 删除旧release
+          gh release delete debug-latest --yes --cleanup-tag 2>/dev/null || true
+          git push origin :refs/tags/debug-latest 2>/dev/null || true
+          # 创建新release并上传APK
+          gh release create debug-latest --title "Debug Build v${{ github.run_number }}" --notes "Auto-generated debug APK v${{ github.run_number }}" --prerelease **/*.apk
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
