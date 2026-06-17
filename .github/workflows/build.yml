@@ -42,10 +42,22 @@ jobs:
           find . -name "*.apk" -type f -exec ls -la {} \;
 
       - name: Upload APK Artifact
+        run: |
+          APK_FILE=$(find . -name "*.apk" -type f | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: No APK found!"
+            find . -name "*.apk" 2>/dev/null
+            exit 1
+          fi
+          echo "Found APK: $APK_FILE"
+          mkdir -p /tmp/apk-upload
+          cp "$APK_FILE" /tmp/apk-upload/app-debug.apk
+
+      - name: Upload APK to Artifact
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: /tmp/apk-upload/
           if-no-files-found: error
 
       - name: Upload to GitHub Release
@@ -55,7 +67,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }}"
-          files: app/build/outputs/apk/debug/*.apk
+          files: /tmp/apk-upload/*.apk
           prerelease: true
           fail_on_unmatched_files: false
         env:
