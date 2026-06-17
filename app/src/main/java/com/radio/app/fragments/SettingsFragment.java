@@ -8,7 +8,6 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -36,8 +35,7 @@ public class SettingsFragment extends Fragment {
 
     private Switch switchAutoSkip, switchContinuousPlay, switchAutoDownload, switchAutoCache;
     private Spinner spinnerTheme, spinnerSubtitleSize, spinnerSubtitleLang, spinnerVoiceLang;
-    private TextView tvCacheSize;
-    private Button btnClearCache, btnManageOfflineEngine, btnCustomizeColors;
+    private TextView tvCacheSize, btnClearCache, btnManageOfflineEngine, btnCustomizeColors;
 
     @Nullable
     @Override
@@ -227,7 +225,6 @@ public class SettingsFragment extends Fragment {
             edits[i] = et;
             layout.addView(et);
 
-            // 预设颜色按钮
             LinearLayout presetRow = new LinearLayout(requireContext());
             presetRow.setOrientation(LinearLayout.HORIZONTAL);
             String[][] presets = {
@@ -261,13 +258,11 @@ public class SettingsFragment extends Fragment {
                 colors.setSuccess(edits[6].getText().toString());
                 colors.setWarning(edits[7].getText().toString());
                 settings.setCustomColors(colors);
-                save();
-                // 强制应用自定义主题
                 settings.setUiTheme(AppSettings.THEME_CUSTOM);
                 save();
                 previousTheme = "_force_";
                 applyTheme();
-                Toast.makeText(requireContext(), "颜色已应用，主题已切换为自定义", Toast.LENGTH_SHORT).show();
+                Toast.makeText(requireContext(), "颜色已应用", Toast.LENGTH_SHORT).show();
             })
             .setNegativeButton("取消", null)
             .show();
@@ -278,16 +273,11 @@ public class SettingsFragment extends Fragment {
         if (previousTheme != null && !previousTheme.equals(currentTheme)) {
             previousTheme = currentTheme;
             if (getActivity() != null) {
-                try {
-                    getActivity().recreate();
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+                try { getActivity().recreate(); }
+                catch (Exception e) { e.printStackTrace(); }
             }
         }
     }
 
-    private void save() {
-        prefManager.saveSettings(settings);
-    }
+    private void save() { prefManager.saveSettings(settings); }
 }

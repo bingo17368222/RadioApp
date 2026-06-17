@@ -28,6 +28,15 @@
         android:textSize="12sp"
         android:layout_marginTop="4dp" />
 
+    <ProgressBar android:id="@+id/progress_engine"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="8dp"
+        android:layout_marginTop="8dp"
+        android:max="100"
+        android:progress="0"
+        android:visibility="gone" />
+
     <Button android:id="@+id/btn_engine_action"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

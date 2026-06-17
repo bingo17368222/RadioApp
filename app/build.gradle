@@ -34,4 +34,14 @@ dependencies {
     implementation 'androidx.media:media:1.7.0'
     implementation 'com.google.code.gson:gson:2.10.1'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+
+    // Vosk - 离线语音识别（APK内置，无需用户操作）
+    implementation 'com.alphacephei:vosk-android:0.3.47'
+
+    // Google ML Kit - 音频分析/分段
+    implementation 'com.google.mlkit:audio:16.1.0'
+    implementation 'com.google.mlkit:common:18.10.0'
+
+    // 阿里 MNN-LLM - 本地AI推理引擎（APK内置）
+    implementation 'com.alibaba.android:mnn:1.0.0'
 }
