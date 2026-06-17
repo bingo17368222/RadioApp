@@ -44,28 +44,23 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
+
+      - name: Get APK info
+        if: success()
+        id: apk
         run: |
-          # 检查APK是否已存在（缓存）
-          if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-            echo "APK already exists from cache, skipping build"
-          else
-            echo "APK not found, building..."
-            ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-            if [ ${PIPESTATUS[0]} -ne 0 ]; then
-              echo "=== BUILD FAILED ==="
-              tail -200 build.log
-              exit 1
-            fi
-          fi
-          echo "=== APK Status ==="
-          ls -la app/build/outputs/apk/debug/app-debug.apk 2>/dev/null || echo "APK still not found!"
+          APK_PATH=$(find app/build -name "*.apk" -type f | head -1)
+          APK_NAME=$(basename "$APK_PATH")
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: warn
 
       - name: Upload to GitHub Release
@@ -75,7 +70,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: ${{ steps.apk.outputs.apk_path }}
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
