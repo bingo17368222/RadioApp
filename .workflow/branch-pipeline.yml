@@ -1,9 +1,16 @@
 version: '1.0'
 name: android-build-branch
 displayName: Android APK 构建 (分支)
+triggers:
+  push:
+    branches:
+      prefix:
+        - dev
+        - feature
+        - fix
+
 stages:
-  - stage:
-    name: build
+  - stage: build
     displayName: 编译APK
     strategy: naturally
     trigger: auto
@@ -11,23 +18,24 @@ stages:
       - step: build@gradle
         name: build_apk
         displayName: Gradle 构建 APK
-        jdkVersion: 17
-        gradleVersion: 4.4
+        jdkVersion: 11
+        gradleVersion: 7.0
         commands:
           - chmod +x ./gradlew
           - ./gradlew assembleDebug --no-daemon --stacktrace
         artifacts:
           - name: APK_ARTIFACT
             path:
-              - ./app/build/outputs/apk/debug
+              - ./app/build/outputs/apk/debug/*.apk
+
+  - stage: publish
+    displayName: 上传制品
+    strategy: naturally
+    trigger: auto
+    steps:
       - step: publish@general_artifacts
         name: publish_apk
-        displayName: 上传APK制品
+        displayName: 上传APK到制品库
         dependArtifact: APK_ARTIFACT
+        artifactRepository: default
         artifactName: radio-apk
-        dependsOn: build_apk
-triggers:
-  push:
-    branches:
-      prefix:
-        - ""
