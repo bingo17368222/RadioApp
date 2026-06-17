@@ -46,23 +46,35 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
-
-      - name: Verify and copy APK
-        if: success()
         run: |
-          echo "=== Finding APK ==="
-          find app/build -name "*.apk" -type f
-          mkdir -p apk-output
-          APK_FILE=$(find app/build -name "*.apk" -type f | head -1)
-          if [ -n "$APK_FILE" ]; then
-            cp "$APK_FILE" apk-output/radio-app-v1.1-${{ github.run_number }}.apk
-            echo "APK copied to apk-output/"
-          else
-            echo "No APK found!"
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          echo "=== Build completed with status: $BUILD_STATUS ==="
+          echo "=== Listing build outputs ==="
+          find . -name "*.apk" -type f 2>/dev/null || echo "No APK found in workspace"
+          echo "=== Listing app/build ==="
+          ls -la app/build/ 2>/dev/null || echo "app/build not found"
+          echo "=== Listing app/build/outputs ==="
+          ls -laR app/build/outputs/ 2>/dev/null || echo "outputs not found"
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "=== BUILD FAILED ==="
+            tail -200 build.log
             exit 1
           fi
-          ls -la apk-output/
+
+      - name: Copy APK
+        if: success()
+        run: |
+          mkdir -p apk-output
+          APK_FILE=$(find . -name "*.apk" -type f | head -1)
+          if [ -n "$APK_FILE" ]; then
+            cp "$APK_FILE" apk-output/radio-app-v1.1-${{ github.run_number }}.apk
+            echo "APK copied: $APK_FILE -> apk-output/"
+            ls -la apk-output/
+          else
+            echo "ERROR: No APK found!"
+            exit 1
+          fi
 
       - name: Upload APK Artifact
         if: success()
