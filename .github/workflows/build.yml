@@ -35,32 +35,20 @@ jobs:
           gradle wrapper --gradle-version 8.0
           chmod +x gradlew
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+      - name: Clean and Build Debug APK
+        run: ./gradlew clean assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
-
-      - name: Copy APK to workspace
+      - name: Verify APK exists
         if: success()
         run: |
-          mkdir -p apk-output
-          cp app/build/outputs/apk/debug/*.apk apk-output/
-          ls -la apk-output/
+          ls -la app/build/outputs/apk/debug/
 
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: apk-output/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
       - name: Get APK info
