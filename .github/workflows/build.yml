@@ -33,44 +33,14 @@ jobs:
           gradle wrapper --gradle-version 8.0
           chmod +x gradlew
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
-
       - name: Build Debug APK
-        run: |
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-          BUILD_STATUS=${PIPESTATUS[0]}
-          if [ $BUILD_STATUS -ne 0 ]; then
-            echo "=== BUILD FAILED ==="
-            tail -200 build.log
-            exit 1
-          fi
-          # 检查APK是否存在
-          if [ ! -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-            echo "APK not found after build, forcing rebuild..."
-            ./gradlew clean assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-            BUILD_STATUS=${PIPESTATUS[0]}
-            if [ $BUILD_STATUS -ne 0 ]; then
-              echo "=== BUILD FAILED ==="
-              tail -200 build.log
-              exit 1
-            fi
-          fi
-          echo "APK verified:"
-          ls -la app/build/outputs/apk/debug/app-debug.apk
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
       - name: Copy APK to workspace
         if: success()
         run: |
           mkdir -p apk-output
-          cp app/build/outputs/apk/debug/app-debug.apk apk-output/radio-app-v1.1-${{ github.run_number }}.apk
+          find app/build -name "*.apk" -type f -exec cp {} apk-output/ \;
           ls -la apk-output/
 
       - name: Upload APK Artifact
