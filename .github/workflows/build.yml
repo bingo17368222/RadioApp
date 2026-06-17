@@ -48,12 +48,19 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
+      - name: Copy APK to workspace
+        if: success()
+        run: |
+          mkdir -p apk-output
+          cp app/build/outputs/apk/debug/*.apk apk-output/
+          ls -la apk-output/
+
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: apk-output/*.apk
           retention-days: 30
 
       - name: Get APK info
