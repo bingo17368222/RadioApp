@@ -11,10 +11,21 @@ android {
         versionCode 2
         versionName "1.1"
     }
+    signingConfigs {
+        debug {
+            storeFile file("debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            signingConfig signingConfigs.debug
         }
     }
     compileOptions {
@@ -41,7 +52,4 @@ dependencies {
     // Google ML Kit - 音频分析/分段
     implementation 'com.google.mlkit:audio:16.1.0'
     implementation 'com.google.mlkit:common:18.10.0'
-
-    // 阿里 MNN-LLM - 本地AI推理引擎（APK内置）
-    implementation 'com.alibaba.android:mnn:1.0.0'
 }
