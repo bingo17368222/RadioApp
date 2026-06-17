@@ -45,7 +45,7 @@ public class PlayerActivity extends AppCompatActivity {
         }
     };
 
-    private RadioPlaybackService.PlaybackCallback playbackCallback = new RadioPlaybackService.PlaybackCallback() {
+    private RadioPlaybackService.Callback playbackCallback = new RadioPlaybackService.Callback() {
         @Override
         public void onProgressUpdate(int position, int duration) {
             runOnUiThread(() -> {
@@ -135,7 +135,7 @@ public class PlayerActivity extends AppCompatActivity {
                 if (playbackService.isPlaying()) {
                     playbackService.pause();
                 } else {
-                    playbackService.play(currentEpisode.getAudioUrl());
+                    playbackService.play();
                 }
             }
         });
