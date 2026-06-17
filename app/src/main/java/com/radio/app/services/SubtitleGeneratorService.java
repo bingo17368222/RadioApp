@@ -68,7 +68,7 @@ public class SubtitleGeneratorService extends Service {
                 Log.d(TAG, "Vosk model not found, extracting from assets...");
                 // 从assets解压模型（首次运行）
                 if (!extractVoskModel(modelPath)) {
-                    Log.w(TAG, "Vosk model extraction failed, falling back to ML Kit");
+                    Log.w(TAG, "Vosk model extraction failed, falling back to fallback");
                     return false;
                 }
             }
