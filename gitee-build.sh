@@ -33,6 +33,18 @@ cd /root/workspace/bingostudio/RadioApp || cd "$(dirname "$0")"
 # 生成 local.properties
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+# 生成兼容 JDK 11 的 debug keystore（替换仓库中的新版 keystore）
+KEYSTORE_FILE="app/debug.keystore"
+if [ -f "$KEYSTORE_FILE" ]; then
+    echo "=== Replacing keystore with JDK 11 compatible version ==="
+    rm -f "$KEYSTORE_FILE"
+fi
+keytool -genkeypair -v -keystore "$KEYSTORE_FILE" \
+    -storepass android -keypass android \
+    -alias androiddebugkey -keyalg RSA -keysize 2048 \
+    -validity 10000 -dname "CN=Android Debug,O=Android,C=US" \
+    -storetype PKCS12
+
 # 编译
 chmod +x ./gradlew
 ./gradlew assembleDebug --no-daemon --stacktrace
