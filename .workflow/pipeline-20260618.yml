@@ -20,9 +20,8 @@ stages:
         jdkVersion: '11'
         gradleVersion: '7.6'
         commands:
-          - '# Gradle默认构建命令'
-          - chmod +x ./gradlew
-          - ./gradlew assembleDebug --no-daemon --stacktrace
+          - chmod +x ./gitee-build.sh
+          - ./gitee-build.sh
         artifacts:
           - name: BUILD_ARTIFACT
             path:
