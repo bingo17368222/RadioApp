@@ -43,10 +43,15 @@ jobs:
 
       - name: Upload APK Artifact
         run: |
+          echo "=== All files in build dir ==="
+          find . -path "*/build/*" -name "*.apk" -o -path "*/outputs/*" 2>/dev/null
+          echo "=== All APK files ==="
+          find . -name "*.apk" -type f 2>/dev/null
+          echo "=== Build outputs dir ==="
+          ls -laR app/build/outputs/ 2>/dev/null || echo "No outputs dir"
           APK_FILE=$(find . -name "*.apk" -type f | head -1)
           if [ -z "$APK_FILE" ]; then
             echo "ERROR: No APK found!"
-            find . -name "*.apk" 2>/dev/null
             exit 1
           fi
           echo "Found APK: $APK_FILE"
