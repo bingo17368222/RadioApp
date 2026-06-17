@@ -36,12 +36,20 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
+      - name: Verify APK
+        run: |
+          echo "=== Searching for APK files ==="
+          find . -name "*.apk" -type f 2>/dev/null
+          echo "=== APK file size ==="
+          find . -name "*.apk" -type f -exec ls -la {} \;
+
       - name: Upload APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: '**/*.apk'
+          if-no-files-found: warn
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -50,7 +58,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }}"
-          files: app/build/outputs/apk/debug/*.apk
+          files: '**/*.apk'
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
