@@ -46,6 +46,12 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.10.1'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
 
+    // 统一 Kotlin 版本，避免 Duplicate class 冲突
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.8.10'
+
     // Vosk - 离线语音识别（APK内置，无需用户操作）
-    implementation 'com.alphacephei:vosk-android:0.3.47'
+    implementation('com.alphacephei:vosk-android:0.3.47') {
+        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+    }
 }
