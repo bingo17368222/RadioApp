@@ -44,13 +44,10 @@ jobs:
           echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
           echo "APK size: $(numfmt --to=iec $APK_SIZE)"
 
-      - name: Delete old release assets
+      - name: Delete old release
         if: success() && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api repos/${{ github.repository }}/releases/tags/debug-latest --method DELETE 2>/dev/null || true
-          git push origin :refs/tags/debug-latest 2>/dev/null || true
+          curl -s -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/releases/tags/debug-latest" || true
 
       - name: Upload Release
         if: success() && github.event_name == 'push'
