@@ -34,7 +34,15 @@ jobs:
           chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+        continue-on-error: true
+
+      - name: Show Build Errors
+        run: |
+          echo "=== BUILD LOG (last 200 lines) ==="
+          tail -200 build.log || true
+          echo "=== ERROR SUMMARY ==="
+          grep -n "error:" build.log | head -30 || true
 
       - name: Verify APK
         run: |
