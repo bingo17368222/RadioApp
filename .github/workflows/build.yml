@@ -46,14 +46,13 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace --info 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
-      - name: Get APK info
+      - name: Rename APK with version
         if: success()
-        id: apk
         run: |
-          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
-          APK_NAME=$(basename "$APK_PATH")
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          VERSION=$(grep 'versionName' app/build.gradle | head -1 | sed "s/.*'\([^']*\)'.*/\1/")
+          BUILD_NUM=${{ github.run_number }}
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/radio-app-v${VERSION}-${BUILD_NUM}.apk
+          echo "APK: radio-app-v${VERSION}-${BUILD_NUM}.apk"
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -62,7 +61,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: ${{ steps.apk.outputs.apk_path }}
+          files: app/build/outputs/apk/debug/*.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
