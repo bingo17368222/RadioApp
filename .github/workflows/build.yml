@@ -55,7 +55,7 @@ jobs:
           echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
           echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
 
-      - name: Upload Release via API
+      - name: Upload Release
         if: success() && github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,23 +63,16 @@ jobs:
           APK_PATH="${{ steps.apk.outputs.apk_path }}"
           BUILD_NUM=${{ github.run_number }}
           
-          # Get release upload URL
-          RELEASE_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/tags/debug-latest")
+          # Create or get release
+          RELEASE_DATA=$(curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"debug-latest\",\"name\":\"Debug Build v${BUILD_NUM}\",\"body\":\"APK build ${BUILD_NUM}\",\"prerelease\":true}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" 2>/dev/null || \
+            curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/releases/tags/debug-latest")
+          
           UPLOAD_URL=$(echo "$RELEASE_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('upload_url','').replace('{?name,label}',''))")
-          
-          if [ -z "$UPLOAD_URL" ]; then
-            # Create release if not exists
-            RELEASE_DATA=$(curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"debug-latest\",\"name\":\"Debug Build v${BUILD_NUM}\",\"body\":\"APK build ${BUILD_NUM}\",\"prerelease\":true}" \
-              "https://api.github.com/repos/${{ github.repository }}/releases")
-            UPLOAD_URL=$(echo "$RELEASE_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('upload_url','').replace('{?name,label}',''))")
-          fi
-          
           echo "Upload URL: $UPLOAD_URL"
           
-          # Upload APK with unique name
-          curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/vnd.android.package-archive" \
+          # Upload APK
+          curl -v -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/vnd.android.package-archive" \
             --data-binary "@$APK_PATH" \
-            "${UPLOAD_URL}?name=radio-app-v1.1-${BUILD_NUM}.apk"
-          
-          echo "APK uploaded successfully"
+            "${UPLOAD_URL}?name=radio-app-v1.1-${BUILD_NUM}.apk" 2>&1
