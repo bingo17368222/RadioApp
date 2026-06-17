@@ -125,7 +125,12 @@ public class RadioPlaybackService extends Service implements
                 callback.onPositionChanged(pos, dur);
                 if (prepared) {
                     try {
-                        int bp = player.getBufferPercentage();
+                        // getBufferPercentage() not available on MediaPlayer, estimate from position/duration
+                        int bp = 0;
+                        if (dur > 0) {
+                            bp = (int) ((pos * 100) / dur);
+                            if (bp < 100) bp = Math.min(100, bp + 10); // estimate slightly ahead
+                        }
                         if (bp > 0 && bp != bufferPercent) {
                             bufferPercent = bp;
                             callback.onBufferUpdate(bp);

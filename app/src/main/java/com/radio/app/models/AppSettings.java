@@ -96,7 +96,19 @@ public class AppSettings {
     public static final String THEME_MINIMAL = "minimal";
     public static final String THEME_CUSTOM = "custom";
 
+    public static final String SUBTITLE_SMALL = "small";
+    public static final String SUBTITLE_MEDIUM = "medium";
+    public static final String SUBTITLE_LARGE = "large";
+    public static final String LANG_CN = "zh-CN";
+    public static final String LANG_EN = "en-US";
+
     private String aiModel = AI_MODEL_WENXIN;
+    private boolean autoSkipWater = true;
+    private boolean autoDownload = false;
+    private boolean autoCache = false;
+    private String subtitleSize = SUBTITLE_MEDIUM;
+    private String subtitleLanguage = LANG_CN;
+    private String voiceLanguage = LANG_CN;
     private String asrProvider = ASR_BAIDU;
     private String uiTheme = THEME_DARK;
     private CustomColors customColors = new CustomColors();
@@ -131,6 +143,18 @@ public class AppSettings {
     public void setAudioFocus(boolean audioFocus) { this.audioFocus = audioFocus; }
     public boolean isContinuousPlay() { return continuousPlay; }
     public void setContinuousPlay(boolean continuousPlay) { this.continuousPlay = continuousPlay; }
+    public boolean isAutoSkipWater() { return autoSkipWater; }
+    public void setAutoSkipWater(boolean autoSkipWater) { this.autoSkipWater = autoSkipWater; }
+    public boolean isAutoDownload() { return autoDownload; }
+    public void setAutoDownload(boolean autoDownload) { this.autoDownload = autoDownload; }
+    public boolean isAutoCache() { return autoCache; }
+    public void setAutoCache(boolean autoCache) { this.autoCache = autoCache; }
+    public String getSubtitleSize() { return subtitleSize; }
+    public void setSubtitleSize(String subtitleSize) { this.subtitleSize = subtitleSize; }
+    public String getSubtitleLanguage() { return subtitleLanguage; }
+    public void setSubtitleLanguage(String subtitleLanguage) { this.subtitleLanguage = subtitleLanguage; }
+    public String getVoiceLanguage() { return voiceLanguage; }
+    public void setVoiceLanguage(String voiceLanguage) { this.voiceLanguage = voiceLanguage; }
     public List<String> getDislikedEpisodes() { return dislikedEpisodes; }
     public void setDislikedEpisodes(List<String> dislikedEpisodes) { this.dislikedEpisodes = dislikedEpisodes; }
 
