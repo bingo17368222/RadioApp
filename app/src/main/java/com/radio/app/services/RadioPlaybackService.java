@@ -278,21 +278,27 @@ public class RadioPlaybackService extends Service implements
                 if (!cacheDir.exists()) cacheDir.mkdirs();
                 File cacheFile = new File(cacheDir, fileName);
 
+                // 如果已存在且大小正常，跳过下载
+                if (cacheFile.exists() && cacheFile.length() > 1024) {
+                    localCachePath = cacheFile.getAbsolutePath();
+                    caching = false;
+                    cacheProgress = 100;
+                    Log.d(TAG, "Cache already exists: " + localCachePath + " size=" + cacheFile.length());
+                    return;
+                }
+
                 URL downloadUrl = new URL(url);
                 conn = (HttpURLConnection) downloadUrl.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setConnectTimeout(15000);
-                conn.setReadTimeout(30000);
-                conn.setInstanceFollowRedirects(false);
+                conn.setReadTimeout(60000);
+                conn.setInstanceFollowRedirects(true);
 
                 int rc = conn.getResponseCode();
-                if (rc == 301 || rc == 302) {
-                    String newUrl = conn.getHeaderField("Location");
-                    conn.disconnect();
-                    conn = (HttpURLConnection) new URL(newUrl).openConnection();
-                    conn.setRequestMethod("GET");
-                    conn.setConnectTimeout(15000);
-                    conn.setReadTimeout(30000);
+                if (rc != 200) {
+                    Log.w(TAG, "Cache HTTP " + rc + " for " + url);
+                    caching = false;
+                    return;
                 }
 
                 int totalSize = conn.getContentLength();
@@ -306,6 +312,17 @@ public class RadioPlaybackService extends Service implements
                     downloaded += len;
                     if (totalSize > 0) cacheProgress = (int) (downloaded * 100 / totalSize);
                 }
+                fos.flush();
+
+                // 验证下载
+                if (cacheFile.length() < 1024) {
+                    Log.w(TAG, "Cache file too small: " + cacheFile.length() + " bytes");
+                    cacheFile.delete();
+                    caching = false;
+                    cacheProgress = 0;
+                    return;
+                }
+
                 localCachePath = cacheFile.getAbsolutePath();
                 caching = false;
                 cacheProgress = 100;

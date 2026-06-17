@@ -8,6 +8,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -64,6 +65,17 @@ public class SettingsFragment extends Fragment {
         btnClearCache = view.findViewById(R.id.btn_clear_cache);
         btnManageOfflineEngine = view.findViewById(R.id.btn_manage_offline_engine);
         btnCustomizeColors = view.findViewById(R.id.btn_customize_colors);
+
+        // 设置Spinner数据适配器
+        String[] themeLabels = {"深色", "清新", "经典", "极简", "自定义"};
+        spinnerTheme.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, themeLabels));
+
+        String[] sizeLabels = {"小", "中", "大"};
+        spinnerSubtitleSize.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, sizeLabels));
+
+        String[] langLabels = {"中文", "英文"};
+        spinnerSubtitleLang.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, langLabels));
+        spinnerVoiceLang.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, langLabels));
     }
 
     private void setupListeners() {
@@ -170,10 +182,10 @@ public class SettingsFragment extends Fragment {
             checked[i] = true;
         }
 
-        new AlertDialog.Builder(requireContext())
-            .setTitle("选择要删除的缓存文件")
-            .setMultiChoiceItems(fileNames, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
-            .setPositiveButton("删除选中", (dialog, which) -> {
+        AlertDialog dialog = new AlertDialog.Builder(requireContext())
+            .setTitle("选择要删除的缓存文件 (" + files.length + "个)")
+            .setMultiChoiceItems(fileNames, checked, (d, which, isChecked) -> checked[which] = isChecked)
+            .setPositiveButton("删除选中", (d, which) -> {
                 long deletedSize = 0;
                 for (int i = 0; i < files.length; i++) {
                     if (checked[i] && files[i].delete()) deletedSize += files[i].length();
@@ -182,7 +194,103 @@ public class SettingsFragment extends Fragment {
                 updateUI();
             })
             .setNegativeButton("取消", null)
-            .show();
+            .create();
+
+        // 添加全选/全不选/反选按钮
+        LinearLayout btnContainer = new LinearLayout(requireContext());
+        btnContainer.setOrientation(LinearLayout.HORIZONTAL);
+        btnContainer.setPadding(20, 10, 20, 10);
+
+        Button btnSelectAll = new Button(requireContext());
+        btnSelectAll.setText("全选");
+        btnSelectAll.setOnClickListener(v -> {
+            for (int i = 0; i < checked.length; i++) checked[i] = true;
+            dialog.getListView().invalidateViews();
+        });
+
+        Button btnSelectNone = new Button(requireContext());
+        btnSelectNone.setText("全不选");
+        btnSelectNone.setOnClickListener(v -> {
+            for (int i = 0; i < checked.length; i++) checked[i] = false;
+            dialog.getListView().invalidateViews();
+        });
+
+        Button btnInvert = new Button(requireContext());
+        btnInvert.setText("反选");
+        btnInvert.setOnClickListener(v -> {
+            for (int i = 0; i < checked.length; i++) checked[i] = !checked[i];
+            dialog.getListView().invalidateViews();
+        });
+
+        btnContainer.addView(btnSelectAll, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        btnContainer.addView(btnSelectNone, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        btnContainer.addView(btnInvert, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+
+        dialog.setView(btnContainer);
+        // 重新设置内容视图，将按钮容器和列表组合
+        // 由于AlertDialog的复杂性，我们使用自定义布局
+        dialog.dismiss();
+        showClearCacheDialogWithButtons(files, fileNames, checked);
+    }
+
+    private void showClearCacheDialogWithButtons(java.io.File[] files, String[] fileNames, boolean[] checked) {
+        java.io.File cacheDir = requireContext().getCacheDir();
+
+        LinearLayout mainLayout = new LinearLayout(requireContext());
+        mainLayout.setOrientation(LinearLayout.VERTICAL);
+
+        // 按钮行
+        LinearLayout btnContainer = new LinearLayout(requireContext());
+        btnContainer.setOrientation(LinearLayout.HORIZONTAL);
+        btnContainer.setPadding(20, 10, 20, 10);
+
+        Button btnSelectAll = new Button(requireContext());
+        btnSelectAll.setText("全选");
+        Button btnSelectNone = new Button(requireContext());
+        btnSelectNone.setText("全不选");
+        Button btnInvert = new Button(requireContext());
+        btnInvert.setText("反选");
+
+        btnContainer.addView(btnSelectAll, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        btnContainer.addView(btnSelectNone, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        btnContainer.addView(btnInvert, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        mainLayout.addView(btnContainer);
+
+        // 使用AlertDialog的MultiChoiceItems
+        AlertDialog dialog = new AlertDialog.Builder(requireContext())
+            .setTitle("选择要删除的缓存文件 (" + files.length + "个)")
+            .setMultiChoiceItems(fileNames, checked, (d, which, isChecked) -> checked[which] = isChecked)
+            .setPositiveButton("删除选中", (d, which) -> {
+                long deletedSize = 0;
+                for (int i = 0; i < files.length; i++) {
+                    if (checked[i] && files[i].delete()) deletedSize += files[i].length();
+                }
+                Toast.makeText(requireContext(), "已删除 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show();
+                updateUI();
+            })
+            .setNegativeButton("取消", null)
+            .create();
+
+        btnSelectAll.setOnClickListener(v -> {
+            for (int i = 0; i < checked.length; i++) {
+                checked[i] = true;
+                dialog.getListView().setItemChecked(i, true);
+            }
+        });
+        btnSelectNone.setOnClickListener(v -> {
+            for (int i = 0; i < checked.length; i++) {
+                checked[i] = false;
+                dialog.getListView().setItemChecked(i, false);
+            }
+        });
+        btnInvert.setOnClickListener(v -> {
+            for (int i = 0; i < checked.length; i++) {
+                checked[i] = !checked[i];
+                dialog.getListView().setItemChecked(i, checked[i]);
+            }
+        });
+
+        dialog.show();
     }
 
     private void scanFilesRecursive(java.io.File dir, java.util.List<java.io.File> result) {
@@ -273,7 +381,8 @@ public class SettingsFragment extends Fragment {
         String currentTheme = settings.getUiTheme();
         if (previousTheme != null && !previousTheme.equals(currentTheme)) {
             previousTheme = currentTheme;
-            if (getActivity() != null) {
+            // 仅当主题真正改变时才重建Activity，避免自定义颜色时重建
+            if (!currentTheme.equals(AppSettings.THEME_CUSTOM) && getActivity() != null) {
                 try { getActivity().recreate(); }
                 catch (Exception e) { e.printStackTrace(); }
             }

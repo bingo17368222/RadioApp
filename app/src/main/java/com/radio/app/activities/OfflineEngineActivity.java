@@ -172,7 +172,13 @@ public class OfflineEngineActivity extends AppCompatActivity {
                 URL url = new URL(engine.downloadUrl);
                 conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET"); conn.setConnectTimeout(30000); conn.setReadTimeout(120000); conn.setInstanceFollowRedirects(true);
+                int rc = conn.getResponseCode();
+                Log.d(TAG, "Download response code: " + rc + " for " + engine.name);
+                if (rc != 200) {
+                    throw new Exception("HTTP " + rc);
+                }
                 int totalSize = conn.getContentLength();
+                Log.d(TAG, "Download total size: " + totalSize + " for " + engine.name);
                 is = conn.getInputStream(); fos = new FileOutputStream(outFile);
                 byte[] buffer = new byte[8192]; int len, downloaded = 0; long lastUpdate = System.currentTimeMillis();
                 while ((len = is.read(buffer)) != -1) {
@@ -185,12 +191,15 @@ public class OfflineEngineActivity extends AppCompatActivity {
                         uiHandler.post(() -> { btn.setText("下载: " + fp + "%"); if (progressBar != null) progressBar.setProgress(fp); });
                     }
                 }
+                if (outFile.length() < 1024) {
+                    throw new Exception("下载文件过小: " + outFile.length() + " bytes");
+                }
                 uiHandler.post(() -> btn.setText("下载完成"));
                 if (fileName.endsWith(".zip")) { uiHandler.post(() -> btn.setText("解压中...")); unzipFile(outFile, new File(modelsDir, engine.modelDir)); outFile.delete(); }
-                uiHandler.post(() -> { btn.setEnabled(true); btn.setText("已安装(删除)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(this, engine.name + " 安装完成", Toast.LENGTH_SHORT).show(); });
+                uiHandler.post(() -> { btn.setEnabled(true); btn.setText("已安装(删除)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(OfflineEngineActivity.this, engine.name + " 安装完成", Toast.LENGTH_SHORT).show(); });
             } catch (Exception e) {
-                Log.e(TAG, "Download failed: " + e.getMessage());
-                uiHandler.post(() -> { btn.setEnabled(true); btn.setText("安装(重试)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show(); });
+                Log.e(TAG, "Download failed: " + e.getMessage(), e);
+                uiHandler.post(() -> { btn.setEnabled(true); btn.setText("安装(重试)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(OfflineEngineActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_LONG).show(); });
             } finally { try { if (fos != null) fos.close(); } catch (Exception ignored) {} try { if (is != null) is.close(); } catch (Exception ignored) {} if (conn != null) conn.disconnect(); }
         });
     }
