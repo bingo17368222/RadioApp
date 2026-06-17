@@ -245,7 +245,7 @@ public class SettingsFragment extends Fragment {
             layout.addView(presetRow);
         }
 
-        final ThemeColors finalColors = colors;
+        final AppSettings.CustomColors finalColors = colors;
         new AlertDialog.Builder(requireContext())
             .setTitle("自定义颜色 - 点击色块快速选择")
             .setView(layout)
