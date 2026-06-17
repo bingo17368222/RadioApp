@@ -47,14 +47,24 @@ public class PlayerActivity extends AppCompatActivity {
 
     private RadioPlaybackService.Callback playbackCallback = new RadioPlaybackService.Callback() {
         @Override
-        public void onProgressUpdate(int position, int duration) {
+        public void onStateChanged(boolean playing) {
             runOnUiThread(() -> {
-                if (duration > 0) {
-                    seekBar.setMax(duration);
-                    seekBar.setProgress(position);
-                    tvProgress.setText(formatTime(position) + " / " + formatTime(duration));
+                updatePlayPauseButton(playing);
+                tvStatus.setText(playing ? "播放中" : "已暂停");
+            });
+        }
+
+        @Override
+        public void onPositionChanged(long position, long duration) {
+            runOnUiThread(() -> {
+                int pos = (int) position;
+                int dur = (int) duration;
+                if (dur > 0) {
+                    seekBar.setMax(dur);
+                    seekBar.setProgress(pos);
+                    tvProgress.setText(formatTime(pos) + " / " + formatTime(dur));
                 } else {
-                    tvProgress.setText(formatTime(position));
+                    tvProgress.setText(formatTime(pos));
                 }
             });
         }
@@ -68,22 +78,6 @@ public class PlayerActivity extends AppCompatActivity {
                 } else {
                     tvBuffer.setVisibility(View.VISIBLE);
                 }
-            });
-        }
-
-        @Override
-        public void onPlaybackStateChanged(boolean isPlaying) {
-            runOnUiThread(() -> {
-                updatePlayPauseButton(isPlaying);
-                tvStatus.setText(isPlaying ? "播放中" : "已暂停");
-            });
-        }
-
-        @Override
-        public void onError(String error) {
-            runOnUiThread(() -> {
-                tvStatus.setText("错误: " + error);
-                Toast.makeText(PlayerActivity.this, error, Toast.LENGTH_SHORT).show();
             });
         }
     };
