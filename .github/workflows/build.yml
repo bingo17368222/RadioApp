@@ -7,13 +7,11 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-  actions: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -46,43 +44,16 @@ jobs:
             gradle-${{ runner.os }}-
 
       - name: Build Debug APK
-        run: |
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
-          BUILD_STATUS=${PIPESTATUS[0]}
-          echo "=== Build completed with status: $BUILD_STATUS ==="
-          echo "=== Listing build outputs ==="
-          find . -name "*.apk" -type f 2>/dev/null || echo "No APK found in workspace"
-          echo "=== Listing app/build ==="
-          ls -la app/build/ 2>/dev/null || echo "app/build not found"
-          echo "=== Listing app/build/outputs ==="
-          ls -laR app/build/outputs/ 2>/dev/null || echo "outputs not found"
-          if [ $BUILD_STATUS -ne 0 ]; then
-            echo "=== BUILD FAILED ==="
-            tail -200 build.log
-            exit 1
-          fi
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log && if [ ${PIPESTATUS[0]} -ne 0 ]; then echo "=== BUILD FAILED ===" && tail -200 build.log; fi
 
-      - name: Copy APK
+      - name: Get APK info
         if: success()
+        id: apk
         run: |
-          mkdir -p apk-output
-          APK_FILE=$(find . -name "*.apk" -type f | head -1)
-          if [ -n "$APK_FILE" ]; then
-            cp "$APK_FILE" apk-output/radio-app-v1.1-${{ github.run_number }}.apk
-            echo "APK copied: $APK_FILE -> apk-output/"
-            ls -la apk-output/
-          else
-            echo "ERROR: No APK found!"
-            exit 1
-          fi
-
-      - name: Upload APK Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: radio-app-apk
-          path: apk-output/*.apk
-          retention-days: 30
+          APK_PATH=$(find app/build -name "*.apk" -type f | head -1)
+          APK_NAME=$(basename "$APK_PATH")
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload to GitHub Release
         if: success() && github.event_name == 'push'
@@ -91,7 +62,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }} from commit ${{ github.sha }}"
-          files: apk-output/*.apk
+          files: ${{ steps.apk.outputs.apk_path }}
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
