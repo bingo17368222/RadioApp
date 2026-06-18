@@ -37,11 +37,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.net.CookieManager
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLDecoder
-import java.util.HashMap
 
 class RadioPlaybackService : Service(),
     MediaPlayer.OnPreparedListener,
@@ -307,11 +304,12 @@ class RadioPlaybackService : Service(),
      * 设置数据源，附带 HTTP headers 以兼容蜻蜓fm等需要User-Agent的源
      */
     private fun setDataSourceWithHeaders(url: String) {
-        val headers = HashMap<String, String>()
-        headers["User-Agent"] = "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        headers["Accept"] = "*/*"
-        headers["Connection"] = "keep-alive"
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val headers: Map<String, String> = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                "Accept" to "*/*",
+                "Connection" to "keep-alive"
+            )
             player?.setDataSource(this, url, headers)
         } else {
             @Suppress("DEPRECATION")
