@@ -49,13 +49,10 @@ jobs:
         run: |
           echo "=== APK files ==="
           find . -name "*.apk" -type f -exec ls -la {} \;
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fasthub-apk
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          echo "=== Copy APK ==="
+          mkdir -p /tmp/apk
+          find . -name "*.apk" -type f -exec cp {} /tmp/apk/ \;
+          ls -la /tmp/apk/
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -63,7 +60,7 @@ jobs:
           tag_name: fasthub-debug-latest
           name: "FastHub Debug Build v${{ github.run_number }}"
           body: "Auto-generated FastHub debug APK v${{ github.run_number }}"
-          files: app/build/outputs/apk/debug/*.apk
+          files: /tmp/apk/*.apk
           prerelease: true
           fail_on_unmatched_files: false
         env:
