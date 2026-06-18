@@ -241,10 +241,10 @@ class OfflineEngineActivity : AppCompatActivity() {
                             break
                         }
 
-                        val totalSize = conn.contentLength
+                        val totalSize = conn?.contentLength ?: -1
                         Log.d(TAG, "Download total size: $totalSize for ${engine.name}")
 
-                        val input = conn.inputStream
+                        val input = conn?.inputStream ?: throw Exception("连接失败")
                         fos = FileOutputStream(outFile)
                         val buffer = ByteArray(8192)
                         var len: Int
