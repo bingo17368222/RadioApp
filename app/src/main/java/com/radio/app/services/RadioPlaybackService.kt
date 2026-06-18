@@ -103,6 +103,8 @@ class RadioPlaybackService : Service(),
     private var cacheProgress = 0
     private var errorRetryCount = 0
     private var isRetrying = false
+    private var stablePlayStartTime = 0L  // 稳定播放开始时间，用于判断是否为新的错误周期
+    private var hasStablePlayed = false    // 是否已经稳定播放过（超过5秒）
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -251,6 +253,9 @@ class RadioPlaybackService : Service(),
         prepared = false
         currentStreamUrl = station.streamUrl ?: ""
         errorRetryCount = 0
+        isRetrying = false
+        hasStablePlayed = false
+        stablePlayStartTime = 0L
         stopAutoSkipCheck()
         try {
             player?.reset()
@@ -273,6 +278,9 @@ class RadioPlaybackService : Service(),
         localCachePath = ""
         caching = false
         errorRetryCount = 0
+        isRetrying = false
+        hasStablePlayed = false
+        stablePlayStartTime = 0L
         stopAutoSkipCheck()
         try {
             player?.reset()
@@ -300,9 +308,9 @@ class RadioPlaybackService : Service(),
             var fos: FileOutputStream? = null
             try {
                 val fileName = "${Math.abs(url.hashCode())}.mp3"
-                val cacheDir = File(getExternalFilesDir("audio"), ".")?.apply {
+                val cacheDir = getExternalFilesDir("audio")?.apply {
                     if (!exists()) mkdirs()
-                } ?: File(cacheDir, "audio").apply {
+                } ?: File(filesDir, "audio").apply {
                     if (!exists()) mkdirs()
                 }
                 val cacheFile = File(cacheDir, fileName)
@@ -629,29 +637,57 @@ class RadioPlaybackService : Service(),
 
     override fun onPrepared(mp: MediaPlayer?) {
         prepared = true
-        errorRetryCount = 0
         isRetrying = false
+        // 记录稳定播放开始时间，但不重置 errorRetryCount
+        // 只有在稳定播放超过5秒后，才认为进入新的播放周期
+        stablePlayStartTime = System.currentTimeMillis()
+        hasStablePlayed = false
         mp?.start()
         callback?.onStateChanged(true)
         sendStateBroadcast(true)
         startForegroundNotification()
+        // 延迟检查是否稳定播放
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (prepared && player?.isPlaying == true) {
+                val elapsed = System.currentTimeMillis() - stablePlayStartTime
+                if (elapsed >= 5000) {
+                    hasStablePlayed = true
+                    errorRetryCount = 0  // 稳定播放5秒后，重置错误计数
+                    Log.d(TAG, "Stable play detected, reset errorRetryCount")
+                }
+            }
+        }, 5000)
     }
 
     override fun onError(mp: MediaPlayer?, what: Int, extra: Int): Boolean {
-        Log.e(TAG, "MediaPlayer onError: what=$what extra=$extra retry=$errorRetryCount")
+        Log.e(TAG, "MediaPlayer onError: what=$what extra=$extra retry=$errorRetryCount hasStable=$hasStablePlayed")
         prepared = false
         errorRetryCount++
+        // 如果之前已经稳定播放过，重置计数器（新的错误周期）
+        if (hasStablePlayed) {
+            errorRetryCount = 1
+            hasStablePlayed = false
+            Log.d(TAG, "New error cycle after stable play, reset retry count to 1")
+        }
         if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
             // 重试期间静默处理，不通知 UI
             isRetrying = true
             val retryDelay = errorRetryCount * 3000L
             Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    player?.reset()
-                    player?.setDataSource(currentStreamUrl)
-                    player?.prepareAsync()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Retry failed", e)
+                if (isRetrying && currentStreamUrl.isNotEmpty()) {
+                    try {
+                        player?.reset()
+                        player?.setDataSource(currentStreamUrl)
+                        player?.prepareAsync()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Retry failed", e)
+                        isRetrying = false
+                        callback?.let { cb ->
+                            cb.onStateChanged(false)
+                            cb.onError("播放失败: 重试异常 (${e.message})")
+                        }
+                        sendStateBroadcast(false)
+                    }
                 }
             }, retryDelay)
         } else {

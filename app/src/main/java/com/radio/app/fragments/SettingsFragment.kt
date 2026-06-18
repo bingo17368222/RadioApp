@@ -232,7 +232,13 @@ class SettingsFragment : Fragment() {
 
         val cacheSize = calculateCacheSize()
         binding.tvCacheSize.text = "缓存大小: " + formatSize(cacheSize)
-        isInitializing = false
+        // 使用 postDelayed 延迟设置 isInitializing = false
+        // 因为 Spinner.setSelection() 会把事件 post 到消息队列
+        // 必须确保这些事件在 isInitializing=true 时被消费
+        // 使用 300ms 延迟确保所有 setSelection 事件已被消费
+        binding.root.postDelayed({
+            isInitializing = false
+        }, 300)
     }
 
     private fun calculateCacheSize(): Long {

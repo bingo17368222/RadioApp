@@ -42,40 +42,40 @@ class OfflineEngineActivity : AppCompatActivity() {
     )
 
     private val engines = arrayOf(
-        // ===== Whisper 语音识别模型（GitHub Release 源） =====
+        // ===== Whisper 语音识别模型（hf-mirror.com 国内镜像源） =====
         EngineInfo(
             "Whisper Tiny",
             "OpenAI Whisper tiny模型\n大小: 约75MB | 识别率: ~85% | 速度: 极快(实时)\n适用: 快速字幕生成，对准确率要求不高的场景\n支持: 中文、英文及99种语言",
             "约75MB",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-tiny.bin",
+            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
             "whisper-tiny"
         ),
         EngineInfo(
             "Whisper Base",
             "OpenAI Whisper base模型\n大小: 约142MB | 识别率: ~90% | 速度: 快(近实时)\n适用: 日常字幕生成，准确率和速度平衡\n支持: 中文、英文及99种语言",
             "约142MB",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-base.bin",
+            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
             "whisper-base"
         ),
         EngineInfo(
             "Whisper Small",
             "OpenAI Whisper small模型\n大小: 约466MB | 识别率: ~93% | 速度: 中等(约2x实时)\n适用: 高质量字幕，推荐日常使用\n支持: 中文、英文及99种语言",
             "约466MB",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-small.bin",
+            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
             "whisper-small"
         ),
         EngineInfo(
             "Whisper Medium",
             "OpenAI Whisper medium模型\n大小: 约1.5GB | 识别率: ~95% | 速度: 较慢(约4x实时)\n适用: 专业级字幕，对准确率要求极高\n支持: 中文、英文及99种语言",
             "约1.5GB",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-medium.bin",
+            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
             "whisper-medium"
         ),
         EngineInfo(
             "Whisper Large-v3",
             "OpenAI Whisper large-v3模型\n大小: 约2.9GB | 识别率: ~97% | 速度: 慢(约8x实时)\n适用: 最高精度，专业转录场景\n支持: 中文、英文及99种语言",
             "约2.9GB",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-large-v3.bin",
+            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
             "whisper-large"
         ),
 
