@@ -1,16 +1,20 @@
 plugins {
     id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
 }
+
 android {
     namespace 'com.radio.app'
     compileSdk 33
+
     defaultConfig {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 3
-        versionName "1.1.1"
+        versionCode 4
+        versionName "1.2.0"
     }
+
     signingConfigs {
         debug {
             storeFile file("debug.keystore")
@@ -19,6 +23,7 @@ android {
             keyPassword "android"
         }
     }
+
     buildTypes {
         release {
             minifyEnabled false
@@ -28,20 +33,21 @@ android {
             signingConfig signingConfigs.debug
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
-}
 
-// 全局强制统一 Kotlin stdlib 版本，避免 Duplicate class 冲突
-configurations.all {
-    resolutionStrategy {
-        force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.10'
-        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.10'
-        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.10'
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+
+    buildFeatures {
+        viewBinding true
     }
 }
+
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.9.0'
@@ -54,7 +60,10 @@ dependencies {
     implementation 'androidx.media:media:1.6.0'
     implementation 'com.google.code.gson:gson:2.10.1'
     implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1'
 
-    // Vosk - 离线语音识别（APK内置，无需用户操作）
+    // Vosk - 离线语音识别
     implementation 'com.alphacephei:vosk-android:0.3.47'
 }
