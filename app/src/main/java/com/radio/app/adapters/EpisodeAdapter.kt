@@ -21,7 +21,7 @@ class EpisodeAdapter(
     private val listener: OnEpisodeClickListener?
 ) : RecyclerView.Adapter<EpisodeAdapter.ViewHolder>() {
 
-    fun interface OnEpisodeClickListener {
+    interface OnEpisodeClickListener {
         fun onEpisodeClick(e: Episode)
         fun onEpisodeLongClick(e: Episode)
     }

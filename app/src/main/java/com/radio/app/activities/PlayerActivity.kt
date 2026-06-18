@@ -35,7 +35,9 @@ class PlayerActivity : AppCompatActivity() {
             val audioUrl = currentEpisode?.audioUrl
             if (!audioUrl.isNullOrBlank()) {
                 val isLive = currentEpisode?.isLive ?: false
-                playbackService?.playEpisode(currentEpisode, isLive)
+                currentEpisode?.let { episode ->
+                    playbackService?.playEpisode(episode, isLive)
+                }
             }
             updateUI()
         }
@@ -102,10 +104,10 @@ class PlayerActivity : AppCompatActivity() {
                 return
             }
             currentEpisode = Episode().apply {
-                id = intent.getStringExtra("episode_id")
-                title = intent.getStringExtra("title")
+                id = intent.getStringExtra("episode_id") ?: ""
+                title = intent.getStringExtra("title") ?: ""
                 this.audioUrl = audioUrl
-                stationName = intent.getStringExtra("station_name")
+                stationName = intent.getStringExtra("station_name") ?: ""
                 duration = intent.getLongExtra("duration", 0)
                 isLive = intent.getBooleanExtra("is_live", false)
             }
@@ -138,7 +140,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupListeners() {
         binding.btnPlayPause.setOnClickListener {
             playbackService?.let { service ->
-                if (service.isPlaying) {
+                if (service.isPlaying()) {
                     service.pause()
                 } else {
                     service.play()
@@ -157,17 +159,17 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         binding.btnSkipForward.setOnClickListener {
-            playbackService?.seekTo(playbackService?.currentPosition?.plus(30000) ?: 0)
+            playbackService?.seekTo(playbackService?.getCurrentPosition().plus(30000))
         }
 
         binding.btnSkipBackward.setOnClickListener {
-            playbackService?.seekTo((playbackService?.currentPosition?.minus(30000) ?: 0).coerceAtLeast(0))
+            playbackService?.seekTo(playbackService?.getCurrentPosition().minus(30000).coerceAtLeast(0))
         }
 
         binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
-                    playbackService?.seekTo(progress)
+                    playbackService?.seekTo(progress.toLong())
                 }
             }
 
@@ -183,7 +185,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun updateUI() {
         playbackService?.let {
-            updatePlayPauseButton(it.isPlaying)
+            updatePlayPauseButton(it.isPlaying())
         }
     }
 

@@ -38,8 +38,8 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         val view = inflater.inflate(R.layout.fragment_search, container, false)
         etSearch = view.findViewById(R.id.et_search)
         recyclerView = view.findViewById(R.id.recycler_view)
-        adapter = SearchResultAdapter(context, results, this)
-        recyclerView?.layoutManager = LinearLayoutManager(context)
+        adapter = SearchResultAdapter(requireContext(), results, this)
+        recyclerView?.layoutManager = LinearLayoutManager(requireContext())
         recyclerView?.adapter = adapter
         etSearch?.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -81,9 +81,9 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
     override fun onSearchResultClick(r: SearchResult) {
         val e = Episode().apply {
-            id = r.id
-            title = r.title
-            stationName = r.stationName
+            id = r.id ?: ""
+            title = r.title ?: ""
+            stationName = r.stationName ?: ""
             audioUrl = "https://example.com/audio/${r.id}.mp3"
             isLive = false
         }

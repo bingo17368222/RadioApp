@@ -103,7 +103,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         stations.clear()
         stations.addAll(getBuiltinStations())
 
-        val stationAdapter = StationAdapter(context, stations, object : StationAdapter.OnStationClickListener {
+        val stationAdapter = StationAdapter(requireContext(), stations, object : StationAdapter.OnStationClickListener {
             override fun onStationClick(s: RadioStation) {
                 selectedStationId = s.id
                 selectedStationName = s.name
@@ -156,7 +156,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
     private fun loadEpisodes(stationId: String, dateStr: String) {
         progressBar?.visibility = View.VISIBLE
-        adapter = EpisodeAdapter(context, episodes, this)
+        adapter = EpisodeAdapter(requireContext(), episodes, this)
         recyclerView?.adapter = adapter
 
         EpisodeApiService.getInstance().getEpisodesByDate(stationId, dateStr,

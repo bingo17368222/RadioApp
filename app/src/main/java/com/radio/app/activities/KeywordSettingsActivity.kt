@@ -106,7 +106,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
         finish()
     }
 
-    private fun parseKeywords(text: String?): List<String> {
+    private fun parseKeywords(text: String?): MutableList<String> {
         val list = mutableListOf<String>()
         if (text.isNullOrBlank()) return list
         val parts = text.split("[,，]".toRegex())

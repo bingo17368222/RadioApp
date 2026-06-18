@@ -35,8 +35,8 @@ class HomeFragment : Fragment(), StationAdapter.OnStationClickListener {
         recyclerView = v.findViewById(R.id.recycler_view)
         progressBar = v.findViewById(R.id.progress_bar)
 
-        recyclerView?.layoutManager = LinearLayoutManager(context)
-        adapter = StationAdapter(context, stations, this)
+        recyclerView?.layoutManager = LinearLayoutManager(requireContext())
+        adapter = StationAdapter(requireContext(), stations, this)
         recyclerView?.adapter = adapter
         loadStations()
         return v

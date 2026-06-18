@@ -82,19 +82,19 @@ class SettingsFragment : Fragment() {
 
     private fun setupListeners() {
         binding.switchAutoSkip.setOnCheckedChangeListener { _, isChecked ->
-            settings.isAutoSkipWater = isChecked
+            settings.autoSkipWater = isChecked
             save()
         }
         binding.switchContinuousPlay.setOnCheckedChangeListener { _, isChecked ->
-            settings.isContinuousPlay = isChecked
+            settings.continuousPlay = isChecked
             save()
         }
         binding.switchAutoDownload.setOnCheckedChangeListener { _, isChecked ->
-            settings.isAutoDownload = isChecked
+            settings.autoDownload = isChecked
             save()
         }
         binding.switchAutoCache.setOnCheckedChangeListener { _, isChecked ->
-            settings.isAutoCache = isChecked
+            settings.autoCache = isChecked
             save()
         }
 
@@ -181,10 +181,10 @@ class SettingsFragment : Fragment() {
     }
 
     private fun updateUI() {
-        binding.switchAutoSkip.isChecked = settings.isAutoSkipWater
-        binding.switchContinuousPlay.isChecked = settings.isContinuousPlay
-        binding.switchAutoDownload.isChecked = settings.isAutoDownload
-        binding.switchAutoCache.isChecked = settings.isAutoCache
+        binding.switchAutoSkip.isChecked = settings.autoSkipWater
+        binding.switchContinuousPlay.isChecked = settings.continuousPlay
+        binding.switchAutoDownload.isChecked = settings.autoDownload
+        binding.switchAutoCache.isChecked = settings.autoCache
 
         val themes = arrayOf(AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM)
         themes.indexOfFirst { it == settings.uiTheme }.takeIf { it >= 0 }?.let { binding.spinnerTheme.setSelection(it) }

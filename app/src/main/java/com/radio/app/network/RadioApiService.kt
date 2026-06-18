@@ -60,7 +60,7 @@ class RadioApiService private constructor() {
                     val array = JSONArray(sb.toString())
                     for (i in 0 until array.length()) {
                         val s = RadioStation.fromJson(array.getJSONObject(i))
-                        if (s.isLastCheckOk) {
+                        if (s.lastCheckOk) {
                             s.currentProgram = "Live Stream"
                             allStations.add(s)
                         }
@@ -90,7 +90,7 @@ class RadioApiService private constructor() {
                     val array = JSONArray(sb.toString())
                     for (i in 0 until array.length()) {
                         val s = RadioStation.fromJson(array.getJSONObject(i))
-                        if (s.isLastCheckOk) {
+                        if (s.lastCheckOk) {
                             s.currentProgram = "河南电台"
                             allStations.add(s)
                         }
@@ -118,7 +118,7 @@ class RadioApiService private constructor() {
             streamUrl = "https://stream.hndt.com/live/xinwen/playlist.m3u8"
             country = "China"
             bitrate = 64
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "河南新闻"
         })
 
@@ -128,7 +128,7 @@ class RadioApiService private constructor() {
             streamUrl = "https://stream.hndt.com/live/yinyue/playlist.m3u8"
             country = "China"
             bitrate = 64
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "河南音乐"
         })
 
@@ -138,7 +138,7 @@ class RadioApiService private constructor() {
             streamUrl = "https://stream.hndt.com/live/jiaotong/playlist.m3u8"
             country = "China"
             bitrate = 64
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "河南交通"
         })
 
@@ -148,7 +148,7 @@ class RadioApiService private constructor() {
             streamUrl = "https://stream.hndt.com/live/jingji/playlist.m3u8"
             country = "China"
             bitrate = 64
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "河南经济"
         })
 
@@ -158,7 +158,7 @@ class RadioApiService private constructor() {
             streamUrl = "http://ls.qingting.fm/live/5022051.m3u8"
             country = "China"
             bitrate = 64
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "郑州新闻"
         })
 
@@ -168,7 +168,7 @@ class RadioApiService private constructor() {
             streamUrl = "http://ls.qingting.fm/live/5022055.m3u8"
             country = "China"
             bitrate = 64
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "洛阳交通"
         })
 
@@ -179,7 +179,7 @@ class RadioApiService private constructor() {
             streamUrl = "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8"
             country = "China"
             bitrate = 128
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "中国之声"
         })
 
@@ -189,7 +189,7 @@ class RadioApiService private constructor() {
             streamUrl = "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8"
             country = "China"
             bitrate = 128
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "经济之声"
         })
 
@@ -199,7 +199,7 @@ class RadioApiService private constructor() {
             streamUrl = "http://live.xmcdn.com/live/95/64.m3u8"
             country = "China"
             bitrate = 128
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "音乐之声"
         })
 
@@ -210,7 +210,7 @@ class RadioApiService private constructor() {
             streamUrl = "http://live.xmcdn.com/live/91/64.m3u8"
             country = "China"
             bitrate = 128
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "北京新闻"
         })
 
@@ -220,7 +220,7 @@ class RadioApiService private constructor() {
             streamUrl = "http://ls.qingting.fm/live/270.m3u8"
             country = "China"
             bitrate = 128
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "上海新闻"
         })
 
@@ -230,7 +230,7 @@ class RadioApiService private constructor() {
             streamUrl = "http://ls.qingting.fm/live/1260.m3u8"
             country = "China"
             bitrate = 128
-            isLastCheckOk = true
+            lastCheckOk = true
             currentProgram = "广东新闻"
         })
 

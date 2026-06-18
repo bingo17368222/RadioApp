@@ -17,7 +17,7 @@ class StationAdapter(
     private val listener: OnStationClickListener?
 ) : RecyclerView.Adapter<StationAdapter.ViewHolder>() {
 
-    fun interface OnStationClickListener {
+    interface OnStationClickListener {
         fun onStationClick(s: RadioStation)
         fun onStationLongClick(s: RadioStation)
     }
