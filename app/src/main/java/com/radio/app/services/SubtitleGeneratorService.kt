@@ -109,8 +109,6 @@ class SubtitleGeneratorService : Service() {
             val allTranscripts = mutableListOf<Transcript>()
             var fullText = StringBuilder()
 
-            recognizer.startListening()
-
             while (offset < totalBytes) {
                 val chunkSize = minOf(bytesPerChunk, totalBytes - offset)
                 val chunk = pcmData.copyOfRange(offset, offset + chunkSize)
@@ -122,7 +120,7 @@ class SubtitleGeneratorService : Service() {
                 val shorts = ShortArray(shortBuffer.remaining())
                 shortBuffer.get(shorts)
 
-                if (recognizer.acceptWaveForm(shorts, SAMPLE_RATE.toFloat())) {
+                if (recognizer.acceptWaveForm(shorts)) {
                     // 获得完整识别结果
                     val result = recognizer.result
                     val text = parseVoskResult(result)
@@ -141,8 +139,6 @@ class SubtitleGeneratorService : Service() {
                         callback.onSubtitleGenerated(t)
                         fullText.append(text).append(" ")
                     }
-                } else {
-                    // 部分结果，不保存
                 }
 
                 // 更新进度
