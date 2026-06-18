@@ -76,7 +76,7 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        override fun onError(errorMessage: String?) {
+        override fun onError(errorMessage: String) {
             runOnUiThread {
                 hasError = true
                 binding.tvLiveIndicator.text = "播放失败"
