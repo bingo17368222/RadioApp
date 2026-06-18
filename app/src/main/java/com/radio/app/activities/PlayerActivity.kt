@@ -342,9 +342,15 @@ class PlayerActivity : AppCompatActivity() {
                 episode.id,
                 episode.audioUrl,
                 object : SubtitleGeneratorService.SubtitleCallback {
+                    private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
                     override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
+                        subtitleList.add(transcript)
                         runOnUiThread {
                             binding.tvAiProgress.text = "字幕: ${transcript.text}"
+                            // 同时更新 SubtitleView 显示
+                            binding.subtitleView.setSubtitles(subtitleList)
+                            binding.subtitleView.visibility = View.VISIBLE
+                            binding.recyclerSegments.visibility = View.GONE
                         }
                     }
                     override fun onProgressUpdate(progress: Int, total: Int) {
@@ -376,9 +382,14 @@ class PlayerActivity : AppCompatActivity() {
                 episode.id,
                 episode.audioUrl,
                 object : SubtitleGeneratorService.SubtitleCallback {
+                    private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
                     override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
+                        subtitleList.add(transcript)
                         runOnUiThread {
                             binding.tvAiProgress.text = "字幕: ${transcript.text}"
+                            binding.subtitleView.setSubtitles(subtitleList)
+                            binding.subtitleView.visibility = View.VISIBLE
+                            binding.recyclerSegments.visibility = View.GONE
                         }
                     }
                     override fun onProgressUpdate(progress: Int, total: Int) {

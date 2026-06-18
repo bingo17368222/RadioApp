@@ -31,6 +31,7 @@ class SettingsFragment : Fragment() {
     private lateinit var settings: AppSettings
     private var previousTheme: String? = null
     private var isInitializing = true
+    private var suppressListeners = true  // 更可靠的标志：在updateUI期间始终为true
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -80,6 +81,30 @@ class SettingsFragment : Fragment() {
         val asrProviderAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, asrProviderLabels)
         asrProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAsrProvider.adapter = asrProviderAdapter
+
+        // 动态检测已安装的离线引擎，添加到ASR方案列表
+        addInstalledEnginesToAsrList(asrProviderAdapter, asrProviderLabels)
+    }
+
+    private fun addInstalledEnginesToAsrList(adapter: ArrayAdapter<String>, baseLabels: Array<String>) {
+        val modelsDir = requireContext().getExternalFilesDir("models")
+        if (modelsDir == null || !modelsDir.exists()) return
+        val whisperModels = arrayOf(
+            "whisper-tiny" to "本地Whisper Tiny",
+            "whisper-base" to "本地Whisper Base",
+            "whisper-small" to "本地Whisper Small",
+            "whisper-medium" to "本地Whisper Medium",
+            "whisper-large" to "本地Whisper Large"
+        )
+        for ((dir, label) in whisperModels) {
+            val modelDir = File(modelsDir, dir)
+            if (modelDir.exists()) {
+                val totalSize = calculateDirSize(modelDir)
+                if (totalSize >= 1024 * 1024) { // >= 1MB
+                    adapter.add(label)
+                }
+            }
+        }
     }
 
     private fun setupListeners() {
@@ -102,7 +127,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (isInitializing) return
+                if (suppressListeners) return
                 val themes = arrayOf(
                     AppSettings.THEME_DARK, AppSettings.THEME_FRESH,
                     AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM
@@ -119,7 +144,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerSubtitleSize.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (isInitializing) return
+                if (suppressListeners) return
                 val sizes = arrayOf(AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE)
                 settings.subtitleSize = sizes[position]
                 save()
@@ -129,7 +154,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerSubtitleLang.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (isInitializing) return
+                if (suppressListeners) return
                 val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
                 settings.subtitleLanguage = langs[position]
                 save()
@@ -139,7 +164,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerVoiceLang.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (isInitializing) return
+                if (suppressListeners) return
                 val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
                 settings.voiceLanguage = langs[position]
                 save()
@@ -153,7 +178,7 @@ class SettingsFragment : Fragment() {
         }
         binding.spinnerAiModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (isInitializing) return
+                if (suppressListeners) return
                 val models = arrayOf(
                     AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK,
                     AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR,
@@ -172,7 +197,7 @@ class SettingsFragment : Fragment() {
         }
         binding.spinnerAsrProvider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (isInitializing) return
+                if (suppressListeners) return
                 val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
                 settings.asrProvider = providers[position]
                 save()
@@ -232,13 +257,12 @@ class SettingsFragment : Fragment() {
 
         val cacheSize = calculateCacheSize()
         binding.tvCacheSize.text = "缓存大小: " + formatSize(cacheSize)
-        // 使用 postDelayed 延迟设置 isInitializing = false
-        // 因为 Spinner.setSelection() 会把事件 post 到消息队列
-        // 必须确保这些事件在 isInitializing=true 时被消费
-        // 使用 300ms 延迟确保所有 setSelection 事件已被消费
+        // 使用 postDelayed 延迟解除 listener 抑制
+        // Spinner.setSelection() 通过 handler.post() 异步触发 listener
+        // 必须确保 suppressListeners 在所有 setSelection 事件消费后才设为 false
         binding.root.postDelayed({
-            isInitializing = false
-        }, 300)
+            suppressListeners = false
+        }, 500)
     }
 
     private fun calculateCacheSize(): Long {

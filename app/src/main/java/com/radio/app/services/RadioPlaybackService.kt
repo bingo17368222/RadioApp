@@ -37,8 +37,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.net.CookieManager
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLDecoder
+import java.util.HashMap
 
 class RadioPlaybackService : Service(),
     MediaPlayer.OnPreparedListener,
@@ -135,11 +138,13 @@ class RadioPlaybackService : Service(),
         progressRunnable = Runnable {
             player?.let { p ->
                 callback?.let { cb ->
-                    val pos = p.currentPosition.toLong()
-                    val dur = p.duration.toLong()
-                    cb.onPositionChanged(pos, dur)
-                    if (prepared) {
-                        try {
+                    try {
+                        val pos = p.currentPosition.toLong()
+                        val dur = p.duration.toLong()
+                        // duration可能为负值(流式)或0(缓冲中)，使用getDuration()方法处理
+                        val effectiveDur = if (dur > 0) dur else if (isLive) -1L else 0L
+                        cb.onPositionChanged(pos, effectiveDur)
+                        if (prepared) {
                             var bp = 0
                             if (dur > 0) {
                                 bp = ((pos * 100) / dur).toInt()
@@ -149,8 +154,8 @@ class RadioPlaybackService : Service(),
                                 bufferPercent = bp
                                 cb.onBufferUpdate(bp)
                             }
-                        } catch (_: Exception) { /* ignore */ }
-                    }
+                        }
+                    } catch (_: Exception) { /* ignore */ }
                 }
             }
             if (caching) {
@@ -259,7 +264,7 @@ class RadioPlaybackService : Service(),
         stopAutoSkipCheck()
         try {
             player?.reset()
-            player?.setDataSource(station.streamUrl)
+            setDataSourceWithHeaders(currentStreamUrl)
             player?.prepareAsync()
             requestAudioFocus()
             startForegroundNotification()
@@ -284,7 +289,7 @@ class RadioPlaybackService : Service(),
         stopAutoSkipCheck()
         try {
             player?.reset()
-            player?.setDataSource(episode.audioUrl)
+            setDataSourceWithHeaders(currentStreamUrl)
             player?.prepareAsync()
             requestAudioFocus()
             startForegroundNotification()
@@ -295,6 +300,22 @@ class RadioPlaybackService : Service(),
         } catch (e: Exception) {
             Log.e(TAG, "playEpisode failed", e)
             prepared = false
+        }
+    }
+
+    /**
+     * 设置数据源，附带 HTTP headers 以兼容蜻蜓fm等需要User-Agent的源
+     */
+    private fun setDataSourceWithHeaders(url: String) {
+        val headers = HashMap<String, String>()
+        headers["User-Agent"] = "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        headers["Accept"] = "*/*"
+        headers["Connection"] = "keep-alive"
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            player?.setDataSource(this, url, headers)
+        } else {
+            @Suppress("DEPRECATION")
+            player?.setDataSource(url)
         }
     }
 
@@ -323,22 +344,46 @@ class RadioPlaybackService : Service(),
                     return@launch
                 }
 
-                val downloadUrl = URL(url)
-                conn = downloadUrl.openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.connectTimeout = 15000
-                conn.readTimeout = 60000
-                conn.instanceFollowRedirects = true
+                // 手动处理重定向 + 设置User-Agent
+                var downloadUrlStr = url
+                var redirectCount = 0
+                while (redirectCount < 5) {
+                    val downloadUrl = URL(downloadUrlStr)
+                    conn = downloadUrl.openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 60000
+                    conn.instanceFollowRedirects = false
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36")
+                    conn.setRequestProperty("Accept", "*/*")
 
-                val rc = conn.responseCode
-                if (rc != 200) {
-                    Log.w(TAG, "Cache HTTP $rc for $url")
-                    caching = false
-                    return@launch
+                    val rc = conn.responseCode
+                    Log.d(TAG, "Cache HTTP $rc for $url (redirect=$redirectCount)")
+                    if (rc in 300..399) {
+                        val location = conn.getHeaderField("Location")
+                        conn.disconnect()
+                        conn = null
+                        if (location.isNullOrBlank()) {
+                            Log.w(TAG, "Cache redirect without Location")
+                            caching = false
+                            return@launch
+                        }
+                        downloadUrlStr = if (location.startsWith("http")) location
+                        else URL(URL(downloadUrlStr), location).toString()
+                        redirectCount++
+                        continue
+                    }
+                    if (rc != 200) {
+                        Log.w(TAG, "Cache HTTP $rc for $url")
+                        caching = false
+                        return@launch
+                    }
+                    break
                 }
 
-                val totalSize = conn.contentLength
-                val input = conn.inputStream
+                val totalSize = conn?.contentLength ?: -1
+                Log.d(TAG, "Cache download totalSize=$totalSize for $url")
+                val input = conn?.inputStream ?: throw Exception("连接失败")
                 fos = FileOutputStream(cacheFile)
                 val buffer = ByteArray(8192)
                 var len: Int
@@ -347,7 +392,7 @@ class RadioPlaybackService : Service(),
                     fos.write(buffer, 0, len)
                     downloaded += len
                     if (totalSize > 0) {
-                        cacheProgress = (downloaded * 100 / totalSize)
+                        cacheProgress = (downloaded * 100 / totalSize).toInt()
                     }
                 }
                 fos.flush()
@@ -409,13 +454,13 @@ class RadioPlaybackService : Service(),
     }
 
     fun seekTo(pos: Long) {
-        if (!isLive) {
+        if (!isLive && prepared) {
             player?.seekTo(pos.toInt())
         }
     }
 
     fun skipForward() {
-        if (isLive) return
+        if (isLive || !prepared) return
         player?.let { p ->
             var pPos = p.currentPosition + skipSeconds * 1000
             val dur = p.duration
@@ -425,7 +470,7 @@ class RadioPlaybackService : Service(),
     }
 
     fun skipBackward() {
-        if (isLive) return
+        if (isLive || !prepared) return
         player?.seekTo(maxOf(0, (player?.currentPosition ?: 0) - skipSeconds * 1000))
     }
 
@@ -570,7 +615,7 @@ class RadioPlaybackService : Service(),
         val playing = player?.isPlaying ?: false
 
         val rewindIntent = Intent(this, RadioPlaybackService::class.java).apply {
-            action = ACTION_REWIND
+            action = ACTION_PREV_EPISODE
         }
         val rewindPI = PendingIntent.getService(
             this, 1, rewindIntent,
@@ -598,7 +643,7 @@ class RadioPlaybackService : Service(),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val forwardIntent = Intent(this, RadioPlaybackService::class.java).apply {
-            action = ACTION_FORWARD
+            action = ACTION_NEXT_EPISODE
         }
         val forwardPI = PendingIntent.getService(
             this, 5, forwardIntent,
@@ -614,7 +659,7 @@ class RadioPlaybackService : Service(),
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(R.drawable.ic_rewind, "快退", rewindPI)
+            .addAction(R.drawable.ic_prev, "上一节目", rewindPI)
             .addAction(R.drawable.ic_prev, "上一片段", prevPI)
             .addAction(
                 if (playing) R.drawable.ic_pause else R.drawable.ic_play,
@@ -622,7 +667,7 @@ class RadioPlaybackService : Service(),
                 playPausePI
             )
             .addAction(R.drawable.ic_next, "下一片段", nextPI)
-            .addAction(R.drawable.ic_forward, "快进", forwardPI)
+            .addAction(R.drawable.ic_next, "下一节目", forwardPI)
             .setStyle(mediaStyle)
             .build()
         startForeground(1, notification)
@@ -677,7 +722,7 @@ class RadioPlaybackService : Service(),
                 if (isRetrying && currentStreamUrl.isNotEmpty()) {
                     try {
                         player?.reset()
-                        player?.setDataSource(currentStreamUrl)
+                        setDataSourceWithHeaders(currentStreamUrl)
                         player?.prepareAsync()
                     } catch (e: Exception) {
                         Log.e(TAG, "Retry failed", e)

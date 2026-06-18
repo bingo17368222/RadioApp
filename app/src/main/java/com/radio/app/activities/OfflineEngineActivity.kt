@@ -256,6 +256,13 @@ class OfflineEngineActivity : AppCompatActivity() {
                         val totalSize = conn?.contentLength ?: -1
                         Log.d(TAG, "Download total size: $totalSize for ${engine.name}")
 
+                        // 如果服务器未返回Content-Length，尝试通过Range请求获取
+                        var effectiveTotalSize = totalSize
+                        if (effectiveTotalSize <= 0) {
+                            // 无法获取文件大小，使用未知大小模式
+                            Log.w(TAG, "Content-Length not available, using unknown size mode")
+                        }
+
                         val input = conn?.inputStream ?: throw Exception("连接失败")
                         fos = FileOutputStream(outFile)
                         val buffer = ByteArray(8192)
@@ -273,12 +280,12 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 lastUpdate = now
                                 val progress: Int
                                 val progressText: String
-                                if (totalSize > 0) {
-                                    progress = (downloaded * 100 / totalSize)
+                                if (effectiveTotalSize > 0) {
+                                    progress = (downloaded * 100 / effectiveTotalSize).coerceIn(0, 100)
                                     // 计算下载速度和剩余时间
                                     val elapsed = (now - startTime) / 1000.0
                                     val speed = if (elapsed > 0) downloaded / elapsed else 0.0 // bytes/sec
-                                    val remaining = if (speed > 0) (totalSize - downloaded) / speed else 0.0 // seconds
+                                    val remaining = if (speed > 0) (effectiveTotalSize - downloaded) / speed else 0.0 // seconds
                                     val speedStr = if (speed >= 1024 * 1024) {
                                         String.format("%.1f MB/s", speed / (1024.0 * 1024))
                                     } else {
@@ -292,17 +299,20 @@ class OfflineEngineActivity : AppCompatActivity() {
                                         String.format("%.0f秒", remaining)
                                     }
                                     // 大文件(>500MB)显示速度和剩余时间
-                                    if (totalSize > 500 * 1024 * 1024) {
+                                    if (effectiveTotalSize > 500 * 1024 * 1024) {
                                         progressText = "下载: $progress% | $speedStr | 剩余$remainStr"
                                     } else {
                                         progressText = "下载: $progress%"
                                     }
                                 } else {
-                                    progress = downloaded / 1024
-                                    progressText = "已下载: $progress KB"
+                                    // 未知大小模式：显示已下载量
+                                    progress = 0  // ProgressBar保持0
+                                    val downloadedMB = downloaded / (1024.0 * 1024)
+                                    progressText = "下载: ${String.format("%.1f", downloadedMB)} MB"
                                 }
                                 withContext(Dispatchers.Main) {
                                     btn.text = progressText
+                                    progressBar?.max = 100
                                     progressBar?.progress = progress
                                 }
                             }
