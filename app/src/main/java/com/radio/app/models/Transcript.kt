@@ -17,11 +17,4 @@ data class Transcript(
     var endTime: Long
         get() = segmentEnd
         set(value) { segmentEnd = value }
-
-    constructor(episodeId: String, segmentStart: Long, segmentEnd: Long, text: String) : this() {
-        this.episodeId = episodeId
-        this.segmentStart = segmentStart
-        this.segmentEnd = segmentEnd
-        this.text = text
-    }
 }
