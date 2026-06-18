@@ -79,6 +79,7 @@ if [ $? -eq 0 ]; then
             -F "name=Debug Build $(date +%Y%m%d-%H%M)" \
             -F "body=Auto-generated debug APK from Gitee Go pipeline" \
             -F "prerelease=true" \
+            -F "target_commitish=main" \
             -F "attach_files=@$APK_PATH")
         
         echo "Release response: $RELEASE_RESULT" | head -c 500
