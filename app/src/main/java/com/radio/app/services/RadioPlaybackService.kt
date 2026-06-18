@@ -58,6 +58,8 @@ class RadioPlaybackService : Service(),
         const val ACTION_NEXT_SEGMENT = "com.radio.app.NEXT_SEGMENT"
         const val ACTION_REWIND = "com.radio.app.REWIND"
         const val ACTION_FORWARD = "com.radio.app.FORWARD"
+        const val ACTION_PREV_EPISODE = "com.radio.app.PREV_EPISODE"
+        const val ACTION_NEXT_EPISODE = "com.radio.app.NEXT_EPISODE"
 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
@@ -100,6 +102,7 @@ class RadioPlaybackService : Service(),
     private var caching = false
     private var cacheProgress = 0
     private var errorRetryCount = 0
+    private var isRetrying = false
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -182,6 +185,8 @@ class RadioPlaybackService : Service(),
                 ACTION_NEXT_SEGMENT -> jumpToNextSegment()
                 ACTION_REWIND -> skipBackward()
                 ACTION_FORWARD -> skipForward()
+                ACTION_PREV_EPISODE -> notifyPrevEpisode()
+                ACTION_NEXT_EPISODE -> notifyNextEpisode()
             }
         }
         return START_STICKY
@@ -295,7 +300,9 @@ class RadioPlaybackService : Service(),
             var fos: FileOutputStream? = null
             try {
                 val fileName = "${Math.abs(url.hashCode())}.mp3"
-                val cacheDir = File(cacheDir, "audio").apply {
+                val cacheDir = File(getExternalFilesDir("audio"), ".")?.apply {
+                    if (!exists()) mkdirs()
+                } ?: File(cacheDir, "audio").apply {
                     if (!exists()) mkdirs()
                 }
                 val cacheFile = File(cacheDir, fileName)
@@ -366,7 +373,7 @@ class RadioPlaybackService : Service(),
     fun getCacheProgress(): Int = cacheProgress
 
     fun play() {
-        player?.takeIf { !it.isPlaying }?.let {
+        player?.takeIf { prepared && !it.isPlaying }?.let {
             it.start()
             callback?.onStateChanged(true)
             sendStateBroadcast(true)
@@ -375,7 +382,7 @@ class RadioPlaybackService : Service(),
     }
 
     fun pause() {
-        player?.takeIf { it.isPlaying }?.let {
+        player?.takeIf { prepared && it.isPlaying }?.let {
             it.pause()
             callback?.onStateChanged(false)
             sendStateBroadcast(false)
@@ -437,6 +444,22 @@ class RadioPlaybackService : Service(),
                 return
             }
         }
+    }
+
+    private fun notifyPrevEpisode() {
+        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+            putExtra(EXTRA_IS_PLAYING, false)
+            putExtra("action", "prev_episode")
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    private fun notifyNextEpisode() {
+        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+            putExtra(EXTRA_IS_PLAYING, false)
+            putExtra("action", "next_episode")
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
     fun jumpToPrevSegment() {
@@ -606,7 +629,8 @@ class RadioPlaybackService : Service(),
 
     override fun onPrepared(mp: MediaPlayer?) {
         prepared = true
-        // 不再重置 errorRetryCount，避免错误-重试-成功-再错误无限循环
+        errorRetryCount = 0
+        isRetrying = false
         mp?.start()
         callback?.onStateChanged(true)
         sendStateBroadcast(true)
@@ -616,16 +640,10 @@ class RadioPlaybackService : Service(),
     override fun onError(mp: MediaPlayer?, what: Int, extra: Int): Boolean {
         Log.e(TAG, "MediaPlayer onError: what=$what extra=$extra retry=$errorRetryCount")
         prepared = false
-        callback?.let { cb ->
-            cb.onStateChanged(false)
-            if (errorRetryCount >= MAX_ERROR_RETRY) {
-                cb.onError("播放失败: 无效的播放内容 (错误 $what)，已重试 $MAX_ERROR_RETRY 次")
-            }
-        }
-        sendStateBroadcast(false)
         errorRetryCount++
         if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
-            // 递增重试间隔：第1次3秒，第2次6秒，第3次9秒
+            // 重试期间静默处理，不通知 UI
+            isRetrying = true
             val retryDelay = errorRetryCount * 3000L
             Handler(Looper.getMainLooper()).postDelayed({
                 try {
@@ -636,6 +654,14 @@ class RadioPlaybackService : Service(),
                     Log.e(TAG, "Retry failed", e)
                 }
             }, retryDelay)
+        } else {
+            // 最终失败，通知 UI
+            isRetrying = false
+            callback?.let { cb ->
+                cb.onStateChanged(false)
+                cb.onError("播放失败: 无效的播放内容 (错误 $what)，已重试 $MAX_ERROR_RETRY 次")
+            }
+            sendStateBroadcast(false)
         }
         return true
     }

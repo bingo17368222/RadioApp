@@ -42,7 +42,7 @@ class ThemeManager(context: Context) {
                 val window: Window = activity.window ?: return
 
                 // 状态栏颜色
-                val primaryColor = parseColorSafe(colors.primary, R.color.primary_dark)
+                val primaryColor = parseColorSafe(activity, colors.primary, R.color.primary_dark)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     window.statusBarColor = primaryColor
                 }
@@ -52,13 +52,13 @@ class ThemeManager(context: Context) {
 
                 // 尝试通过反射或遍历View树来应用颜色
                 // 实际应用中，更好的方式是在onResume中刷新所有View
-                Log.d(TAG, "Custom colors applied: primary=${colors.primary}")
+                Log.d(TAG, "Custom colors applied: primary=$primaryColor")
             } catch (e: Exception) {
                 Log.e(TAG, "applyCustomColors failed", e)
             }
         }
 
-        private fun parseColorSafe(colorStr: String?, defaultResId: Int): Int {
+        private fun parseColorSafe(context: Context, colorStr: String?, defaultResId: Int): Int {
             try {
                 if (!colorStr.isNullOrEmpty()) {
                     return Color.parseColor(colorStr)
@@ -66,7 +66,7 @@ class ThemeManager(context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "parseColor failed: $colorStr")
             }
-            return defaultResId // 这里会返回资源ID，需要context来获取颜色值
+            return context.getColor(defaultResId)
         }
 
         fun getColorFromTheme(context: Context, attrResId: Int): Int {

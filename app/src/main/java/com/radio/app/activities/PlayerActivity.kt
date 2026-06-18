@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.view.View
 import android.widget.SeekBar
 import android.widget.Toast
@@ -33,6 +35,11 @@ class PlayerActivity : AppCompatActivity() {
     private var subtitleService: SubtitleGeneratorService? = null
     private var subtitleServiceBound = false
     private var hasError = false
+    private var hasErrorToastShown = false
+    private var episodeList: ArrayList<Episode> = ArrayList()
+    private var currentEpisodeIndex = -1
+    private var cachePollingHandler: Handler? = null
+    private var cachePollingRunnable: Runnable? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -66,6 +73,11 @@ class PlayerActivity : AppCompatActivity() {
         override fun onStateChanged(playing: Boolean) {
             runOnUiThread {
                 updatePlayPauseButton(playing)
+                if (playing) {
+                    hasError = false
+                    hasErrorToastShown = false
+                    binding.tvAiProgress.visibility = View.GONE
+                }
                 binding.tvLiveIndicator.text = if (hasError) "播放失败" else if (playing) "播放中" else "已暂停"
             }
         }
@@ -99,7 +111,10 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvLiveIndicator.text = "播放失败"
                 binding.tvAiProgress.text = errorMessage
                 binding.tvAiProgress.visibility = View.VISIBLE
-                Toast.makeText(this@PlayerActivity, errorMessage, Toast.LENGTH_LONG).show()
+                if (!hasErrorToastShown) {
+                    hasErrorToastShown = true
+                    Toast.makeText(this@PlayerActivity, errorMessage, Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -151,6 +166,11 @@ class PlayerActivity : AppCompatActivity() {
         @Suppress("UNCHECKED_CAST")
         voiceSegments = (intent.getSerializableExtra("voice_segments") as? ArrayList<VoiceSegment>) ?: emptyList()
 
+        // 读取 episode 列表和 index
+        @Suppress("UNCHECKED_CAST")
+        episodeList = (intent.getSerializableExtra("episode_list") as? ArrayList<Episode>) ?: ArrayList()
+        currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
+
         // 最终校验：确保 audioUrl 有效
         if (currentEpisode?.audioUrl.isNullOrBlank()) {
             Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show()
@@ -196,6 +216,44 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             binding.recyclerSegments.visibility = View.VISIBLE
         }
+
+        // 节目导航：非直播且有列表时显示
+        val isLive = currentEpisode?.isLive ?: false
+        if (!isLive && episodeList.size > 1 && currentEpisodeIndex >= 0) {
+            binding.layoutEpisodeNav.visibility = View.VISIBLE
+            binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
+            binding.btnPrevEpisode.setOnClickListener {
+                if (currentEpisodeIndex > 0) {
+                    playEpisodeAtIndex(currentEpisodeIndex - 1)
+                }
+            }
+            binding.btnNextEpisode.setOnClickListener {
+                if (currentEpisodeIndex < episodeList.size - 1) {
+                    playEpisodeAtIndex(currentEpisodeIndex + 1)
+                }
+            }
+        } else {
+            binding.layoutEpisodeNav.visibility = View.GONE
+        }
+
+        // 缓存路径轮询：每2秒检查一次
+        cachePollingHandler = Handler(Looper.getMainLooper())
+        cachePollingRunnable = object : Runnable {
+            override fun run() {
+                playbackService?.let {
+                    val cachePath = it.getLocalCachePath()
+                    if (cachePath.isNotEmpty()) {
+                        binding.tvCacheUrl.text = "缓存: $cachePath"
+                        binding.tvCacheUrl.visibility = View.VISIBLE
+                    } else if (it.isCaching()) {
+                        binding.tvCacheUrl.text = "缓存中..."
+                        binding.tvCacheUrl.visibility = View.VISIBLE
+                    }
+                }
+                cachePollingHandler?.postDelayed(this, 2000)
+            }
+        }
+        cachePollingRunnable?.let { cachePollingHandler?.post(it) }
     }
 
     private fun setupListeners() {
@@ -355,6 +413,22 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun playEpisodeAtIndex(index: Int) {
+        if (index < 0 || index >= episodeList.size) return
+        currentEpisodeIndex = index
+        val episode = episodeList[index]
+        currentEpisode = episode
+        binding.tvStationName.text = episode.title
+        binding.tvNetworkUrl.text = "网络: ${episode.audioUrl}"
+        binding.tvEpisodeNavHint.text = " ${index + 1}/${episodeList.size} "
+        binding.tvLiveIndicator.text = "准备播放..."
+        binding.tvCurrentTime.text = "00:00 / 00:00"
+        binding.seekBar.progress = 0
+        hasError = false
+        hasErrorToastShown = false
+        playbackService?.playEpisode(episode, false)
+    }
+
     private fun updatePlayPauseButton(isPlaying: Boolean) {
         binding.btnPlayPause.setImageResource(
             if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
@@ -370,6 +444,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        cachePollingRunnable?.let { cachePollingHandler?.removeCallbacks(it) }
         if (serviceBound) {
             playbackService?.setCallback(null)
             unbindService(serviceConnection)

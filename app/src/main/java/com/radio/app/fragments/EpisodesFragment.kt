@@ -196,6 +196,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             putExtra("duration", episode.duration)
             putExtra("voice_segments", ArrayList(episode.voiceSegments))
             putExtra("transcripts", ArrayList(episode.transcripts))
+            putExtra("episode_list", ArrayList(episodes))
+            putExtra("episode_index", episodes.indexOf(episode))
         }
         startActivity(intent)
     }

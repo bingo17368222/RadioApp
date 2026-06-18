@@ -42,44 +42,44 @@ class OfflineEngineActivity : AppCompatActivity() {
     )
 
     private val engines = arrayOf(
-        // ===== Whisper 语音识别模型（OpenAI开源） =====
+        // ===== Whisper 语音识别模型（GitHub Release 源） =====
         EngineInfo(
             "Whisper Tiny",
             "OpenAI Whisper tiny模型\n大小: 约75MB | 识别率: ~85% | 速度: 极快(实时)\n适用: 快速字幕生成，对准确率要求不高的场景\n支持: 中文、英文及99种语言",
             "约75MB",
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-tiny.bin",
             "whisper-tiny"
         ),
         EngineInfo(
             "Whisper Base",
             "OpenAI Whisper base模型\n大小: 约142MB | 识别率: ~90% | 速度: 快(近实时)\n适用: 日常字幕生成，准确率和速度平衡\n支持: 中文、英文及99种语言",
             "约142MB",
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-base.bin",
             "whisper-base"
         ),
         EngineInfo(
             "Whisper Small",
             "OpenAI Whisper small模型\n大小: 约466MB | 识别率: ~93% | 速度: 中等(约2x实时)\n适用: 高质量字幕，推荐日常使用\n支持: 中文、英文及99种语言",
             "约466MB",
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-small.bin",
             "whisper-small"
         ),
         EngineInfo(
             "Whisper Medium",
             "OpenAI Whisper medium模型\n大小: 约1.5GB | 识别率: ~95% | 速度: 较慢(约4x实时)\n适用: 专业级字幕，对准确率要求极高\n支持: 中文、英文及99种语言",
             "约1.5GB",
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-medium.bin",
             "whisper-medium"
         ),
         EngineInfo(
             "Whisper Large-v3",
             "OpenAI Whisper large-v3模型\n大小: 约2.9GB | 识别率: ~97% | 速度: 慢(约8x实时)\n适用: 最高精度，专业转录场景\n支持: 中文、英文及99种语言",
             "约2.9GB",
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.0/ggml-large-v3.bin",
             "whisper-large"
         ),
 
-        // ===== Vosk 离线语音识别（APK内置） =====
+        // ===== Vosk 离线语音识别（APK内置 + 可下载） =====
         EngineInfo(
             "Vosk 小模型 (中文)",
             "Vosk small-cn 中文模型\n大小: 约42MB | 识别率: ~88% | 速度: 快(实时)\n状态: APK内置，无需下载\n适用: 中文语音识别，低资源消耗",
@@ -94,14 +94,26 @@ class OfflineEngineActivity : AppCompatActivity() {
             "https://alphacephei.com/vosk/models/vosk-model-cn-0.22.zip",
             "vosk-model-cn-0.22"
         ),
-
-        // ===== Google ML Kit (用户手动下载) =====
         EngineInfo(
-            "Google ML Kit (设备端)",
-            "Google ML Kit on-device audio\n大小: 约85MB | 识别率: ~92% | 速度: 快(实时)\n状态: 需手动下载安装\n适用: 音频活动检测、语音分段",
-            "约85MB",
-            "https://github.com/google/ml-kit/releases/download/audio-v16.1.0/mlkit-audio-model.zip",
-            "mlkit-audio"
+            "Vosk 小模型 (英文)",
+            "Vosk small-en 英文模型\n大小: 约42MB | 识别率: ~90% | 速度: 快(实时)\n适用: 英文语音识别，低资源消耗",
+            "约42MB",
+            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+            "vosk-model-small-en-us-0.15"
+        ),
+        EngineInfo(
+            "Vosk 中模型 (英文)",
+            "Vosk medium-en 英文模型\n大小: 约280MB | 识别率: ~93% | 速度: 中等\n适用: 高精度英文语音识别",
+            "约280MB",
+            "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
+            "vosk-model-en-us-0.22"
+        ),
+        EngineInfo(
+            "Vosk 大模型 (英文)",
+            "Vosk large-en 英文大模型\n大小: 约1.8GB | 识别率: ~96% | 速度: 较慢\n适用: 最高精度英文语音识别",
+            "约1.8GB",
+            "https://alphacephei.com/vosk/models/vosk-model-en-us-daanzu-0.22.zip",
+            "vosk-model-en-us-daanzu-0.22"
         ),
 
         // ===== 阿里 MNN-LLM (APK内置) =====

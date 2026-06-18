@@ -14,13 +14,22 @@
         <SeekBar android:id="@+id/seek_bar" android:layout_width="match_parent" android:layout_height="wrap_content" android:progressDrawable="@drawable/seekbar_progress" android:thumb="@drawable/seekbar_thumb" />
         <SeekBar android:id="@+id/seek_bar_cache" android:layout_width="match_parent" android:layout_height="wrap_content" android:progressDrawable="@drawable/seekbar_cache_progress" android:thumb="@null" android:clickable="false" android:alpha="0.5" android:layout_marginTop="-8dp" />
         <ProgressBar android:id="@+id/progress_buffer" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="4dp" android:layout_marginTop="2dp" android:max="100" android:progress="0" android:visibility="gone" />
-        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp">
-            <TextView android:id="@+id/tv_network_url" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_above="@+id/tv_current_time" android:text="" android:textColor="@color/text_secondary" android:textSize="10sp" android:maxLines="1" android:ellipsize="middle" android:visibility="gone" />
-            <TextView android:id="@+id/tv_current_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentStart="true" android:text="0:00" android:textColor="@color/text_secondary" android:textSize="12sp" />
-            <TextView android:id="@+id/tv_ai_progress" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerInParent="true" android:text="" android:textColor="@color/success" android:textSize="11sp" android:visibility="gone" />
-            <TextView android:id="@+id/tv_cache_url" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_above="@+id/tv_total_time" android:layout_alignParentEnd="true" android:text="" android:textColor="@color/text_secondary" android:textSize="10sp" android:maxLines="1" android:ellipsize="middle" android:visibility="gone" android:gravity="end" />
-            <TextView android:id="@+id/tv_total_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentEnd="true" android:text="0:00" android:textColor="@color/text_secondary" android:textSize="12sp" />
-        </RelativeLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginTop="4dp">
+            <TextView android:id="@+id/tv_network_url" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="@color/text_secondary" android:textSize="10sp" android:maxLines="1" android:ellipsize="middle" android:visibility="visible" />
+            <TextView android:id="@+id/tv_cache_url" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textColor="@color/text_secondary" android:textSize="10sp" android:maxLines="1" android:ellipsize="middle" android:visibility="gone" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <TextView android:id="@+id/tv_current_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0:00" android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
+                <TextView android:id="@+id/tv_ai_progress" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="" android:textColor="@color/success" android:textSize="11sp" android:visibility="gone" />
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
+                <TextView android:id="@+id/tv_total_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0:00" android:textColor="@color/text_secondary" android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+    <LinearLayout android:id="@+id/layout_episode_nav" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="8dp" android:visibility="gone">
+        <ImageButton android:id="@+id/btn_prev_episode" android:layout_width="40dp" android:layout_height="40dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_prev" android:contentDescription="Prev Episode" />
+        <TextView android:id="@+id/tv_episode_nav_hint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="  节目导航  " android:textColor="@color/text_secondary" android:textSize="12sp" android:gravity="center" />
+        <ImageButton android:id="@+id/btn_next_episode" android:layout_width="40dp" android:layout_height="40dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_next" android:contentDescription="Next Episode" />
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="8dp">
         <ImageButton android:id="@+id/btn_prev_segment" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_prev" android:contentDescription="Prev Segment" android:tooltipText="上一片段" />

@@ -30,6 +30,7 @@ class SettingsFragment : Fragment() {
     private lateinit var prefManager: PreferenceManager
     private lateinit var settings: AppSettings
     private var previousTheme: String? = null
+    private var isInitializing = true
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -53,6 +54,7 @@ class SettingsFragment : Fragment() {
     }
 
     private fun initViews() {
+        isInitializing = true
         val themeLabels = arrayOf("深色", "清新", "经典", "极简", "自定义")
         val themeAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, themeLabels)
         themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -100,6 +102,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isInitializing) return
                 val themes = arrayOf(
                     AppSettings.THEME_DARK, AppSettings.THEME_FRESH,
                     AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM
@@ -116,6 +119,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerSubtitleSize.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isInitializing) return
                 val sizes = arrayOf(AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE)
                 settings.subtitleSize = sizes[position]
                 save()
@@ -125,6 +129,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerSubtitleLang.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isInitializing) return
                 val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
                 settings.subtitleLanguage = langs[position]
                 save()
@@ -134,6 +139,7 @@ class SettingsFragment : Fragment() {
 
         binding.spinnerVoiceLang.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isInitializing) return
                 val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
                 settings.voiceLanguage = langs[position]
                 save()
@@ -147,6 +153,7 @@ class SettingsFragment : Fragment() {
         }
         binding.spinnerAiModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isInitializing) return
                 val models = arrayOf(
                     AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK,
                     AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR,
@@ -165,6 +172,7 @@ class SettingsFragment : Fragment() {
         }
         binding.spinnerAsrProvider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isInitializing) return
                 val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
                 settings.asrProvider = providers[position]
                 save()
@@ -224,6 +232,7 @@ class SettingsFragment : Fragment() {
 
         val cacheSize = calculateCacheSize()
         binding.tvCacheSize.text = "缓存大小: " + formatSize(cacheSize)
+        isInitializing = false
     }
 
     private fun calculateCacheSize(): Long {
@@ -403,6 +412,12 @@ class SettingsFragment : Fragment() {
         activity?.let {
             if (it is com.radio.app.activities.MainActivity) {
                 try {
+                    // 动态更新状态栏颜色
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                        val typedValue = android.util.TypedValue()
+                        it.theme.resolveAttribute(androidx.appcompat.R.attr.colorPrimary, typedValue, true)
+                        it.window.statusBarColor = typedValue.data
+                    }
                     it.recreate()
                 } catch (e: Exception) {
                     e.printStackTrace()
