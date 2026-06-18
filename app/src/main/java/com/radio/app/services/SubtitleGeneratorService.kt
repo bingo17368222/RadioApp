@@ -12,7 +12,6 @@ import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.Transcript
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.SpeechRecognizer
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -100,7 +99,7 @@ class SubtitleGeneratorService : Service() {
 
             // 4. 使用Vosk进行语音识别
             val model = Model(modelPath)
-            val recognizer = SpeechRecognizer(model, SAMPLE_RATE.toFloat())
+            val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
 
             val pcmData = pcmFile.readBytes()
             val totalBytes = pcmData.size
