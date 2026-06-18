@@ -169,7 +169,7 @@ class RadioPlaybackService : Service(),
     private fun loadSettings() {
         val prefMgr = PreferenceManager(this)
         val settings: AppSettings = prefMgr.loadSettings()
-        continuousPlay = settings.isContinuousPlay
+        continuousPlay = settings.continuousPlay
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -497,7 +497,7 @@ class RadioPlaybackService : Service(),
     private fun jumpToNextDrySegment(currentSeg: VoiceSegment) {
         val segments = currentEpisode?.voiceSegments ?: return
         for (seg in segments) {
-            if (seg.start > currentSeg.end && seg.isEffectiveDry) {
+            if (seg.start > currentSeg.end && seg.isEffectiveDry()) {
                 seekTo(seg.start)
                 return
             }

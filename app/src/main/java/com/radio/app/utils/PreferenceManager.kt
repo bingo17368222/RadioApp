@@ -17,7 +17,11 @@ class PreferenceManager(context: Context) {
 
     fun loadSettings(): AppSettings {
         val json = prefs.getString(KEY_SETTINGS, null)
-        return if (json != null) gson.fromJson(json, AppSettings::class.java) else AppSettings()
+        return if (json != null) {
+            gson.fromJson(json, AppSettings::class.java)
+        } else {
+            AppSettings.getInstance(context)
+        }
     }
 
     fun saveSettings(settings: AppSettings) {

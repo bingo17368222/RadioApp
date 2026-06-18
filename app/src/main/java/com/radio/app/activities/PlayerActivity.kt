@@ -159,11 +159,15 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         binding.btnSkipForward.setOnClickListener {
-            playbackService?.seekTo(playbackService?.getCurrentPosition().plus(30000))
+            playbackService?.getCurrentPosition()?.let { pos ->
+                playbackService?.seekTo(pos + 30000)
+            }
         }
 
         binding.btnSkipBackward.setOnClickListener {
-            playbackService?.seekTo(playbackService?.getCurrentPosition().minus(30000).coerceAtLeast(0))
+            playbackService?.getCurrentPosition()?.let { pos ->
+                playbackService?.seekTo((pos - 30000).coerceAtLeast(0))
+            }
         }
 
         binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
