@@ -606,6 +606,7 @@ class RadioPlaybackService : Service(),
 
     override fun onPrepared(mp: MediaPlayer?) {
         prepared = true
+        errorRetryCount = 0  // Bug 2: 重置错误重试计数
         mp?.start()
         callback?.onStateChanged(true)
         sendStateBroadcast(true)

@@ -186,21 +186,41 @@ class SettingsFragment : Fragment() {
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchAutoCache.isChecked = settings.autoCache
 
+        // Bug 7: 设置 selection 时暂时移除 listener，避免触发 onItemSelected
+        val themeListener = binding.spinnerTheme.onItemSelectedListener
+        binding.spinnerTheme.onItemSelectedListener = null
         val themes = arrayOf(AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM)
         themes.indexOfFirst { it == settings.uiTheme }.takeIf { it >= 0 }?.let { binding.spinnerTheme.setSelection(it) }
+        binding.spinnerTheme.onItemSelectedListener = themeListener
 
+        val sizeListener = binding.spinnerSubtitleSize.onItemSelectedListener
+        binding.spinnerSubtitleSize.onItemSelectedListener = null
         val sizes = arrayOf(AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE)
         sizes.indexOfFirst { it == settings.subtitleSize }.takeIf { it >= 0 }?.let { binding.spinnerSubtitleSize.setSelection(it) }
+        binding.spinnerSubtitleSize.onItemSelectedListener = sizeListener
 
+        val langListener = binding.spinnerSubtitleLang.onItemSelectedListener
+        binding.spinnerSubtitleLang.onItemSelectedListener = null
         val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
         langs.indexOfFirst { it == settings.subtitleLanguage }.takeIf { it >= 0 }?.let { binding.spinnerSubtitleLang.setSelection(it) }
-        langs.indexOfFirst { it == settings.voiceLanguage }.takeIf { it >= 0 }?.let { binding.spinnerVoiceLang.setSelection(it) }
+        binding.spinnerSubtitleLang.onItemSelectedListener = langListener
 
+        val voiceLangListener = binding.spinnerVoiceLang.onItemSelectedListener
+        binding.spinnerVoiceLang.onItemSelectedListener = null
+        langs.indexOfFirst { it == settings.voiceLanguage }.takeIf { it >= 0 }?.let { binding.spinnerVoiceLang.setSelection(it) }
+        binding.spinnerVoiceLang.onItemSelectedListener = voiceLangListener
+
+        val aiModelListener = binding.spinnerAiModel.onItemSelectedListener
+        binding.spinnerAiModel.onItemSelectedListener = null
         val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING)
         aiModels.indexOfFirst { it == settings.aiModel }.takeIf { it >= 0 }?.let { binding.spinnerAiModel.setSelection(it) }
+        binding.spinnerAiModel.onItemSelectedListener = aiModelListener
 
+        val asrProviderListener = binding.spinnerAsrProvider.onItemSelectedListener
+        binding.spinnerAsrProvider.onItemSelectedListener = null
         val asrProviders = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
         asrProviders.indexOfFirst { it == settings.asrProvider }.takeIf { it >= 0 }?.let { binding.spinnerAsrProvider.setSelection(it) }
+        binding.spinnerAsrProvider.onItemSelectedListener = asrProviderListener
 
         val cacheSize = calculateCacheSize()
         binding.tvCacheSize.text = "缓存大小: " + formatSize(cacheSize)
@@ -384,10 +404,13 @@ class SettingsFragment : Fragment() {
         if (previousTheme != null && previousTheme != currentTheme) {
             previousTheme = currentTheme
             activity?.let {
-                try {
-                    it.recreate()
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                // Bug 8: 只 recreate MainActivity，避免停止 PlayerActivity 的播放
+                if (it is com.radio.app.activities.MainActivity) {
+                    try {
+                        it.recreate()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 }
             }
         }

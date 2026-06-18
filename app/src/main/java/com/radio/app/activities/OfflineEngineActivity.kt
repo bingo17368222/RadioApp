@@ -204,17 +204,41 @@ class OfflineEngineActivity : AppCompatActivity() {
                     var conn: HttpURLConnection? = null
                     var fos: FileOutputStream? = null
                     try {
-                        val url = URL(downloadUrl)
-                        conn = url.openConnection() as HttpURLConnection
-                        conn.requestMethod = "GET"
-                        conn.connectTimeout = 30000
-                        conn.readTimeout = 120000
-                        conn.instanceFollowRedirects = true
+                        var downloadUrlStr = downloadUrl
+                        // Bug 9: 手动处理 3xx 重定向（HuggingFace 使用 307/308）
+                        var redirectCount = 0
+                        while (redirectCount < 5) {
+                            val url = URL(downloadUrlStr)
+                            conn = url.openConnection() as HttpURLConnection
+                            conn.requestMethod = "GET"
+                            conn.connectTimeout = 30000
+                            conn.readTimeout = 120000
+                            conn.instanceFollowRedirects = false  // 手动处理重定向
+                            // 设置 User-Agent，部分服务器需要
+                            conn.setRequestProperty("User-Agent", "RadioApp/1.0")
 
-                        val rc = conn.responseCode
-                        Log.d(TAG, "Download response code: $rc for ${engine.name}")
-                        if (rc != 200) {
-                            throw Exception("HTTP $rc")
+                            val rc = conn.responseCode
+                            Log.d(TAG, "Download response code: $rc for ${engine.name} (redirect=$redirectCount)")
+                            if (rc in 300..399) {
+                                val location = conn.getHeaderField("Location")
+                                conn.disconnect()
+                                conn = null
+                                if (location.isNullOrBlank()) {
+                                    throw Exception("重定向但无 Location 头 (HTTP $rc)")
+                                }
+                                // 处理相对 URL
+                                downloadUrlStr = if (location.startsWith("http")) {
+                                    location
+                                } else {
+                                    URL(URL(downloadUrlStr), location).toString()
+                                }
+                                redirectCount++
+                                continue
+                            }
+                            if (rc != 200) {
+                                throw Exception("HTTP $rc")
+                            }
+                            break
                         }
 
                         val totalSize = conn.contentLength
