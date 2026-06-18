@@ -57,50 +57,32 @@ if [ $? -eq 0 ]; then
         APK_SIZE=$(stat -c%s "$APK_PATH")
         echo "APK size: $APK_SIZE bytes"
         
-        # 获取或创建 Release
         GITEE_TOKEN="c49181ed3234c05100ef7db8a2b979c6"
         RELEASE_TAG="debug-latest"
         
-        # 检查 Release 是否已存在
-        RELEASE_ID=$(curl -s "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases?access_token=$GITEE_TOKEN&page=1&per_page=5" | python3 -c "
-import sys,json
-try:
-    releases=json.load(sys.stdin)
-    for r in releases:
-        if r.get('tag_name') == '$RELEASE_TAG':
-            print(r['id'])
-            break
-except:
-    print('')
-" 2>/dev/null)
+        # 检查 Release 是否已存在（纯 shell 解析 JSON）
+        RELEASE_LIST=$(curl -s "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases?access_token=$GITEE_TOKEN&page=1&per_page=5")
+        RELEASE_ID=$(echo "$RELEASE_LIST" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
         
         if [ -n "$RELEASE_ID" ]; then
-            echo "Updating existing Release #$RELEASE_ID"
-            # 删除旧的 Release（因为码云 Release API 不支持更新附件）
+            echo "Deleting existing Release #$RELEASE_ID"
             curl -s -X DELETE "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases/$RELEASE_ID?access_token=$GITEE_TOKEN" > /dev/null
+            sleep 1
         fi
         
         # 创建新 Release 并上传 APK
-        curl -s -X POST "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases" \
+        echo "Creating new Release..."
+        RELEASE_RESULT=$(curl -s -X POST "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases" \
             -H "Authorization: token $GITEE_TOKEN" \
             -F "access_token=$GITEE_TOKEN" \
             -F "tag_name=$RELEASE_TAG" \
             -F "name=Debug Build $(date +%Y%m%d-%H%M)" \
             -F "body=Auto-generated debug APK from Gitee Go pipeline" \
             -F "prerelease=true" \
-            -F "attach_files=@$APK_PATH" | python3 -c "
-import sys,json
-try:
-    d=json.load(sys.stdin)
-    if 'id' in d:
-        print('Release created: #' + str(d['id']))
-        for f in d.get('assets', []):
-            print('Asset: ' + f.get('name','') + ' -> ' + f.get('browser_download_url',''))
-    else:
-        print('Response: ' + json.dumps(d, ensure_ascii=False)[:300])
-except Exception as e:
-    print('Parse error: ' + str(e))
-"
+            -F "attach_files=@$APK_PATH")
+        
+        echo "Release response: $RELEASE_RESULT" | head -c 500
+        echo ""
         echo "=== Upload complete ==="
     else
         echo "WARNING: APK file not found at $APK_PATH"
