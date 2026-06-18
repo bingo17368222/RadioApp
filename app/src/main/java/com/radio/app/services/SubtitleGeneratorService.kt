@@ -120,7 +120,7 @@ class SubtitleGeneratorService : Service() {
                 val shorts = ShortArray(shortBuffer.remaining())
                 shortBuffer.get(shorts)
 
-                if (recognizer.acceptWaveForm(shorts)) {
+                if (recognizer.acceptWaveForm(shorts, SAMPLE_RATE)) {
                     // 获得完整识别结果
                     val result = recognizer.result
                     val text = parseVoskResult(result)
