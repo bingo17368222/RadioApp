@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.radio.app.models.AppSettings
 
-class PreferenceManager(context: Context) {
+class PreferenceManager(private val context: Context) {
 
     companion object {
         private const val PREF_NAME = "radio_app_prefs"
