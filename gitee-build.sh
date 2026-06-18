@@ -70,20 +70,29 @@ if [ $? -eq 0 ]; then
             sleep 1
         fi
         
-        # 创建新 Release 并上传 APK
+        # 创建新 Release（先不带附件）
         echo "Creating new Release..."
         RELEASE_RESULT=$(curl -s -X POST "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases" \
-            -H "Authorization: token $GITEE_TOKEN" \
-            -F "access_token=$GITEE_TOKEN" \
-            -F "tag_name=$RELEASE_TAG" \
-            -F "name=Debug Build $(date +%Y%m%d-%H%M)" \
-            -F "body=Auto-generated debug APK from Gitee Go pipeline" \
-            -F "prerelease=true" \
-            -F "target_commitish=main" \
-            -F "attach_files=@$APK_PATH")
+            -H "Content-Type: application/json" \
+            -d "{\"access_token\":\"$GITEE_TOKEN\",\"tag_name\":\"$RELEASE_TAG\",\"name\":\"Debug Build $(date +%Y%m%d-%H%M)\",\"body\":\"Auto-generated debug APK from Gitee Go pipeline\",\"prerelease\":true,\"target_commitish\":\"main\"}")
         
-        echo "Release response: $RELEASE_RESULT" | head -c 500
-        echo ""
+        # 解析 Release ID（纯 shell）
+        NEW_RELEASE_ID=$(echo "$RELEASE_RESULT" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+        
+        if [ -n "$NEW_RELEASE_ID" ]; then
+            echo "Release created: #$NEW_RELEASE_ID"
+            
+            # 单独上传 APK 附件
+            echo "Uploading APK attachment..."
+            UPLOAD_RESULT=$(curl -s -X POST "https://gitee.com/api/v5/repos/bingostudio/RadioApp/releases/$NEW_RELEASE_ID/attach_files?access_token=$GITEE_TOKEN" \
+                -F "file=@$APK_PATH")
+            echo "Upload result: $UPLOAD_RESULT" | head -c 300
+            echo ""
+        else
+            echo "Failed to create Release: $RELEASE_RESULT" | head -c 300
+            echo ""
+        fi
+        
         echo "=== Upload complete ==="
     else
         echo "WARNING: APK file not found at $APK_PATH"
