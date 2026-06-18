@@ -2,6 +2,7 @@ package com.radio.app.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import com.google.gson.Gson
 import com.radio.app.models.AppSettings
 
@@ -18,7 +19,24 @@ class PreferenceManager(private val context: Context) {
     fun loadSettings(): AppSettings {
         val json = prefs.getString(KEY_SETTINGS, null)
         return if (json != null) {
-            gson.fromJson(json, AppSettings::class.java)
+            try {
+                val s = gson.fromJson(json, AppSettings::class.java)
+                // Gson 不调用 Kotlin 属性初始化器，手动确保非 null
+                if (s.subtitleSize.isNullOrEmpty()) s.subtitleSize = AppSettings.SUBTITLE_MEDIUM
+                if (s.subtitleLanguage.isNullOrEmpty()) s.subtitleLanguage = AppSettings.LANG_CN
+                if (s.voiceLanguage.isNullOrEmpty()) s.voiceLanguage = AppSettings.LANG_CN
+                if (s.uiTheme.isNullOrEmpty()) s.uiTheme = AppSettings.THEME_DARK
+                if (s.aiModel.isNullOrEmpty()) s.aiModel = AppSettings.AI_MODEL_WENXIN
+                if (s.asrProvider.isNullOrEmpty()) s.asrProvider = AppSettings.ASR_BAIDU
+                if (s.splitMode.isNullOrEmpty()) s.splitMode = AppSettings.SPLIT_MODE_NONE
+                if (s.customColors == null) s.customColors = AppSettings.CustomColors()
+                if (s.keywordConfig == null) s.keywordConfig = AppSettings.KeywordConfig()
+                if (s.dislikedEpisodes == null) s.dislikedEpisodes = mutableListOf()
+                s
+            } catch (e: Exception) {
+                Log.e("PreferenceManager", "Failed to load settings", e)
+                AppSettings.getInstance(context)
+            }
         } else {
             AppSettings.getInstance(context)
         }

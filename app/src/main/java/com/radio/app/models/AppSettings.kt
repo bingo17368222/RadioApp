@@ -70,6 +70,15 @@ class AppSettings private constructor() {
     var autoCache: Boolean = false
     var dislikedEpisodes: MutableList<String> = mutableListOf()
 
+    /** Gson 安全访问：确保字段不为 null */
+    fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
+    fun safeSubtitleLanguage(): String = subtitleLanguage ?: LANG_CN
+    fun safeVoiceLanguage(): String = voiceLanguage ?: LANG_CN
+    fun safeUiTheme(): String = uiTheme ?: THEME_DARK
+    fun safeAiModel(): String = aiModel ?: AI_MODEL_WENXIN
+    fun safeAsrProvider(): String = asrProvider ?: ASR_BAIDU
+    fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
+
     private fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN

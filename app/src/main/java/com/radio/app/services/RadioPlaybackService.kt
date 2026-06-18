@@ -262,8 +262,7 @@ class RadioPlaybackService : Service(),
         stopAutoSkipCheck()
         try {
             player?.reset()
-            setDataSourceWithHeaders(currentStreamUrl)
-            player?.prepareAsync()
+            setDataSourceWithHeaders(currentStreamUrl)  // 内部调用 prepareAsync()
             requestAudioFocus()
             startForegroundNotification()
         } catch (e: Exception) {
@@ -277,45 +276,133 @@ class RadioPlaybackService : Service(),
         currentStation = null
         isLive = live
         prepared = false
-        currentStreamUrl = episode.audioUrl ?: ""
-        localCachePath = ""
-        caching = false
         errorRetryCount = 0
         isRetrying = false
         hasStablePlayed = false
         stablePlayStartTime = 0L
         stopAutoSkipCheck()
+
+        // 节目回放：优先使用本地缓存文件
+        val audioUrl = episode.audioUrl ?: ""
+        val cacheDir = getExternalFilesDir("audio") ?: File(filesDir, "audio")
+        val cachedFile = File(cacheDir, "${Math.abs(audioUrl.hashCode())}.mp3")
+
+        if (!live && cachedFile.exists() && cachedFile.length() > 1024) {
+            // 使用本地缓存文件播放
+            currentStreamUrl = audioUrl  // 保留原始URL用于显示
+            localCachePath = cachedFile.absolutePath
+            caching = false
+            cacheProgress = 100
+            Log.d(TAG, "Playing from cache: $localCachePath size=${cachedFile.length()}")
+            try {
+                player?.reset()
+                player?.setDataSource(cachedFile.absolutePath)
+                player?.prepareAsync()
+                requestAudioFocus()
+                startForegroundNotification()
+                startAutoSkipCheck()
+            } catch (e: Exception) {
+                Log.e(TAG, "playEpisode from cache failed", e)
+                // 缓存文件损坏，删除并回退到网络播放
+                cachedFile.delete()
+                localCachePath = ""
+                playFromNetwork(audioUrl, live)
+            }
+        } else {
+            // 无缓存，从网络播放
+            currentStreamUrl = audioUrl
+            localCachePath = ""
+            caching = false
+            playFromNetwork(audioUrl, live)
+        }
+    }
+
+    private fun playFromNetwork(audioUrl: String, live: Boolean) {
         try {
             player?.reset()
-            setDataSourceWithHeaders(currentStreamUrl)
-            player?.prepareAsync()
+            setDataSourceWithHeaders(audioUrl)  // 内部调用 prepareAsync()
             requestAudioFocus()
             startForegroundNotification()
             startAutoSkipCheck()
-            if (!live && episode.audioUrl != null) {
-                startCaching(episode.audioUrl)
+            if (!live && audioUrl.isNotEmpty()) {
+                startCaching(audioUrl)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "playEpisode failed", e)
+            Log.e(TAG, "playFromNetwork failed", e)
             prepared = false
         }
     }
 
     /**
-     * 设置数据源，附带 HTTP headers 以兼容蜻蜓fm等需要User-Agent的源
+     * 设置数据源，先手动解析HTTP重定向获取真实URL，再设置给MediaPlayer。
+     * 兼容蜻蜓fm等需要User-Agent和多重定向的音频源。
      */
     private fun setDataSourceWithHeaders(url: String) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val headers: Map<String, String> = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-                "Accept" to "*/*",
-                "Connection" to "keep-alive"
-            )
-            player?.setDataSource(this, Uri.parse(url), headers)
-        } else {
-            @Suppress("DEPRECATION")
-            player?.setDataSource(url)
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val resolvedUrl = resolveRedirectUrl(url)
+                withContext(Dispatchers.Main) {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            val headers: Map<String, String> = mapOf(
+                                "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                                "Accept" to "*/*",
+                                "Connection" to "keep-alive"
+                            )
+                            player?.setDataSource(this@RadioPlaybackService, Uri.parse(resolvedUrl), headers)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            player?.setDataSource(resolvedUrl)
+                        }
+                        player?.prepareAsync()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "setDataSource failed for $resolvedUrl", e)
+                        prepared = false
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "resolveRedirect failed for $url", e)
+                withContext(Dispatchers.Main) {
+                    prepared = false
+                }
+            }
         }
+    }
+
+    /**
+     * 手动解析HTTP重定向，最多跟踪10次
+     */
+    private fun resolveRedirectUrl(originalUrl: String): String {
+        var currentUrl = originalUrl
+        var redirectCount = 0
+        while (redirectCount < 10) {
+            try {
+                val conn = URL(currentUrl).openConnection() as HttpURLConnection
+                conn.requestMethod = "HEAD"
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36")
+                conn.setRequestProperty("Accept", "*/*")
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (location.isNullOrBlank()) break
+                    currentUrl = if (location.startsWith("http")) location
+                    else URL(URL(currentUrl), location).toString()
+                    redirectCount++
+                    Log.d(TAG, "Redirect $redirectCount: $currentUrl")
+                } else {
+                    conn.disconnect()
+                    break
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "HEAD request failed for redirect check, using current URL", e)
+                break
+            }
+        }
+        return currentUrl
     }
 
     private fun startCaching(url: String?) {
@@ -721,8 +808,7 @@ class RadioPlaybackService : Service(),
                 if (isRetrying && currentStreamUrl.isNotEmpty()) {
                     try {
                         player?.reset()
-                        setDataSourceWithHeaders(currentStreamUrl)
-                        player?.prepareAsync()
+                        setDataSourceWithHeaders(currentStreamUrl)  // 内部调用 prepareAsync()
                     } catch (e: Exception) {
                         Log.e(TAG, "Retry failed", e)
                         isRetrying = false

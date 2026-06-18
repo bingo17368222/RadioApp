@@ -15,6 +15,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import android.util.Log
 import com.radio.app.R
 import com.radio.app.activities.OfflineEngineActivity
 import com.radio.app.databinding.FragmentSettingsBinding
@@ -83,27 +84,35 @@ class SettingsFragment : Fragment() {
         binding.spinnerAsrProvider.adapter = asrProviderAdapter
 
         // 动态检测已安装的离线引擎，添加到ASR方案列表
-        addInstalledEnginesToAsrList(asrProviderAdapter, asrProviderLabels)
+        try {
+            addInstalledEnginesToAsrList(asrProviderAdapter, asrProviderLabels)
+        } catch (e: Exception) {
+            Log.e("SettingsFragment", "addInstalledEngines failed", e)
+        }
     }
 
     private fun addInstalledEnginesToAsrList(adapter: ArrayAdapter<String>, baseLabels: Array<String>) {
-        val modelsDir = requireContext().getExternalFilesDir("models")
-        if (modelsDir == null || !modelsDir.exists()) return
-        val whisperModels = arrayOf(
-            "whisper-tiny" to "本地Whisper Tiny",
-            "whisper-base" to "本地Whisper Base",
-            "whisper-small" to "本地Whisper Small",
-            "whisper-medium" to "本地Whisper Medium",
-            "whisper-large" to "本地Whisper Large"
-        )
-        for ((dir, label) in whisperModels) {
-            val modelDir = File(modelsDir, dir)
-            if (modelDir.exists()) {
-                val totalSize = calculateDirSize(modelDir)
-                if (totalSize >= 1024 * 1024) { // >= 1MB
-                    adapter.add(label)
+        try {
+            val modelsDir = requireContext().getExternalFilesDir("models")
+            if (modelsDir == null || !modelsDir.exists()) return
+            val whisperModels = arrayOf(
+                "whisper-tiny" to "本地Whisper Tiny",
+                "whisper-base" to "本地Whisper Base",
+                "whisper-small" to "本地Whisper Small",
+                "whisper-medium" to "本地Whisper Medium",
+                "whisper-large" to "本地Whisper Large"
+            )
+            for ((dir, label) in whisperModels) {
+                val modelDir = File(modelsDir, dir)
+                if (modelDir.exists()) {
+                    val totalSize = calculateDirSize(modelDir)
+                    if (totalSize >= 1024 * 1024) {
+                        adapter.add(label)
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.e("SettingsFragment", "addInstalledEngines failed", e)
         }
     }
 
