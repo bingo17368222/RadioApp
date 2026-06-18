@@ -211,11 +211,11 @@ class OfflineEngineActivity : AppCompatActivity() {
                             val url = URL(downloadUrlStr)
                             conn = url.openConnection() as HttpURLConnection
                             conn.requestMethod = "GET"
-                            conn.connectTimeout = 30000
-                            conn.readTimeout = 120000
+                            conn.connectTimeout = 60000
+                            conn.readTimeout = 300000
                             conn.instanceFollowRedirects = false  // 手动处理重定向
-                            // 设置 User-Agent，部分服务器需要
-                            conn.setRequestProperty("User-Agent", "RadioApp/1.0")
+                            // 设置 User-Agent，模拟浏览器以避免服务器拒绝
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
 
                             val rc = conn.responseCode
                             Log.d(TAG, "Download response code: $rc for ${engine.name} (redirect=$redirectCount)")
@@ -250,6 +250,8 @@ class OfflineEngineActivity : AppCompatActivity() {
                         var len: Int
                         var downloaded = 0
                         var lastUpdate = System.currentTimeMillis()
+                        var lastDownloaded = 0L
+                        var startTime = System.currentTimeMillis()
 
                         while (input.read(buffer).also { len = it } != -1) {
                             fos.write(buffer, 0, len)
@@ -261,7 +263,28 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 val progressText: String
                                 if (totalSize > 0) {
                                     progress = (downloaded * 100 / totalSize)
-                                    progressText = "下载: $progress%"
+                                    // 计算下载速度和剩余时间
+                                    val elapsed = (now - startTime) / 1000.0
+                                    val speed = if (elapsed > 0) downloaded / elapsed else 0.0 // bytes/sec
+                                    val remaining = if (speed > 0) (totalSize - downloaded) / speed else 0.0 // seconds
+                                    val speedStr = if (speed >= 1024 * 1024) {
+                                        String.format("%.1f MB/s", speed / (1024.0 * 1024))
+                                    } else {
+                                        String.format("%.0f KB/s", speed / 1024.0)
+                                    }
+                                    val remainStr = if (remaining >= 3600) {
+                                        String.format("%.0f小时%.0f分", remaining / 3600, (remaining % 3600) / 60)
+                                    } else if (remaining >= 60) {
+                                        String.format("%.0f分%.0f秒", remaining / 60, remaining % 60)
+                                    } else {
+                                        String.format("%.0f秒", remaining)
+                                    }
+                                    // 大文件(>500MB)显示速度和剩余时间
+                                    if (totalSize > 500 * 1024 * 1024) {
+                                        progressText = "下载: $progress% | $speedStr | 剩余$remainStr"
+                                    } else {
+                                        progressText = "下载: $progress%"
+                                    }
                                 } else {
                                     progress = downloaded / 1024
                                     progressText = "已下载: $progress KB"

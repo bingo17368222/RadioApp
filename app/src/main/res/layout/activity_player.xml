@@ -23,11 +23,18 @@
         </RelativeLayout>
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="8dp">
-        <ImageButton android:id="@+id/btn_prev_segment" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_prev" android:contentDescription="Prev Segment" />
-        <ImageButton android:id="@+id/btn_skip_backward" android:layout_width="56dp" android:layout_height="56dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_rewind" android:contentDescription="Backward" />
-        <ImageButton android:id="@+id/btn_play_pause" android:layout_width="72dp" android:layout_height="72dp" android:layout_marginHorizontal="8dp" android:background="@drawable/bg_play_button" android:src="@drawable/ic_play" android:contentDescription="Play" />
-        <ImageButton android:id="@+id/btn_skip_forward" android:layout_width="56dp" android:layout_height="56dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_forward" android:contentDescription="Forward" />
-        <ImageButton android:id="@+id/btn_next_segment" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_next" android:contentDescription="Next Segment" />
+        <ImageButton android:id="@+id/btn_prev_segment" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_prev" android:contentDescription="Prev Segment" android:tooltipText="上一片段" />
+        <ImageButton android:id="@+id/btn_skip_backward" android:layout_width="56dp" android:layout_height="56dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_rewind" android:contentDescription="Backward" android:tooltipText="-15秒" />
+        <ImageButton android:id="@+id/btn_play_pause" android:layout_width="72dp" android:layout_height="72dp" android:layout_marginHorizontal="8dp" android:background="@drawable/bg_play_button" android:src="@drawable/ic_play" android:contentDescription="Play" android:tooltipText="播放/暂停" />
+        <ImageButton android:id="@+id/btn_skip_forward" android:layout_width="56dp" android:layout_height="56dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_forward" android:contentDescription="Forward" android:tooltipText="+15秒" />
+        <ImageButton android:id="@+id/btn_next_segment" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_next" android:contentDescription="Next Segment" android:tooltipText="下一片段" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="8dp">
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="上一片段" android:textColor="@color/text_secondary" android:textSize="10sp" android:gravity="center" />
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="-15秒" android:textColor="@color/text_secondary" android:textSize="10sp" android:gravity="center" />
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="播放" android:textColor="@color/text_secondary" android:textSize="10sp" android:gravity="center" />
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="+15秒" android:textColor="@color/text_secondary" android:textSize="10sp" android:gravity="center" />
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="下一片段" android:textColor="@color/text_secondary" android:textSize="10sp" android:gravity="center" />
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
         <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="片段列表" android:textColor="@color/text_primary" android:textSize="14sp" android:textStyle="bold" />

@@ -15,6 +15,7 @@ import com.radio.app.fragments.EpisodesFragment
 import com.radio.app.fragments.SearchFragment
 import com.radio.app.fragments.SettingsFragment
 import com.radio.app.services.RadioPlaybackService
+import com.radio.app.utils.ThemeManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -36,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        ThemeManager.applyTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 

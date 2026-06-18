@@ -49,7 +49,7 @@ class RadioPlaybackService : Service(),
 
     companion object {
         private const val TAG = "RadioPlaybackService"
-        private const val MAX_ERROR_RETRY = 2
+        private const val MAX_ERROR_RETRY = 3
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -606,7 +606,7 @@ class RadioPlaybackService : Service(),
 
     override fun onPrepared(mp: MediaPlayer?) {
         prepared = true
-        errorRetryCount = 0  // Bug 2: 重置错误重试计数
+        // 不再重置 errorRetryCount，避免错误-重试-成功-再错误无限循环
         mp?.start()
         callback?.onStateChanged(true)
         sendStateBroadcast(true)
@@ -619,12 +619,14 @@ class RadioPlaybackService : Service(),
         callback?.let { cb ->
             cb.onStateChanged(false)
             if (errorRetryCount >= MAX_ERROR_RETRY) {
-                cb.onError("播放失败: 无效的播放内容 (错误 $what)")
+                cb.onError("播放失败: 无效的播放内容 (错误 $what)，已重试 $MAX_ERROR_RETRY 次")
             }
         }
         sendStateBroadcast(false)
         errorRetryCount++
         if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
+            // 递增重试间隔：第1次3秒，第2次6秒，第3次9秒
+            val retryDelay = errorRetryCount * 3000L
             Handler(Looper.getMainLooper()).postDelayed({
                 try {
                     player?.reset()
@@ -633,7 +635,7 @@ class RadioPlaybackService : Service(),
                 } catch (e: Exception) {
                     Log.e(TAG, "Retry failed", e)
                 }
-            }, 2000)
+            }, retryDelay)
         }
         return true
     }

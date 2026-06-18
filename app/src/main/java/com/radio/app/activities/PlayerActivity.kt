@@ -246,6 +246,17 @@ class PlayerActivity : AppCompatActivity() {
             bindSubtitleService(episode)
         }
 
+        // btnSubtitleToggle: 切换字幕/片段列表显示
+        binding.btnSubtitleToggle.setOnClickListener {
+            if (binding.subtitleView.visibility == View.VISIBLE) {
+                binding.subtitleView.visibility = View.GONE
+                binding.recyclerSegments.visibility = View.VISIBLE
+            } else {
+                binding.recyclerSegments.visibility = View.GONE
+                binding.subtitleView.visibility = View.VISIBLE
+            }
+        }
+
         binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {

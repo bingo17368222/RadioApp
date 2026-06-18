@@ -400,17 +400,12 @@ class SettingsFragment : Fragment() {
     }
 
     private fun applyTheme() {
-        val currentTheme = settings.uiTheme
-        if (previousTheme != null && previousTheme != currentTheme) {
-            previousTheme = currentTheme
-            activity?.let {
-                // Bug 8: 只 recreate MainActivity，避免停止 PlayerActivity 的播放
-                if (it is com.radio.app.activities.MainActivity) {
-                    try {
-                        it.recreate()
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+        activity?.let {
+            if (it is com.radio.app.activities.MainActivity) {
+                try {
+                    it.recreate()
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
         }
