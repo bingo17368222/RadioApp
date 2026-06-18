@@ -36,37 +36,11 @@ jobs:
           echo "=== ERROR SUMMARY ==="
           grep -n "error:" build.log | head -30 || true
 
-      - name: Verify APK
-        run: |
-          echo "=== APK files ==="
-          find . -name "*.apk" -type f -exec ls -la {} \;
-
-      - name: Upload APK Artifact
-        shell: bash
-        run: |
-          set +e
-          echo "=== Searching APK ==="
-          find . -name "*.apk" -type f 2>/dev/null || true
-          echo "=== Build dir ==="
-          ls -la app/build/ 2>/dev/null || true
-          ls -la app/build/outputs/ 2>/dev/null || true
-          ls -la app/build/outputs/apk/ 2>/dev/null || true
-          ls -la app/build/outputs/apk/debug/ 2>/dev/null || true
-          set -e
-          APK_FILE=$(find . -name "app-debug.apk" -type f 2>/dev/null | head -1)
-          if [ -z "$APK_FILE" ]; then
-            echo "ERROR: No APK found!"
-            exit 1
-          fi
-          echo "Found APK: $APK_FILE"
-          mkdir -p /tmp/apk-upload
-          cp "$APK_FILE" /tmp/apk-upload/app-debug.apk
-
-      - name: Upload APK to Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: radio-app-apk
-          path: /tmp/apk-upload/
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
       - name: Upload to GitHub Release
@@ -76,7 +50,7 @@ jobs:
           tag_name: debug-latest
           name: "Debug Build v${{ github.run_number }}"
           body: "Auto-generated debug APK v${{ github.run_number }}"
-          files: /tmp/apk-upload/*.apk
+          files: app/build/outputs/apk/debug/app-debug.apk
           prerelease: true
           fail_on_unmatched_files: false
         env:
