@@ -35,7 +35,7 @@ public class SettingsFragment extends Fragment {
     private String previousTheme;
 
     private Switch switchAutoSkip, switchContinuousPlay, switchAutoDownload, switchAutoCache;
-    private Spinner spinnerTheme, spinnerSubtitleSize, spinnerSubtitleLang, spinnerVoiceLang;
+    private Spinner spinnerTheme, spinnerSubtitleSize, spinnerSubtitleLang, spinnerVoiceLang, spinnerAiModel, spinnerAsrProvider;
     private TextView tvCacheSize, btnClearCache, btnManageOfflineEngine, btnCustomizeColors;
 
     @Nullable
@@ -61,6 +61,8 @@ public class SettingsFragment extends Fragment {
         spinnerSubtitleSize = view.findViewById(R.id.spinner_subtitle_size);
         spinnerSubtitleLang = view.findViewById(R.id.spinner_subtitle_lang);
         spinnerVoiceLang = view.findViewById(R.id.spinner_voice_lang);
+        spinnerAiModel = view.findViewById(R.id.spinner_ai_model);
+        spinnerAsrProvider = view.findViewById(R.id.spinner_asr_provider);
         tvCacheSize = view.findViewById(R.id.tv_cache_size);
         btnClearCache = view.findViewById(R.id.btn_clear_cache);
         btnManageOfflineEngine = view.findViewById(R.id.btn_manage_offline_engine);
@@ -68,14 +70,30 @@ public class SettingsFragment extends Fragment {
 
         // 设置Spinner数据适配器
         String[] themeLabels = {"深色", "清新", "经典", "极简", "自定义"};
-        spinnerTheme.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, themeLabels));
+        ArrayAdapter<String> themeAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, themeLabels);
+        themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerTheme.setAdapter(themeAdapter);
 
         String[] sizeLabels = {"小", "中", "大"};
-        spinnerSubtitleSize.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, sizeLabels));
+        ArrayAdapter<String> sizeAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, sizeLabels);
+        sizeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerSubtitleSize.setAdapter(sizeAdapter);
 
         String[] langLabels = {"中文", "英文"};
-        spinnerSubtitleLang.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, langLabels));
-        spinnerVoiceLang.setAdapter(new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, langLabels));
+        ArrayAdapter<String> langAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, langLabels);
+        langAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerSubtitleLang.setAdapter(langAdapter);
+        spinnerVoiceLang.setAdapter(langAdapter);
+
+        String[] aiModelLabels = {"文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "久爱听"};
+        ArrayAdapter<String> aiModelAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, aiModelLabels);
+        aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerAiModel.setAdapter(aiModelAdapter);
+
+        String[] asrProviderLabels = {"百度语音", "FunASR", "Whisper在线", "本地Vosk"};
+        ArrayAdapter<String> asrProviderAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_item, asrProviderLabels);
+        asrProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerAsrProvider.setAdapter(asrProviderAdapter);
     }
 
     private void setupListeners() {
@@ -84,12 +102,16 @@ public class SettingsFragment extends Fragment {
         switchAutoDownload.setOnCheckedChangeListener((buttonView, isChecked) -> { settings.setAutoDownload(isChecked); save(); });
         switchAutoCache.setOnCheckedChangeListener((buttonView, isChecked) -> { settings.setAutoCache(isChecked); save(); });
 
+        // 主题Spinner：使用OnItemSelectedListener + 强制标记主题已改变
         spinnerTheme.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 String[] themes = {AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM};
-                settings.setUiTheme(themes[position]);
-                save();
-                applyTheme();
+                String selectedTheme = themes[position];
+                if (!selectedTheme.equals(settings.getUiTheme())) {
+                    settings.setUiTheme(selectedTheme);
+                    save();
+                    applyTheme();
+                }
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
@@ -121,6 +143,36 @@ public class SettingsFragment extends Fragment {
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
 
+        // AI模型Spinner：添加OnTouchListener确保点击即触发下拉
+        spinnerAiModel.setOnTouchListener((v, event) -> {
+            v.performClick();
+            return false;
+        });
+        spinnerAiModel.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String[] models = {AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING};
+                settings.setAiModel(models[position]);
+                save();
+                Toast.makeText(requireContext(), "AI模型已切换: " + parent.getItemAtPosition(position), Toast.LENGTH_SHORT).show();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+        // ASR方案Spinner：添加OnTouchListener确保点击即触发下拉
+        spinnerAsrProvider.setOnTouchListener((v, event) -> {
+            v.performClick();
+            return false;
+        });
+        spinnerAsrProvider.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String[] providers = {AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK};
+                settings.setAsrProvider(providers[position]);
+                save();
+                Toast.makeText(requireContext(), "ASR方案已切换: " + parent.getItemAtPosition(position), Toast.LENGTH_SHORT).show();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
         btnClearCache.setOnClickListener(v -> showClearCacheDialog());
         btnManageOfflineEngine.setOnClickListener(v -> startActivity(new Intent(requireContext(), OfflineEngineActivity.class)));
         btnCustomizeColors.setOnClickListener(v -> showColorPickerDialog());
@@ -141,6 +193,12 @@ public class SettingsFragment extends Fragment {
         String[] langs = {AppSettings.LANG_CN, AppSettings.LANG_EN};
         for (int i = 0; i < langs.length; i++) { if (langs[i].equals(settings.getSubtitleLanguage())) { spinnerSubtitleLang.setSelection(i); break; } }
         for (int i = 0; i < langs.length; i++) { if (langs[i].equals(settings.getVoiceLanguage())) { spinnerVoiceLang.setSelection(i); break; } }
+
+        String[] aiModels = {AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING};
+        for (int i = 0; i < aiModels.length; i++) { if (aiModels[i].equals(settings.getAiModel())) { spinnerAiModel.setSelection(i); break; } }
+
+        String[] asrProviders = {AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK};
+        for (int i = 0; i < asrProviders.length; i++) { if (asrProviders[i].equals(settings.getAsrProvider())) { spinnerAsrProvider.setSelection(i); break; } }
 
         long cacheSize = calculateCacheSize();
         tvCacheSize.setText("缓存大小: " + formatSize(cacheSize));
@@ -379,10 +437,10 @@ public class SettingsFragment extends Fragment {
 
     private void applyTheme() {
         String currentTheme = settings.getUiTheme();
+        // 只要主题有变化（包括从自定义切换到其他），都重建Activity
         if (previousTheme != null && !previousTheme.equals(currentTheme)) {
             previousTheme = currentTheme;
-            // 仅当主题真正改变时才重建Activity，避免自定义颜色时重建
-            if (!currentTheme.equals(AppSettings.THEME_CUSTOM) && getActivity() != null) {
+            if (getActivity() != null) {
                 try { getActivity().recreate(); }
                 catch (Exception e) { e.printStackTrace(); }
             }

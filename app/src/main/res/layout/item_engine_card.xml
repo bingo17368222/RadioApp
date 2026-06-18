@@ -37,6 +37,14 @@
         android:progress="0"
         android:visibility="gone" />
 
+    <TextView android:id="@+id/tv_progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        android:layout_marginTop="4dp"
+        android:visibility="gone" />
+
     <Button android:id="@+id/btn_engine_action"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

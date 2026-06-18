@@ -27,6 +27,7 @@ public class PlayerActivity extends AppCompatActivity {
     private RadioPlaybackService playbackService;
     private boolean serviceBound = false;
     private Episode currentEpisode;
+    private boolean hasError = false;
 
     private ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
@@ -35,6 +36,12 @@ public class PlayerActivity extends AppCompatActivity {
             playbackService = binder.getService();
             serviceBound = true;
             playbackService.setCallback(playbackCallback);
+            // 服务绑定成功后，开始播放当前 episode
+            if (currentEpisode != null && currentEpisode.getAudioUrl() != null
+                    && !currentEpisode.getAudioUrl().trim().isEmpty()) {
+                boolean isLive = currentEpisode.isLive();
+                playbackService.playEpisode(currentEpisode, isLive);
+            }
             updateUI();
         }
 
@@ -50,7 +57,11 @@ public class PlayerActivity extends AppCompatActivity {
         public void onStateChanged(boolean playing) {
             runOnUiThread(() -> {
                 updatePlayPauseButton(playing);
-                tvStatus.setText(playing ? "播放中" : "已暂停");
+                if (hasError) {
+                    tvStatus.setText("播放失败");
+                } else {
+                    tvStatus.setText(playing ? "播放中" : "已暂停");
+                }
             });
         }
 
@@ -72,12 +83,24 @@ public class PlayerActivity extends AppCompatActivity {
         @Override
         public void onBufferUpdate(int percent) {
             runOnUiThread(() -> {
+                if (hasError) return;
                 tvBuffer.setText("缓冲: " + percent + "%");
                 if (percent >= 100) {
                     tvBuffer.setVisibility(View.GONE);
                 } else {
                     tvBuffer.setVisibility(View.VISIBLE);
                 }
+            });
+        }
+
+        @Override
+        public void onError(String errorMessage) {
+            runOnUiThread(() -> {
+                hasError = true;
+                tvStatus.setText("播放失败");
+                tvBuffer.setText(errorMessage);
+                tvBuffer.setVisibility(View.VISIBLE);
+                Toast.makeText(PlayerActivity.this, errorMessage, Toast.LENGTH_LONG).show();
             });
         }
     };
@@ -89,7 +112,25 @@ public class PlayerActivity extends AppCompatActivity {
 
         currentEpisode = (Episode) getIntent().getSerializableExtra("episode");
         if (currentEpisode == null) {
-            Toast.makeText(this, "无效的播放内容", Toast.LENGTH_SHORT).show();
+            // 尝试从单独的字段中构建 Episode 对象（兼容旧调用方式）
+            String audioUrl = getIntent().getStringExtra("audio_url");
+            if (audioUrl == null || audioUrl.trim().isEmpty()) {
+                Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show();
+                finish();
+                return;
+            }
+            currentEpisode = new Episode();
+            currentEpisode.setId(getIntent().getStringExtra("episode_id"));
+            currentEpisode.setTitle(getIntent().getStringExtra("title"));
+            currentEpisode.setAudioUrl(audioUrl);
+            currentEpisode.setStationName(getIntent().getStringExtra("station_name"));
+            currentEpisode.setDuration(getIntent().getLongExtra("duration", 0));
+            currentEpisode.setLive(getIntent().getBooleanExtra("is_live", false));
+        }
+
+        // 最终校验：确保 audioUrl 有效
+        if (currentEpisode.getAudioUrl() == null || currentEpisode.getAudioUrl().trim().isEmpty()) {
+            Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show();
             finish();
             return;
         }
@@ -108,7 +149,7 @@ public class PlayerActivity extends AppCompatActivity {
         tvBuffer = findViewById(R.id.tv_ai_progress);
         seekBar = findViewById(R.id.seek_bar);
         btnPlayPause = findViewById(R.id.btn_play_pause);
-        btnStop = findViewById(R.id.btn_skip_backward);
+        btnStop = findViewById(R.id.btn_prev_segment);
         btnForward = findViewById(R.id.btn_skip_forward);
         btnRewind = findViewById(R.id.btn_skip_backward);
 

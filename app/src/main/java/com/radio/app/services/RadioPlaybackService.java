@@ -92,6 +92,7 @@ public class RadioPlaybackService extends Service implements
         void onStateChanged(boolean playing);
         void onPositionChanged(long position, long duration);
         void onBufferUpdate(int percent);
+        void onError(String errorMessage);
     }
 
     public class LocalBinder extends Binder {
@@ -544,7 +545,12 @@ public class RadioPlaybackService extends Service implements
     public boolean onError(MediaPlayer mp, int what, int extra) {
         Log.e(TAG, "MediaPlayer onError: what=" + what + " extra=" + extra + " retry=" + errorRetryCount);
         prepared = false;
-        if (callback != null) callback.onStateChanged(false);
+        if (callback != null) {
+            callback.onStateChanged(false);
+            if (errorRetryCount >= MAX_ERROR_RETRY) {
+                callback.onError("播放失败: 无效的播放内容 (错误 " + what + ")");
+            }
+        }
         sendStateBroadcast(false);
         errorRetryCount++;
         if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl != null && !currentStreamUrl.isEmpty()) {

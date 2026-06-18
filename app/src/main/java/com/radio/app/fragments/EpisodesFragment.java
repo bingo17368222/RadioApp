@@ -195,10 +195,18 @@ public class EpisodesFragment extends Fragment implements EpisodeAdapter.OnEpiso
 
     @Override
     public void onEpisodeClick(Episode episode) {
+        // 检查 audioUrl 是否有效
+        String audioUrl = episode.getAudioUrl();
+        if (audioUrl == null || audioUrl.trim().isEmpty()) {
+            Toast.makeText(getContext(), "播放地址无效，该节目暂无音频资源", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         Intent intent = new Intent(getContext(), PlayerActivity.class);
+        intent.putExtra("episode", episode);
         intent.putExtra("episode_id", episode.getId());
         intent.putExtra("title", episode.getTitle());
-        intent.putExtra("audio_url", episode.getAudioUrl());
+        intent.putExtra("audio_url", audioUrl);
         intent.putExtra("is_live", false);
         intent.putExtra("station_name", selectedStationName != null ? selectedStationName : episode.getStationName());
         intent.putExtra("duration", episode.getDuration());

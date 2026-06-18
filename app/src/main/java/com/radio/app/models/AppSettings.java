@@ -32,6 +32,7 @@ public class AppSettings {
         preprocessingCount = prefs.getInt("preprocessing_count", 1);
         audioFocus = prefs.getBoolean("audio_focus", true);
         continuousPlay = prefs.getBoolean("continuous_play", true);
+        splitMode = prefs.getString("split_mode", SPLIT_MODE_NONE);
         String dislikedJson = prefs.getString("disliked_episodes", "[]");
         try {
             JSONArray arr = new JSONArray(dislikedJson);
@@ -56,6 +57,7 @@ public class AppSettings {
         editor.putInt("preprocessing_count", preprocessingCount);
         editor.putBoolean("audio_focus", audioFocus);
         editor.putBoolean("continuous_play", continuousPlay);
+        editor.putString("split_mode", splitMode);
         JSONArray arr = new JSONArray();
         for (String id : dislikedEpisodes) arr.put(id);
         editor.putString("disliked_episodes", arr.toString());
@@ -119,7 +121,12 @@ public class AppSettings {
     private int preprocessingCount = 1;
     private boolean audioFocus = true;
     private boolean continuousPlay = true;
+    private String splitMode = SPLIT_MODE_NONE;
     private List<String> dislikedEpisodes = new ArrayList<>();
+
+    public static final String SPLIT_MODE_NONE = "none";
+    public static final String SPLIT_MODE_HORIZONTAL = "horizontal";
+    public static final String SPLIT_MODE_VERTICAL = "vertical";
 
     public String getAiModel() { return aiModel; }
     public void setAiModel(String aiModel) { this.aiModel = aiModel; }
@@ -157,6 +164,8 @@ public class AppSettings {
     public void setVoiceLanguage(String voiceLanguage) { this.voiceLanguage = voiceLanguage; }
     public List<String> getDislikedEpisodes() { return dislikedEpisodes; }
     public void setDislikedEpisodes(List<String> dislikedEpisodes) { this.dislikedEpisodes = dislikedEpisodes; }
+    public String getSplitMode() { return splitMode; }
+    public void setSplitMode(String splitMode) { this.splitMode = splitMode; }
 
     public static class CustomColors {
         private String primary = "#0f3460";

@@ -21,8 +21,11 @@ import com.radio.app.utils.ThemeManager;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
@@ -31,10 +34,13 @@ import java.util.zip.ZipInputStream;
 public class OfflineEngineActivity extends AppCompatActivity {
 
     private static final String TAG = "OfflineEngineActivity";
+    private static final long MIN_INSTALL_SIZE = 1024 * 1024; // 1MB，低于此大小不认为已安装
     private TextView tvTitle;
     private ImageButton btnBack;
     private ExecutorService downloadExecutor = Executors.newSingleThreadExecutor();
     private Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Map<String, Long> downloadProgress = new HashMap<>(); // 记录每个引擎的已下载字节数
+    private volatile boolean isDestroyed = false; // Activity 是否已销毁
 
     private static class EngineInfo {
         String name, desc, size, downloadUrl, modelDir;
@@ -135,7 +141,7 @@ public class OfflineEngineActivity extends AppCompatActivity {
         } else {
             File modelsDir = getExternalFilesDir("models");
             File modelDir = modelsDir != null ? new File(modelsDir, engine.modelDir) : null;
-            boolean installed = modelDir != null && modelDir.exists();
+            boolean installed = modelDir != null && modelDir.exists() && getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE;
             if (installed) {
                 btnAction.setText("已安装(删除)");
                 btnAction.setOnClickListener(v -> {
@@ -144,6 +150,10 @@ public class OfflineEngineActivity extends AppCompatActivity {
                     Toast.makeText(this, engine.name + " 已删除", Toast.LENGTH_SHORT).show();
                 });
             } else {
+                // 如果目录存在但文件不完整，清理残留
+                if (modelDir != null && modelDir.exists()) {
+                    deleteRecursive(modelDir);
+                }
                 btnAction.setText("安装");
                 btnAction.setOnClickListener(v -> {
                     btnAction.setEnabled(false);
@@ -163,12 +173,12 @@ public class OfflineEngineActivity extends AppCompatActivity {
             HttpURLConnection conn = null; InputStream is = null; FileOutputStream fos = null;
             try {
                 File modelsDir = getExternalFilesDir("models");
-                if (modelsDir == null) { uiHandler.post(() -> { btn.setEnabled(true); btn.setText("安装"); }); return; }
+                if (modelsDir == null) { uiHandler.post(() -> { if (!isDestroyed) { btn.setEnabled(true); btn.setText("安装"); } }); return; }
                 if (!modelsDir.exists()) modelsDir.mkdirs();
                 String fileName = engine.downloadUrl.substring(engine.downloadUrl.lastIndexOf('/') + 1);
                 File outFile = new File(modelsDir, engine.modelDir + "/" + fileName);
                 outFile.getParentFile().mkdirs();
-                uiHandler.post(() -> btn.setText("连接中..."));
+                uiHandler.post(() -> { if (!isDestroyed) btn.setText("连接中..."); });
                 URL url = new URL(engine.downloadUrl);
                 conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET"); conn.setConnectTimeout(30000); conn.setReadTimeout(120000); conn.setInstanceFollowRedirects(true);
@@ -182,24 +192,44 @@ public class OfflineEngineActivity extends AppCompatActivity {
                 is = conn.getInputStream(); fos = new FileOutputStream(outFile);
                 byte[] buffer = new byte[8192]; int len, downloaded = 0; long lastUpdate = System.currentTimeMillis();
                 while ((len = is.read(buffer)) != -1) {
+                    if (isDestroyed) { // Activity 已销毁，取消下载
+                        throw new Exception("下载已取消");
+                    }
                     fos.write(buffer, 0, len); downloaded += len;
                     long now = System.currentTimeMillis();
                     if (now - lastUpdate > 500) {
                         lastUpdate = now;
-                        int progress = totalSize > 0 ? (int)(downloaded * 100 / totalSize) : 0;
+                        int progress;
+                        String progressText;
+                        if (totalSize > 0) {
+                            progress = (int)(downloaded * 100 / totalSize);
+                            progressText = "下载: " + progress + "%";
+                        } else {
+                            progress = (int)(downloaded / 1024); // 以KB为单位显示
+                            progressText = "已下载: " + progress + " KB";
+                        }
                         int fp = progress;
-                        uiHandler.post(() -> { btn.setText("下载: " + fp + "%"); if (progressBar != null) progressBar.setProgress(fp); });
+                        String fpt = progressText;
+                        uiHandler.post(() -> { if (!isDestroyed) { btn.setText(fpt); if (progressBar != null) progressBar.setProgress(fp); } });
                     }
                 }
                 if (outFile.length() < 1024) {
                     throw new Exception("下载文件过小: " + outFile.length() + " bytes");
                 }
-                uiHandler.post(() -> btn.setText("下载完成"));
-                if (fileName.endsWith(".zip")) { uiHandler.post(() -> btn.setText("解压中...")); unzipFile(outFile, new File(modelsDir, engine.modelDir)); outFile.delete(); }
-                uiHandler.post(() -> { btn.setEnabled(true); btn.setText("已安装(删除)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(OfflineEngineActivity.this, engine.name + " 安装完成", Toast.LENGTH_SHORT).show(); });
+                uiHandler.post(() -> { if (!isDestroyed) btn.setText("下载完成"); });
+                if (fileName.endsWith(".zip")) { uiHandler.post(() -> { if (!isDestroyed) btn.setText("解压中..."); }); unzipFile(outFile, new File(modelsDir, engine.modelDir)); outFile.delete(); }
+                uiHandler.post(() -> { if (!isDestroyed) { btn.setEnabled(true); btn.setText("已安装(删除)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(OfflineEngineActivity.this, engine.name + " 安装完成", Toast.LENGTH_SHORT).show(); } });
             } catch (Exception e) {
                 Log.e(TAG, "Download failed: " + e.getMessage(), e);
-                uiHandler.post(() -> { btn.setEnabled(true); btn.setText("安装(重试)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(OfflineEngineActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_LONG).show(); });
+                // 下载失败，删除残留文件
+                try {
+                    File modelsDir = getExternalFilesDir("models");
+                    if (modelsDir != null) {
+                        File modelDir = new File(modelsDir, engine.modelDir);
+                        if (modelDir.exists()) deleteRecursive(modelDir);
+                    }
+                } catch (Exception ignored) {}
+                uiHandler.post(() -> { if (!isDestroyed) { btn.setEnabled(true); btn.setText("安装(重试)"); if (progressBar != null) progressBar.setVisibility(View.GONE); Toast.makeText(OfflineEngineActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_LONG).show(); } });
             } finally { try { if (fos != null) fos.close(); } catch (Exception ignored) {} try { if (is != null) is.close(); } catch (Exception ignored) {} if (conn != null) conn.disconnect(); }
         });
     }
@@ -218,6 +248,23 @@ public class OfflineEngineActivity extends AppCompatActivity {
 
     private void deleteRecursive(File file) { if (file.isDirectory()) { File[] c = file.listFiles(); if (c != null) for (File ch : c) deleteRecursive(ch); } file.delete(); }
 
+    private long getDirTotalSize(File dir) {
+        if (dir == null || !dir.exists()) return 0;
+        long size = 0;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                if (f.isDirectory()) size += getDirTotalSize(f);
+                else size += f.length();
+            }
+        }
+        return size;
+    }
+
     @Override
-    protected void onDestroy() { super.onDestroy(); if (downloadExecutor != null) downloadExecutor.shutdownNow(); }
+    protected void onDestroy() {
+        super.onDestroy();
+        isDestroyed = true;
+        if (downloadExecutor != null) downloadExecutor.shutdownNow();
+    }
 }
