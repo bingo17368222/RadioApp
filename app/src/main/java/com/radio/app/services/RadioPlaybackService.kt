@@ -35,6 +35,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.net.Uri
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -310,7 +311,7 @@ class RadioPlaybackService : Service(),
                 "Accept" to "*/*",
                 "Connection" to "keep-alive"
             )
-            player?.setDataSource(this, url, headers)
+            player?.setDataSource(this, Uri.parse(url), headers)
         } else {
             @Suppress("DEPRECATION")
             player?.setDataSource(url)
