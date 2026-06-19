@@ -37,8 +37,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 使用默认主题，避免SharedPreferences读取导致闪退
-        setTheme(R.style.Theme_RadioApp)
+        // 优先从Intent extra读取主题（热切换时传递），否则使用默认主题
+        val themeExtra = intent.getStringExtra("theme")
+        when (themeExtra) {
+            "fresh" -> setTheme(R.style.Theme_RadioApp_Fresh)
+            "classic" -> setTheme(R.style.Theme_RadioApp_Classic)
+            "minimal" -> setTheme(R.style.Theme_RadioApp_Minimal)
+            else -> setTheme(R.style.Theme_RadioApp)
+        }
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 

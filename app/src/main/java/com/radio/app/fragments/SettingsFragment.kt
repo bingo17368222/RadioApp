@@ -492,8 +492,18 @@ class SettingsFragment : Fragment() {
 
     private fun applyTheme() {
         prefManager.saveSettings(settings)
-        // 热切换：重启Activity（不重启应用）
-        activity?.recreate()
+        // 通过Intent传递主题，recreate后onCreate会读取
+        val themeValue = settings.uiTheme
+        activity?.let { act ->
+            val intent = act.intent.apply {
+                putExtra("theme", themeValue)
+            }
+            // 保存主题到SharedPreferences以便下次启动时也能使用
+            act.getSharedPreferences("radio_app_prefs", android.content.Context.MODE_PRIVATE)
+                .edit().putString("current_theme", themeValue).apply()
+            act.intent = intent
+            act.recreate()
+        }
     }
 
     private fun save() {

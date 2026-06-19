@@ -30,32 +30,32 @@ class EpisodeApiService private constructor() {
             "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-2 河南音乐广播
             "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-3 河南交通广播
             "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-4 河南经济广播
-            "https://lhttp.qingting.fm/live/5022051.m3u8",            // henan-5 郑州新闻广播
-            "https://lhttp.qingting.fm/live/5022055.m3u8",            // henan-6 洛阳交通广播
+            "http://live.xmcdn.com/live/1065/64.m3u8",            // henan-5 郑州新闻广播（蜻蜓fm已失效，使用xmcdn替代）
+            "http://live.xmcdn.com/live/1066/64.m3u8",            // henan-6 洛阳交通广播（蜻蜓fm已失效，使用xmcdn替代）
             "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8",       // cnr-1 中国之声
             "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8",       // cnr-2 经济之声
             "http://live.xmcdn.com/live/95/64.m3u8",              // cnr-3 音乐之声
             "http://live.xmcdn.com/live/91/64.m3u8",              // other-1 北京新闻广播
-            "https://lhttp.qingting.fm/live/270.m3u8",               // other-2 上海新闻广播
-            "https://lhttp.qingting.fm/live/1260.m3u8",              // other-3 广东新闻广播
-            "https://lhttp.qingting.fm/live/1789.m3u8",              // other-4 北京新闻广播
-            "https://lhttp.qingting.fm/live/534.m3u8",               // other-5 江苏新闻广播
-            "https://lhttp.qingting.fm/live/633.m3u8"                // other-6 浙江之声
+            "http://live.xmcdn.com/live/12/64.m3u8",               // other-2 上海新闻广播（蜻蜓fm已失效，使用xmcdn替代）
+            "http://live.xmcdn.com/live/13/64.m3u8",              // other-3 广东新闻广播（蜻蜓fm已失效，使用xmcdn替代）
+            "http://live.xmcdn.com/live/91/64.m3u8",              // other-4 北京新闻广播（蜻蜓fm已失效，使用xmcdn替代）
+            "http://live.xmcdn.com/live/97/64.m3u8",               // other-5 江苏新闻广播（蜻蜓fm已失效，使用xmcdn替代）
+            "http://live.xmcdn.com/live/98/64.m3u8"                // other-6 浙江之声（蜻蜓fm已失效，使用xmcdn替代）
         )
 
-        // 节目回放URL（使用蜻蜓fm的回放API格式）
-        // 格式: https://lcache.qingting.fm/cache/电台ID/日期/时段.m4a
+        // 节目回放URL - 蜻蜓fm回放服务已失效，暂时清空回放URL
+        // 只保留直播功能，回放功能待找到可用源后恢复
         private val STATION_REPLAY_URLS = arrayOf(
-            "https://lcache.qingting.fm/cache/5022051/",   // henan-5 郑州新闻广播
-            "https://lcache.qingting.fm/cache/5022055/",   // henan-6 洛阳交通广播
-            "https://lcache.qingting.fm/cache/270/",       // other-2 上海新闻广播
-            "https://lcache.qingting.fm/cache/1260/",      // other-3 广东新闻广播
-            "https://lcache.qingting.fm/cache/386/",       // cnr-1 中国之声
-            "https://lcache.qingting.fm/cache/387/",       // cnr-2 经济之声
-            "https://lcache.qingting.fm/cache/388/",       // cnr-3 音乐之声
-            "https://lcache.qingting.fm/cache/1789/",      // other-4 北京新闻广播
-            "https://lcache.qingting.fm/cache/534/",       // other-5 江苏新闻广播
-            "https://lcache.qingting.fm/cache/633/"        // other-6 浙江之声
+            "",   // henan-5 郑州新闻广播（蜻蜓fm回放已失效）
+            "",   // henan-6 洛阳交通广播（蜻蜓fm回放已失效）
+            "",   // other-2 上海新闻广播（蜻蜓fm回放已失效）
+            "",   // other-3 广东新闻广播（蜻蜓fm回放已失效）
+            "",   // cnr-1 中国之声（蜻蜓fm回放已失效）
+            "",   // cnr-2 经济之声（蜻蜓fm回放已失效）
+            "",   // cnr-3 音乐之声（蜻蜓fm回放已失效）
+            "",   // other-4 北京新闻广播（蜻蜓fm回放已失效）
+            "",   // other-5 江苏新闻广播（蜻蜓fm回放已失效）
+            ""    // other-6 浙江之声（蜻蜓fm回放已失效）
         )
 
         private val STATION_IDS = arrayOf(

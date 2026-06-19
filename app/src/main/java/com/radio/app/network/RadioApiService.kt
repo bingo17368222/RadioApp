@@ -155,7 +155,7 @@ class RadioApiService private constructor() {
         list.add(RadioStation().apply {
             id = "henan-5"
             name = "郑州新闻广播"
-            streamUrl = "https://lhttp.qingting.fm/live/5022051.m3u8"
+            streamUrl = "http://live.xmcdn.com/live/1065/64.m3u8"  // 中国之声
             country = "China"
             bitrate = 64
             lastCheckOk = true
@@ -165,7 +165,7 @@ class RadioApiService private constructor() {
         list.add(RadioStation().apply {
             id = "henan-6"
             name = "洛阳交通广播"
-            streamUrl = "https://lhttp.qingting.fm/live/5022055.m3u8"
+            streamUrl = "http://live.xmcdn.com/live/1066/64.m3u8"  // 经济之声
             country = "China"
             bitrate = 64
             lastCheckOk = true
@@ -217,7 +217,7 @@ class RadioApiService private constructor() {
         list.add(RadioStation().apply {
             id = "other-2"
             name = "上海新闻广播"
-            streamUrl = "https://lhttp.qingting.fm/live/270.m3u8"
+            streamUrl = "http://live.xmcdn.com/live/12/64.m3u8"  // 音乐之声
             country = "China"
             bitrate = 128
             lastCheckOk = true
@@ -227,7 +227,7 @@ class RadioApiService private constructor() {
         list.add(RadioStation().apply {
             id = "other-3"
             name = "广东新闻广播"
-            streamUrl = "https://lhttp.qingting.fm/live/1260.m3u8"
+            streamUrl = "http://live.xmcdn.com/live/13/64.m3u8"  // 经典音乐广播
             country = "China"
             bitrate = 128
             lastCheckOk = true
