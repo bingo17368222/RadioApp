@@ -492,17 +492,20 @@ class SettingsFragment : Fragment() {
 
     private fun applyTheme() {
         prefManager.saveSettings(settings)
-        // 通过Intent传递主题，recreate后onCreate会读取
-        val themeValue = settings.uiTheme
+        // 手动重启Activity实现主题切换（避免recreate()闪退）
         activity?.let { act ->
-            val intent = act.intent.apply {
-                putExtra("theme", themeValue)
-            }
-            // 保存主题到SharedPreferences以便下次启动时也能使用
+            val themeValue = settings.uiTheme
+            // 保存主题到SharedPreferences
             act.getSharedPreferences("radio_app_prefs", android.content.Context.MODE_PRIVATE)
                 .edit().putString("current_theme", themeValue).apply()
-            act.intent = intent
-            act.recreate()
+            // 启动新Activity并传递主题
+            val intent = android.content.Intent(act, com.radio.app.activities.MainActivity::class.java)
+            intent.putExtra("theme", themeValue)
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            act.startActivity(intent)
+            act.finish()
+            // 无动画过渡
+            act.overridePendingTransition(0, 0)
         }
     }
 
