@@ -38,8 +38,7 @@ class PlayerActivity : AppCompatActivity() {
     private var hasErrorToastShown = false
     private var episodeList: ArrayList<Episode> = ArrayList()
     private var currentEpisodeIndex = -1
-    private var cachePollingHandler: Handler? = null
-    private var cachePollingRunnable: Runnable? = null
+
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -236,24 +235,8 @@ class PlayerActivity : AppCompatActivity() {
             binding.layoutEpisodeNav.visibility = View.GONE
         }
 
-        // 缓存路径轮询：每2秒检查一次
-        cachePollingHandler = Handler(Looper.getMainLooper())
-        cachePollingRunnable = object : Runnable {
-            override fun run() {
-                playbackService?.let {
-                    val cachePath = it.getLocalCachePath()
-                    if (cachePath.isNotEmpty()) {
-                        binding.tvCacheUrl.text = "缓存: $cachePath"
-                        binding.tvCacheUrl.visibility = View.VISIBLE
-                    } else if (it.isCaching()) {
-                        binding.tvCacheUrl.text = "缓存中..."
-                        binding.tvCacheUrl.visibility = View.VISIBLE
-                    }
-                }
-                cachePollingHandler?.postDelayed(this, 2000)
-            }
-        }
-        cachePollingRunnable?.let { cachePollingHandler?.post(it) }
+        // ExoPlayer 自带缓存，不需要手动轮询缓存路径
+        binding.tvCacheUrl.visibility = View.GONE
     }
 
     private fun setupListeners() {
@@ -415,12 +398,6 @@ class PlayerActivity : AppCompatActivity() {
     private fun updateUI() {
         playbackService?.let {
             updatePlayPauseButton(it.isPlaying())
-            // Bug 4: 更新缓存路径显示
-            val cachePath = it.getLocalCachePath()
-            if (cachePath.isNotEmpty()) {
-                binding.tvCacheUrl.text = "缓存: $cachePath"
-                binding.tvCacheUrl.visibility = View.VISIBLE
-            }
         }
     }
 
@@ -455,7 +432,6 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        cachePollingRunnable?.let { cachePollingHandler?.removeCallbacks(it) }
         if (serviceBound) {
             playbackService?.setCallback(null)
             unbindService(serviceConnection)
