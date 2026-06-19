@@ -117,20 +117,6 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
         recyclerView?.adapter = stationAdapter
         progressBar?.visibility = View.GONE
-
-        RadioApiService.getInstance().getAllStations(object : RadioApiService.ApiCallback<List<RadioStation>> {
-            override fun onSuccess(result: List<RadioStation>) {
-                mainHandler.post {
-                    stations.clear()
-                    stations.addAll(result)
-                    stationAdapter.notifyDataSetChanged()
-                }
-            }
-
-            override fun onError(error: String) {
-                // 忽略网络错误，使用内置电台
-            }
-        })
     }
 
     private fun getBuiltinStations(): List<RadioStation> {

@@ -11,8 +11,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 14
-        versionName "1.2.11"
+        versionCode 15
+        versionName "1.2.12"
     }
 
     signingConfigs {
@@ -66,4 +66,7 @@ dependencies {
 
     // Vosk - 离线语音识别
     implementation 'com.alphacephei:vosk-android:0.3.47'
+
+    // ExoPlayer - 支持M3U8流媒体
+    implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
 }

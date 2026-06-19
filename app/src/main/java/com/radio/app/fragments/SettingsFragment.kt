@@ -478,9 +478,9 @@ class SettingsFragment : Fragment() {
         activity?.let {
             if (it is com.radio.app.activities.MainActivity) {
                 try {
-                    // 主题切换需要重启Activity才能生效
-                    // 保存设置后提示用户手动重启
-                    Toast.makeText(requireContext(), "主题已保存，请完全关闭应用后重新打开", Toast.LENGTH_LONG).show()
+                    // 保存设置后提示用户重启
+                    prefManager.saveSettings(settings)
+                    Toast.makeText(requireContext(), "主题已保存，请重启应用生效", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
