@@ -370,35 +370,54 @@ class RadioPlaybackService : Service(),
     }
 
     /**
-     * 手动解析HTTP重定向，最多跟踪10次
+     * 手动解析HTTP重定向，最多跟踪10次。
+     * 蜻蜓fm需要Referer和Cookie支持。
      */
     private fun resolveRedirectUrl(originalUrl: String): String {
         var currentUrl = originalUrl
         var redirectCount = 0
+        var cookieValue = ""
         while (redirectCount < 10) {
             try {
                 val conn = URL(currentUrl).openConnection() as HttpURLConnection
-                conn.requestMethod = "HEAD"
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
                 conn.instanceFollowRedirects = false
-                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36")
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
                 conn.setRequestProperty("Accept", "*/*")
+                conn.setRequestProperty("Referer", "https://www.qingting.fm/")
+                if (cookieValue.isNotEmpty()) {
+                    conn.setRequestProperty("Cookie", cookieValue)
+                }
+                conn.setRequestProperty("Connection", "keep-alive")
+                conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
                 val code = conn.responseCode
+                Log.d(TAG, "resolveRedirect $redirectCount: $currentUrl -> HTTP $code")
                 if (code in 300..399) {
                     val location = conn.getHeaderField("Location")
+                    val setCookie = conn.getHeaderField("Set-Cookie")
+                    if (!setCookie.isNullOrBlank()) {
+                        cookieValue = setCookie.split(";")[0].trim()
+                    }
                     conn.disconnect()
                     if (location.isNullOrBlank()) break
                     currentUrl = if (location.startsWith("http")) location
                     else URL(URL(currentUrl), location).toString()
                     redirectCount++
-                    Log.d(TAG, "Redirect $redirectCount: $currentUrl")
+                } else if (code == 200) {
+                    // 检查是否是M3U8或音频流
+                    val contentType = conn.contentType ?: ""
+                    Log.d(TAG, "Final URL resolved: $currentUrl contentType=$contentType")
+                    conn.disconnect()
+                    break
                 } else {
+                    Log.w(TAG, "HTTP $code for $currentUrl")
                     conn.disconnect()
                     break
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "HEAD request failed for redirect check, using current URL", e)
+                Log.w(TAG, "Redirect check failed for $currentUrl", e)
                 break
             }
         }
@@ -430,9 +449,10 @@ class RadioPlaybackService : Service(),
                     return@launch
                 }
 
-                // 手动处理重定向 + 设置User-Agent
+                // 手动处理重定向 + 设置User-Agent + Referer + Cookie
                 var downloadUrlStr = url
                 var redirectCount = 0
+                var cookieValue = ""
                 while (redirectCount < 5) {
                     val downloadUrl = URL(downloadUrlStr)
                     conn = downloadUrl.openConnection() as HttpURLConnection
@@ -440,13 +460,23 @@ class RadioPlaybackService : Service(),
                     conn.connectTimeout = 15000
                     conn.readTimeout = 60000
                     conn.instanceFollowRedirects = false
-                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36")
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
                     conn.setRequestProperty("Accept", "*/*")
+                    conn.setRequestProperty("Referer", "https://www.qingting.fm/")
+                    if (cookieValue.isNotEmpty()) {
+                        conn.setRequestProperty("Cookie", cookieValue)
+                    }
+                    conn.setRequestProperty("Connection", "keep-alive")
+                    conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
 
                     val rc = conn.responseCode
                     Log.d(TAG, "Cache HTTP $rc for $url (redirect=$redirectCount)")
                     if (rc in 300..399) {
                         val location = conn.getHeaderField("Location")
+                        val setCookie = conn.getHeaderField("Set-Cookie")
+                        if (!setCookie.isNullOrBlank()) {
+                            cookieValue = setCookie.split(";")[0].trim()
+                        }
                         conn.disconnect()
                         conn = null
                         if (location.isNullOrBlank()) {
@@ -468,7 +498,18 @@ class RadioPlaybackService : Service(),
                 }
 
                 val totalSize = conn?.contentLength ?: -1
-                Log.d(TAG, "Cache download totalSize=$totalSize for $url")
+                val contentType = conn?.contentType ?: ""
+                Log.d(TAG, "Cache download totalSize=$totalSize contentType=$contentType for $url")
+
+                // 检查Content-Type，拒绝HTML错误页面
+                if (contentType.contains("text/html", ignoreCase = true) ||
+                    contentType.contains("application/json", ignoreCase = true)) {
+                    Log.w(TAG, "Cache received non-audio content: $contentType")
+                    caching = false
+                    cacheProgress = 0
+                    return@launch
+                }
+
                 val input = conn?.inputStream ?: throw Exception("连接失败")
                 fos = FileOutputStream(cacheFile)
                 val buffer = ByteArray(8192)
@@ -485,6 +526,19 @@ class RadioPlaybackService : Service(),
 
                 if (cacheFile.length() < 1024) {
                     Log.w(TAG, "Cache file too small: ${cacheFile.length()} bytes")
+                    cacheFile.delete()
+                    caching = false
+                    cacheProgress = 0
+                    return@launch
+                }
+
+                // 再次检查文件头，确保不是HTML错误页面
+                val header = ByteArray(20)
+                cacheFile.inputStream().use { it.read(header) }
+                val headerStr = String(header, Charsets.UTF_8)
+                if (headerStr.contains("<!DOCTYPE", ignoreCase = true) ||
+                    headerStr.contains("<html", ignoreCase = true)) {
+                    Log.w(TAG, "Cache file is HTML, not audio")
                     cacheFile.delete()
                     caching = false
                     cacheProgress = 0

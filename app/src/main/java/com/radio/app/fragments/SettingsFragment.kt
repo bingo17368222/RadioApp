@@ -451,13 +451,9 @@ class SettingsFragment : Fragment() {
         activity?.let {
             if (it is com.radio.app.activities.MainActivity) {
                 try {
-                    // 动态更新状态栏颜色
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                        val typedValue = android.util.TypedValue()
-                        it.theme.resolveAttribute(androidx.appcompat.R.attr.colorPrimary, typedValue, true)
-                        it.window.statusBarColor = typedValue.data
-                    }
-                    it.recreate()
+                    // 保存新主题到SharedPreferences，下次启动生效
+                    // 不调用recreate()以避免播放停止
+                    Toast.makeText(requireContext(), "主题已切换，下次启动应用时生效", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }

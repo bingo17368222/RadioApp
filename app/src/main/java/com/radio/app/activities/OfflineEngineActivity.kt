@@ -98,7 +98,7 @@ class OfflineEngineActivity : AppCompatActivity() {
             "Vosk 小模型 (英文)",
             "Vosk small-en 英文模型\n大小: 约42MB | 识别率: ~90% | 速度: 快(实时)\n适用: 英文语音识别，低资源消耗",
             "约42MB",
-            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+            "https://hf-mirror.com/SlyEcho/vosk-model-small-en-us/resolve/main/vosk-model-small-en-us-0.15.zip",
             "vosk-model-small-en-us-0.15"
         ),
         EngineInfo(
@@ -216,8 +216,15 @@ class OfflineEngineActivity : AppCompatActivity() {
                     var conn: HttpURLConnection? = null
                     var fos: FileOutputStream? = null
                     try {
+                        // 断点续传：检查已下载的部分
+                        var resumeFrom = 0L
+                        if (outFile.exists() && outFile.length() > 1024) {
+                            resumeFrom = outFile.length()
+                            Log.d(TAG, "Resuming download from $resumeFor bytes")
+                        }
+
                         var downloadUrlStr = downloadUrl
-                        // Bug 9: 手动处理 3xx 重定向（HuggingFace 使用 307/308）
+                        // 手动处理 3xx 重定向
                         var redirectCount = 0
                         while (redirectCount < 5) {
                             val url = URL(downloadUrlStr)
@@ -225,9 +232,12 @@ class OfflineEngineActivity : AppCompatActivity() {
                             conn.requestMethod = "GET"
                             conn.connectTimeout = 60000
                             conn.readTimeout = 300000
-                            conn.instanceFollowRedirects = false  // 手动处理重定向
-                            // 设置 User-Agent，模拟浏览器以避免服务器拒绝
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                            conn.instanceFollowRedirects = false
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+                            conn.setRequestProperty("Accept", "*/*")
+                            if (resumeFrom > 0) {
+                                conn.setRequestProperty("Range", "bytes=$resumeFrom-")
+                            }
 
                             val rc = conn.responseCode
                             Log.d(TAG, "Download response code: $rc for ${engine.name} (redirect=$redirectCount)")
@@ -238,38 +248,37 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 if (location.isNullOrBlank()) {
                                     throw Exception("重定向但无 Location 头 (HTTP $rc)")
                                 }
-                                // 处理相对 URL
-                                downloadUrlStr = if (location.startsWith("http")) {
-                                    location
-                                } else {
-                                    URL(URL(downloadUrlStr), location).toString()
-                                }
+                                downloadUrlStr = if (location.startsWith("http")) location
+                                else URL(URL(downloadUrlStr), location).toString()
                                 redirectCount++
                                 continue
                             }
-                            if (rc != 200) {
+                            if (rc != 200 && rc != 206) {
                                 throw Exception("HTTP $rc")
                             }
                             break
                         }
 
                         val totalSize = conn?.contentLength ?: -1
-                        Log.d(TAG, "Download total size: $totalSize for ${engine.name}")
-
-                        // 如果服务器未返回Content-Length，尝试通过Range请求获取
+                        val contentRange = conn?.getHeaderField("Content-Range")
                         var effectiveTotalSize = totalSize
-                        if (effectiveTotalSize <= 0) {
-                            // 无法获取文件大小，使用未知大小模式
-                            Log.w(TAG, "Content-Length not available, using unknown size mode")
+                        if (contentRange != null && contentRange.contains("/")) {
+                            val totalStr = contentRange.substringAfter("/")
+                            effectiveTotalSize = totalStr.toIntOrNull() ?: totalSize
                         }
+                        if (effectiveTotalSize <= 0 && resumeFrom > 0) {
+                            // Range请求但没有Content-Length，用文件大小估算
+                            effectiveTotalSize = (totalSize + resumeFrom.toInt()).coerceAtLeast(1)
+                        }
+                        Log.d(TAG, "Download total size: $effectiveTotalSize for ${engine.name}")
 
                         val input = conn?.inputStream ?: throw Exception("连接失败")
-                        fos = FileOutputStream(outFile)
+                        // 断点续传模式追加写入
+                        fos = FileOutputStream(outFile, resumeFrom > 0)
                         val buffer = ByteArray(8192)
                         var len: Int
-                        var downloaded = 0
+                        var downloaded = resumeFrom.toInt()
                         var lastUpdate = System.currentTimeMillis()
-                        var lastDownloaded = 0L
                         var startTime = System.currentTimeMillis()
 
                         while (input.read(buffer).also { len = it } != -1) {
@@ -282,31 +291,16 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 val progressText: String
                                 if (effectiveTotalSize > 0) {
                                     progress = (downloaded * 100 / effectiveTotalSize).coerceIn(0, 100)
-                                    // 计算下载速度和剩余时间
                                     val elapsed = (now - startTime) / 1000.0
-                                    val speed = if (elapsed > 0) downloaded / elapsed else 0.0 // bytes/sec
-                                    val remaining = if (speed > 0) (effectiveTotalSize - downloaded) / speed else 0.0 // seconds
+                                    val speed = if (elapsed > 0) (downloaded - resumeFrom) / elapsed else 0.0
                                     val speedStr = if (speed >= 1024 * 1024) {
                                         String.format("%.1f MB/s", speed / (1024.0 * 1024))
                                     } else {
                                         String.format("%.0f KB/s", speed / 1024.0)
                                     }
-                                    val remainStr = if (remaining >= 3600) {
-                                        String.format("%.0f小时%.0f分", remaining / 3600, (remaining % 3600) / 60)
-                                    } else if (remaining >= 60) {
-                                        String.format("%.0f分%.0f秒", remaining / 60, remaining % 60)
-                                    } else {
-                                        String.format("%.0f秒", remaining)
-                                    }
-                                    // 大文件(>500MB)显示速度和剩余时间
-                                    if (effectiveTotalSize > 500 * 1024 * 1024) {
-                                        progressText = "下载: $progress% | $speedStr | 剩余$remainStr"
-                                    } else {
-                                        progressText = "下载: $progress%"
-                                    }
+                                    progressText = "下载: $progress% | $speedStr"
                                 } else {
-                                    // 未知大小模式：显示已下载量
-                                    progress = 0  // ProgressBar保持0
+                                    progress = 0
                                     val downloadedMB = downloaded / (1024.0 * 1024)
                                     progressText = "下载: ${String.format("%.1f", downloadedMB)} MB"
                                 }
@@ -342,15 +336,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Download failed: ${e.message}", e)
-                        // 下载失败，删除残留文件
-                        try {
-                            val modelDir = File(modelsDir, engine.modelDir)
-                            if (modelDir.exists()) {
-                                deleteRecursive(modelDir)
-                            }
-                        } catch (_: Exception) {
-                            // ignored
-                        }
+                        // 下载失败不删除残留文件，支持断点续传
                         withContext(Dispatchers.Main) {
                             btn.isEnabled = true
                             btn.text = "安装(重试)"
@@ -358,11 +344,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                             Toast.makeText(this@OfflineEngineActivity, "下载失败: ${e.message}", Toast.LENGTH_LONG).show()
                         }
                     } finally {
-                        try {
-                            fos?.close()
-                        } catch (_: Exception) {
-                            // ignored
-                        }
+                        try { fos?.close() } catch (_: Exception) {}
                         conn?.disconnect()
                     }
                 }
