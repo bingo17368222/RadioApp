@@ -6,16 +6,17 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
+import android.view.View
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
-import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.radio.app.R
 import com.radio.app.fragments.HomeFragment
 import com.radio.app.fragments.EpisodesFragment
 import com.radio.app.fragments.SearchFragment
 import com.radio.app.fragments.SettingsFragment
 import com.radio.app.services.RadioPlaybackService
-import com.radio.app.utils.ThemeManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -23,6 +24,9 @@ class MainActivity : AppCompatActivity() {
         private set
     var isServiceBound: Boolean = false
         private set
+
+    private val navIds = intArrayOf(R.id.nav_home, R.id.nav_episodes, R.id.nav_search, R.id.nav_settings)
+    private var currentNavId: Int = R.id.nav_home
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -48,20 +52,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val nav = findViewById<BottomNavigationView>(R.id.bottom_navigation)
-        nav.setOnItemSelectedListener { item ->
-            val fragment: Fragment? = when (item.itemId) {
-                R.id.nav_home -> HomeFragment()
-                R.id.nav_episodes -> EpisodesFragment()
-                R.id.nav_search -> SearchFragment()
-                R.id.nav_settings -> SettingsFragment()
-                else -> null
+        // 自定义底部导航栏点击处理（绕过MIUI的BottomNavigationView崩溃）
+        for (navId in navIds) {
+            findViewById<View>(navId)?.setOnClickListener { view ->
+                selectNav(view.id)
             }
-            loadFragment(fragment)
         }
 
         if (savedInstanceState == null) {
             loadFragment(HomeFragment())
+            selectNav(R.id.nav_home)
         }
 
         bindService(
@@ -69,6 +69,41 @@ class MainActivity : AppCompatActivity() {
             serviceConnection,
             Context.BIND_AUTO_CREATE
         )
+    }
+
+    private fun selectNav(navId: Int) {
+        currentNavId = navId
+        val fragment: Fragment? = when (navId) {
+            R.id.nav_home -> HomeFragment()
+            R.id.nav_episodes -> EpisodesFragment()
+            R.id.nav_search -> SearchFragment()
+            R.id.nav_settings -> SettingsFragment()
+            else -> null
+        }
+        loadFragment(fragment)
+
+        // 更新导航栏选中状态的颜色
+        val activeColor = try {
+            val tv = android.util.TypedValue()
+            theme.resolveAttribute(android.R.attr.colorPrimary, tv, true)
+            tv.data
+        } catch (e: Exception) {
+            0xFF7ED321.toInt()
+        }
+        val inactiveColor = 0xFF999999.toInt()
+
+        for (id in navIds) {
+            val navView = findViewById<View>(id)
+            if (navView is LinearLayout) {
+                // 每个导航项的第二个子View是TextView
+                val textView = navView.getChildAt(1) as? TextView
+                if (id == navId) {
+                    textView?.setTextColor(activeColor)
+                } else {
+                    textView?.setTextColor(inactiveColor)
+                }
+            }
+        }
     }
 
     private fun loadFragment(fragment: Fragment?): Boolean {
