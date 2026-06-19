@@ -487,20 +487,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             this, 1, rewindIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        // 上一节目
-        val prevEpIntent = Intent(this, RadioPlaybackService::class.java).apply {
-            action = ACTION_PREV_EPISODE
-        }
-        val prevEpPI = PendingIntent.getService(
-            this, 2, prevEpIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
         // 上一片段
         val prevSegIntent = Intent(this, RadioPlaybackService::class.java).apply {
             action = ACTION_PREV_SEGMENT
         }
         val prevSegPI = PendingIntent.getService(
-            this, 3, prevSegIntent,
+            this, 2, prevSegIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        // 上一节目
+        val prevEpIntent = Intent(this, RadioPlaybackService::class.java).apply {
+            action = ACTION_PREV_EPISODE
+        }
+        val prevEpPI = PendingIntent.getService(
+            this, 3, prevEpIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         // 播放/暂停
@@ -511,20 +511,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             this, 4, playPauseIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        // 下一片段
-        val nextSegIntent = Intent(this, RadioPlaybackService::class.java).apply {
-            action = ACTION_NEXT_SEGMENT
-        }
-        val nextSegPI = PendingIntent.getService(
-            this, 5, nextSegIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
         // 下一节目
         val nextEpIntent = Intent(this, RadioPlaybackService::class.java).apply {
             action = ACTION_NEXT_EPISODE
         }
         val nextEpPI = PendingIntent.getService(
-            this, 6, nextEpIntent,
+            this, 5, nextEpIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        // 下一片段
+        val nextSegIntent = Intent(this, RadioPlaybackService::class.java).apply {
+            action = ACTION_NEXT_SEGMENT
+        }
+        val nextSegPI = PendingIntent.getService(
+            this, 6, nextSegIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         // 快进15秒
@@ -550,7 +550,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setShowActionsInCompactView(2, 3, 4))
             .addAction(R.drawable.ic_rewind, "-15s", rewindPI)      // 0: 快退
-            .addAction(R.drawable.ic_skip_backward, "上片段", prevSegPI)  // 1: 上片段（不同图标）
+            .addAction(R.drawable.ic_skip_backward, "上片段", prevSegPI)  // 1: 上片段
             .addAction(R.drawable.ic_prev, "上节目", prevEpPI)       // 2: 上节目
             .addAction(
                 if (playing) R.drawable.ic_pause else R.drawable.ic_play,
@@ -558,7 +558,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 playPausePI
             )                                                      // 3: 播放/暂停
             .addAction(R.drawable.ic_next, "下节目", nextEpPI)       // 4: 下节目
-            .addAction(R.drawable.ic_skip_forward, "下片段", nextSegPI)   // 5: 下片段（不同图标）
+            .addAction(R.drawable.ic_skip_forward, "下片段", nextSegPI)   // 5: 下片段
             .addAction(R.drawable.ic_forward, "+15s", forwardPI)    // 6: 快进
             .build()
         startForeground(1, notification)

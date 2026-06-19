@@ -491,17 +491,9 @@ class SettingsFragment : Fragment() {
     }
 
     private fun applyTheme() {
-        activity?.let {
-            if (it is com.radio.app.activities.MainActivity) {
-                try {
-                    // 保存设置后提示用户重启
-                    prefManager.saveSettings(settings)
-                    Toast.makeText(requireContext(), "主题已保存，请重启应用生效", Toast.LENGTH_LONG).show()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
+        prefManager.saveSettings(settings)
+        // 热切换：重启Activity（不重启应用）
+        activity?.recreate()
     }
 
     private fun save() {

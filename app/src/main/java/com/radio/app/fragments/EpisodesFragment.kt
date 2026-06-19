@@ -128,7 +128,10 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             arrayOf("other-3", "广东新闻广播"),
             arrayOf("cnr-1", "中国之声"),
             arrayOf("cnr-2", "经济之声"),
-            arrayOf("cnr-3", "音乐之声")
+            arrayOf("cnr-3", "音乐之声"),
+            arrayOf("other-4", "北京新闻广播"),
+            arrayOf("other-5", "江苏新闻广播"),
+            arrayOf("other-6", "浙江之声")
         )
         return data.map { d ->
             RadioStation().apply {

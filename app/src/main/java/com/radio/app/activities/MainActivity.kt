@@ -37,25 +37,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 从 PreferenceManager 使用的存储读取主题（与 SettingsFragment 保存位置一致）
-        try {
-            val prefs = getSharedPreferences("radio_app_prefs", Context.MODE_PRIVATE)
-            val json = prefs.getString("settings", null)
-            if (json != null) {
-                val obj = org.json.JSONObject(json)
-                val theme = if (obj.has("uiTheme")) obj.getString("uiTheme") else "dark"
-                when (theme) {
-                    "fresh" -> setTheme(R.style.Theme_RadioApp_Fresh)
-                    "classic" -> setTheme(R.style.Theme_RadioApp_Classic)
-                    "minimal" -> setTheme(R.style.Theme_RadioApp_Minimal)
-                    else -> setTheme(R.style.Theme_RadioApp)
-                }
-            } else {
-                setTheme(R.style.Theme_RadioApp)
-            }
-        } catch (e: Exception) {
-            setTheme(R.style.Theme_RadioApp)
-        }
+        // 使用默认主题，避免SharedPreferences读取导致闪退
+        setTheme(R.style.Theme_RadioApp)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
