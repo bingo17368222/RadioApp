@@ -290,17 +290,18 @@ class SettingsFragment : Fragment() {
         val asrProviders = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
         val savedProvider = settings.asrProvider
         val index = asrProviders.indexOfFirst { it == savedProvider }
+        val adapter = binding.spinnerAsrProvider.adapter as? ArrayAdapter<*>
         if (index >= 0) {
             binding.spinnerAsrProvider.setSelection(index)
         } else if (savedProvider == "whisper-local") {
             // 查找本地Whisper在adapter中的位置
-            val whisperIndex = (0 until asrProviderAdapter.count).indexOfFirst {
-                asrProviderAdapter.getItem(it)?.toString()?.startsWith("本地Whisper") == true
+            val whisperIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
+                adapter?.getItem(it)?.toString()?.startsWith("本地Whisper") == true
             }
             if (whisperIndex >= 0) binding.spinnerAsrProvider.setSelection(whisperIndex)
         } else if (savedProvider == "vosk-local") {
-            val voskIndex = (0 until asrProviderAdapter.count).indexOfFirst {
-                asrProviderAdapter.getItem(it)?.toString()?.startsWith("本地Vosk") == true
+            val voskIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
+                adapter?.getItem(it)?.toString()?.startsWith("本地Vosk") == true
             }
             if (voskIndex >= 0) binding.spinnerAsrProvider.setSelection(voskIndex)
         }
