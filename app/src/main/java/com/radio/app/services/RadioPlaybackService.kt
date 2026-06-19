@@ -101,58 +101,62 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     override fun onCreate() {
         super.onCreate()
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setDefaultRequestProperties(mapOf(
-                "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36",
-                "Referer" to "https://www.qingting.fm/"
-            ))
-        player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
-            .build()
-            .apply {
-                addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(state: Int) {
-                        when (state) {
-                            Player.STATE_READY -> {
-                                prepared = true
-                                isRetrying = false
-                                callback?.onStateChanged(true)
-                                sendStateBroadcast(true)
-                                startForegroundNotification()
-                            }
-                            Player.STATE_ENDED -> {
-                                callback?.onStateChanged(false)
-                                sendStateBroadcast(false)
-                                stopAutoSkipCheck()
-                            }
-                        }
-                    }
-                    override fun onPlayerError(error: PlaybackException) {
-                        Log.e(TAG, "ExoPlayer error: ${error.message}")
-                        prepared = false
-                        errorRetryCount++
-                        if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
-                            val retryDelay = errorRetryCount * 3000L
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                try {
-                                    player?.let {
-                                        it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                                        it.prepare()
-                                        it.play()
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Retry failed", e)
+        try {
+            val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+                .setDefaultRequestProperties(mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36",
+                    "Referer" to "https://www.qingting.fm/"
+                ))
+            player = ExoPlayer.Builder(this)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+                .build()
+                .apply {
+                    addListener(object : Player.Listener {
+                        override fun onPlaybackStateChanged(state: Int) {
+                            when (state) {
+                                Player.STATE_READY -> {
+                                    prepared = true
+                                    isRetrying = false
+                                    callback?.onStateChanged(true)
+                                    sendStateBroadcast(true)
+                                    startForegroundNotification()
                                 }
-                            }, retryDelay)
+                                Player.STATE_ENDED -> {
+                                    callback?.onStateChanged(false)
+                                    sendStateBroadcast(false)
+                                    stopAutoSkipCheck()
+                                }
+                            }
                         }
-                    }
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        callback?.onStateChanged(isPlaying)
-                        sendStateBroadcast(isPlaying)
-                        startForegroundNotification()
-                    }
-                })
-            }
+                        override fun onPlayerError(error: PlaybackException) {
+                            Log.e(TAG, "ExoPlayer error: ${error.message}")
+                            prepared = false
+                            errorRetryCount++
+                            if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
+                                val retryDelay = errorRetryCount * 3000L
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    try {
+                                        player?.let {
+                                            it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                                            it.prepare()
+                                            it.play()
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Retry failed", e)
+                                    }
+                                }, retryDelay)
+                            }
+                        }
+                        override fun onIsPlayingChanged(isPlaying: Boolean) {
+                            callback?.onStateChanged(isPlaying)
+                            sendStateBroadcast(isPlaying)
+                            startForegroundNotification()
+                        }
+                    })
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "ExoPlayer init failed", e)
+        }
         audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         autoSkipHandler = Handler(Looper.getMainLooper())
         progressHandler = Handler(Looper.getMainLooper())
