@@ -4,11 +4,13 @@
     <style name="Theme.RadioApp" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/primary_dark</item>
         <item name="colorPrimaryVariant">@color/primary_dark</item>
+        <item name="colorOnPrimary">@color/text_primary</item>
         <item name="colorAccent">@color/accent</item>
         <item name="android:colorBackground">@color/background_dark</item>
+        <item name="colorSurface">@color/card_dark</item>
+        <item name="colorOnSurface">@color/text_primary</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
-        <item name="colorSurface">@color/card_dark</item>
         <item name="android:statusBarColor">@color/background_dark</item>
         <item name="android:navigationBarColor">@color/background_dark</item>
     </style>
@@ -17,11 +19,13 @@
     <style name="Theme.RadioApp.Fresh" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#7ED321</item>
         <item name="colorPrimaryVariant">#6BBF1A</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
         <item name="colorAccent">#7ED321</item>
         <item name="android:colorBackground">#F5F7F5</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#1A1A1A</item>
         <item name="android:textColorPrimary">#1A1A1A</item>
         <item name="android:textColorSecondary">#666666</item>
-        <item name="colorSurface">#FFFFFF</item>
         <item name="android:statusBarColor">#F5F7F5</item>
         <item name="android:navigationBarColor">#F5F7F5</item>
     </style>
@@ -30,11 +34,13 @@
     <style name="Theme.RadioApp.Classic" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#E74C3C</item>
         <item name="colorPrimaryVariant">#C0392B</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
         <item name="colorAccent">#E74C3C</item>
         <item name="android:colorBackground">#FFF8F0</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#2C1810</item>
         <item name="android:textColorPrimary">#2C1810</item>
         <item name="android:textColorSecondary">#8B7355</item>
-        <item name="colorSurface">#FFFFFF</item>
         <item name="android:statusBarColor">#FFF8F0</item>
         <item name="android:navigationBarColor">#FFF8F0</item>
     </style>
@@ -43,11 +49,13 @@
     <style name="Theme.RadioApp.Minimal" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#9B59B6</item>
         <item name="colorPrimaryVariant">#8E44AD</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
         <item name="colorAccent">#9B59B6</item>
         <item name="android:colorBackground">#F0E6F6</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#2D1B3D</item>
         <item name="android:textColorPrimary">#2D1B3D</item>
         <item name="android:textColorSecondary">#7D6B8A</item>
-        <item name="colorSurface">#FFFFFF</item>
         <item name="android:statusBarColor">#F0E6F6</item>
         <item name="android:navigationBarColor">#F0E6F6</item>
     </style>
