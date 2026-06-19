@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        ThemeManager.applyTheme(this)
+        // ThemeManager.applyTheme(this) // 暂时禁用，排查闪退原因
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 

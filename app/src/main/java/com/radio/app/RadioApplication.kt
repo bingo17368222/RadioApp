@@ -16,7 +16,7 @@ class RadioApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        applyTheme()
+        // applyTheme() // 暂时禁用，排查闪退原因
     }
 
     private fun applyTheme() {
