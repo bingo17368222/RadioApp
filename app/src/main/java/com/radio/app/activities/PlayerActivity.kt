@@ -190,8 +190,8 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
         binding.tvCurrentTime.text = "00:00 / 00:00"
-        binding.tvAiProgress.text = "缓冲: 0%"
-        binding.tvAiProgress.visibility = View.VISIBLE
+        // 直播流不显示缓冲进度
+        binding.tvAiProgress.visibility = View.GONE
 
         // Bug 5: 设置片段列表 adapter
         segmentAdapter = VoiceSegmentAdapter()
