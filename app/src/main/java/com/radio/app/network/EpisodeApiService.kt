@@ -30,14 +30,14 @@ class EpisodeApiService private constructor() {
             "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-2 河南音乐广播
             "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-3 河南交通广播
             "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-4 河南经济广播
-            "http://ls.qingting.fm/live/5022051.m3u8",            // henan-5 郑州新闻广播
-            "http://ls.qingting.fm/live/5022055.m3u8",            // henan-6 洛阳交通广播
+            "https://lhttp.qingting.fm/live/5022051.m3u8",            // henan-5 郑州新闻广播
+            "https://lhttp.qingting.fm/live/5022055.m3u8",            // henan-6 洛阳交通广播
             "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8",       // cnr-1 中国之声
             "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8",       // cnr-2 经济之声
             "http://live.xmcdn.com/live/95/64.m3u8",              // cnr-3 音乐之声
             "http://live.xmcdn.com/live/91/64.m3u8",              // other-1 北京新闻广播
-            "http://ls.qingting.fm/live/270.m3u8",               // other-2 上海新闻广播
-            "http://ls.qingting.fm/live/1260.m3u8"               // other-3 广东新闻广播
+            "https://lhttp.qingting.fm/live/270.m3u8",               // other-2 上海新闻广播
+            "https://lhttp.qingting.fm/live/1260.m3u8"               // other-3 广东新闻广播
         )
 
         // 节目回放URL（使用蜻蜓fm的回放API格式）

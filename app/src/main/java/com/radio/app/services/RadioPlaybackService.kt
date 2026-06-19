@@ -734,9 +734,6 @@ class RadioPlaybackService : Service(),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // compact view 显示: 快退, 上一节目, 播放/暂停, 下一节目, 快进
-        val mediaStyle = MediaStyle().setShowActionsInCompactView(0, 2, 3, 4, 6)
-
         val subText = if (isLive) "[直播]" else "[回放]"
 
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
@@ -747,9 +744,9 @@ class RadioPlaybackService : Service(),
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // 使用大图标样式让通知栏更大
+            // compact view 最多显示3个按钮: 上节目(1)、播放/暂停(3)、下节目(5)
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
-                .setShowActionsInCompactView(0, 2, 3, 4, 6))
+                .setShowActionsInCompactView(1, 3, 5))
             .addAction(R.drawable.ic_rewind, "-15s", rewindPI)
             .addAction(R.drawable.ic_prev, "上节目", prevEpPI)
             .addAction(R.drawable.ic_prev, "上片段", prevSegPI)

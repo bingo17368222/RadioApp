@@ -226,10 +226,18 @@ class SettingsFragment : Fragment() {
         binding.spinnerAsrProvider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
-                val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
-                settings.asrProvider = providers[position]
+                val selected = binding.spinnerAsrProvider.selectedItem.toString()
+                val providerId = when {
+                    selected.startsWith("本地Whisper") -> "whisper-local"
+                    selected.startsWith("本地Vosk") -> "vosk-local"
+                    else -> {
+                        val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
+                        if (position < providers.size) providers[position] else selected
+                    }
+                }
+                settings.asrProvider = providerId
                 save()
-                Toast.makeText(requireContext(), "ASR方案已切换: " + parent?.getItemAtPosition(position), Toast.LENGTH_SHORT).show()
+                Toast.makeText(requireContext(), "ASR方案已切换: $selected", Toast.LENGTH_SHORT).show()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }

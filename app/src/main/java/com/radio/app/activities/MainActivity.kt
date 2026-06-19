@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // ThemeManager.applyTheme(this) // 暂时禁用，排查闪退原因
+        setTheme(R.style.Theme_RadioApp)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 

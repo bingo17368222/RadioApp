@@ -265,21 +265,19 @@ class OfflineEngineActivity : AppCompatActivity() {
                         val buffer = ByteArray(8192)
                         var len: Int
                         var downloaded = 0L
-                        var lastUpdate = System.currentTimeMillis()
-                        var lastDownloaded = 0L
+                        var startTime = System.currentTimeMillis()
 
                         while (input.read(buffer).also { len = it } != -1) {
                             fos.write(buffer, 0, len)
                             downloaded += len
                             val now = System.currentTimeMillis()
-                            if (now - lastUpdate > 1000) {
-                                lastUpdate = now
+                            if (now - startTime > 1000) {
                                 val progress: Int
                                 val progressText: String
                                 if (totalSize > 0) {
                                     progress = (downloaded * 100 / totalSize).toInt().coerceIn(0, 100)
-                                    val elapsedSec = (now - lastUpdate) / 1000.0
-                                    val speed = if (elapsedSec > 0) (downloaded - lastDownloaded) / elapsedSec else 0.0
+                                    val elapsedSec = (now - startTime) / 1000.0
+                                    val speed = if (elapsedSec > 0) downloaded / elapsedSec else 0.0
                                     val speedStr = if (speed >= 1024 * 1024) {
                                         String.format("%.1f MB/s", speed / (1024.0 * 1024))
                                     } else {
@@ -291,7 +289,6 @@ class OfflineEngineActivity : AppCompatActivity() {
                                     val downloadedMB = downloaded / (1024.0 * 1024)
                                     progressText = "下载: ${String.format("%.1f", downloadedMB)} MB"
                                 }
-                                lastDownloaded = downloaded
                                 withContext(Dispatchers.Main) {
                                     btn.text = progressText
                                     progressBar?.max = 100
