@@ -20,18 +20,27 @@ class PreferenceManager(private val context: Context) {
         val json = prefs.getString(KEY_SETTINGS, null)
         return if (json != null) {
             try {
-                val s = gson.fromJson(json, AppSettings::class.java)
-                // Gson 不调用 Kotlin 属性初始化器，手动确保非 null
-                if (s.subtitleSize.isNullOrEmpty()) s.subtitleSize = AppSettings.SUBTITLE_MEDIUM
-                if (s.subtitleLanguage.isNullOrEmpty()) s.subtitleLanguage = AppSettings.LANG_CN
-                if (s.voiceLanguage.isNullOrEmpty()) s.voiceLanguage = AppSettings.LANG_CN
-                if (s.uiTheme.isNullOrEmpty()) s.uiTheme = AppSettings.THEME_DARK
-                if (s.aiModel.isNullOrEmpty()) s.aiModel = AppSettings.AI_MODEL_WENXIN
-                if (s.asrProvider.isNullOrEmpty()) s.asrProvider = AppSettings.ASR_BAIDU
-                if (s.splitMode.isNullOrEmpty()) s.splitMode = AppSettings.SPLIT_MODE_NONE
-                if (s.customColors == null) s.customColors = AppSettings.CustomColors()
-                if (s.keywordConfig == null) s.keywordConfig = AppSettings.KeywordConfig()
-                if (s.dislikedEpisodes == null) s.dislikedEpisodes = mutableListOf()
+                // Gson 反序列化 AppSettings 可能因私有构造函数失败
+                // 使用更安全的方式：直接创建新实例并复制字段
+                val s = AppSettings.getInstance(context)
+                // 尝试解析 JSON 中的关键字段
+                try {
+                    val jsonObj = org.json.JSONObject(json)
+                    if (jsonObj.has("uiTheme")) s.uiTheme = jsonObj.getString("uiTheme")
+                    if (jsonObj.has("aiModel")) s.aiModel = jsonObj.getString("aiModel")
+                    if (jsonObj.has("asrProvider")) s.asrProvider = jsonObj.getString("asrProvider")
+                    if (jsonObj.has("subtitleSize")) s.subtitleSize = jsonObj.getString("subtitleSize")
+                    if (jsonObj.has("subtitleLanguage")) s.subtitleLanguage = jsonObj.getString("subtitleLanguage")
+                    if (jsonObj.has("voiceLanguage")) s.voiceLanguage = jsonObj.getString("voiceLanguage")
+                    if (jsonObj.has("splitMode")) s.splitMode = jsonObj.getString("splitMode")
+                    if (jsonObj.has("autoSkipWater")) s.autoSkipWater = jsonObj.getBoolean("autoSkipWater")
+                    if (jsonObj.has("continuousPlay")) s.continuousPlay = jsonObj.getBoolean("continuousPlay")
+                    if (jsonObj.has("autoDownload")) s.autoDownload = jsonObj.getBoolean("autoDownload")
+                    if (jsonObj.has("autoCache")) s.autoCache = jsonObj.getBoolean("autoCache")
+                    if (jsonObj.has("audioFocus")) s.audioFocus = jsonObj.getBoolean("audioFocus")
+                } catch (e: Exception) {
+                    Log.w("PreferenceManager", "JSON parse fallback failed", e)
+                }
                 s
             } catch (e: Exception) {
                 Log.e("PreferenceManager", "Failed to load settings", e)

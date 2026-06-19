@@ -677,61 +677,90 @@ class RadioPlaybackService : Service(),
             ?: "Radio App"
         val playing = player?.isPlaying ?: false
 
+        // 快退15秒
         val rewindIntent = Intent(this, RadioPlaybackService::class.java).apply {
-            action = ACTION_PREV_EPISODE
+            action = ACTION_REWIND
         }
         val rewindPI = PendingIntent.getService(
             this, 1, rewindIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val prevIntent = Intent(this, RadioPlaybackService::class.java).apply {
-            action = ACTION_PREV_SEGMENT
+        // 上一节目
+        val prevEpIntent = Intent(this, RadioPlaybackService::class.java).apply {
+            action = ACTION_PREV_EPISODE
         }
-        val prevPI = PendingIntent.getService(
-            this, 2, prevIntent,
+        val prevEpPI = PendingIntent.getService(
+            this, 2, prevEpIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // 上一片段
+        val prevSegIntent = Intent(this, RadioPlaybackService::class.java).apply {
+            action = ACTION_PREV_SEGMENT
+        }
+        val prevSegPI = PendingIntent.getService(
+            this, 3, prevSegIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        // 播放/暂停
         val playPauseIntent = Intent(this, RadioPlaybackService::class.java).apply {
             action = if (playing) ACTION_PAUSE else ACTION_PLAY
         }
         val playPausePI = PendingIntent.getService(
-            this, 3, playPauseIntent,
+            this, 4, playPauseIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val nextIntent = Intent(this, RadioPlaybackService::class.java).apply {
+        // 下一片段
+        val nextSegIntent = Intent(this, RadioPlaybackService::class.java).apply {
             action = ACTION_NEXT_SEGMENT
         }
-        val nextPI = PendingIntent.getService(
-            this, 4, nextIntent,
+        val nextSegPI = PendingIntent.getService(
+            this, 5, nextSegIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val forwardIntent = Intent(this, RadioPlaybackService::class.java).apply {
+        // 下一节目
+        val nextEpIntent = Intent(this, RadioPlaybackService::class.java).apply {
             action = ACTION_NEXT_EPISODE
         }
+        val nextEpPI = PendingIntent.getService(
+            this, 6, nextEpIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        // 快进15秒
+        val forwardIntent = Intent(this, RadioPlaybackService::class.java).apply {
+            action = ACTION_FORWARD
+        }
         val forwardPI = PendingIntent.getService(
-            this, 5, forwardIntent,
+            this, 7, forwardIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val mediaStyle = MediaStyle().setShowActionsInCompactView(1, 2, 3)
+        // compact view 显示: 快退, 上一节目, 播放/暂停, 下一节目, 快进
+        val mediaStyle = MediaStyle().setShowActionsInCompactView(0, 2, 3, 4, 6)
+
+        val subText = if (isLive) "[直播]" else "[回放]"
 
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(if (playing) "正在播放" else "已暂停")
+            .setContentText(if (playing) "正在播放 $subText" else "已暂停 $subText")
+            .setSubText(subText)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(R.drawable.ic_prev, "上一节目", rewindPI)
-            .addAction(R.drawable.ic_prev, "上一片段", prevPI)
+            // 使用大图标样式让通知栏更大
+            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
+                .setShowActionsInCompactView(0, 2, 3, 4, 6))
+            .addAction(R.drawable.ic_rewind, "-15s", rewindPI)
+            .addAction(R.drawable.ic_prev, "上节目", prevEpPI)
+            .addAction(R.drawable.ic_prev, "上片段", prevSegPI)
             .addAction(
                 if (playing) R.drawable.ic_pause else R.drawable.ic_play,
                 if (playing) "暂停" else "播放",
                 playPausePI
             )
-            .addAction(R.drawable.ic_next, "下一片段", nextPI)
-            .addAction(R.drawable.ic_next, "下一节目", forwardPI)
-            .setStyle(mediaStyle)
+            .addAction(R.drawable.ic_next, "下片段", nextSegPI)
+            .addAction(R.drawable.ic_next, "下节目", nextEpPI)
+            .addAction(R.drawable.ic_forward, "+15s", forwardPI)
             .build()
         startForeground(1, notification)
     }

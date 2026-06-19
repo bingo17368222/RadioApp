@@ -17,26 +17,31 @@ class ThemeManager(context: Context) {
 
         fun applyTheme(activity: Activity?) {
             if (activity == null) return
-            // 使用 PreferenceManager 读取设置（与 SettingsFragment 使用同一存储）
-            val prefManager = PreferenceManager(activity)
-            val settings = prefManager.loadSettings()
-            val theme = settings.uiTheme
+            try {
+                // 使用 PreferenceManager 读取设置（与 SettingsFragment 使用同一存储）
+                val prefManager = PreferenceManager(activity)
+                val settings = prefManager.loadSettings()
+                val theme = settings.uiTheme
 
-            Log.d(TAG, "Applying theme: $theme")
+                Log.d(TAG, "Applying theme: $theme")
 
-            // 先应用基础主题
-            when (theme) {
-                AppSettings.THEME_DARK -> activity.setTheme(R.style.Theme_RadioApp)
-                AppSettings.THEME_FRESH -> activity.setTheme(R.style.Theme_RadioApp_Fresh)
-                AppSettings.THEME_CLASSIC -> activity.setTheme(R.style.Theme_RadioApp_Classic)
-                AppSettings.THEME_MINIMAL -> activity.setTheme(R.style.Theme_RadioApp_Minimal)
-                AppSettings.THEME_CUSTOM -> activity.setTheme(R.style.Theme_RadioApp)
-                else -> activity.setTheme(R.style.Theme_RadioApp)
-            }
+                // 先应用基础主题
+                when (theme) {
+                    AppSettings.THEME_DARK -> activity.setTheme(R.style.Theme_RadioApp)
+                    AppSettings.THEME_FRESH -> activity.setTheme(R.style.Theme_RadioApp_Fresh)
+                    AppSettings.THEME_CLASSIC -> activity.setTheme(R.style.Theme_RadioApp_Classic)
+                    AppSettings.THEME_MINIMAL -> activity.setTheme(R.style.Theme_RadioApp_Minimal)
+                    AppSettings.THEME_CUSTOM -> activity.setTheme(R.style.Theme_RadioApp)
+                    else -> activity.setTheme(R.style.Theme_RadioApp)
+                }
 
-            // 如果是自定义主题，动态应用颜色
-            if (AppSettings.THEME_CUSTOM == theme) {
-                applyCustomColors(activity, settings.customColors)
+                // 如果是自定义主题，动态应用颜色
+                if (AppSettings.THEME_CUSTOM == theme) {
+                    applyCustomColors(activity, settings.customColors)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "applyTheme failed, using default", e)
+                activity.setTheme(R.style.Theme_RadioApp)
             }
         }
 
