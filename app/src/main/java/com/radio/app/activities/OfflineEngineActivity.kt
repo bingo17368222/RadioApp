@@ -98,7 +98,7 @@ class OfflineEngineActivity : AppCompatActivity() {
             "Vosk 小模型 (英文)",
             "Vosk small-en 英文模型\n大小: 约42MB | 识别率: ~90% | 速度: 快(实时)\n适用: 英文语音识别，低资源消耗",
             "约42MB",
-            "https://hf-mirror.com/SlyEcho/vosk-model-small-en-us/resolve/main/vosk-model-small-en-us-0.15.zip",
+            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
             "vosk-model-small-en-us-0.15"
         ),
         EngineInfo(
@@ -210,89 +210,76 @@ class OfflineEngineActivity : AppCompatActivity() {
                 val outFile = File(modelsDir, "${engine.modelDir}/$fileName")
                 outFile.parentFile?.mkdirs()
 
+                // 如果已存在有效文件，直接视为已安装
+                if (outFile.exists() && outFile.length() > 1024 && !fileName.endsWith(".zip")) {
+                    withContext(Dispatchers.Main) {
+                        btn.isEnabled = true
+                        btn.text = "已安装(删除)"
+                        progressBar?.visibility = View.GONE
+                    }
+                    return@launch
+                }
+
+                // 删除旧的残留文件（避免断点续传导致的混乱）
+                if (outFile.exists()) {
+                    outFile.delete()
+                }
+
                 btn.text = "连接中..."
 
                 val result = withContext(Dispatchers.IO) {
                     var conn: HttpURLConnection? = null
                     var fos: FileOutputStream? = null
                     try {
-                        // 断点续传：检查已下载的部分
-                        var resumeFrom = 0L
-                        if (outFile.exists() && outFile.length() > 1024) {
-                            resumeFrom = outFile.length()
-                            Log.d(TAG, "Resuming download from $resumeFrom bytes")
+                        val url = URL(downloadUrl)
+                        conn = url.openConnection() as HttpURLConnection
+                        conn.requestMethod = "GET"
+                        conn.connectTimeout = 30000
+                        conn.readTimeout = 300000
+                        conn.instanceFollowRedirects = true
+                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36")
+
+                        val rc = conn.responseCode
+                        Log.d(TAG, "Download HTTP $rc for ${engine.name}")
+                        if (rc != 200) {
+                            throw Exception("HTTP $rc")
                         }
 
-                        var downloadUrlStr = downloadUrl
-                        // 手动处理 3xx 重定向
-                        var redirectCount = 0
-                        while (redirectCount < 5) {
-                            val url = URL(downloadUrlStr)
-                            conn = url.openConnection() as HttpURLConnection
-                            conn.requestMethod = "GET"
-                            conn.connectTimeout = 60000
-                            conn.readTimeout = 300000
-                            conn.instanceFollowRedirects = false
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
-                            conn.setRequestProperty("Accept", "*/*")
-                            if (resumeFrom > 0) {
-                                conn.setRequestProperty("Range", "bytes=$resumeFrom-")
+                        // 获取总大小（从Content-Length或已下载量估算）
+                        val contentLength = conn.contentLengthLong
+                        val totalSize = if (contentLength > 0) contentLength else {
+                            // 尝试从URL估算（Whisper tiny约75MB）
+                            when {
+                                engine.name.contains("Tiny") -> 75L * 1024 * 1024
+                                engine.name.contains("Base") -> 142L * 1024 * 1024
+                                engine.name.contains("Small") -> 466L * 1024 * 1024
+                                engine.name.contains("Medium") -> 1500L * 1024 * 1024
+                                engine.name.contains("Large") -> 2900L * 1024 * 1024
+                                else -> -1L
                             }
-
-                            val rc = conn.responseCode
-                            Log.d(TAG, "Download response code: $rc for ${engine.name} (redirect=$redirectCount)")
-                            if (rc in 300..399) {
-                                val location = conn.getHeaderField("Location")
-                                conn.disconnect()
-                                conn = null
-                                if (location.isNullOrBlank()) {
-                                    throw Exception("重定向但无 Location 头 (HTTP $rc)")
-                                }
-                                downloadUrlStr = if (location.startsWith("http")) location
-                                else URL(URL(downloadUrlStr), location).toString()
-                                redirectCount++
-                                continue
-                            }
-                            if (rc != 200 && rc != 206) {
-                                throw Exception("HTTP $rc")
-                            }
-                            break
                         }
+                        Log.d(TAG, "Download total size: $totalSize for ${engine.name}")
 
-                        val totalSize = conn?.contentLength ?: -1
-                        val contentRange = conn?.getHeaderField("Content-Range")
-                        var effectiveTotalSize = totalSize
-                        if (contentRange != null && contentRange.contains("/")) {
-                            val totalStr = contentRange.substringAfter("/")
-                            effectiveTotalSize = totalStr.toIntOrNull() ?: totalSize
-                        }
-                        if (effectiveTotalSize <= 0 && resumeFrom > 0) {
-                            // Range请求但没有Content-Length，用文件大小估算
-                            effectiveTotalSize = (totalSize + resumeFrom.toInt()).coerceAtLeast(1)
-                        }
-                        Log.d(TAG, "Download total size: $effectiveTotalSize for ${engine.name}")
-
-                        val input = conn?.inputStream ?: throw Exception("连接失败")
-                        // 断点续传模式追加写入
-                        fos = FileOutputStream(outFile, resumeFrom > 0)
+                        val input = conn.inputStream ?: throw Exception("连接失败")
+                        fos = FileOutputStream(outFile)
                         val buffer = ByteArray(8192)
                         var len: Int
-                        var downloaded = resumeFrom.toInt()
+                        var downloaded = 0L
                         var lastUpdate = System.currentTimeMillis()
-                        var startTime = System.currentTimeMillis()
+                        var lastDownloaded = 0L
 
                         while (input.read(buffer).also { len = it } != -1) {
                             fos.write(buffer, 0, len)
                             downloaded += len
                             val now = System.currentTimeMillis()
-                            if (now - lastUpdate > 500) {
+                            if (now - lastUpdate > 1000) {
                                 lastUpdate = now
                                 val progress: Int
                                 val progressText: String
-                                if (effectiveTotalSize > 0) {
-                                    progress = (downloaded * 100 / effectiveTotalSize).coerceIn(0, 100)
-                                    val elapsed = (now - startTime) / 1000.0
-                                    val speed = if (elapsed > 0) (downloaded - resumeFrom) / elapsed else 0.0
+                                if (totalSize > 0) {
+                                    progress = (downloaded * 100 / totalSize).toInt().coerceIn(0, 100)
+                                    val elapsedSec = (now - lastUpdate) / 1000.0
+                                    val speed = if (elapsedSec > 0) (downloaded - lastDownloaded) / elapsedSec else 0.0
                                     val speedStr = if (speed >= 1024 * 1024) {
                                         String.format("%.1f MB/s", speed / (1024.0 * 1024))
                                     } else {
@@ -304,6 +291,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                     val downloadedMB = downloaded / (1024.0 * 1024)
                                     progressText = "下载: ${String.format("%.1f", downloadedMB)} MB"
                                 }
+                                lastDownloaded = downloaded
                                 withContext(Dispatchers.Main) {
                                     btn.text = progressText
                                     progressBar?.max = 100
@@ -311,6 +299,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 }
                             }
                         }
+                        fos.flush()
 
                         if (outFile.length() < 1024) {
                             throw Exception("下载文件过小: ${outFile.length()} bytes")
@@ -336,7 +325,8 @@ class OfflineEngineActivity : AppCompatActivity() {
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Download failed: ${e.message}", e)
-                        // 下载失败不删除残留文件，支持断点续传
+                        // 下载失败删除残留文件
+                        try { outFile.delete() } catch (_: Exception) {}
                         withContext(Dispatchers.Main) {
                             btn.isEnabled = true
                             btn.text = "安装(重试)"

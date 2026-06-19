@@ -334,94 +334,17 @@ class RadioPlaybackService : Service(),
     }
 
     /**
-     * 设置数据源，先手动解析HTTP重定向获取真实URL，再设置给MediaPlayer。
-     * 兼容蜻蜓fm等需要User-Agent和多重定向的音频源。
+     * 设置数据源。MediaPlayer原生支持M3U8（Android 3.0+），
+     * 直接设置URL即可，不需要手动解析重定向。
      */
     private fun setDataSourceWithHeaders(url: String) {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val resolvedUrl = resolveRedirectUrl(url)
-                withContext(Dispatchers.Main) {
-                    try {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            val headers: Map<String, String> = mapOf(
-                                "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-                                "Accept" to "*/*",
-                                "Connection" to "keep-alive"
-                            )
-                            player?.setDataSource(this@RadioPlaybackService, Uri.parse(resolvedUrl), headers)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            player?.setDataSource(resolvedUrl)
-                        }
-                        player?.prepareAsync()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "setDataSource failed for $resolvedUrl", e)
-                        prepared = false
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "resolveRedirect failed for $url", e)
-                withContext(Dispatchers.Main) {
-                    prepared = false
-                }
-            }
+        try {
+            player?.setDataSource(url)
+            player?.prepareAsync()
+        } catch (e: Exception) {
+            Log.e(TAG, "setDataSource failed for $url", e)
+            prepared = false
         }
-    }
-
-    /**
-     * 手动解析HTTP重定向，最多跟踪10次。
-     * 蜻蜓fm需要Referer和Cookie支持。
-     */
-    private fun resolveRedirectUrl(originalUrl: String): String {
-        var currentUrl = originalUrl
-        var redirectCount = 0
-        var cookieValue = ""
-        while (redirectCount < 10) {
-            try {
-                val conn = URL(currentUrl).openConnection() as HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
-                conn.instanceFollowRedirects = false
-                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
-                conn.setRequestProperty("Accept", "*/*")
-                conn.setRequestProperty("Referer", "https://www.qingting.fm/")
-                if (cookieValue.isNotEmpty()) {
-                    conn.setRequestProperty("Cookie", cookieValue)
-                }
-                conn.setRequestProperty("Connection", "keep-alive")
-                conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
-                val code = conn.responseCode
-                Log.d(TAG, "resolveRedirect $redirectCount: $currentUrl -> HTTP $code")
-                if (code in 300..399) {
-                    val location = conn.getHeaderField("Location")
-                    val setCookie = conn.getHeaderField("Set-Cookie")
-                    if (!setCookie.isNullOrBlank()) {
-                        cookieValue = setCookie.split(";")[0].trim()
-                    }
-                    conn.disconnect()
-                    if (location.isNullOrBlank()) break
-                    currentUrl = if (location.startsWith("http")) location
-                    else URL(URL(currentUrl), location).toString()
-                    redirectCount++
-                } else if (code == 200) {
-                    // 检查是否是M3U8或音频流
-                    val contentType = conn.contentType ?: ""
-                    Log.d(TAG, "Final URL resolved: $currentUrl contentType=$contentType")
-                    conn.disconnect()
-                    break
-                } else {
-                    Log.w(TAG, "HTTP $code for $currentUrl")
-                    conn.disconnect()
-                    break
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Redirect check failed for $currentUrl", e)
-                break
-            }
-        }
-        return currentUrl
     }
 
     private fun startCaching(url: String?) {

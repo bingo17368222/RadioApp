@@ -78,23 +78,25 @@ class SettingsFragment : Fragment() {
         aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAiModel.adapter = aiModelAdapter
 
-        val asrProviderLabels = arrayOf("百度语音", "FunASR", "Whisper在线", "本地Vosk")
+        val asrProviderLabels = mutableListOf("百度语音", "FunASR", "Whisper在线", "本地Vosk")
         val asrProviderAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, asrProviderLabels)
         asrProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAsrProvider.adapter = asrProviderAdapter
 
         // 动态检测已安装的离线引擎，添加到ASR方案列表
         try {
-            addInstalledEnginesToAsrList(asrProviderAdapter, asrProviderLabels)
+            addInstalledEnginesToAsrList(asrProviderAdapter)
         } catch (e: Exception) {
             Log.e("SettingsFragment", "addInstalledEngines failed", e)
         }
     }
 
-    private fun addInstalledEnginesToAsrList(adapter: ArrayAdapter<String>, baseLabels: Array<String>) {
+    private fun addInstalledEnginesToAsrList(adapter: ArrayAdapter<String>) {
         try {
             val modelsDir = requireContext().getExternalFilesDir("models")
             if (modelsDir == null || !modelsDir.exists()) return
+
+            // 检测已安装的 Whisper 模型
             val whisperModels = arrayOf(
                 "whisper-tiny" to "本地Whisper Tiny",
                 "whisper-base" to "本地Whisper Base",
@@ -108,6 +110,23 @@ class SettingsFragment : Fragment() {
                     val totalSize = calculateDirSize(modelDir)
                     if (totalSize >= 1024 * 1024) {
                         adapter.add(label)
+                        Log.d("SettingsFragment", "Added ASR option: $label size=$totalSize")
+                    }
+                }
+            }
+
+            // 检测已安装的 Vosk 模型
+            val voskModels = arrayOf(
+                "vosk-small-cn" to "本地Vosk 中文",
+                "vosk-small-en" to "本地Vosk 英文"
+            )
+            for ((dir, label) in voskModels) {
+                val modelDir = File(modelsDir, dir)
+                if (modelDir.exists()) {
+                    val totalSize = calculateDirSize(modelDir)
+                    if (totalSize >= 1024 * 1024) {
+                        adapter.add(label)
+                        Log.d("SettingsFragment", "Added ASR option: $label size=$totalSize")
                     }
                 }
             }
@@ -451,9 +470,9 @@ class SettingsFragment : Fragment() {
         activity?.let {
             if (it is com.radio.app.activities.MainActivity) {
                 try {
-                    // 保存新主题到SharedPreferences，下次启动生效
-                    // 不调用recreate()以避免播放停止
-                    Toast.makeText(requireContext(), "主题已切换，下次启动应用时生效", Toast.LENGTH_SHORT).show()
+                    // 主题切换需要重启Activity才能生效
+                    // 保存设置后提示用户手动重启
+                    Toast.makeText(requireContext(), "主题已保存，请完全关闭应用后重新打开", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }

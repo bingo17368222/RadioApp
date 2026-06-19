@@ -134,16 +134,12 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     private fun getBuiltinStations(): List<RadioStation> {
+        // 只显示支持节目回放的电台
         val data = arrayOf(
-            arrayOf("henan-1", "河南新闻广播"),
-            arrayOf("henan-2", "河南音乐广播"),
-            arrayOf("henan-3", "河南交通广播"),
-            arrayOf("henan-4", "河南经济广播"),
             arrayOf("henan-5", "郑州新闻广播"),
             arrayOf("henan-6", "洛阳交通广播"),
-            arrayOf("cnr-1", "中国之声"),
-            arrayOf("cnr-2", "经济之声"),
-            arrayOf("cnr-3", "音乐之声")
+            arrayOf("other-2", "上海新闻广播"),
+            arrayOf("other-3", "广东新闻广播")
         )
         return data.map { d ->
             RadioStation().apply {

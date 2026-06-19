@@ -17,8 +17,12 @@ class ThemeManager(context: Context) {
 
         fun applyTheme(activity: Activity?) {
             if (activity == null) return
-            val settings = AppSettings.getInstance(activity)
+            // 使用 PreferenceManager 读取设置（与 SettingsFragment 使用同一存储）
+            val prefManager = PreferenceManager(activity)
+            val settings = prefManager.loadSettings()
             val theme = settings.uiTheme
+
+            Log.d(TAG, "Applying theme: $theme")
 
             // 先应用基础主题
             when (theme) {
@@ -50,8 +54,6 @@ class ThemeManager(context: Context) {
                 // ActionBar颜色
                 activity.actionBar?.setBackgroundDrawable(ColorDrawable(primaryColor))
 
-                // 尝试通过反射或遍历View树来应用颜色
-                // 实际应用中，更好的方式是在onResume中刷新所有View
                 Log.d(TAG, "Custom colors applied: primary=$primaryColor")
             } catch (e: Exception) {
                 Log.e(TAG, "applyCustomColors failed", e)
