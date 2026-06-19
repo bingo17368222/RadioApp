@@ -14,7 +14,7 @@
     </style>
 
     <!-- 清新风格（明亮绿色+白色背景）— 设为默认 -->
-    <style name="Theme.RadioApp.Fresh" parent="Theme.Material3.Light.NoActionBar">
+    <style name="Theme.RadioApp.Fresh" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#7ED321</item>
         <item name="colorPrimaryVariant">#6BBF1A</item>
         <item name="colorAccent">#7ED321</item>
@@ -26,8 +26,8 @@
         <item name="android:navigationBarColor">#F5F7F5</item>
     </style>
 
-    <!-- 经典风格（蓝色+浅灰背景） -->
-    <style name="Theme.RadioApp.Classic" parent="Theme.Material3.Light.NoActionBar">
+    <!-- 经典风格（红色+暖白背景） -->
+    <style name="Theme.RadioApp.Classic" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#E74C3C</item>
         <item name="colorPrimaryVariant">#C0392B</item>
         <item name="colorAccent">#E74C3C</item>
@@ -39,8 +39,8 @@
         <item name="android:navigationBarColor">#FFF8F0</item>
     </style>
 
-    <!-- 极简风格（纯黑白） -->
-    <style name="Theme.RadioApp.Minimal" parent="Theme.Material3.Light.NoActionBar">
+    <!-- 极简风格（紫色+淡紫背景） -->
+    <style name="Theme.RadioApp.Minimal" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#9B59B6</item>
         <item name="colorPrimaryVariant">#8E44AD</item>
         <item name="colorAccent">#9B59B6</item>

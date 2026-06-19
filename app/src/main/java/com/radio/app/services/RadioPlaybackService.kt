@@ -511,9 +511,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setOnClickPendingIntent(R.id.btn_next_episode, nextEpPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_next_segment, nextSegPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_forward, forwardPI)
-        // 设置播放/暂停图标（使用应用内drawable）
-        remoteViews.setImageViewResource(R.id.btn_play_pause,
-            if (playing) R.drawable.ic_pause else R.drawable.ic_play)
+        // 设置播放/暂停图标和文字（使用非vector的notif_* drawable）
+        remoteViews.setImageViewResource(R.id.play_pause_icon,
+            if (playing) R.drawable.notif_pause else R.drawable.notif_play)
+        remoteViews.setTextViewText(R.id.play_pause_text,
+            if (playing) "暂停" else "播放")
 
         val subText = if (isLive) "[直播]" else "[回放]"
 
