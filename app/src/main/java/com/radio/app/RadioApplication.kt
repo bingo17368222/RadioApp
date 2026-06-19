@@ -15,6 +15,8 @@ class RadioApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 初始化崩溃日志收集（必须在最前面）
+        com.radio.app.utils.CrashHandler.getInstance().init(this)
         createNotificationChannel()
     }
 
