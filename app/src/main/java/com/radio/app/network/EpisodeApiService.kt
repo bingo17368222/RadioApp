@@ -46,7 +46,10 @@ class EpisodeApiService private constructor() {
             "https://lcache.qingting.fm/cache/5022051/",   // henan-5 郑州新闻广播
             "https://lcache.qingting.fm/cache/5022055/",   // henan-6 洛阳交通广播
             "https://lcache.qingting.fm/cache/270/",       // other-2 上海新闻广播
-            "https://lcache.qingting.fm/cache/1260/"       // other-3 广东新闻广播
+            "https://lcache.qingting.fm/cache/1260/",      // other-3 广东新闻广播
+            "https://lcache.qingting.fm/cache/386/",       // cnr-1 中国之声
+            "https://lcache.qingting.fm/cache/387/",       // cnr-2 经济之声
+            "https://lcache.qingting.fm/cache/388/"        // cnr-3 音乐之声
         )
 
         private val STATION_IDS = arrayOf(
@@ -54,9 +57,10 @@ class EpisodeApiService private constructor() {
             "cnr-1", "cnr-2", "cnr-3", "other-1", "other-2", "other-3"
         )
 
-        // 有回放功能的电台ID
+        // 有回放功能的电台ID（基于公开回放URL）
         private val REPLAY_STATION_IDS = arrayOf(
-            "henan-5", "henan-6", "other-2", "other-3"
+            "henan-5", "henan-6", "other-2", "other-3",
+            "cnr-1", "cnr-2", "cnr-3"
         )
     }
 

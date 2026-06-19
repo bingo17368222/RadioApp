@@ -101,6 +101,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     override fun onCreate() {
         super.onCreate()
+        // 延迟初始化ExoPlayer，避免启动时闪退
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        autoSkipHandler = Handler(Looper.getMainLooper())
+        progressHandler = Handler(Looper.getMainLooper())
+        loadSettings()
+        startProgressPolling()
+    }
+
+    private fun ensurePlayerInitialized() {
+        if (player != null) return
         try {
             val httpDataSourceFactory = DefaultHttpDataSource.Factory()
                 .setDefaultRequestProperties(mapOf(
@@ -157,11 +167,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             Log.e(TAG, "ExoPlayer init failed", e)
         }
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        autoSkipHandler = Handler(Looper.getMainLooper())
-        progressHandler = Handler(Looper.getMainLooper())
-        loadSettings()
-        startProgressPolling()
     }
 
     private fun startProgressPolling() {
@@ -274,6 +279,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         errorRetryCount = 0
         isRetrying = false
         stopAutoSkipCheck()
+        ensurePlayerInitialized()
         try {
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
@@ -296,6 +302,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         isRetrying = false
         stopAutoSkipCheck()
         val audioUrl = episode.audioUrl ?: ""
+        ensurePlayerInitialized()
         try {
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(audioUrl))

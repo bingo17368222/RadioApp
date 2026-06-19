@@ -120,12 +120,15 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     private fun getBuiltinStations(): List<RadioStation> {
-        // 只显示支持节目回放的电台
+        // 支持节目回放的电台（基于公开M3U8流和回放URL）
         val data = arrayOf(
             arrayOf("henan-5", "郑州新闻广播"),
             arrayOf("henan-6", "洛阳交通广播"),
             arrayOf("other-2", "上海新闻广播"),
-            arrayOf("other-3", "广东新闻广播")
+            arrayOf("other-3", "广东新闻广播"),
+            arrayOf("cnr-1", "中国之声"),
+            arrayOf("cnr-2", "经济之声"),
+            arrayOf("cnr-3", "音乐之声")
         )
         return data.map { d ->
             RadioStation().apply {
