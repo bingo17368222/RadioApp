@@ -17,7 +17,6 @@ import android.util.Log
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import androidx.media.app.NotificationCompat.MediaStyle
 import com.radio.app.R
 import com.radio.app.RadioApplication
 import com.radio.app.activities.PlayerActivity
@@ -512,31 +511,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setOnClickPendingIntent(R.id.btn_next_episode, nextEpPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_next_segment, nextSegPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_forward, forwardPI)
-        // 设置播放/暂停图标
+        // 设置播放/暂停图标（使用应用内drawable）
         remoteViews.setImageViewResource(R.id.btn_play_pause,
-            if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play)
+            if (playing) R.drawable.ic_pause else R.drawable.ic_play)
 
         val subText = if (isLive) "[直播]" else "[回放]"
 
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(if (playing) "正在播放 $subText" else "已暂停 $subText")
-            .setSubText(subText)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
-                .setShowActionsInCompactView(0, 3, 6))
-            // 仍然添加3个compact view按钮（折叠状态）
-            .addAction(R.drawable.ic_rewind, "-15s", rewindPI)
-            .addAction(
-                if (playing) R.drawable.ic_pause else R.drawable.ic_play,
-                if (playing) "暂停" else "播放",
-                playPausePI
-            )
-            .addAction(R.drawable.ic_forward, "+15s", forwardPI)
-            // 自定义展开视图
+            // 不使用MediaStyle，避免和自定义RemoteViews冲突
+            // 折叠状态也使用自定义布局
+            .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .build()
         startForeground(1, notification)

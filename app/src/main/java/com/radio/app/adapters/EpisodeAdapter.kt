@@ -6,8 +6,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
+import android.widget.ImageView
 import android.widget.TextView
-import androidx.cardview.widget.CardView
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
 import com.radio.app.models.Episode
@@ -38,7 +38,6 @@ class EpisodeAdapter(
         val episode = episodes[position]
         holder.tvTitle.text = episode.title
         holder.tvDescription.text = episode.description
-        holder.tvStation.text = episode.stationName
 
         val timeText = try {
             val date: Date? = dateIn.parse(episode.broadcastAt)
@@ -48,34 +47,13 @@ class EpisodeAdapter(
         }
         holder.tvTime.text = timeText
 
-        holder.tvDuration.text = String.format(
-            Locale.getDefault(),
-            "%02d:%02d",
-            episode.duration / 60,
-            episode.duration % 60
-        )
+        // 时长·片段数
+        val durationMin = episode.duration / 60
+        val segments = episode.voiceSegments?.size ?: 0
+        holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 
-        // Live indicator with blinking animation
-        if (episode.isLive) {
-            holder.tvLive.visibility = View.VISIBLE
-            holder.tvLive.text = "LIVE"
-            holder.tvLive.setBackgroundResource(R.drawable.bg_live_indicator)
-            val blink = AlphaAnimation(1.0f, 0.3f).apply {
-                duration = 800
-                repeatMode = Animation.REVERSE
-                repeatCount = Animation.INFINITE
-            }
-            holder.tvLive.startAnimation(blink)
-        } else {
-            holder.tvLive.visibility = View.GONE
-            holder.tvLive.clearAnimation()
-        }
-
-        // Disliked episode - reduce opacity
-        holder.card.alpha = if (episode.isDisliked) 0.5f else 1.0f
-
-        holder.card.setOnClickListener { listener?.onEpisodeClick(episode) }
-        holder.card.setOnLongClickListener {
+        holder.btnPlay.setOnClickListener { listener?.onEpisodeClick(episode) }
+        holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
             true
         }
@@ -84,12 +62,9 @@ class EpisodeAdapter(
     override fun getItemCount(): Int = episodes.size
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val card: CardView = view.findViewById(R.id.card_view)
+        val tvTime: TextView = view.findViewById(R.id.tv_time)
         val tvTitle: TextView = view.findViewById(R.id.tv_title)
         val tvDescription: TextView = view.findViewById(R.id.tv_description)
-        val tvStation: TextView = view.findViewById(R.id.tv_station)
-        val tvTime: TextView = view.findViewById(R.id.tv_time)
-        val tvDuration: TextView = view.findViewById(R.id.tv_duration)
-        val tvLive: TextView = view.findViewById(R.id.tv_live)
+        val btnPlay: ImageView = view.findViewById(R.id.btn_play)
     }
 }

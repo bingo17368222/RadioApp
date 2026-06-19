@@ -4,85 +4,71 @@
     android:layout_height="wrap_content"
     android:orientation="horizontal"
     android:gravity="center_vertical"
-    android:paddingStart="8dp"
-    android:paddingEnd="8dp"
+    android:paddingStart="4dp"
+    android:paddingEnd="4dp"
     android:paddingTop="4dp"
     android:paddingBottom="4dp">
 
     <ImageView
         android:id="@+id/btn_rewind"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_rew"
-        android:background="#33000000"
-        android:contentDescription="-15s"
+        android:src="@drawable/ic_rewind"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 
     <ImageView
         android:id="@+id/btn_prev_segment"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_previous"
-        android:background="#33000000"
-        android:contentDescription="上片段"
+        android:src="@drawable/ic_skip_backward"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 
     <ImageView
         android:id="@+id/btn_prev_episode"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_previous"
-        android:background="#33000000"
-        android:contentDescription="上节目"
+        android:src="@drawable/ic_prev"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 
     <ImageView
         android:id="@+id/btn_play_pause"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_play"
-        android:background="#55000000"
-        android:contentDescription="播放"
+        android:src="@drawable/ic_play"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 
     <ImageView
         android:id="@+id/btn_next_episode"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_next"
-        android:background="#33000000"
-        android:contentDescription="下节目"
+        android:src="@drawable/ic_next"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 
     <ImageView
         android:id="@+id/btn_next_segment"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_next"
-        android:background="#33000000"
-        android:contentDescription="下片段"
+        android:src="@drawable/ic_skip_forward"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 
     <ImageView
         android:id="@+id/btn_forward"
         android:layout_width="0dp"
-        android:layout_height="40dp"
+        android:layout_height="36dp"
         android:layout_weight="1"
-        android:src="@android:drawable/ic_media_ff"
-        android:background="#33000000"
-        android:contentDescription="+15s"
+        android:src="@drawable/ic_forward"
         android:scaleType="centerInside"
-        android:padding="8dp" />
+        android:padding="4dp" />
 </LinearLayout>

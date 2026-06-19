@@ -26,49 +26,37 @@ class EpisodeApiService private constructor() {
 
         // 直播流URL
         private val STATION_STREAM_URLS = arrayOf(
-            "https://stream.hndt.com/live/xinwen/playlist.m3u8",   // henan-1 河南新闻广播
-            "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-2 河南音乐广播
-            "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-3 河南交通广播
-            "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-4 河南经济广播
-            "http://live.xmcdn.com/live/1065/64.m3u8",            // henan-5 郑州新闻广播（蜻蜓fm已失效，使用xmcdn替代）
-            "http://live.xmcdn.com/live/1066/64.m3u8",            // henan-6 洛阳交通广播（蜻蜓fm已失效，使用xmcdn替代）
-            "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8",       // cnr-1 中国之声
-            "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8",       // cnr-2 经济之声
-            "http://live.xmcdn.com/live/95/64.m3u8",              // cnr-3 音乐之声
-            "http://live.xmcdn.com/live/91/64.m3u8",              // other-1 北京新闻广播
-            "http://live.xmcdn.com/live/12/64.m3u8",               // other-2 上海新闻广播（蜻蜓fm已失效，使用xmcdn替代）
-            "http://live.xmcdn.com/live/13/64.m3u8",              // other-3 广东新闻广播（蜻蜓fm已失效，使用xmcdn替代）
-            "http://live.xmcdn.com/live/91/64.m3u8",              // other-4 北京新闻广播（蜻蜓fm已失效，使用xmcdn替代）
-            "http://live.xmcdn.com/live/97/64.m3u8",               // other-5 江苏新闻广播（蜻蜓fm已失效，使用xmcdn替代）
-            "http://live.xmcdn.com/live/98/64.m3u8"                // other-6 浙江之声（蜻蜓fm已失效，使用xmcdn替代）
+            "https://stream.hndt.com/live/xinwen/playlist.m3u8",   // henan-1
+            "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-2
+            "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-3
+            "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-4
+            "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8",       // cnr-1
+            "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8",       // cnr-2
+            "http://live.xmcdn.com/live/95/64.m3u8",              // cnr-3
+            "http://live.xmcdn.com/live/13/64.m3u8"               // cnr-4
         )
 
         // 节目回放URL - 蜻蜓fm回放服务已失效，暂时清空回放URL
-        // 只保留直播功能，回放功能待找到可用源后恢复
         private val STATION_REPLAY_URLS = arrayOf(
-            "",   // henan-5 郑州新闻广播（蜻蜓fm回放已失效）
-            "",   // henan-6 洛阳交通广播（蜻蜓fm回放已失效）
-            "",   // other-2 上海新闻广播（蜻蜓fm回放已失效）
-            "",   // other-3 广东新闻广播（蜻蜓fm回放已失效）
-            "",   // cnr-1 中国之声（蜻蜓fm回放已失效）
-            "",   // cnr-2 经济之声（蜻蜓fm回放已失效）
-            "",   // cnr-3 音乐之声（蜻蜓fm回放已失效）
-            "",   // other-4 北京新闻广播（蜻蜓fm回放已失效）
-            "",   // other-5 江苏新闻广播（蜻蜓fm回放已失效）
-            ""    // other-6 浙江之声（蜻蜓fm回放已失效）
+            "",   // henan-1
+            "",   // henan-2
+            "",   // henan-3
+            "",   // henan-4
+            "",   // cnr-1
+            "",   // cnr-2
+            "",   // cnr-3
+            ""    // cnr-4
         )
 
         private val STATION_IDS = arrayOf(
-            "henan-1", "henan-2", "henan-3", "henan-4", "henan-5", "henan-6",
-            "cnr-1", "cnr-2", "cnr-3", "other-1", "other-2", "other-3",
-            "other-4", "other-5", "other-6"
+            "henan-1", "henan-2", "henan-3", "henan-4",
+            "cnr-1", "cnr-2", "cnr-3", "cnr-4"
         )
 
-        // 有回放功能的电台ID（基于公开回放URL）
+        // 有回放功能的电台ID
         private val REPLAY_STATION_IDS = arrayOf(
-            "henan-5", "henan-6", "other-2", "other-3",
-            "cnr-1", "cnr-2", "cnr-3",
-            "other-4", "other-5", "other-6"
+            "henan-1", "henan-2", "henan-3", "henan-4",
+            "cnr-1", "cnr-2", "cnr-3", "cnr-4"
         )
     }
 
@@ -133,18 +121,30 @@ class EpisodeApiService private constructor() {
                         arrayOf("音乐晚高峰", "18:00", "7200", "晚间音乐高峰"),
                         arrayOf("音乐夜未眠", "20:00", "14400", "深夜音乐陪伴")
                     )
-                    "henan-5" -> arrayOf(
-                        arrayOf("郑州早新闻", "06:00", "3600", "郑州本地早间新闻"),
-                        arrayOf("新闻进行时", "07:00", "5400", "滚动新闻播报"),
-                        arrayOf("都市热线", "08:30", "5400", "民生服务节目"),
-                        arrayOf("午间新闻", "12:00", "3600", "午间新闻快报"),
-                        arrayOf("新闻下午茶", "14:00", "7200", "下午新闻节目"),
-                        arrayOf("都市报道", "17:00", "7200", "都市新闻报道"),
-                        arrayOf("郑州新闻联播", "19:00", "3600", "晚间综合新闻"),
-                        arrayOf("夜话郑州", "20:00", "7200", "夜间话题节目"),
-                        arrayOf("音乐时光", "22:00", "7200", "夜间音乐节目")
+                    "henan-1" -> arrayOf(
+                        arrayOf("河南早新闻", "06:00", "3600", "播报国内外重要新闻、天气预报和交通信息。"),
+                        arrayOf("新闻纵横", "08:00", "5400", "深度报道时政要闻，解读政策走向。"),
+                        arrayOf("政府在线", "10:00", "3600", "政务信息公开，政策解读。"),
+                        arrayOf("新闻和报纸摘要", "12:00", "1800", "午间新闻快报，精选报纸头条。"),
+                        arrayOf("直播河南", "14:00", "7200", "连线河南省各地，展现中原发展面貌。"),
+                        arrayOf("河南新闻联播", "16:00", "3600", "河南全省新闻综合播报。"),
+                        arrayOf("民生频道", "17:00", "3600", "民生新闻服务。"),
+                        arrayOf("法治在线", "18:00", "3600", "法律知识普及，典型案例分析。"),
+                        arrayOf("健康之路", "19:00", "3600", "医学专家答疑，健康养生知识。"),
+                        arrayOf("文化之旅", "20:00", "5400", "探索中原文化遗产，讲述历史故事。"),
+                        arrayOf("夜话中原", "22:00", "7200", "夜间话题节目。")
                     )
-                    "henan-6" -> arrayOf(
+                    "henan-2" -> arrayOf(
+                        arrayOf("音乐早餐", "06:00", "7200", "清晨音乐节目"),
+                        arrayOf("音乐快活人", "08:00", "7200", "活力音乐节目"),
+                        arrayOf("音乐任我行", "10:00", "7200", "自由音乐欣赏"),
+                        arrayOf("音乐午餐", "12:00", "7200", "午间音乐时光"),
+                        arrayOf("音乐下午茶", "14:00", "7200", "午后音乐节目"),
+                        arrayOf("音乐快乐行", "16:00", "7200", "快乐音乐旅程"),
+                        arrayOf("音乐晚高峰", "18:00", "7200", "晚间音乐高峰"),
+                        arrayOf("音乐夜未眠", "20:00", "14400", "深夜音乐陪伴")
+                    )
+                    "henan-3" -> arrayOf(
                         arrayOf("交通早高峰", "06:00", "3600", "早间交通资讯"),
                         arrayOf("一路畅通", "07:00", "5400", "出行服务节目"),
                         arrayOf("红绿灯", "08:30", "5400", "交通法规普及"),
@@ -154,55 +154,25 @@ class EpisodeApiService private constructor() {
                         arrayOf("夜行侠", "20:00", "7200", "夜间出行资讯"),
                         arrayOf("音乐方向盘", "22:00", "7200", "夜间音乐节目")
                     )
-                    "other-2" -> arrayOf(
-                        arrayOf("上海早晨", "06:00", "3600", "上海早间新闻"),
-                        arrayOf("新闻进行时", "07:00", "7200", "滚动新闻播报"),
-                        arrayOf("市民与社会", "09:00", "7200", "民生话题节目"),
-                        arrayOf("午间新闻", "12:00", "3600", "午间新闻快报"),
-                        arrayOf("长三角之声", "14:00", "7200", "区域新闻节目"),
-                        arrayOf("新闻晚高峰", "17:00", "7200", "晚间新闻高峰"),
-                        arrayOf("海上畅谈", "19:00", "7200", "文化访谈节目"),
-                        arrayOf("子夜书社", "21:00", "10800", "深夜读书节目")
+                    "henan-4" -> arrayOf(
+                        arrayOf("财经早读", "06:00", "3600", "早间财经资讯"),
+                        arrayOf("天下财经", "07:00", "7200", "国内外财经要闻"),
+                        arrayOf("交易实况", "09:00", "10800", "股市交易直播"),
+                        arrayOf("财经午餐", "12:00", "7200", "午间财经分析"),
+                        arrayOf("天天315", "14:00", "7200", "消费维权节目"),
+                        arrayOf("财经下午茶", "16:00", "7200", "下午财经热点"),
+                        arrayOf("经济之声夜读", "18:00", "7200", "夜间财经阅读"),
+                        arrayOf("理财有道", "20:00", "14400", "理财知识分享")
                     )
-                    "other-3" -> arrayOf(
-                        arrayOf("广东早晨", "06:00", "3600", "广东早间新闻"),
-                        arrayOf("新闻纵横", "07:00", "7200", "深度新闻报道"),
-                        arrayOf("粤听粤精彩", "09:00", "7200", "粤语文化节目"),
-                        arrayOf("午间新闻", "12:00", "3600", "午间新闻快报"),
-                        arrayOf("大湾区观察", "14:00", "7200", "湾区发展报道"),
-                        arrayOf("新闻晚高峰", "17:00", "7200", "晚间新闻高峰"),
-                        arrayOf("粤听之夜", "19:00", "7200", "夜间文化节目"),
-                        arrayOf("音乐夜未央", "21:00", "10800", "深夜音乐节目")
-                    )
-                    "other-4" -> arrayOf(
-                        arrayOf("北京您早", "06:00", "3600", "北京早间新闻"),
-                        arrayOf("新闻热线", "07:00", "7200", "民生新闻服务"),
-                        arrayOf("首都经济报道", "09:00", "7200", "经济资讯节目"),
-                        arrayOf("午间新闻", "12:00", "3600", "午间新闻快报"),
-                        arrayOf("北京故事", "14:00", "7200", "京城文化故事"),
-                        arrayOf("新闻晚高峰", "17:00", "7200", "晚间新闻高峰"),
-                        arrayOf("京城夜话", "19:00", "7200", "夜间话题节目"),
-                        arrayOf("经典回响", "21:00", "10800", "经典音乐节目")
-                    )
-                    "other-5" -> arrayOf(
-                        arrayOf("江苏新闻联播", "06:00", "3600", "江苏早间新闻"),
-                        arrayOf("新闻进行时", "07:00", "7200", "滚动新闻播报"),
-                        arrayOf("政风热线", "09:00", "7200", "政民互动节目"),
-                        arrayOf("午间新闻", "12:00", "3600", "午间新闻快报"),
-                        arrayOf("长三角观察", "14:00", "7200", "区域发展报道"),
-                        arrayOf("新闻晚高峰", "17:00", "7200", "晚间新闻高峰"),
-                        arrayOf("江苏人文", "19:00", "7200", "人文历史节目"),
-                        arrayOf("夜读江苏", "21:00", "10800", "深夜阅读节目")
-                    )
-                    "other-6" -> arrayOf(
-                        arrayOf("浙江之声早新闻", "06:00", "3600", "浙江早间新闻"),
-                        arrayOf("新闻进行时", "07:00", "7200", "滚动新闻播报"),
-                        arrayOf("民生996", "09:00", "7200", "民生服务节目"),
-                        arrayOf("午间新闻", "12:00", "3600", "午间新闻快报"),
-                        arrayOf("美丽浙江", "14:00", "7200", "生态文化节目"),
-                        arrayOf("新闻晚高峰", "17:00", "7200", "晚间新闻高峰"),
-                        arrayOf("浙里夜话", "19:00", "7200", "夜间话题节目"),
-                        arrayOf("江南夜曲", "21:00", "10800", "江南音乐节目")
+                    "cnr-4" -> arrayOf(
+                        arrayOf("经典音乐早餐", "06:00", "7200", "清晨经典音乐"),
+                        arrayOf("经典音乐欣赏", "08:00", "7200", "经典曲目赏析"),
+                        arrayOf("岁月留声", "10:00", "7200", "怀旧金曲回顾"),
+                        arrayOf("经典音乐午餐", "12:00", "7200", "午间经典时光"),
+                        arrayOf("交响乐之旅", "14:00", "7200", "交响乐欣赏"),
+                        arrayOf("民乐大观", "16:00", "7200", "中国民乐欣赏"),
+                        arrayOf("经典音乐晚高峰", "18:00", "7200", "晚间经典音乐"),
+                        arrayOf("夜色经典", "20:00", "14400", "深夜经典音乐陪伴")
                     )
                     else -> arrayOf(
                         arrayOf("早间新闻", "06:00", "3600", "播报国内外重要新闻、天气预报和交通信息。"),
@@ -334,18 +304,11 @@ class EpisodeApiService private constructor() {
             "henan-2" -> "河南音乐广播"
             "henan-3" -> "河南交通广播"
             "henan-4" -> "河南经济广播"
-            "henan-5" -> "郑州新闻广播"
-            "henan-6" -> "洛阳交通广播"
             "cnr-1" -> "中国之声"
             "cnr-2" -> "经济之声"
             "cnr-3" -> "音乐之声"
-            "other-1" -> "北京新闻广播"
-            "other-2" -> "上海新闻广播"
-            "other-3" -> "广东新闻广播"
-            "other-4" -> "北京新闻广播"
-            "other-5" -> "江苏新闻广播"
-            "other-6" -> "浙江之声"
-            else -> "电台节目"
+            "cnr-4" -> "经典音乐广播"
+            else -> "未知电台"
         }
     }
 

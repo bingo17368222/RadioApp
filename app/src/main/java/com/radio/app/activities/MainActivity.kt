@@ -37,13 +37,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 优先从Intent extra读取主题（热切换时传递）
+        // 优先从Intent extra读取主题（热切换时传递），默认使用清新风格
         val themeExtra = intent.getStringExtra("theme")
         when (themeExtra) {
-            "fresh" -> setTheme(R.style.Theme_RadioApp_Fresh)
+            "dark" -> setTheme(R.style.Theme_RadioApp)
             "classic" -> setTheme(R.style.Theme_RadioApp_Classic)
             "minimal" -> setTheme(R.style.Theme_RadioApp_Minimal)
-            else -> setTheme(R.style.Theme_RadioApp)
+            else -> setTheme(R.style.Theme_RadioApp_Fresh)  // 默认清新风格
         }
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)

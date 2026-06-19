@@ -492,7 +492,6 @@ class SettingsFragment : Fragment() {
 
     private fun applyTheme() {
         prefManager.saveSettings(settings)
-        // 手动重启Activity实现主题切换（避免recreate()闪退）
         activity?.let { act ->
             val themeValue = settings.uiTheme
             // 保存主题到SharedPreferences
@@ -504,7 +503,6 @@ class SettingsFragment : Fragment() {
             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             act.startActivity(intent)
             act.finish()
-            // 无动画过渡
             act.overridePendingTransition(0, 0)
         }
     }
