@@ -220,7 +220,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                         var resumeFrom = 0L
                         if (outFile.exists() && outFile.length() > 1024) {
                             resumeFrom = outFile.length()
-                            Log.d(TAG, "Resuming download from $resumeFor bytes")
+                            Log.d(TAG, "Resuming download from $resumeFrom bytes")
                         }
 
                         var downloadUrlStr = downloadUrl
