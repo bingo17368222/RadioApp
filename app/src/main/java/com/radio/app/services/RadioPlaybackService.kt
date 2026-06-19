@@ -171,15 +171,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     try {
                         val pos = p.currentPosition
                         val dur = p.duration
+                        // 直播流duration为TIME_UNSET(-9223372036854775807)，不计算进度
                         val effectiveDur = if (dur > 0) dur else if (isLive) -1L else 0L
                         cb.onPositionChanged(pos, effectiveDur)
-                        if (prepared) {
-                            var bp = 0
-                            if (dur > 0) {
-                                bp = ((pos * 100) / dur).toInt()
-                                if (bp < 100) bp = minOf(100, bp + 10)
-                            }
-                            if (bp > 0 && bp != bufferPercent) {
+                        // 只给回放节目计算缓冲进度
+                        if (prepared && !isLive && dur > 0) {
+                            val bp = ((pos * 100) / dur).toInt().coerceIn(0, 100)
+                            if (bp != bufferPercent) {
                                 bufferPercent = bp
                                 cb.onBufferUpdate(bp)
                             }
@@ -280,7 +278,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 it.prepare()
-                it.play()
+                it.playWhenReady = true
             }
             requestAudioFocus()
             startForegroundNotification()
@@ -302,7 +300,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(audioUrl))
                 it.prepare()
-                it.play()
+                it.playWhenReady = true
             }
             requestAudioFocus()
             startForegroundNotification()
@@ -356,7 +354,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
     fun getDuration(): Long {
         val dur = player?.duration ?: 0L
-        return if (dur <= 0 && isLive) -1 else maxOf(0, dur)
+        // 直播流返回TIME_UNSET，返回-1表示未知
+        return if (dur < 0) -1L else dur
     }
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
@@ -540,20 +539,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // compact view 最多显示3个按钮: 上节目(1), 播放/暂停(3), 下节目(5)
+            // compact view 最多显示3个按钮: 上节目(2), 播放/暂停(3), 下节目(4)
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
-                .setShowActionsInCompactView(1, 3, 5))
-            .addAction(R.drawable.ic_rewind, "-15s", rewindPI)
-            .addAction(R.drawable.ic_prev, "上节目", prevEpPI)
-            .addAction(R.drawable.ic_prev, "上片段", prevSegPI)
+                .setShowActionsInCompactView(2, 3, 4))
+            .addAction(R.drawable.ic_rewind, "-15s", rewindPI)      // 0: 快退
+            .addAction(R.drawable.ic_skip_backward, "上片段", prevSegPI)  // 1: 上片段（不同图标）
+            .addAction(R.drawable.ic_prev, "上节目", prevEpPI)       // 2: 上节目
             .addAction(
                 if (playing) R.drawable.ic_pause else R.drawable.ic_play,
                 if (playing) "暂停" else "播放",
                 playPausePI
-            )
-            .addAction(R.drawable.ic_next, "下片段", nextSegPI)
-            .addAction(R.drawable.ic_next, "下节目", nextEpPI)
-            .addAction(R.drawable.ic_forward, "+15s", forwardPI)
+            )                                                      // 3: 播放/暂停
+            .addAction(R.drawable.ic_next, "下节目", nextEpPI)       // 4: 下节目
+            .addAction(R.drawable.ic_skip_forward, "下片段", nextSegPI)   // 5: 下片段（不同图标）
+            .addAction(R.drawable.ic_forward, "+15s", forwardPI)    // 6: 快进
             .build()
         startForeground(1, notification)
     }

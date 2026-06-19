@@ -37,8 +37,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 读取保存的主题并应用（使用默认主题，避免闪退）
-        setTheme(R.style.Theme_RadioApp)
+        // 从AppSettings读取主题（SharedPreferences方式，安全不闪退）
+        try {
+            val settings = com.radio.app.models.AppSettings.getInstance(this)
+            when (settings.uiTheme) {
+                com.radio.app.models.AppSettings.THEME_FRESH -> setTheme(R.style.Theme_RadioApp_Fresh)
+                com.radio.app.models.AppSettings.THEME_CLASSIC -> setTheme(R.style.Theme_RadioApp_Classic)
+                com.radio.app.models.AppSettings.THEME_MINIMAL -> setTheme(R.style.Theme_RadioApp_Minimal)
+                else -> setTheme(R.style.Theme_RadioApp)
+            }
+        } catch (e: Exception) {
+            setTheme(R.style.Theme_RadioApp)
+        }
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
