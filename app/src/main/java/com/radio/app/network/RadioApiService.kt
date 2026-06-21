@@ -111,10 +111,10 @@ class RadioApiService private constructor() {
     private fun getBuiltinStations(): List<RadioStation> {
         val list = mutableListOf<RadioStation>()
 
-        // 河南人民广播电台 - 使用真实M3U8流地址
+        // === 河南人民广播电台（来自 hndt.com） ===
         list.add(RadioStation().apply {
-            id = "henan-1"
-            name = "河南新闻广播"
+            id = "henan-news"
+            name = "河南新闻广播 FM95.5"
             streamUrl = "https://stream.hndt.com/live/xinwen/playlist.m3u8"
             country = "China"
             bitrate = 64
@@ -123,18 +123,18 @@ class RadioApiService private constructor() {
         })
 
         list.add(RadioStation().apply {
-            id = "henan-2"
-            name = "河南音乐广播"
+            id = "henan-music"
+            name = "河南音乐广播 FM88.1"
             streamUrl = "https://stream.hndt.com/live/yinyue/playlist.m3u8"
             country = "China"
             bitrate = 64
             lastCheckOk = true
-            currentProgram = "河南音乐"
+            currentProgram = "魅力881"
         })
 
         list.add(RadioStation().apply {
-            id = "henan-3"
-            name = "河南交通广播"
+            id = "henan-traffic"
+            name = "河南交通广播 FM104.1"
             streamUrl = "https://stream.hndt.com/live/jiaotong/playlist.m3u8"
             country = "China"
             bitrate = 64
@@ -143,8 +143,8 @@ class RadioApiService private constructor() {
         })
 
         list.add(RadioStation().apply {
-            id = "henan-4"
-            name = "河南经济广播"
+            id = "henan-economy"
+            name = "河南经济广播 FM103.2"
             streamUrl = "https://stream.hndt.com/live/jingji/playlist.m3u8"
             country = "China"
             bitrate = 64
@@ -153,26 +153,66 @@ class RadioApiService private constructor() {
         })
 
         list.add(RadioStation().apply {
-            id = "henan-5"
-            name = "郑州新闻广播"
-            streamUrl = "http://live.xmcdn.com/live/1065/64.m3u8"  // 中国之声
+            id = "henan-opera"
+            name = "河南戏曲广播 FM97.6"
+            streamUrl = "https://stream.hndt.com/live/yule/playlist.m3u8"
             country = "China"
             bitrate = 64
             lastCheckOk = true
-            currentProgram = "郑州新闻"
+            currentProgram = "河南戏曲"
         })
 
         list.add(RadioStation().apply {
-            id = "henan-6"
-            name = "洛阳交通广播"
-            streamUrl = "http://live.xmcdn.com/live/1066/64.m3u8"  // 经济之声
+            id = "henan-edu"
+            name = "河南教育广播 FM106.6"
+            streamUrl = "https://stream.hndt.com/live/jiaoyu/playlist.m3u8"
             country = "China"
             bitrate = 64
             lastCheckOk = true
-            currentProgram = "洛阳交通"
+            currentProgram = "河南教育"
         })
 
-        // 央广电台 - 使用真实M3U8流地址
+        list.add(RadioStation().apply {
+            id = "henan-rural"
+            name = "河南农村广播 FM107.4"
+            streamUrl = "https://stream.hndt.com/live/nongcun/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "河南农村"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-myradio"
+            name = "My Radio FM90.0"
+            streamUrl = "https://stream.hndt.com/live/yingshi/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "My Radio"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-private-car"
+            name = "私家车999 FM99.9"
+            streamUrl = "https://stream.hndt.com/live/sijiache/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "私家车999"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-info"
+            name = "乐龄105.6 FM105.6"
+            streamUrl = "https://stream.hndt.com/live/xinxi/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "乐龄1056"
+        })
+
+        // === 央广电台 ===
         list.add(RadioStation().apply {
             id = "cnr-1"
             name = "中国之声"
@@ -201,37 +241,6 @@ class RadioApiService private constructor() {
             bitrate = 128
             lastCheckOk = true
             currentProgram = "音乐之声"
-        })
-
-        // 其他省台 - 使用真实M3U8流地址
-        list.add(RadioStation().apply {
-            id = "other-1"
-            name = "北京新闻广播"
-            streamUrl = "http://live.xmcdn.com/live/91/64.m3u8"
-            country = "China"
-            bitrate = 128
-            lastCheckOk = true
-            currentProgram = "北京新闻"
-        })
-
-        list.add(RadioStation().apply {
-            id = "other-2"
-            name = "上海新闻广播"
-            streamUrl = "http://live.xmcdn.com/live/12/64.m3u8"  // 音乐之声
-            country = "China"
-            bitrate = 128
-            lastCheckOk = true
-            currentProgram = "上海新闻"
-        })
-
-        list.add(RadioStation().apply {
-            id = "other-3"
-            name = "广东新闻广播"
-            streamUrl = "http://live.xmcdn.com/live/13/64.m3u8"  // 经典音乐广播
-            country = "China"
-            bitrate = 128
-            lastCheckOk = true
-            currentProgram = "广东新闻"
         })
 
         return list

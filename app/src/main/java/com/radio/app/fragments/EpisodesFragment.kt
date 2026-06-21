@@ -177,14 +177,14 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
     private fun getBuiltinStations(): List<RadioStation> {
         val data = arrayOf(
-            arrayOf("henan-1", "河南新闻广播"),
-            arrayOf("henan-2", "河南音乐广播"),
-            arrayOf("henan-3", "河南交通广播"),
-            arrayOf("henan-4", "河南经济广播"),
+            arrayOf("henan-news", "河南新闻广播"),
+            arrayOf("henan-music", "河南音乐广播"),
+            arrayOf("henan-traffic", "河南交通广播"),
+            arrayOf("henan-economy", "河南经济广播"),
+            arrayOf("henan-opera", "河南戏曲广播"),
             arrayOf("cnr-1", "中国之声"),
             arrayOf("cnr-2", "经济之声"),
-            arrayOf("cnr-3", "音乐之声"),
-            arrayOf("cnr-4", "经典音乐广播")
+            arrayOf("cnr-3", "音乐之声")
         )
         return data.map { d ->
             RadioStation().apply {

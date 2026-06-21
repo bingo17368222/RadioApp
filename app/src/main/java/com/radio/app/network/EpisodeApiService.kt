@@ -26,37 +26,30 @@ class EpisodeApiService private constructor() {
 
         // 直播流URL
         private val STATION_STREAM_URLS = arrayOf(
-            "https://stream.hndt.com/live/xinwen/playlist.m3u8",   // henan-1
-            "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-2
-            "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-3
-            "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-4
+            "https://stream.hndt.com/live/xinwen/playlist.m3u8",   // henan-news
+            "https://stream.hndt.com/live/yinyue/playlist.m3u8",   // henan-music
+            "https://stream.hndt.com/live/jiaotong/playlist.m3u8", // henan-traffic
+            "https://stream.hndt.com/live/jingji/playlist.m3u8",  // henan-economy
+            "https://stream.hndt.com/live/yule/playlist.m3u8",     // henan-opera
             "https://ngcdn001.cnr.cn/live/zgzs/index.m3u8",       // cnr-1
             "https://ngcdn002.cnr.cn/live/jjzs/index.m3u8",       // cnr-2
-            "http://live.xmcdn.com/live/95/64.m3u8",              // cnr-3
-            "http://live.xmcdn.com/live/13/64.m3u8"               // cnr-4
+            "http://live.xmcdn.com/live/95/64.m3u8"              // cnr-3
         )
 
         // 节目回放URL - 蜻蜓fm回放服务已失效，暂时清空回放URL
         private val STATION_REPLAY_URLS = arrayOf(
-            "",   // henan-1
-            "",   // henan-2
-            "",   // henan-3
-            "",   // henan-4
-            "",   // cnr-1
-            "",   // cnr-2
-            "",   // cnr-3
-            ""    // cnr-4
+            "", "", "", "", "", "", "", ""
         )
 
         private val STATION_IDS = arrayOf(
-            "henan-1", "henan-2", "henan-3", "henan-4",
-            "cnr-1", "cnr-2", "cnr-3", "cnr-4"
+            "henan-news", "henan-music", "henan-traffic", "henan-economy",
+            "henan-opera", "cnr-1", "cnr-2", "cnr-3"
         )
 
         // 有回放功能的电台ID
         private val REPLAY_STATION_IDS = arrayOf(
-            "henan-1", "henan-2", "henan-3", "henan-4",
-            "cnr-1", "cnr-2", "cnr-3", "cnr-4"
+            "henan-news", "henan-music", "henan-traffic", "henan-economy",
+            "henan-opera", "cnr-1", "cnr-2", "cnr-3"
         )
     }
 
@@ -134,7 +127,7 @@ class EpisodeApiService private constructor() {
                         arrayOf("文化之旅", "20:00", "5400", "探索中原文化遗产，讲述历史故事。"),
                         arrayOf("夜话中原", "22:00", "7200", "夜间话题节目。")
                     )
-                    "henan-2" -> arrayOf(
+                    "henan-music" -> arrayOf(
                         arrayOf("音乐早餐", "06:00", "7200", "清晨音乐节目"),
                         arrayOf("音乐快活人", "08:00", "7200", "活力音乐节目"),
                         arrayOf("音乐任我行", "10:00", "7200", "自由音乐欣赏"),
@@ -144,7 +137,7 @@ class EpisodeApiService private constructor() {
                         arrayOf("音乐晚高峰", "18:00", "7200", "晚间音乐高峰"),
                         arrayOf("音乐夜未眠", "20:00", "14400", "深夜音乐陪伴")
                     )
-                    "henan-3" -> arrayOf(
+                    "henan-traffic" -> arrayOf(
                         arrayOf("交通早高峰", "06:00", "3600", "早间交通资讯"),
                         arrayOf("一路畅通", "07:00", "5400", "出行服务节目"),
                         arrayOf("红绿灯", "08:30", "5400", "交通法规普及"),
@@ -154,7 +147,7 @@ class EpisodeApiService private constructor() {
                         arrayOf("夜行侠", "20:00", "7200", "夜间出行资讯"),
                         arrayOf("音乐方向盘", "22:00", "7200", "夜间音乐节目")
                     )
-                    "henan-4" -> arrayOf(
+                    "henan-economy" -> arrayOf(
                         arrayOf("财经早读", "06:00", "3600", "早间财经资讯"),
                         arrayOf("天下财经", "07:00", "7200", "国内外财经要闻"),
                         arrayOf("交易实况", "09:00", "10800", "股市交易直播"),
@@ -163,16 +156,6 @@ class EpisodeApiService private constructor() {
                         arrayOf("财经下午茶", "16:00", "7200", "下午财经热点"),
                         arrayOf("经济之声夜读", "18:00", "7200", "夜间财经阅读"),
                         arrayOf("理财有道", "20:00", "14400", "理财知识分享")
-                    )
-                    "cnr-4" -> arrayOf(
-                        arrayOf("经典音乐早餐", "06:00", "7200", "清晨经典音乐"),
-                        arrayOf("经典音乐欣赏", "08:00", "7200", "经典曲目赏析"),
-                        arrayOf("岁月留声", "10:00", "7200", "怀旧金曲回顾"),
-                        arrayOf("经典音乐午餐", "12:00", "7200", "午间经典时光"),
-                        arrayOf("交响乐之旅", "14:00", "7200", "交响乐欣赏"),
-                        arrayOf("民乐大观", "16:00", "7200", "中国民乐欣赏"),
-                        arrayOf("经典音乐晚高峰", "18:00", "7200", "晚间经典音乐"),
-                        arrayOf("夜色经典", "20:00", "14400", "深夜经典音乐陪伴")
                     )
                     else -> arrayOf(
                         arrayOf("早间新闻", "06:00", "3600", "播报国内外重要新闻、天气预报和交通信息。"),
@@ -300,14 +283,14 @@ class EpisodeApiService private constructor() {
 
     private fun getStationName(stationId: String): String {
         return when (stationId) {
-            "henan-1" -> "河南新闻广播"
-            "henan-2" -> "河南音乐广播"
-            "henan-3" -> "河南交通广播"
-            "henan-4" -> "河南经济广播"
+            "henan-news" -> "河南新闻广播"
+            "henan-music" -> "河南音乐广播"
+            "henan-traffic" -> "河南交通广播"
+            "henan-economy" -> "河南经济广播"
+            "henan-opera" -> "河南戏曲广播"
             "cnr-1" -> "中国之声"
             "cnr-2" -> "经济之声"
             "cnr-3" -> "音乐之声"
-            "cnr-4" -> "经典音乐广播"
             else -> "未知电台"
         }
     }
