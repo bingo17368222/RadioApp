@@ -182,6 +182,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             arrayOf("henan-traffic", "河南交通广播"),
             arrayOf("henan-economy", "河南经济广播"),
             arrayOf("henan-opera", "河南戏曲广播"),
+            arrayOf("henan-edu", "河南教育广播"),
+            arrayOf("henan-rural", "河南农村广播"),
+            arrayOf("henan-myradio", "My Radio"),
+            arrayOf("henan-private-car", "私家车999"),
+            arrayOf("henan-info", "乐龄105.6"),
             arrayOf("cnr-1", "中国之声"),
             arrayOf("cnr-2", "经济之声"),
             arrayOf("cnr-3", "音乐之声")

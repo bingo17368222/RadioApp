@@ -186,7 +186,14 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvStationName.text = currentEpisode?.title
         binding.tvNetworkUrl.text = "网络: ${currentEpisode?.audioUrl}"
         binding.tvNetworkUrl.visibility = View.VISIBLE
-        binding.tvCacheUrl.visibility = View.GONE
+        // 回放模式下显示缓存URL信息
+        val isLive = currentEpisode?.isLive ?: false
+        if (!isLive) {
+            binding.tvCacheUrl.text = "缓存: 未缓存（使用直播流回放）"
+            binding.tvCacheUrl.visibility = View.VISIBLE
+        } else {
+            binding.tvCacheUrl.visibility = View.GONE
+        }
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
         binding.tvCurrentTime.text = "00:00 / 00:00"
@@ -408,6 +415,9 @@ class PlayerActivity : AppCompatActivity() {
         currentEpisode = episode
         binding.tvStationName.text = episode.title
         binding.tvNetworkUrl.text = "网络: ${episode.audioUrl}"
+        binding.tvNetworkUrl.visibility = View.VISIBLE
+        binding.tvCacheUrl.text = "缓存: 未缓存（使用直播流回放）"
+        binding.tvCacheUrl.visibility = View.VISIBLE
         binding.tvEpisodeNavHint.text = " ${index + 1}/${episodeList.size} "
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvCurrentTime.text = "00:00 / 00:00"
