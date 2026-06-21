@@ -66,7 +66,7 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
 
         if (position == currentSegmentIndex) {
             holder.itemView.alpha = 1.0f
-            val primaryColor = if (theme.resolveAttribute(R.attr.colorPrimary, typedValue, true)) typedValue.data else 0
+            val primaryColor = if (theme.resolveAttribute(android.R.attr.colorPrimary, typedValue, true)) typedValue.data else 0
             holder.itemView.setBackgroundColor(primaryColor)
         } else {
             holder.itemView.alpha = 0.8f
