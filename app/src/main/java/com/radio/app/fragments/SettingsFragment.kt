@@ -133,22 +133,22 @@ class SettingsFragment : Fragment() {
 
     private fun setupListeners() {
         binding.switchAutoSkip.setOnCheckedChangeListener { _, isChecked ->
-            if (suppressListeners) return
+            if (suppressListeners) return@setOnCheckedChangeListener
             settings.autoSkipWater = isChecked
             save()
         }
         binding.switchContinuousPlay.setOnCheckedChangeListener { _, isChecked ->
-            if (suppressListeners) return
+            if (suppressListeners) return@setOnCheckedChangeListener
             settings.continuousPlay = isChecked
             save()
         }
         binding.switchAutoDownload.setOnCheckedChangeListener { _, isChecked ->
-            if (suppressListeners) return
+            if (suppressListeners) return@setOnCheckedChangeListener
             settings.autoDownload = isChecked
             save()
         }
         binding.switchAutoCache.setOnCheckedChangeListener { _, isChecked ->
-            if (suppressListeners) return
+            if (suppressListeners) return@setOnCheckedChangeListener
             settings.autoCache = isChecked
             save()
         }
