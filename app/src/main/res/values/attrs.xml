@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 背景色 -->
+    <attr name="appBackground" format="color" />
+    <attr name="appSurface" format="color" />
+    <attr name="appCardBackground" format="color" />
+
+    <!-- 文字色 -->
+    <attr name="appTextPrimary" format="color" />
+    <attr name="appTextSecondary" format="color" />
+    <attr name="appTextMuted" format="color" />
+
+    <!-- 强调色 -->
+    <attr name="appAccent" format="color" />
+    <attr name="appAccentLight" format="color" />
+
+    <!-- 边框/分隔线 -->
+    <attr name="appBorder" format="color" />
+    <attr name="appDivider" format="color" />
+
+    <!-- 状态色 -->
+    <attr name="appSuccess" format="color" />
+    <attr name="appWarning" format="color" />
+    <attr name="appError" format="color" />
+
+    <!-- 导航栏 -->
+    <attr name="appNavBackground" format="color" />
+    <attr name="appNavActive" format="color" />
+    <attr name="appNavInactive" format="color" />
+
+    <!-- 通知栏 -->
+    <attr name="appNotificationBackground" format="color" />
+</resources>

@@ -21,6 +21,7 @@ import com.radio.app.activities.OfflineEngineActivity
 import com.radio.app.databinding.FragmentSettingsBinding
 import com.radio.app.models.AppSettings
 import com.radio.app.utils.PreferenceManager
+import com.radio.app.utils.ThemeManager
 import java.io.File
 
 class SettingsFragment : Fragment() {
@@ -433,16 +434,20 @@ class SettingsFragment : Fragment() {
         val values = arrayOf(colors.primary, colors.accent, colors.background, colors.text, colors.card, colors.border, colors.success, colors.warning)
         val edits = Array<EditText>(labels.size) { EditText(requireContext()) }
 
+        val typedValue = android.util.TypedValue()
+        val theme = requireContext().theme
+        val textPrimaryColor = if (theme.resolveAttribute(R.attr.appTextPrimary, typedValue, true)) typedValue.data else 0
+
         for (i in labels.indices) {
             val tv = TextView(requireContext()).apply {
                 text = labels[i]
-                setTextColor(resources.getColor(R.color.text_primary, null))
+                setTextColor(textPrimaryColor)
             }
             layout.addView(tv)
 
             edits[i] = EditText(requireContext()).apply {
                 setText(values[i])
-                setTextColor(resources.getColor(R.color.text_primary, null))
+                setTextColor(textPrimaryColor)
             }
             layout.addView(edits[i])
 
@@ -494,12 +499,10 @@ class SettingsFragment : Fragment() {
         prefManager.saveSettings(settings)
         activity?.let { act ->
             val themeValue = settings.uiTheme
-            // 保存主题到SharedPreferences
-            act.getSharedPreferences("radio_app_prefs", android.content.Context.MODE_PRIVATE)
-                .edit().putString("current_theme", themeValue).apply()
-            // 启动新Activity并传递主题
+            // 保存主题到 ThemeManager
+            ThemeManager.setTheme(act, themeValue)
+            // 重启 Activity
             val intent = android.content.Intent(act, com.radio.app.activities.MainActivity::class.java)
-            intent.putExtra("theme", themeValue)
             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             act.startActivity(intent)
             act.finish()

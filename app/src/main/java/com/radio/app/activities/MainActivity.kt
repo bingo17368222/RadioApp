@@ -17,6 +17,7 @@ import com.radio.app.fragments.EpisodesFragment
 import com.radio.app.fragments.SearchFragment
 import com.radio.app.fragments.SettingsFragment
 import com.radio.app.services.RadioPlaybackService
+import com.radio.app.utils.ThemeManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -41,18 +42,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 优先从Intent extra读取主题（热切换时传递），默认使用清新风格
-        val themeExtra = intent.getStringExtra("theme")
-        when (themeExtra) {
-            "dark" -> setTheme(R.style.Theme_RadioApp)
-            "classic" -> setTheme(R.style.Theme_RadioApp_Classic)
-            "minimal" -> setTheme(R.style.Theme_RadioApp_Minimal)
-            else -> setTheme(R.style.Theme_RadioApp_Fresh)  // 默认清新风格
-        }
+        // 使用 ThemeManager 应用主题
+        ThemeManager.applyTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // 自定义底部导航栏点击处理（绕过MIUI的BottomNavigationView崩溃）
+        // 自定义底部导航栏点击处理
         for (navId in navIds) {
             findViewById<View>(navId)?.setOnClickListener { view ->
                 selectNav(view.id)
@@ -85,17 +80,22 @@ class MainActivity : AppCompatActivity() {
         // 更新导航栏选中状态的颜色
         val activeColor = try {
             val tv = android.util.TypedValue()
-            theme.resolveAttribute(android.R.attr.colorPrimary, tv, true)
+            theme.resolveAttribute(R.attr.appNavActive, tv, true)
             tv.data
         } catch (e: Exception) {
             0xFF7ED321.toInt()
         }
-        val inactiveColor = 0xFF999999.toInt()
+        val inactiveColor = try {
+            val tv = android.util.TypedValue()
+            theme.resolveAttribute(R.attr.appNavInactive, tv, true)
+            tv.data
+        } catch (e: Exception) {
+            0xFF999999.toInt()
+        }
 
         for (id in navIds) {
             val navView = findViewById<View>(id)
             if (navView is LinearLayout) {
-                // 每个导航项的第二个子View是TextView
                 val textView = navView.getChildAt(1) as? TextView
                 if (id == navId) {
                     textView?.setTextColor(activeColor)

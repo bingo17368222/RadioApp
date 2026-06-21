@@ -3,9 +3,8 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="?android:colorBackground">
+    android:background="?attr/appBackground">
 
-    <!-- 顶部标题栏 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="56dp"
@@ -21,7 +20,7 @@
             android:text="往期节目"
             android:textSize="20sp"
             android:textStyle="bold"
-            android:textColor="?android:attr/textColorPrimary" />
+            android:textColor="?attr/appTextPrimary" />
 
         <Button
             android:id="@+id/btn_today"
@@ -29,21 +28,22 @@
             android:layout_height="36dp"
             android:text="今天"
             android:textSize="13sp"
+            android:textColor="?attr/colorOnPrimary"
+            android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:background="?android:attr/colorPrimary" />
+            android:paddingEnd="12dp" />
 
         <Button
             android:id="@+id/btn_refresh"
             android:layout_width="36dp"
             android:layout_height="36dp"
-            android:text="↻"
+            android:text="&#x21bb;"
             android:textSize="18sp"
-            android:layout_marginStart="8dp"
-            android:background="?android:attr/colorControlNormal" />
+            android:textColor="?attr/colorOnPrimary"
+            android:backgroundTint="?attr/colorPrimary"
+            android:layout_marginStart="8dp" />
     </LinearLayout>
 
-    <!-- 日期选择器（水平滚动） -->
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -59,7 +59,6 @@
             android:paddingEnd="12dp" />
     </HorizontalScrollView>
 
-    <!-- 电台标签（水平滚动） -->
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -75,13 +74,11 @@
             android:paddingEnd="12dp" />
     </HorizontalScrollView>
 
-    <!-- 分隔线 -->
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="#E0E0E0" />
+        android:background="?attr/appDivider" />
 
-    <!-- 进度条 -->
     <ProgressBar
         android:id="@+id/progress_bar"
         android:layout_width="wrap_content"
@@ -89,7 +86,6 @@
         android:layout_gravity="center"
         android:visibility="gone" />
 
-    <!-- 节目列表 -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recycler_view"
         android:layout_width="match_parent"

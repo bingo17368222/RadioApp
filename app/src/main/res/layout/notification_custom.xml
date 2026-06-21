@@ -2,172 +2,227 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="horizontal"
-    android:gravity="center_vertical"
-    android:paddingStart="2dp"
-    android:paddingEnd="2dp"
-    android:paddingTop="2dp"
-    android:paddingBottom="2dp">
+    android:orientation="vertical"
+    android:background="?android:attr/colorBackground">
 
+    <!-- 标题区域 -->
     <LinearLayout
-        android:id="@+id/btn_rewind"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#33FFFFFF"
-        android:padding="2dp">
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp"
+        android:gravity="center_vertical">
+
         <ImageView
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:src="@drawable/notif_rewind"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_notification"
             android:scaleType="centerInside" />
-        <TextView
-            android:layout_width="wrap_content"
+
+        <LinearLayout
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="-15s"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:layout_marginStart="8dp">
+
+            <TextView
+                android:id="@+id/notification_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Radio App"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textColor="?android:attr/textColorPrimary"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <TextView
+                android:id="@+id/notification_subtitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="正在播放"
+                android:textSize="12sp"
+                android:textColor="?android:attr/textColorSecondary"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
     </LinearLayout>
 
+    <!-- 7个按钮 -->
     <LinearLayout
-        android:id="@+id/btn_prev_segment"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#33FFFFFF"
-        android:padding="2dp"
-        android:layout_marginStart="1dp">
-        <ImageView
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:src="@drawable/notif_skip"
-            android:scaleType="centerInside" />
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="上片段"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
-    </LinearLayout>
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="2dp"
+        android:paddingEnd="2dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="4dp">
 
-    <LinearLayout
-        android:id="@+id/btn_prev_episode"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#33FFFFFF"
-        android:padding="2dp"
-        android:layout_marginStart="1dp">
-        <ImageView
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:src="@drawable/notif_prev"
-            android:scaleType="centerInside" />
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="上节目"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
-    </LinearLayout>
+        <LinearLayout
+            android:id="@+id/btn_rewind"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#33000000"
+            android:padding="2dp">
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/notif_rewind"
+                android:scaleType="centerInside" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="-15s"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/btn_play_pause"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#55FFFFFF"
-        android:padding="2dp"
-        android:layout_marginStart="1dp">
-        <ImageView
-            android:id="@+id/play_pause_icon"
-            android:layout_width="20dp"
-            android:layout_height="20dp"
-            android:src="@drawable/notif_play"
-            android:scaleType="centerInside" />
-        <TextView
-            android:id="@+id/play_pause_text"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="播放"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
-    </LinearLayout>
+        <LinearLayout
+            android:id="@+id/btn_prev_segment"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#33000000"
+            android:padding="2dp"
+            android:layout_marginStart="1dp">
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/notif_skip"
+                android:scaleType="centerInside" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="上片段"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/btn_next_episode"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#33FFFFFF"
-        android:padding="2dp"
-        android:layout_marginStart="1dp">
-        <ImageView
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:src="@drawable/notif_next"
-            android:scaleType="centerInside" />
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="下节目"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
-    </LinearLayout>
+        <LinearLayout
+            android:id="@+id/btn_prev_episode"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#33000000"
+            android:padding="2dp"
+            android:layout_marginStart="1dp">
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/notif_prev"
+                android:scaleType="centerInside" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="上节目"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/btn_next_segment"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#33FFFFFF"
-        android:padding="2dp"
-        android:layout_marginStart="1dp">
-        <ImageView
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:src="@drawable/notif_skip"
-            android:scaleType="centerInside" />
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="下片段"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
-    </LinearLayout>
+        <LinearLayout
+            android:id="@+id/btn_play_pause"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#55000000"
+            android:padding="2dp"
+            android:layout_marginStart="1dp">
+            <ImageView
+                android:id="@+id/play_pause_icon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/notif_play"
+                android:scaleType="centerInside" />
+            <TextView
+                android:id="@+id/play_pause_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="播放"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/btn_forward"
-        android:layout_width="0dp"
-        android:layout_height="40dp"
-        android:layout_weight="1"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:background="#33FFFFFF"
-        android:padding="2dp"
-        android:layout_marginStart="1dp">
-        <ImageView
-            android:layout_width="16dp"
-            android:layout_height="16dp"
-            android:src="@drawable/notif_forward"
-            android:scaleType="centerInside" />
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="+15s"
-            android:textSize="8sp"
-            android:textColor="#FFFFFF" />
+        <LinearLayout
+            android:id="@+id/btn_next_episode"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#33000000"
+            android:padding="2dp"
+            android:layout_marginStart="1dp">
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/notif_next"
+                android:scaleType="centerInside" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="下节目"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_next_segment"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#33000000"
+            android:padding="2dp"
+            android:layout_marginStart="1dp">
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/notif_skip"
+                android:scaleType="centerInside" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="下片段"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_forward"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#33000000"
+            android:padding="2dp"
+            android:layout_marginStart="1dp">
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/notif_forward"
+                android:scaleType="centerInside" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="+15s"
+                android:textSize="8sp"
+                android:textColor="?android:attr/textColorPrimary" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>

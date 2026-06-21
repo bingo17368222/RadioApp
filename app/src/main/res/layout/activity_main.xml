@@ -15,7 +15,7 @@
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:orientation="horizontal"
-        android:background="#FFFFFF"
+        android:background="?attr/appNavBackground"
         android:elevation="8dp">
 
         <LinearLayout
@@ -37,7 +37,7 @@
                 android:layout_height="wrap_content"
                 android:text="首页"
                 android:textSize="11sp"
-                android:textColor="#7ED321"
+                android:textColor="?attr/appNavActive"
                 android:layout_marginTop="2dp" />
         </LinearLayout>
 
@@ -60,7 +60,7 @@
                 android:layout_height="wrap_content"
                 android:text="回放"
                 android:textSize="11sp"
-                android:textColor="#999999"
+                android:textColor="?attr/appNavInactive"
                 android:layout_marginTop="2dp" />
         </LinearLayout>
 
@@ -83,7 +83,7 @@
                 android:layout_height="wrap_content"
                 android:text="搜索"
                 android:textSize="11sp"
-                android:textColor="#999999"
+                android:textColor="?attr/appNavInactive"
                 android:layout_marginTop="2dp" />
         </LinearLayout>
 
@@ -106,7 +106,7 @@
                 android:layout_height="wrap_content"
                 android:text="设置"
                 android:textSize="11sp"
-                android:textColor="#999999"
+                android:textColor="?attr/appNavInactive"
                 android:layout_marginTop="2dp" />
         </LinearLayout>
     </LinearLayout>

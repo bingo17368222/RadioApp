@@ -48,9 +48,15 @@ class SubtitleView @JvmOverloads constructor(
     }
 
     private fun createItem(t: Transcript, idx: Int): View {
+        val typedValue = android.util.TypedValue()
+        val theme = context.theme
+        val cardBg = if (theme.resolveAttribute(R.attr.appCardBackground, typedValue, true)) typedValue.data else 0
+        val textSecondary = if (theme.resolveAttribute(R.attr.appTextSecondary, typedValue, true)) typedValue.data else 0
+        val textPrimary = if (theme.resolveAttribute(R.attr.appTextPrimary, typedValue, true)) typedValue.data else 0
+
         val card = CardView(context).apply {
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
-            setCardBackgroundColor(resources.getColor(R.color.card_dark))
+            setCardBackgroundColor(cardBg)
             radius = 8f
             setContentPadding(16, 12, 16, 12)
             tag = idx
@@ -60,12 +66,12 @@ class SubtitleView @JvmOverloads constructor(
         }
         val tvTime = TextView(context).apply {
             text = fmtTime(t.segmentStart)
-            setTextColor(resources.getColor(R.color.text_secondary))
+            setTextColor(textSecondary)
             textSize = 12f
         }
         val tvText = TextView(context).apply {
             text = t.text
-            setTextColor(resources.getColor(R.color.text_primary))
+            setTextColor(textPrimary)
             textSize = 14f
             setPadding(0, 4, 0, 0)
         }
@@ -82,13 +88,18 @@ class SubtitleView @JvmOverloads constructor(
     }
 
     fun highlightSubtitle(ms: Long) {
+        val typedValue = android.util.TypedValue()
+        val theme = context.theme
+        val cardBg = if (theme.resolveAttribute(R.attr.appCardBackground, typedValue, true)) typedValue.data else 0
+        val primaryColor = if (theme.resolveAttribute(R.attr.colorPrimary, typedValue, true)) typedValue.data else 0
+
         val idx = (ms / 30).toInt()
         if (idx == highlightIdx || idx >= container.childCount) return
         if (highlightIdx >= 0 && highlightIdx < container.childCount) {
-            (container.getChildAt(highlightIdx) as CardView).setCardBackgroundColor(resources.getColor(R.color.card_dark))
+            (container.getChildAt(highlightIdx) as CardView).setCardBackgroundColor(cardBg)
         }
         if (idx >= 0 && idx < container.childCount) {
-            (container.getChildAt(idx) as CardView).setCardBackgroundColor(resources.getColor(R.color.primary_dark))
+            (container.getChildAt(idx) as CardView).setCardBackgroundColor(primaryColor)
             scrollView.post { scrollView.smoothScrollTo(0, container.getChildAt(idx).top) }
         }
         highlightIdx = idx

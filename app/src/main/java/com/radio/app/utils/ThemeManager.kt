@@ -1,87 +1,70 @@
 package com.radio.app.utils
 
-import android.app.Activity
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
-import android.os.Build
-import android.util.Log
-import android.view.Window
+import androidx.appcompat.app.AppCompatActivity
 import com.radio.app.R
-import com.radio.app.models.AppSettings
 
-class ThemeManager(context: Context) {
+object ThemeManager {
 
-    companion object {
-        private const val TAG = "ThemeManager"
+    private const val PREFS_NAME = "theme_prefs"
+    private const val KEY_THEME = "current_theme"
+    private const val KEY_CUSTOM_PRIMARY = "custom_primary"
+    private const val KEY_CUSTOM_BACKGROUND = "custom_background"
+    private const val KEY_CUSTOM_TEXT = "custom_text"
 
-        fun applyTheme(activity: Activity?) {
-            if (activity == null) return
-            try {
-                // 使用 PreferenceManager 读取设置（与 SettingsFragment 使用同一存储）
-                val prefManager = PreferenceManager(activity)
-                val settings = prefManager.loadSettings()
-                val theme = settings.uiTheme
+    enum class AppTheme(val value: String) {
+        DARK("dark"),
+        FRESH("fresh"),
+        CLASSIC("classic"),
+        MINIMAL("minimal"),
+        CUSTOM("custom")
+    }
 
-                Log.d(TAG, "Applying theme: $theme")
+    private fun getPrefs(context: Context): SharedPreferences {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
-                // 先应用基础主题
-                when (theme) {
-                    AppSettings.THEME_DARK -> activity.setTheme(R.style.Theme_RadioApp)
-                    AppSettings.THEME_FRESH -> activity.setTheme(R.style.Theme_RadioApp_Fresh)
-                    AppSettings.THEME_CLASSIC -> activity.setTheme(R.style.Theme_RadioApp_Classic)
-                    AppSettings.THEME_MINIMAL -> activity.setTheme(R.style.Theme_RadioApp_Minimal)
-                    AppSettings.THEME_CUSTOM -> activity.setTheme(R.style.Theme_RadioApp)
-                    else -> activity.setTheme(R.style.Theme_RadioApp)
-                }
+    fun getCurrentTheme(context: Context): String {
+        return getPrefs(context).getString(KEY_THEME, AppTheme.FRESH.value) ?: AppTheme.FRESH.value
+    }
 
-                // 如果是自定义主题，动态应用颜色
-                if (AppSettings.THEME_CUSTOM == theme) {
-                    applyCustomColors(activity, settings.customColors)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "applyTheme failed, using default", e)
-                activity.setTheme(R.style.Theme_RadioApp)
-            }
+    fun setTheme(context: Context, theme: String) {
+        getPrefs(context).edit().putString(KEY_THEME, theme).apply()
+    }
+
+    fun applyTheme(activity: AppCompatActivity) {
+        val theme = getCurrentTheme(activity)
+        val themeId = when (theme) {
+            AppTheme.DARK.value -> R.style.Theme_RadioApp
+            AppTheme.FRESH.value -> R.style.Theme_RadioApp_Fresh
+            AppTheme.CLASSIC.value -> R.style.Theme_RadioApp_Classic
+            AppTheme.MINIMAL.value -> R.style.Theme_RadioApp_Minimal
+            AppTheme.CUSTOM.value -> R.style.Theme_RadioApp_Fresh // 自定义主题基于清新
+            else -> R.style.Theme_RadioApp_Fresh
         }
+        activity.setTheme(themeId)
+    }
 
-        private fun applyCustomColors(activity: Activity?, colors: AppSettings.CustomColors?) {
-            if (activity == null || colors == null) return
-            try {
-                val window: Window = activity.window ?: return
+    // 自定义颜色
+    fun setCustomColors(context: Context, primary: Int, background: Int, text: Int) {
+        getPrefs(context).edit()
+            .putInt(KEY_CUSTOM_PRIMARY, primary)
+            .putInt(KEY_CUSTOM_BACKGROUND, background)
+            .putInt(KEY_CUSTOM_TEXT, text)
+            .apply()
+    }
 
-                // 状态栏颜色
-                val primaryColor = parseColorSafe(activity, colors.primary, R.color.primary_dark)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    window.statusBarColor = primaryColor
-                }
+    fun getCustomPrimary(context: Context): Int {
+        return getPrefs(context).getInt(KEY_CUSTOM_PRIMARY, Color.parseColor("#7ED321"))
+    }
 
-                // ActionBar颜色
-                activity.actionBar?.setBackgroundDrawable(ColorDrawable(primaryColor))
+    fun getCustomBackground(context: Context): Int {
+        return getPrefs(context).getInt(KEY_CUSTOM_BACKGROUND, Color.parseColor("#F5F7F5"))
+    }
 
-                Log.d(TAG, "Custom colors applied: primary=$primaryColor")
-            } catch (e: Exception) {
-                Log.e(TAG, "applyCustomColors failed", e)
-            }
-        }
-
-        private fun parseColorSafe(context: Context, colorStr: String?, defaultResId: Int): Int {
-            try {
-                if (!colorStr.isNullOrEmpty()) {
-                    return Color.parseColor(colorStr)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "parseColor failed: $colorStr")
-            }
-            return context.getColor(defaultResId)
-        }
-
-        fun getColorFromTheme(context: Context, attrResId: Int): Int {
-            val typedValue = android.util.TypedValue()
-            val a = context.obtainStyledAttributes(typedValue.data, intArrayOf(attrResId))
-            val color = a.getColor(0, 0)
-            a.recycle()
-            return color
-        }
+    fun getCustomText(context: Context): Int {
+        return getPrefs(context).getInt(KEY_CUSTOM_TEXT, Color.parseColor("#1A1A1A"))
     }
 }

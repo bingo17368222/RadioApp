@@ -1,21 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 默认深色主题（深蓝+红） -->
-    <style name="Theme.RadioApp" parent="Theme.Material3.Dark.NoActionBar">
-        <item name="colorPrimary">@color/primary_dark</item>
-        <item name="colorPrimaryVariant">@color/primary_dark</item>
-        <item name="colorOnPrimary">@color/text_primary</item>
-        <item name="colorAccent">@color/accent</item>
-        <item name="android:colorBackground">@color/background_dark</item>
-        <item name="colorSurface">@color/card_dark</item>
-        <item name="colorOnSurface">@color/text_primary</item>
-        <item name="android:textColorPrimary">@color/text_primary</item>
-        <item name="android:textColorSecondary">@color/text_secondary</item>
-        <item name="android:statusBarColor">@color/background_dark</item>
-        <item name="android:navigationBarColor">@color/background_dark</item>
+    <!-- 深色主题 -->
+    <style name="Theme.RadioApp" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#0f3460</item>
+        <item name="colorPrimaryVariant">#0f3460</item>
+        <item name="colorOnPrimary">#e0e0e0</item>
+        <item name="colorAccent">#e94560</item>
+        <item name="android:colorBackground">#1a1a2e</item>
+        <item name="colorSurface">#16213e</item>
+        <item name="colorOnSurface">#e0e0e0</item>
+        <item name="android:textColorPrimary">#e0e0e0</item>
+        <item name="android:textColorSecondary">#a0a0a0</item>
+        <item name="android:statusBarColor">#1a1a2e</item>
+        <item name="android:navigationBarColor">#1a1a2e</item>
+        <!-- 自定义属性 -->
+        <item name="appBackground">#1a1a2e</item>
+        <item name="appSurface">#16213e</item>
+        <item name="appCardBackground">#16213e</item>
+        <item name="appTextPrimary">#e0e0e0</item>
+        <item name="appTextSecondary">#a0a0a0</item>
+        <item name="appTextMuted">#666666</item>
+        <item name="appAccent">#e94560</item>
+        <item name="appAccentLight">#ff6b81</item>
+        <item name="appBorder">#2a2a4e</item>
+        <item name="appDivider">#2a2a4e</item>
+        <item name="appSuccess">#2ecc71</item>
+        <item name="appWarning">#f39c12</item>
+        <item name="appError">#e74c3c</item>
+        <item name="appNavBackground">#16213e</item>
+        <item name="appNavActive">#e94560</item>
+        <item name="appNavInactive">#a0a0a0</item>
+        <item name="appNotificationBackground">#16213e</item>
     </style>
 
-    <!-- 清新风格（明亮绿色+白色背景）— 设为默认 -->
+    <!-- 清新主题（默认） -->
     <style name="Theme.RadioApp.Fresh" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#7ED321</item>
         <item name="colorPrimaryVariant">#6BBF1A</item>
@@ -28,9 +46,26 @@
         <item name="android:textColorSecondary">#666666</item>
         <item name="android:statusBarColor">#F5F7F5</item>
         <item name="android:navigationBarColor">#F5F7F5</item>
+        <item name="appBackground">#F5F7F5</item>
+        <item name="appSurface">#FFFFFF</item>
+        <item name="appCardBackground">#FFFFFF</item>
+        <item name="appTextPrimary">#1A1A1A</item>
+        <item name="appTextSecondary">#666666</item>
+        <item name="appTextMuted">#999999</item>
+        <item name="appAccent">#7ED321</item>
+        <item name="appAccentLight">#9EE855</item>
+        <item name="appBorder">#E0E0E0</item>
+        <item name="appDivider">#E0E0E0</item>
+        <item name="appSuccess">#2ecc71</item>
+        <item name="appWarning">#f39c12</item>
+        <item name="appError">#e74c3c</item>
+        <item name="appNavBackground">#FFFFFF</item>
+        <item name="appNavActive">#7ED321</item>
+        <item name="appNavInactive">#999999</item>
+        <item name="appNotificationBackground">#FFFFFF</item>
     </style>
 
-    <!-- 经典风格（红色+暖白背景） -->
+    <!-- 经典主题 -->
     <style name="Theme.RadioApp.Classic" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#E74C3C</item>
         <item name="colorPrimaryVariant">#C0392B</item>
@@ -43,9 +78,26 @@
         <item name="android:textColorSecondary">#8B7355</item>
         <item name="android:statusBarColor">#FFF8F0</item>
         <item name="android:navigationBarColor">#FFF8F0</item>
+        <item name="appBackground">#FFF8F0</item>
+        <item name="appSurface">#FFFFFF</item>
+        <item name="appCardBackground">#FFFFFF</item>
+        <item name="appTextPrimary">#2C1810</item>
+        <item name="appTextSecondary">#8B7355</item>
+        <item name="appTextMuted">#B0A090</item>
+        <item name="appAccent">#E74C3C</item>
+        <item name="appAccentLight">#FF6B5B</item>
+        <item name="appBorder">#E8D8C8</item>
+        <item name="appDivider">#E8D8C8</item>
+        <item name="appSuccess">#27ae60</item>
+        <item name="appWarning">#e67e22</item>
+        <item name="appError">#c0392b</item>
+        <item name="appNavBackground">#FFFFFF</item>
+        <item name="appNavActive">#E74C3C</item>
+        <item name="appNavInactive">#B0A090</item>
+        <item name="appNotificationBackground">#FFFFFF</item>
     </style>
 
-    <!-- 极简风格（紫色+淡紫背景） -->
+    <!-- 极简主题 -->
     <style name="Theme.RadioApp.Minimal" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">#9B59B6</item>
         <item name="colorPrimaryVariant">#8E44AD</item>
@@ -58,5 +110,22 @@
         <item name="android:textColorSecondary">#7D6B8A</item>
         <item name="android:statusBarColor">#F0E6F6</item>
         <item name="android:navigationBarColor">#F0E6F6</item>
+        <item name="appBackground">#F0E6F6</item>
+        <item name="appSurface">#FFFFFF</item>
+        <item name="appCardBackground">#FFFFFF</item>
+        <item name="appTextPrimary">#2D1B3D</item>
+        <item name="appTextSecondary">#7D6B8A</item>
+        <item name="appTextMuted">#A090B0</item>
+        <item name="appAccent">#9B59B6</item>
+        <item name="appAccentLight">#BB79D6</item>
+        <item name="appBorder">#D8C8E8</item>
+        <item name="appDivider">#D8C8E8</item>
+        <item name="appSuccess">#2ecc71</item>
+        <item name="appWarning">#f39c12</item>
+        <item name="appError">#e74c3c</item>
+        <item name="appNavBackground">#FFFFFF</item>
+        <item name="appNavActive">#9B59B6</item>
+        <item name="appNavInactive">#A090B0</item>
+        <item name="appNotificationBackground">#FFFFFF</item>
     </style>
 </resources>

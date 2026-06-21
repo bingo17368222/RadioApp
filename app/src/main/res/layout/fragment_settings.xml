@@ -1,76 +1,205 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/background_dark">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/appBackground"
+    android:fillViewport="true">
 
-        <!-- 播放设置 -->
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="播放设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AI模型" android:textColor="@color/text_primary" android:textSize="16sp" />
-            <Spinner android:id="@+id/spinner_ai_model" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ASR方案" android:textColor="@color/text_primary" android:textSize="16sp" />
-            <Spinner android:id="@+id/spinner_asr_provider" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="自动跳过水分" android:textColor="@color/text_primary" android:textSize="16sp" />
-                <Switch android:id="@+id/switch_auto_skip" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="设置"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="?attr/appTextPrimary" />
+
+        <!-- 主题选择 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="主题风格"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="?attr/appTextPrimary"
+            android:layout_marginTop="24dp" />
+
+        <RadioGroup
+            android:id="@+id/rg_theme"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="8dp">
+
+            <RadioButton
+                android:id="@+id/rb_theme_fresh"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="清新风格"
+                android:textColor="?attr/appTextPrimary" />
+
+            <RadioButton
+                android:id="@+id/rb_theme_classic"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="经典风格"
+                android:textColor="?attr/appTextPrimary" />
+
+            <RadioButton
+                android:id="@+id/rb_theme_minimal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="极简风格"
+                android:textColor="?attr/appTextPrimary" />
+
+            <RadioButton
+                android:id="@+id/rb_theme_dark"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="深色风格"
+                android:textColor="?attr/appTextPrimary" />
+
+            <RadioButton
+                android:id="@+id/rb_theme_custom"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="自定义风格"
+                android:textColor="?attr/appTextPrimary" />
+        </RadioGroup>
+
+        <!-- 自定义颜色设置 -->
+        <LinearLayout
+            android:id="@+id/custom_color_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="自定义颜色"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="?attr/appTextPrimary" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="主色"
+                    android:textColor="?attr/appTextSecondary" />
+
+                <View
+                    android:id="@+id/color_primary_preview"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/colorPrimary" />
             </LinearLayout>
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="连续播放" android:textColor="@color/text_primary" android:textSize="16sp" />
-                <Switch android:id="@+id/switch_continuous_play" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="背景色"
+                    android:textColor="?attr/appTextSecondary" />
+
+                <View
+                    android:id="@+id/color_background_preview"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/appBackground" />
             </LinearLayout>
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="自动下载缓存" android:textColor="@color/text_primary" android:textSize="16sp" />
-                <Switch android:id="@+id/switch_auto_download" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="文字色"
+                    android:textColor="?attr/appTextSecondary" />
+
+                <View
+                    android:id="@+id/color_text_preview"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/appTextPrimary" />
             </LinearLayout>
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用预缓存" android:textColor="@color/text_primary" android:textSize="16sp" />
-                <Switch android:id="@+id/switch_auto_cache" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-            </LinearLayout>
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="启用音频焦点（导航或其他播放器播放时自动暂停，恢复后自动继续）" android:textColor="@color/text_primary" android:textSize="14sp" />
-                <Switch android:id="@+id/switch_audio_focus" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
-            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_pick_color"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="选择颜色"
+                android:textColor="?attr/colorOnPrimary"
+                android:backgroundTint="?attr/colorPrimary"
+                android:layout_marginTop="8dp" />
         </LinearLayout>
 
-        <!-- 界面设置 -->
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="界面设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="界面风格" android:textColor="@color/text_primary" android:textSize="16sp" />
-            <Spinner android:id="@+id/spinner_theme" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <TextView android:id="@+id/btn_customize_colors" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="自定义颜色" android:textColor="@color/accent" android:textSize="16sp" android:padding="8dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
-        </LinearLayout>
+        <!-- 其他设置 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="播放设置"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="?attr/appTextPrimary"
+            android:layout_marginTop="24dp" />
 
-        <!-- 字幕设置 -->
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="字幕设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="字幕大小" android:textColor="@color/text_primary" android:textSize="16sp" />
-            <Spinner android:id="@+id/spinner_subtitle_size" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="字幕语言" android:textColor="@color/text_primary" android:textSize="16sp" />
-            <Spinner android:id="@+id/spinner_subtitle_lang" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" android:layout_marginVertical="12dp" />
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="语音识别语言" android:textColor="@color/text_primary" android:textSize="16sp" />
-            <Spinner android:id="@+id/spinner_voice_lang" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" />
-        </LinearLayout>
+        <CheckBox
+            android:id="@+id/cb_auto_play"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="自动播放"
+            android:textColor="?attr/appTextPrimary"
+            android:layout_marginTop="8dp" />
 
-        <!-- 更多设置 -->
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="更多设置" android:textColor="@color/text_secondary" android:textSize="13sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="24dp">
-            <TextView android:id="@+id/tv_disliked_episodes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="不喜欢的节目" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
-            <TextView android:id="@+id/tv_keyword_settings" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="关键词设置" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
-            <TextView android:id="@+id/btn_manage_offline_engine" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="离线引擎管理" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
-            <TextView android:id="@+id/tv_cache_size" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="缓存大小: 计算中..." android:textColor="@color/text_primary" android:textSize="14sp" android:padding="12dp" />
-            <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/divider" />
-            <TextView android:id="@+id/btn_clear_cache" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="清理缓存" android:textColor="@color/accent" android:textSize="16sp" android:padding="12dp" android:background="?attr/selectableItemBackground" android:clickable="true" android:focusable="true" />
-        </LinearLayout>
+        <CheckBox
+            android:id="@+id/cb_show_lyrics"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="显示歌词"
+            android:textColor="?attr/appTextPrimary"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="关于"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="?attr/appTextPrimary"
+            android:layout_marginTop="24dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Radio App v1.2.22"
+            android:textSize="14sp"
+            android:textColor="?attr/appTextSecondary"
+            android:layout_marginTop="8dp" />
     </LinearLayout>
 </ScrollView>

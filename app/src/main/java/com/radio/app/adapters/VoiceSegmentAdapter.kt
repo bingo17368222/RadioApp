@@ -49,12 +49,13 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
 
         val isDry = segment.isEffectiveDry()
         holder.tvType.text = if (isDry) "干货" else "水分"
-        holder.tvType.setTextColor(
-            if (isDry)
-                ContextCompat.getColor(holder.itemView.context, R.color.success)
-            else
-                ContextCompat.getColor(holder.itemView.context, R.color.warning)
-        )
+
+        val ctx = holder.itemView.context
+        val typedValue = android.util.TypedValue()
+        val theme = ctx.theme
+        val successColor = if (theme.resolveAttribute(R.attr.appSuccess, typedValue, true)) typedValue.data else ContextCompat.getColor(ctx, android.R.color.holo_green_dark)
+        val warningColor = if (theme.resolveAttribute(R.attr.appWarning, typedValue, true)) typedValue.data else ContextCompat.getColor(ctx, android.R.color.holo_orange_dark)
+        holder.tvType.setTextColor(if (isDry) successColor else warningColor)
 
         if (segment.isManuallyMarked) {
             holder.ivManualMark.visibility = View.VISIBLE
@@ -65,7 +66,8 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
 
         if (position == currentSegmentIndex) {
             holder.itemView.alpha = 1.0f
-            holder.itemView.setBackgroundColor(ContextCompat.getColor(holder.itemView.context, R.color.primary_dark))
+            val primaryColor = if (theme.resolveAttribute(R.attr.colorPrimary, typedValue, true)) typedValue.data else 0
+            holder.itemView.setBackgroundColor(primaryColor)
         } else {
             holder.itemView.alpha = 0.8f
             holder.itemView.setBackgroundColor(0)

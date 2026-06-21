@@ -519,6 +519,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val subText = if (isLive) "[直播]" else "[回放]"
 
+        // 设置通知标题和子文本
+        remoteViews.setTextViewText(R.id.notification_title, title)
+        remoteViews.setTextViewText(R.id.notification_subtitle,
+            if (playing) "正在播放 $subText" else "已暂停 $subText")
+
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(if (playing) "正在播放 $subText" else "已暂停 $subText")
