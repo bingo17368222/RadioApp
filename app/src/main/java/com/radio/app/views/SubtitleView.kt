@@ -91,7 +91,7 @@ class SubtitleView @JvmOverloads constructor(
         val typedValue = android.util.TypedValue()
         val theme = context.theme
         val cardBg = if (theme.resolveAttribute(R.attr.appCardBackground, typedValue, true)) typedValue.data else 0
-        val primaryColor = if (theme.resolveAttribute(R.attr.colorPrimary, typedValue, true)) typedValue.data else 0
+        val primaryColor = if (theme.resolveAttribute(android.R.attr.colorPrimary, typedValue, true)) typedValue.data else 0
 
         val idx = (ms / 30).toInt()
         if (idx == highlightIdx || idx >= container.childCount) return
