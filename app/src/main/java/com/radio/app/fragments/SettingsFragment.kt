@@ -4,21 +4,23 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
-import android.util.Log
 import com.radio.app.R
+import com.radio.app.activities.DislikedEpisodesActivity
+import com.radio.app.activities.KeywordSettingsActivity
 import com.radio.app.activities.OfflineEngineActivity
+import com.radio.app.databinding.FragmentSettingsBinding
 import com.radio.app.models.AppSettings
 import com.radio.app.utils.PreferenceManager
 import com.radio.app.utils.ThemeManager
@@ -26,112 +28,289 @@ import java.io.File
 
 class SettingsFragment : Fragment() {
 
+    private var _binding: FragmentSettingsBinding? = null
+    private val binding get() = _binding!!
+
     private lateinit var prefManager: PreferenceManager
     private lateinit var settings: AppSettings
     private var previousTheme: String? = null
-
-    // Views
-    private var rgTheme: RadioGroup? = null
-    private var rbThemeDark: RadioButton? = null
-    private var rbThemeFresh: RadioButton? = null
-    private var rbThemeClassic: RadioButton? = null
-    private var rbThemeMinimal: RadioButton? = null
-    private var rbThemeCustom: RadioButton? = null
-    private var customColorContainer: LinearLayout? = null
-    private var btnPickColor: Button? = null
-    private var cbAutoPlay: CheckBox? = null
-    private var cbShowLyrics: CheckBox? = null
-    private var tvCacheSize: TextView? = null
-    private var btnClearCache: Button? = null
-    private var btnManageOffline: Button? = null
+    private var suppressListeners = true
 
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
-        val view = inflater.inflate(R.layout.fragment_settings, container, false)
+        _binding = FragmentSettingsBinding.inflate(inflater, container, false)
         prefManager = PreferenceManager(requireContext())
         settings = prefManager.loadSettings()
         previousTheme = settings.uiTheme
 
-        initViews(view)
+        initViews()
         setupListeners()
         updateUI()
-        return view
+        return binding.root
     }
 
-    private fun initViews(view: View) {
-        rgTheme = view.findViewById(R.id.rg_theme)
-        rbThemeDark = view.findViewById(R.id.rb_theme_dark)
-        rbThemeFresh = view.findViewById(R.id.rb_theme_fresh)
-        rbThemeClassic = view.findViewById(R.id.rb_theme_classic)
-        rbThemeMinimal = view.findViewById(R.id.rb_theme_minimal)
-        rbThemeCustom = view.findViewById(R.id.rb_theme_custom)
-        customColorContainer = view.findViewById(R.id.custom_color_container)
-        btnPickColor = view.findViewById(R.id.btn_pick_color)
-        cbAutoPlay = view.findViewById(R.id.cb_auto_play)
-        cbShowLyrics = view.findViewById(R.id.cb_show_lyrics)
-        tvCacheSize = view.findViewById(R.id.tv_cache_size)
-        btnClearCache = view.findViewById(R.id.btn_clear_cache)
-        btnManageOffline = view.findViewById(R.id.btn_manage_offline)
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+
+    private fun initViews() {
+        val themeLabels = arrayOf("深色", "清新", "经典", "极简", "自定义")
+        val themeAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, themeLabels)
+        themeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerTheme.adapter = themeAdapter
+
+        val sizeLabels = arrayOf("小", "中", "大")
+        val sizeAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, sizeLabels)
+        sizeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerSubtitleSize.adapter = sizeAdapter
+
+        val langLabels = arrayOf("中文", "英文")
+        val langAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, langLabels)
+        langAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerSubtitleLang.adapter = langAdapter
+        binding.spinnerVoiceLang.adapter = langAdapter
+
+        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "久爱听")
+        val aiModelAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, aiModelLabels)
+        aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerAiModel.adapter = aiModelAdapter
+
+        val asrProviderLabels = mutableListOf("百度语音", "FunASR", "Whisper在线", "本地Vosk")
+        val asrProviderAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, asrProviderLabels)
+        asrProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerAsrProvider.adapter = asrProviderAdapter
+
+        try {
+            addInstalledEnginesToAsrList(asrProviderAdapter)
+        } catch (e: Exception) {
+            Log.e("SettingsFragment", "addInstalledEngines failed", e)
+        }
+    }
+
+    private fun addInstalledEnginesToAsrList(adapter: ArrayAdapter<String>) {
+        try {
+            val modelsDir = requireContext().getExternalFilesDir("models")
+            if (modelsDir == null || !modelsDir.exists()) return
+
+            val whisperModels = arrayOf(
+                "whisper-tiny" to "本地Whisper Tiny",
+                "whisper-base" to "本地Whisper Base",
+                "whisper-small" to "本地Whisper Small",
+                "whisper-medium" to "本地Whisper Medium",
+                "whisper-large" to "本地Whisper Large"
+            )
+            for ((dir, label) in whisperModels) {
+                val modelDir = File(modelsDir, dir)
+                if (modelDir.exists()) {
+                    val totalSize = calculateDirSize(modelDir)
+                    if (totalSize >= 1024 * 1024) {
+                        adapter.add(label)
+                    }
+                }
+            }
+
+            val voskModels = arrayOf(
+                "vosk-small-cn" to "本地Vosk 中文",
+                "vosk-small-en" to "本地Vosk 英文"
+            )
+            for ((dir, label) in voskModels) {
+                val modelDir = File(modelsDir, dir)
+                if (modelDir.exists()) {
+                    val totalSize = calculateDirSize(modelDir)
+                    if (totalSize >= 1024 * 1024) {
+                        adapter.add(label)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SettingsFragment", "addInstalledEngines failed", e)
+        }
     }
 
     private fun setupListeners() {
-        rgTheme?.setOnCheckedChangeListener { _, checkedId ->
-            val selectedTheme = when (checkedId) {
-                R.id.rb_theme_dark -> AppSettings.THEME_DARK
-                R.id.rb_theme_fresh -> AppSettings.THEME_FRESH
-                R.id.rb_theme_classic -> AppSettings.THEME_CLASSIC
-                R.id.rb_theme_minimal -> AppSettings.THEME_MINIMAL
-                R.id.rb_theme_custom -> AppSettings.THEME_CUSTOM
-                else -> AppSettings.THEME_FRESH
-            }
-            if (selectedTheme != settings.uiTheme) {
-                settings.uiTheme = selectedTheme
-                save()
-                applyTheme()
-            }
-        }
-
-        cbAutoPlay?.setOnCheckedChangeListener { _, isChecked ->
+        binding.switchAutoSkip.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return
             settings.autoSkipWater = isChecked
             save()
         }
-
-        cbShowLyrics?.setOnCheckedChangeListener { _, isChecked ->
+        binding.switchContinuousPlay.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return
             settings.continuousPlay = isChecked
             save()
         }
+        binding.switchAutoDownload.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return
+            settings.autoDownload = isChecked
+            save()
+        }
+        binding.switchAutoCache.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return
+            settings.autoCache = isChecked
+            save()
+        }
 
-        btnPickColor?.setOnClickListener { showColorPickerDialog() }
-        btnClearCache?.setOnClickListener { showClearCacheDialog() }
-        btnManageOffline?.setOnClickListener {
+        binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                val themes = arrayOf(
+                    AppSettings.THEME_DARK, AppSettings.THEME_FRESH,
+                    AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM
+                )
+                val selectedTheme = themes[position]
+                if (selectedTheme != settings.uiTheme) {
+                    settings.uiTheme = selectedTheme
+                    save()
+                    applyTheme()
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.spinnerSubtitleSize.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                val sizes = arrayOf(AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE)
+                settings.subtitleSize = sizes[position]
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.spinnerSubtitleLang.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
+                settings.subtitleLanguage = langs[position]
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.spinnerVoiceLang.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
+                settings.voiceLanguage = langs[position]
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.spinnerAiModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                val models = arrayOf(
+                    AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK,
+                    AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR,
+                    AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING
+                )
+                settings.aiModel = models[position]
+                save()
+                Toast.makeText(requireContext(), "AI模型已切换: " + parent?.getItemAtPosition(position), Toast.LENGTH_SHORT).show()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.spinnerAsrProvider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                val selected = binding.spinnerAsrProvider.selectedItem.toString()
+                val providerId = when {
+                    selected.startsWith("本地Whisper") -> "whisper-local"
+                    selected.startsWith("本地Vosk") -> "vosk-local"
+                    else -> {
+                        val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
+                        if (position < providers.size) providers[position] else selected
+                    }
+                }
+                settings.asrProvider = providerId
+                save()
+                Toast.makeText(requireContext(), "ASR方案已切换: $selected", Toast.LENGTH_SHORT).show()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        binding.btnClearCache.setOnClickListener { showClearCacheDialog() }
+        binding.btnManageOfflineEngine.setOnClickListener {
             startActivity(Intent(requireContext(), OfflineEngineActivity::class.java))
+        }
+        binding.btnCustomizeColors.setOnClickListener { showColorPickerDialog() }
+        binding.tvDislikedEpisodes.setOnClickListener {
+            startActivity(Intent(requireContext(), DislikedEpisodesActivity::class.java))
+        }
+        binding.tvKeywordSettings.setOnClickListener {
+            startActivity(Intent(requireContext(), KeywordSettingsActivity::class.java))
         }
     }
 
     private fun updateUI() {
-        cbAutoPlay?.isChecked = settings.autoSkipWater
-        cbShowLyrics?.isChecked = settings.continuousPlay
+        binding.switchAutoSkip.isChecked = settings.autoSkipWater
+        binding.switchContinuousPlay.isChecked = settings.continuousPlay
+        binding.switchAutoDownload.isChecked = settings.autoDownload
+        binding.switchAutoCache.isChecked = settings.autoCache
 
-        // 设置主题选中
-        val themeId = when (settings.uiTheme) {
-            AppSettings.THEME_DARK -> R.id.rb_theme_dark
-            AppSettings.THEME_FRESH -> R.id.rb_theme_fresh
-            AppSettings.THEME_CLASSIC -> R.id.rb_theme_classic
-            AppSettings.THEME_MINIMAL -> R.id.rb_theme_minimal
-            AppSettings.THEME_CUSTOM -> R.id.rb_theme_custom
-            else -> R.id.rb_theme_fresh
+        suppressListeners = true
+
+        val themeListener = binding.spinnerTheme.onItemSelectedListener
+        binding.spinnerTheme.onItemSelectedListener = null
+        val themes = arrayOf(AppSettings.THEME_DARK, AppSettings.THEME_FRESH, AppSettings.THEME_CLASSIC, AppSettings.THEME_MINIMAL, AppSettings.THEME_CUSTOM)
+        themes.indexOfFirst { it == settings.uiTheme }.takeIf { it >= 0 }?.let { binding.spinnerTheme.setSelection(it) }
+        binding.spinnerTheme.onItemSelectedListener = themeListener
+
+        val sizeListener = binding.spinnerSubtitleSize.onItemSelectedListener
+        binding.spinnerSubtitleSize.onItemSelectedListener = null
+        val sizes = arrayOf(AppSettings.SUBTITLE_SMALL, AppSettings.SUBTITLE_MEDIUM, AppSettings.SUBTITLE_LARGE)
+        sizes.indexOfFirst { it == settings.subtitleSize }.takeIf { it >= 0 }?.let { binding.spinnerSubtitleSize.setSelection(it) }
+        binding.spinnerSubtitleSize.onItemSelectedListener = sizeListener
+
+        val langListener = binding.spinnerSubtitleLang.onItemSelectedListener
+        binding.spinnerSubtitleLang.onItemSelectedListener = null
+        val langs = arrayOf(AppSettings.LANG_CN, AppSettings.LANG_EN)
+        langs.indexOfFirst { it == settings.subtitleLanguage }.takeIf { it >= 0 }?.let { binding.spinnerSubtitleLang.setSelection(it) }
+        binding.spinnerSubtitleLang.onItemSelectedListener = langListener
+
+        val voiceLangListener = binding.spinnerVoiceLang.onItemSelectedListener
+        binding.spinnerVoiceLang.onItemSelectedListener = null
+        langs.indexOfFirst { it == settings.voiceLanguage }.takeIf { it >= 0 }?.let { binding.spinnerVoiceLang.setSelection(it) }
+        binding.spinnerVoiceLang.onItemSelectedListener = voiceLangListener
+
+        val aiModelListener = binding.spinnerAiModel.onItemSelectedListener
+        binding.spinnerAiModel.onItemSelectedListener = null
+        val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING)
+        aiModels.indexOfFirst { it == settings.aiModel }.takeIf { it >= 0 }?.let { binding.spinnerAiModel.setSelection(it) }
+        binding.spinnerAiModel.onItemSelectedListener = aiModelListener
+
+        val asrProviderListener = binding.spinnerAsrProvider.onItemSelectedListener
+        binding.spinnerAsrProvider.onItemSelectedListener = null
+        val asrProviders = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
+        val savedProvider = settings.asrProvider
+        val index = asrProviders.indexOfFirst { it == savedProvider }
+        val adapter = binding.spinnerAsrProvider.adapter as? ArrayAdapter<*>
+        if (index >= 0) {
+            binding.spinnerAsrProvider.setSelection(index)
+        } else if (savedProvider == "whisper-local") {
+            val whisperIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
+                adapter?.getItem(it)?.toString()?.startsWith("本地Whisper") == true
+            }
+            if (whisperIndex >= 0) binding.spinnerAsrProvider.setSelection(whisperIndex)
+        } else if (savedProvider == "vosk-local") {
+            val voskIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
+                adapter?.getItem(it)?.toString()?.startsWith("本地Vosk") == true
+            }
+            if (voskIndex >= 0) binding.spinnerAsrProvider.setSelection(voskIndex)
         }
-        rgTheme?.check(themeId)
+        binding.spinnerAsrProvider.onItemSelectedListener = asrProviderListener
 
-        // 显示/隐藏自定义颜色容器
-        customColorContainer?.visibility = if (settings.uiTheme == AppSettings.THEME_CUSTOM) View.VISIBLE else View.GONE
-
-        // 更新缓存大小
         val cacheSize = calculateCacheSize()
-        tvCacheSize?.text = "缓存大小: " + formatSize(cacheSize)
+        binding.tvCacheSize.text = "缓存大小: " + formatSize(cacheSize)
+
+        binding.root.postDelayed({
+            suppressListeners = false
+        }, 500)
     }
 
     private fun calculateCacheSize(): Long {
@@ -166,7 +345,6 @@ class SettingsFragment : Fragment() {
             files[i].absolutePath.replace(cacheDir.absolutePath, "...") + " (" + formatSize(files[i].length()) + ")"
         }
         val checked = BooleanArray(files.size) { true }
-
         showClearCacheDialogWithButtons(files, fileNames, checked)
     }
 
@@ -175,11 +353,9 @@ class SettingsFragment : Fragment() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(20, 10, 20, 10)
         }
-
         val btnSelectAll = Button(requireContext()).apply { text = "全选" }
         val btnSelectNone = Button(requireContext()).apply { text = "全不选" }
         val btnInvert = Button(requireContext()).apply { text = "反选" }
-
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -201,24 +377,14 @@ class SettingsFragment : Fragment() {
             .create()
 
         btnSelectAll.setOnClickListener {
-            for (i in checked.indices) {
-                checked[i] = true
-                dialog.listView.setItemChecked(i, true)
-            }
+            for (i in checked.indices) { checked[i] = true; dialog.listView.setItemChecked(i, true) }
         }
         btnSelectNone.setOnClickListener {
-            for (i in checked.indices) {
-                checked[i] = false
-                dialog.listView.setItemChecked(i, false)
-            }
+            for (i in checked.indices) { checked[i] = false; dialog.listView.setItemChecked(i, false) }
         }
         btnInvert.setOnClickListener {
-            for (i in checked.indices) {
-                checked[i] = !checked[i]
-                dialog.listView.setItemChecked(i, checked[i])
-            }
+            for (i in checked.indices) { checked[i] = !checked[i]; dialog.listView.setItemChecked(i, checked[i]) }
         }
-
         dialog.setView(btnContainer)
         dialog.show()
     }
@@ -250,9 +416,10 @@ class SettingsFragment : Fragment() {
         val values = arrayOf(colors.primary, colors.accent, colors.background, colors.text, colors.card, colors.border, colors.success, colors.warning)
         val edits = Array<EditText>(labels.size) { EditText(requireContext()) }
 
+        // 获取主题文字颜色
         val typedValue = android.util.TypedValue()
         val theme = requireContext().theme
-        val textPrimaryColor = if (theme.resolveAttribute(R.attr.appTextPrimary, typedValue, true)) typedValue.data else 0
+        val textPrimaryColor = if (theme.resolveAttribute(R.attr.appTextPrimary, typedValue, true)) typedValue.data else 0xFF000000.toInt()
 
         for (i in labels.indices) {
             val tv = TextView(requireContext()).apply {
@@ -303,6 +470,7 @@ class SettingsFragment : Fragment() {
                 settings.customColors = finalColors
                 settings.uiTheme = AppSettings.THEME_CUSTOM
                 save()
+                previousTheme = "_force_"
                 applyTheme()
                 Toast.makeText(requireContext(), "颜色已应用", Toast.LENGTH_SHORT).show()
             }
