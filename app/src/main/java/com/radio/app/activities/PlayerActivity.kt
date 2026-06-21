@@ -224,8 +224,8 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         // 节目导航：非直播且有列表时显示
-        val isLive = currentEpisode?.isLive ?: false
-        if (!isLive && episodeList.size > 1 && currentEpisodeIndex >= 0) {
+        val isLiveNav = currentEpisode?.isLive ?: false
+        if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
             binding.layoutEpisodeNav.visibility = View.VISIBLE
             binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
             binding.btnPrevEpisode.setOnClickListener {
