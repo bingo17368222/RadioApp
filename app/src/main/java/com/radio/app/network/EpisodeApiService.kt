@@ -206,25 +206,25 @@ class EpisodeApiService private constructor() {
 
                 // 判断该节目是否已结束：endTime < now (加60秒缓冲)
                 // 如果已结束，尝试从VOD API获取回放URL
-                // 先用 endTimeSec 按标题匹配；失败则用 dayMidnight；仍失败则不带标题匹配
+                // 使用 beginTimeSec（节目开始时间）作为VOD时间戳，因为VOD CDN按开始时间索引
                 var replayUrl: String? = null
-                val endTimeSec = endTime / 1000
-                if (endTimeSec < nowTimestamp + 60) {
-                    // 先按标题匹配
-                    replayUrl = tryFetchVodUrl(cid, endTimeSec, title)
+                val beginTimeSec = beginTime / 1000
+                if (endTime / 1000 < nowTimestamp + 60) {
+                    // 先按开始时间+标题匹配
+                    replayUrl = tryFetchVodUrl(cid, beginTimeSec, title)
                     // 失败则用当天0点时间戳+标题匹配
                     if (replayUrl == null) {
                         replayUrl = tryFetchVodUrl(cid, dayMidnight, title)
                     }
                     // 仍失败则不带标题匹配（取第一个结果）
                     if (replayUrl == null) {
-                        replayUrl = tryFetchVodUrl(cid, endTimeSec, null)
+                        replayUrl = tryFetchVodUrl(cid, beginTimeSec, null)
                     }
                     if (replayUrl == null) {
                         replayUrl = tryFetchVodUrl(cid, dayMidnight, null)
                     }
                     if (replayUrl == null) {
-                        Log.w(TAG, "No VOD url for: $title (endTimeSec=$endTimeSec, now=$nowTimestamp)")
+                        Log.w(TAG, "No VOD url for: $title (beginTimeSec=$beginTimeSec, now=$nowTimestamp)")
                     }
                 }
 

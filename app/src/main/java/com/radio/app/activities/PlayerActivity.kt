@@ -76,6 +76,7 @@ class PlayerActivity : AppCompatActivity() {
     private val playbackCallback = object : RadioPlaybackService.Callback {
         override fun onStateChanged(playing: Boolean) {
             runOnUiThread {
+                if (_binding == null) return@runOnUiThread
                 updatePlayPauseButton(playing)
                 if (playing) {
                     hasError = false
@@ -89,6 +90,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
+                if (_binding == null) return@runOnUiThread
                 val pos = position.toInt()
                 val dur = duration.toInt()
                 if (isDragging) return@runOnUiThread
@@ -103,7 +105,6 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBarCache.visibility = View.GONE
                     binding.tvCacheProgress.visibility = View.GONE
                 } else {
-                    // 回放模式但时长尚未加载，显示缓冲中
                     binding.tvCurrentTime.text = "缓冲中 ${formatTime(pos)}"
                 }
             }
@@ -111,6 +112,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onBufferUpdate(percent: Int) {
             runOnUiThread {
+                if (_binding == null) return@runOnUiThread
                 if (hasError) return@runOnUiThread
                 binding.tvAiProgress.text = "缓冲: ${percent}%"
                 binding.tvAiProgress.visibility = if (percent >= 100) View.GONE else View.VISIBLE
@@ -121,6 +123,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onError(errorMessage: String) {
             runOnUiThread {
+                if (_binding == null) return@runOnUiThread
                 hasError = true
                 binding.tvLiveIndicator.text = "播放失败"
                 binding.tvAiProgress.text = errorMessage
@@ -137,22 +140,23 @@ class PlayerActivity : AppCompatActivity() {
         cacheProgressHandler?.removeCallbacksAndMessages(null)
         cacheProgressHandler = Handler(Looper.getMainLooper())
         cacheProgressRunnable = Runnable {
+            if (_binding == null) return@Runnable
             try {
                 val svc = playbackService ?: return@Runnable
                 val dur = svc.getDuration()
                 if (dur <= 0) {
-                    // 直播模式不显示缓存
                     runOnUiThread {
+                        if (_binding == null) return@runOnUiThread
                         binding.seekBarCache.visibility = View.GONE
                         binding.tvCacheProgress.visibility = View.GONE
                     }
                     cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
                     return@Runnable
                 }
-                // 使用后台下载进度（非 ExoPlayer 缓冲进度，MP4 不适用）
                 val cachePct = svc.getDownloadProgress()
 
                 runOnUiThread {
+                    if (_binding == null) return@runOnUiThread
                     binding.seekBarCache.max = dur.toInt()
                     binding.seekBarCache.progress = ((dur * cachePct) / 100).toInt()
                     binding.tvCacheProgress.text = "缓存: $cachePct%"
@@ -228,7 +232,6 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvNetworkUrl.text = "网络: ${currentEpisode?.audioUrl}"
         binding.tvNetworkUrl.visibility = View.VISIBLE
 
-        // 从EpisodesFragment进入时，is_live始终为false，以回放模式处理
         val isLive = currentEpisode?.isLive ?: false
         if (!isLive) {
             val audioUrl = currentEpisode?.audioUrl ?: ""
@@ -381,6 +384,7 @@ class PlayerActivity : AppCompatActivity() {
                     object : SubtitleGeneratorService.SegmentCallback {
                         override fun onSegmentGenerated(segment: VoiceSegment) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 val updated = voiceSegments.toMutableList()
                                 updated.add(segment)
                                 voiceSegments = updated
@@ -390,12 +394,14 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 binding.progressAi.progress = progress
                                 binding.tvAiStatus.text = buildStatusText("segment", progress)
                             }
                         }
                         override fun onComplete(segments: List<VoiceSegment>) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
@@ -405,6 +411,7 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 finishAiProcessing()
                                 binding.tvAiStatus.text = "AI分段失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
@@ -421,6 +428,7 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
                             subtitleList.add(transcript)
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 binding.subtitleView.setSubtitles(subtitleList)
                                 binding.subtitleView.visibility = View.VISIBLE
                                 binding.recyclerSegments.visibility = View.GONE
@@ -428,18 +436,21 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 binding.progressAi.progress = progress
                                 binding.tvAiStatus.text = buildStatusText("subtitle", progress)
                             }
                         }
                         override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 finishAiProcessing()
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
                             }
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 finishAiProcessing()
                                 binding.tvAiStatus.text = "字幕生成失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
@@ -464,6 +475,7 @@ class PlayerActivity : AppCompatActivity() {
                     object : SubtitleGeneratorService.SegmentCallback {
                         override fun onSegmentGenerated(segment: VoiceSegment) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 val updated = voiceSegments.toMutableList()
                                 updated.add(segment)
                                 voiceSegments = updated
@@ -473,12 +485,14 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 binding.progressAi.progress = progress
                                 binding.tvAiStatus.text = buildStatusText("segment", progress)
                             }
                         }
                         override fun onComplete(segments: List<VoiceSegment>) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
@@ -488,6 +502,7 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 finishAiProcessing()
                                 binding.tvAiStatus.text = "AI分段失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
@@ -504,6 +519,7 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
                             subtitleList.add(transcript)
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 binding.subtitleView.setSubtitles(subtitleList)
                                 binding.subtitleView.visibility = View.VISIBLE
                                 binding.recyclerSegments.visibility = View.GONE
@@ -511,18 +527,21 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 binding.progressAi.progress = progress
                                 binding.tvAiStatus.text = buildStatusText("subtitle", progress)
                             }
                         }
                         override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 finishAiProcessing()
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
                             }
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
+                                if (_binding == null) return@runOnUiThread
                                 finishAiProcessing()
                                 binding.tvAiStatus.text = "字幕生成失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
@@ -540,6 +559,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun updateUI() {
+        if (_binding == null) return
         playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
     }
 
@@ -548,6 +568,7 @@ class PlayerActivity : AppCompatActivity() {
         currentEpisodeIndex = index
         val episode = episodeList[index]
         currentEpisode = episode
+        if (_binding == null) return
         binding.tvStationName.text = episode.title
         binding.tvNetworkUrl.text = "网络: ${episode.audioUrl}"
         binding.tvNetworkUrl.visibility = View.VISIBLE
@@ -571,6 +592,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun updatePlayPauseButton(isPlaying: Boolean) {
+        if (_binding == null) return
         binding.btnPlayPause.setImageResource(
             if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         )
@@ -609,6 +631,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun startAiProcessing(taskType: String) {
         aiProcessing = true
+        if (_binding == null) return
         binding.progressAi.progress = 0
         binding.progressAi.visibility = View.VISIBLE
         binding.tvAiStatus.visibility = View.VISIBLE
@@ -619,6 +642,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun finishAiProcessing() {
         aiProcessing = false
+        if (_binding == null) return
         binding.progressAi.visibility = View.GONE
         binding.tvAiStatus.visibility = View.GONE
         binding.btnGenerateSubtitle.isEnabled = true
