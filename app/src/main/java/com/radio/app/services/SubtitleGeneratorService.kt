@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.Transcript
+import com.radio.app.models.VoiceSegment
 import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
@@ -31,6 +32,14 @@ class SubtitleGeneratorService : Service() {
     interface SubtitleCallback {
         fun onSubtitleGenerated(transcript: Transcript)
         fun onProgressUpdate(progress: Int, total: Int)
+        fun onError(error: String)
+        fun onComplete(transcripts: List<Transcript>) {}
+    }
+
+    interface SegmentCallback {
+        fun onProgressUpdate(progress: Int, total: Int)
+        fun onSegmentGenerated(segment: VoiceSegment)
+        fun onComplete(segments: List<VoiceSegment>)
         fun onError(error: String)
     }
 
@@ -65,6 +74,48 @@ class SubtitleGeneratorService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Subtitle generation failed", e)
                 callback.onError("字幕生成失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * AI分段：基于ASR结果生成语音分段（VoiceSegment列表）
+     * 使用与字幕生成相同的引擎，但输出为VoiceSegment而非Transcript
+     */
+    fun generateSegmentsForEpisode(episodeId: String, audioUrl: String, callback: SegmentCallback) {
+        executor?.execute {
+            try {
+                val allSegments = mutableListOf<VoiceSegment>()
+                val subtitleCallback = object : SubtitleCallback {
+                    override fun onSubtitleGenerated(transcript: Transcript) {
+                        // 将字幕结果转换为VoiceSegment
+                        val segment = VoiceSegment(
+                            start = transcript.segmentStart,
+                            end = transcript.segmentEnd,
+                            hasVoice = transcript.text?.isNotBlank() == true,
+                            label = transcript.text
+                        )
+                        allSegments.add(segment)
+                        callback.onSegmentGenerated(segment)
+                    }
+                    override fun onProgressUpdate(progress: Int, total: Int) {
+                        callback.onProgressUpdate(progress, total)
+                    }
+                    override fun onError(error: String) {
+                        callback.onError(error)
+                    }
+                    override fun onComplete(transcripts: List<Transcript>) {
+                        callback.onComplete(allSegments)
+                    }
+                }
+                val voskSuccess = generateWithVosk(episodeId, audioUrl, subtitleCallback)
+                if (!voskSuccess) {
+                    Log.w(TAG, "Vosk segment failed, falling back to online ASR")
+                    generateWithOnlineAsr(episodeId, audioUrl, subtitleCallback)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Segment generation failed", e)
+                callback.onError("AI分段失败: ${e.message}")
             }
         }
     }
@@ -171,6 +222,7 @@ class SubtitleGeneratorService : Service() {
 
             callback.onProgressUpdate(100, 100)
             Log.d(TAG, "Online ASR complete: ${transcripts.size} segments")
+            callback.onComplete(transcripts)
 
             // 清理临时文件
             audioFile.delete()
@@ -310,6 +362,7 @@ class SubtitleGeneratorService : Service() {
 
             callback.onProgressUpdate(100, 100)
             Log.d(TAG, "Vosk recognition complete: ${allTranscripts.size} segments")
+            callback.onComplete(allTranscripts)
 
             // 清理临时文件
             pcmFile.delete()
