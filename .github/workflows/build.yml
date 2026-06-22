@@ -25,6 +25,7 @@ jobs:
 
       - name: Build Debug APK
         run: |
+          set -o pipefail
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
@@ -35,6 +36,15 @@ jobs:
           tail -200 build.log || true
           echo "=== ERROR SUMMARY ==="
           grep -n "error:" build.log | head -30 || true
+
+      - name: Debug APK location
+        run: |
+          echo "=== Listing APK outputs ==="
+          find app/build/outputs -name "*.apk" 2>/dev/null || echo "No APK files found"
+          echo "=== Listing build directory ==="
+          ls -la app/build/outputs/apk/ 2>/dev/null || echo "No apk directory"
+          echo "=== Checking debug directory ==="
+          ls -la app/build/outputs/apk/debug/ 2>/dev/null || echo "No debug directory"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
