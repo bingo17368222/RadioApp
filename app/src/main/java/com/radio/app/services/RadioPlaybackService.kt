@@ -31,13 +31,17 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
+import com.google.android.exoplayer2.upstream.cache.CacheDataSource
+import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor
+import com.google.android.exoplayer2.upstream.cache.SimpleCache
+import com.google.android.exoplayer2.database.StandaloneDatabaseProvider
+import java.io.File
 
 class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener {
 
@@ -46,6 +50,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         private const val MAX_ERROR_RETRY = 3
         private const val NOTIFICATION_ID = 1
         private const val POSITION_SAVE_INTERVAL = 15000L
+        private const val CACHE_MAX_SIZE = 512L * 1024 * 1024 // 512MB
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -112,6 +117,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
+    // ExoPlayer 磁盘缓存
+    private var simpleCache: SimpleCache? = null
+
     override fun onCreate() {
         super.onCreate()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -119,10 +127,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         progressHandler = Handler(Looper.getMainLooper())
         notificationHandler = Handler(Looper.getMainLooper())
         positionSaveHandler = Handler(Looper.getMainLooper())
+        initCache()
         loadSettings()
         startProgressPolling()
         startNotificationProgressUpdater()
         startPositionSaver()
+    }
+
+    private fun initCache() {
+        try {
+            val cacheDir = File(cacheDir, "exoplayer_cache")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+            val evictor = LeastRecentlyUsedCacheEvictor(CACHE_MAX_SIZE)
+            val databaseProvider = StandaloneDatabaseProvider(this)
+            simpleCache = SimpleCache(cacheDir, evictor, databaseProvider)
+            Log.d(TAG, "ExoPlayer cache initialized: ${cacheDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to init cache", e)
+        }
     }
 
     private fun ensurePlayerInitialized() {
@@ -133,8 +155,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     "User-Agent" to "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36",
                     "Referer" to "https://www.hndt.com/"
                 ))
+
+            val mediaSourceFactory = if (simpleCache != null) {
+                val cacheDataSourceFactory = CacheDataSource.Factory()
+                    .setCache(simpleCache!!)
+                    .setUpstreamDataSourceFactory(httpDataSourceFactory)
+                DefaultMediaSourceFactory(cacheDataSourceFactory)
+            } else {
+                DefaultMediaSourceFactory(httpDataSourceFactory)
+            }
+
             player = ExoPlayer.Builder(this)
-                .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+                .setMediaSourceFactory(mediaSourceFactory)
                 .build()
                 .apply {
                     addListener(object : Player.Listener {
@@ -143,6 +175,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 Player.STATE_READY -> {
                                     prepared = true
                                     isRetrying = false
+                                    errorRetryCount = 0
                                     callback?.onStateChanged(true)
                                     sendStateBroadcast(true)
                                     updateNotification()
@@ -295,7 +328,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         applyThemeToNotification(remoteViews)
         applySeekIntents(remoteViews)
 
-        // 播放中始终固定通知栏，防止误划
+        // 始终固定，不可划掉
         val deleteIntent = PendingIntent.getService(this, 99,
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -305,20 +338,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
-            .setOngoing(true)           // 始终固定，不可划掉
-            .setAutoCancel(false)       // 不自动取消
-            .setDeleteIntent(deleteIntent)  // 划掉时停止服务（通过通知栏设置清除）
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setDeleteIntent(deleteIntent)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .build()
+
+        notification.flags = notification.flags or Notification.FLAG_NO_CLEAR
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         manager.notify(NOTIFICATION_ID, notification)
     }
 
     private fun applySeekIntents(remoteViews: RemoteViews) {
-        // 以10%为步长，共11个点击点，每个对应具体秒数
         val pcts = listOf(0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)
         val ids = listOf(R.id.btn_seek_0, R.id.btn_seek_10, R.id.btn_seek_20, R.id.btn_seek_30,
             R.id.btn_seek_40, R.id.btn_seek_50, R.id.btn_seek_60, R.id.btn_seek_70,
@@ -374,7 +410,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val dur = player?.duration ?: 0L
         if (dur <= 0) return
         player?.seekTo((dur * pct).toLong())
-        // 立即更新通知栏显示
         updateNotification()
     }
 
@@ -491,12 +526,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (builtIn in 1..99) return builtIn
         val dur = p.duration
         if (dur <= 0) return 0
-        val calc = ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
-        return maxOf(builtIn, calc)
+        return ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
     }
     fun getBufferedPosition(): Long {
-        val p = player ?: return 0L
-        return p.bufferedPosition
+        return player?.bufferedPosition ?: 0L
     }
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
@@ -668,6 +701,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         serviceScope.cancel()
         player?.release()
         player = null
+        try { simpleCache?.release(); simpleCache = null } catch (_: Exception) {}
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
     }

@@ -224,7 +224,8 @@ class EpisodeApiService private constructor() {
                     description = "${timeStr} - ${getStationName(stationId)}"
                     this.stationId = stationId
                     this.stationName = stationName
-                    audioUrl = replayUrl ?: if (endTimeSec < nowTimestamp) streamUrl else ""
+                    // 已过节目：只有获取到VOD URL才可回放，不回退到直播流
+                    audioUrl = replayUrl ?: ""
                     isLive = false
                     voiceSegments = generateSimpleSegments(duration * 1000)
                 }

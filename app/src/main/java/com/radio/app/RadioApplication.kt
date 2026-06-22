@@ -41,9 +41,10 @@ class RadioApplication : Application() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Radio Playback",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_MIN
             )
             channel.description = "Radio playback controls"
+            channel.setShowBadge(false)
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
