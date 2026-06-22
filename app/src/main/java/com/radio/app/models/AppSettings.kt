@@ -15,6 +15,7 @@ class AppSettings private constructor() {
         const val AI_MODEL_FUNASR = "funasr"
         const val AI_MODEL_WHISPER = "whisper"
         const val AI_MODEL_JIU_AI_TING = "jiu-ai-ting"
+        const val AI_MODEL_MNN_LLM = "mnn-llm"
 
         const val ASR_BAIDU = "baidu"
         const val ASR_FUNASR = "funasr"
@@ -68,6 +69,8 @@ class AppSettings private constructor() {
     var autoSkipWater: Boolean = true
     var autoDownload: Boolean = false
     var autoCache: Boolean = false
+    var savePlaybackPosition: Boolean = true
+    var rememberLastEpisode: Boolean = true
     var dislikedEpisodes: MutableList<String> = mutableListOf()
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
     var lastSelectedDate: String = ""
@@ -93,6 +96,8 @@ class AppSettings private constructor() {
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
         audioFocus = prefs.getBoolean("audio_focus", true)
         continuousPlay = prefs.getBoolean("continuous_play", true)
+        savePlaybackPosition = prefs.getBoolean("save_playback_position", true)
+        rememberLastEpisode = prefs.getBoolean("remember_last_episode", true)
         splitMode = prefs.getString("split_mode", SPLIT_MODE_NONE) ?: SPLIT_MODE_NONE
 
         val dislikedJson = prefs.getString("disliked_episodes", "[]") ?: "[]"
@@ -137,6 +142,8 @@ class AppSettings private constructor() {
             putInt("preprocessing_count", preprocessingCount)
             putBoolean("audio_focus", audioFocus)
             putBoolean("continuous_play", continuousPlay)
+            putBoolean("save_playback_position", savePlaybackPosition)
+            putBoolean("remember_last_episode", rememberLastEpisode)
             putString("split_mode", splitMode)
             val arr = JSONArray()
             dislikedEpisodes.forEach { arr.put(it) }

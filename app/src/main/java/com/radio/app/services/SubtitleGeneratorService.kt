@@ -64,11 +64,17 @@ class SubtitleGeneratorService : Service() {
     fun generateSubtitlesForEpisode(episodeId: String, audioUrl: String, callback: SubtitleCallback) {
         executor?.execute {
             try {
-                // 先尝试Vosk离线ASR
-                val voskSuccess = generateWithVosk(episodeId, audioUrl, callback)
-                if (!voskSuccess) {
-                    // Vosk失败，使用在线ASR方案
-                    Log.w(TAG, "Vosk failed, falling back to online ASR")
+                // 先检查Vosk模型是否可用，没有则直接走在线ASR
+                val voskModel = findVoskModel()
+                if (voskModel != null) {
+                    val voskSuccess = generateWithVosk(episodeId, audioUrl, callback)
+                    if (!voskSuccess) {
+                        Log.w(TAG, "Vosk failed, falling back to online ASR")
+                        generateWithOnlineAsr(episodeId, audioUrl, callback)
+                    }
+                } else {
+                    Log.w(TAG, "No Vosk model, using online ASR directly")
+                    callback.onProgressUpdate(0, 100)
                     generateWithOnlineAsr(episodeId, audioUrl, callback)
                 }
             } catch (e: Exception) {
@@ -88,7 +94,6 @@ class SubtitleGeneratorService : Service() {
                 val allSegments = mutableListOf<VoiceSegment>()
                 val subtitleCallback = object : SubtitleCallback {
                     override fun onSubtitleGenerated(transcript: Transcript) {
-                        // 将字幕结果转换为VoiceSegment
                         val segment = VoiceSegment(
                             start = transcript.segmentStart,
                             end = transcript.segmentEnd,
@@ -108,9 +113,16 @@ class SubtitleGeneratorService : Service() {
                         callback.onComplete(allSegments)
                     }
                 }
-                val voskSuccess = generateWithVosk(episodeId, audioUrl, subtitleCallback)
-                if (!voskSuccess) {
-                    Log.w(TAG, "Vosk segment failed, falling back to online ASR")
+                val voskModel = findVoskModel()
+                if (voskModel != null) {
+                    val voskSuccess = generateWithVosk(episodeId, audioUrl, subtitleCallback)
+                    if (!voskSuccess) {
+                        Log.w(TAG, "Vosk segment failed, falling back to online ASR")
+                        generateWithOnlineAsr(episodeId, audioUrl, subtitleCallback)
+                    }
+                } else {
+                    Log.w(TAG, "No Vosk model, using online ASR for segments")
+                    callback.onProgressUpdate(0, 100)
                     generateWithOnlineAsr(episodeId, audioUrl, subtitleCallback)
                 }
             } catch (e: Exception) {
@@ -128,8 +140,6 @@ class SubtitleGeneratorService : Service() {
      * 4. 生成字幕（使用节目标题等上下文信息）
      */
     private fun generateWithOnlineAsr(episodeId: String, audioUrl: String, callback: SubtitleCallback): Boolean {
-        callback.onProgressUpdate(0, 100)
-
         // M3U8流不支持
         if (audioUrl.endsWith(".m3u8", ignoreCase = true) ||
             audioUrl.contains("/live/", ignoreCase = true)) {
@@ -137,8 +147,10 @@ class SubtitleGeneratorService : Service() {
             return false
         }
 
-        // 下载音频
-        val audioFile = downloadAudio(audioUrl)
+        // 下载音频（带进度回调，0-20%）
+        val audioFile = downloadAudioWithProgress(audioUrl) { progress ->
+            callback.onProgressUpdate(progress, 100)
+        }
         if (audioFile == null || !audioFile.exists() || audioFile.length() < 1024) {
             callback.onError("音频文件下载失败，无法生成字幕")
             return false
@@ -621,6 +633,79 @@ class SubtitleGeneratorService : Service() {
                     var len: Int
                     while (input.read(buffer).also { len = it } != -1) {
                         output.write(buffer, 0, len)
+                    }
+                }
+            }
+            return outFile
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio download failed: ${e.message}")
+            outFile?.delete()
+            return null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /**
+     * 下载音频文件，并实时报告进度（0-20%）
+     */
+    private fun downloadAudioWithProgress(audioUrl: String, onProgress: (Int) -> Unit): File? {
+        var outFile: File? = null
+        var conn: HttpURLConnection? = null
+        try {
+            outFile = File(cacheDir, "subtitle_audio_${Math.abs(audioUrl.hashCode())}.tmp")
+
+            var downloadUrl = audioUrl
+            var redirectCount = 0
+            while (redirectCount < 5) {
+                val url = URL(downloadUrl)
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 15000
+                conn.readTimeout = 60000
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36")
+
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    conn = null
+                    if (location.isNullOrBlank()) break
+                    downloadUrl = if (location.startsWith("http")) location
+                    else URL(URL(downloadUrl), location).toString()
+                    redirectCount++
+                } else if (code == 200) {
+                    break
+                } else {
+                    conn.disconnect()
+                    conn = null
+                    Log.w(TAG, "Audio download HTTP $code")
+                    return null
+                }
+            }
+
+            if (conn == null) return null
+
+            val totalBytes = conn.contentLength.toLong()
+            var downloadedBytes = 0L
+            var lastReportedPct = 0
+
+            conn.inputStream.use { input ->
+                FileOutputStream(outFile).use { output ->
+                    val buffer = ByteArray(8192)
+                    var len: Int
+                    while (input.read(buffer).also { len = it } != -1) {
+                        output.write(buffer, 0, len)
+                        downloadedBytes += len
+                        if (totalBytes > 0) {
+                            // 下载进度映射到 0-20%
+                            val pct = (downloadedBytes * 20 / totalBytes).toInt()
+                            if (pct > lastReportedPct) {
+                                lastReportedPct = pct
+                                onProgress(pct)
+                            }
+                        }
                     }
                 }
             }

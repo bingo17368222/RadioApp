@@ -74,7 +74,7 @@ class SettingsFragment : Fragment() {
         binding.spinnerSubtitleLang.adapter = langAdapter
         binding.spinnerVoiceLang.adapter = langAdapter
 
-        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "就AI听")
+        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "就AI听", "阿里MNN-LLM")
         val aiModelAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, aiModelLabels)
         aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAiModel.adapter = aiModelAdapter
@@ -167,6 +167,16 @@ class SettingsFragment : Fragment() {
             settings.audioFocus = isChecked
             save()
         }
+        binding.switchSavePosition.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.savePlaybackPosition = isChecked
+            save()
+        }
+        binding.switchRememberEpisode.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.rememberLastEpisode = isChecked
+            save()
+        }
 
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -221,7 +231,8 @@ class SettingsFragment : Fragment() {
                 val models = arrayOf(
                     AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK,
                     AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR,
-                    AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING
+                    AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING,
+                    AppSettings.AI_MODEL_MNN_LLM
                 )
                 settings.aiModel = models[position]
                 save()
@@ -268,6 +279,8 @@ class SettingsFragment : Fragment() {
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchAutoCache.isChecked = settings.autoCache
         binding.switchAudioFocus.isChecked = settings.audioFocus
+        binding.switchSavePosition.isChecked = settings.savePlaybackPosition
+        binding.switchRememberEpisode.isChecked = settings.rememberLastEpisode
         binding.etPreloadCacheCount.setText(settings.preloadCacheCount.toString())
 
         suppressListeners = true
@@ -297,7 +310,7 @@ class SettingsFragment : Fragment() {
 
         val aiModelListener = binding.spinnerAiModel.onItemSelectedListener
         binding.spinnerAiModel.onItemSelectedListener = null
-        val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING)
+        val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING, AppSettings.AI_MODEL_MNN_LLM)
         aiModels.indexOfFirst { it == settings.aiModel }.takeIf { it >= 0 }?.let { binding.spinnerAiModel.setSelection(it) }
         binding.spinnerAiModel.onItemSelectedListener = aiModelListener
 

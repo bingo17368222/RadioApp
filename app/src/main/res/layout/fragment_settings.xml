@@ -273,6 +273,77 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- 播放记忆 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="播放记忆"
+            android:textColor="?attr/appTextSecondary"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="24dp">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="自动记忆播放位置"
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="16sp" />
+                <Switch
+                    android:id="@+id/switch_save_position"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="每15秒自动保存播放位置，播放完成后清除，再次进入从此位置继续"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider"
+                android:layout_marginVertical="12dp" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="自动记忆播放节目"
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="16sp" />
+                <Switch
+                    android:id="@+id/switch_remember_episode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="记忆最后播放的节目，进入App时提示是否继续播放"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
+        </LinearLayout>
+
         <!-- 界面设置 -->
         <TextView
             android:layout_width="wrap_content"

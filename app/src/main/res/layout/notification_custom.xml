@@ -89,32 +89,62 @@
                 android:progress="0"
                 android:progressDrawable="@drawable/notification_progress_drawable" />
 
-            <!-- 20个跳转点：0%, 5%, 10%, 15%... 95%, 100% -->
+            <!-- 50个跳转点：0%, 2%, 4%, 6%... 98%, 100% (2%精度) -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="32dp"
                 android:orientation="horizontal">
 
                 <LinearLayout android:id="@+id/btn_seek_0"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_5"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_2"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_4"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_6"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_8"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_10" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_15" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_12" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_14" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_16" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_18" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_20" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_25" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_22" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_24" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_26" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_28" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_30" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_35" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_32" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_34" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_36" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_38" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_40" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_45" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_42" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_44" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_46" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_48" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_50" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_55" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_52" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_54" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_56" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_58" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_60" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_65" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_62" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_64" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_66" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_68" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_70" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_75" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_72" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_74" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_76" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_78" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_80" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_85" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_82" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_84" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_86" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_88" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_90" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
-                <LinearLayout android:id="@+id/btn_seek_95" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_92" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_94" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_96" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_98" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
                 <LinearLayout android:id="@+id/btn_seek_100" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
             </LinearLayout>
         </FrameLayout>
@@ -148,7 +178,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="-15s"
+                android:text="-5s"
                 android:textSize="8sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
@@ -288,7 +318,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="+15s"
+                android:text="+5s"
                 android:textSize="8sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>

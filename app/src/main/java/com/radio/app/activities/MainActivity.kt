@@ -9,6 +9,7 @@ import android.os.IBinder
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.radio.app.R
@@ -16,8 +17,10 @@ import com.radio.app.fragments.HomeFragment
 import com.radio.app.fragments.EpisodesFragment
 import com.radio.app.fragments.SearchFragment
 import com.radio.app.fragments.SettingsFragment
+import com.radio.app.models.AppSettings
 import com.radio.app.services.RadioPlaybackService
 import com.radio.app.utils.ThemeManager
+import com.radio.app.utils.PreferenceManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -64,6 +67,30 @@ class MainActivity : AppCompatActivity() {
             serviceConnection,
             Context.BIND_AUTO_CREATE
         )
+
+        // 检查是否提示继续播放上次节目
+        if (savedInstanceState == null) {
+            checkLastEpisode()
+        }
+    }
+
+    private fun checkLastEpisode() {
+        val settings = AppSettings.getInstance(this)
+        if (!settings.rememberLastEpisode) return
+        val lastEpisode = RadioPlaybackService.getLastEpisode(this) ?: return
+        val title = lastEpisode.title ?: "未知节目"
+        AlertDialog.Builder(this)
+            .setTitle("继续播放")
+            .setMessage("是否继续播放上次的节目《${title}》？")
+            .setPositiveButton("继续播放") { _, _ ->
+                val intent = Intent(this, PlayerActivity::class.java).apply {
+                    putExtra("episode", lastEpisode)
+                    putExtra("is_live", false)
+                }
+                startActivity(intent)
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun selectNav(navId: Int) {

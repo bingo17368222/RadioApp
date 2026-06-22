@@ -614,6 +614,7 @@ class PlayerActivity : AppCompatActivity() {
             AppSettings.AI_MODEL_FUNASR -> "FunASR"
             AppSettings.AI_MODEL_WHISPER -> "Whisper"
             AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+            AppSettings.AI_MODEL_MNN_LLM -> "阿里MNN-LLM"
             else -> settings.safeAiModel()
         }
     }

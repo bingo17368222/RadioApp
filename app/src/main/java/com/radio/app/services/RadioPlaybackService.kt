@@ -73,6 +73,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val EXTRA_CACHE_PATH = "cache_path"
         const val EXTRA_SEEK_PCT = "seek_pct"
         const val EXTRA_SEEK_SEC = "seek_sec"
+
+        fun getLastEpisode(context: Context): Episode? {
+            val prefs = context.getSharedPreferences("last_episode", Context.MODE_PRIVATE)
+            val id = prefs.getString("episode_id", null) ?: return null
+            val title = prefs.getString("title", null) ?: return null
+            val audioUrl = prefs.getString("audio_url", null) ?: return null
+            return Episode().apply {
+                this.id = id
+                this.title = title
+                this.audioUrl = audioUrl
+                this.stationName = prefs.getString("station_name", "")
+                this.stationId = prefs.getString("station_id", "") ?: ""
+                this.duration = prefs.getLong("duration", 0)
+                this.broadcastAt = prefs.getString("broadcast_at", null)
+                this.programName = prefs.getString("program_name", null)
+            }
+        }
     }
 
     interface Callback {
@@ -106,9 +123,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationRunnable: Runnable? = null
     private var positionSaveHandler: Handler? = null
     private var positionSaveRunnable: Runnable? = null
-    private var skipSeconds = 15
+    private var skipSeconds = 5
     private var errorRetryCount = 0
     private var isRetrying = false
+    private var savePlaybackPosition = true
     private var notificationPlaying = false
     private var notificationTitle = "Radio App"
     private var notificationSubText = ""
@@ -303,6 +321,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun applySavedPosition() {
+        if (!savePlaybackPosition) return
         val ep = currentEpisode ?: return
         val episodeKey = "${ep.stationId}::${ep.title}"
         val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
@@ -314,7 +333,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun startPositionSaver() {
         positionSaveRunnable = Runnable {
-            if (!isLive && prepared && player?.isPlaying == true) {
+            if (savePlaybackPosition && !isLive && prepared && player?.isPlaying == true) {
                 saveCurrentPosition()
             }
             positionSaveHandler?.postDelayed(positionSaveRunnable!!, POSITION_SAVE_INTERVAL)
@@ -336,6 +355,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val episodeKey = "${ep.stationId}::${ep.title}"
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().remove(episodeKey).apply()
+    }
+
+    private fun saveLastEpisode(episode: Episode) {
+        val prefs = getSharedPreferences("last_episode", MODE_PRIVATE)
+        prefs.edit().apply {
+            putString("episode_id", episode.id)
+            putString("title", episode.title)
+            putString("audio_url", episode.audioUrl)
+            putString("station_name", episode.stationName)
+            putString("station_id", episode.stationId)
+            putLong("duration", episode.duration)
+            putString("broadcast_at", episode.broadcastAt)
+            putString("program_name", episode.programName)
+            putLong("saved_at", System.currentTimeMillis())
+        }.apply()
     }
 
     fun getSavedPosition(episode: Episode?): Long {
@@ -437,14 +471,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun applySeekIntents(remoteViews: RemoteViews) {
-        // 20个跳转点，每5%一个，精度更高
-        val pcts = FloatArray(21) { it * 0.05f }
+        // 50个跳转点，每2%一个，精度更高
+        val pcts = FloatArray(51) { it * 0.02f }
         val ids = intArrayOf(
-            R.id.btn_seek_0, R.id.btn_seek_5, R.id.btn_seek_10, R.id.btn_seek_15,
-            R.id.btn_seek_20, R.id.btn_seek_25, R.id.btn_seek_30, R.id.btn_seek_35,
-            R.id.btn_seek_40, R.id.btn_seek_45, R.id.btn_seek_50, R.id.btn_seek_55,
-            R.id.btn_seek_60, R.id.btn_seek_65, R.id.btn_seek_70, R.id.btn_seek_75,
-            R.id.btn_seek_80, R.id.btn_seek_85, R.id.btn_seek_90, R.id.btn_seek_95,
+            R.id.btn_seek_0, R.id.btn_seek_2, R.id.btn_seek_4, R.id.btn_seek_6, R.id.btn_seek_8,
+            R.id.btn_seek_10, R.id.btn_seek_12, R.id.btn_seek_14, R.id.btn_seek_16, R.id.btn_seek_18,
+            R.id.btn_seek_20, R.id.btn_seek_22, R.id.btn_seek_24, R.id.btn_seek_26, R.id.btn_seek_28,
+            R.id.btn_seek_30, R.id.btn_seek_32, R.id.btn_seek_34, R.id.btn_seek_36, R.id.btn_seek_38,
+            R.id.btn_seek_40, R.id.btn_seek_42, R.id.btn_seek_44, R.id.btn_seek_46, R.id.btn_seek_48,
+            R.id.btn_seek_50, R.id.btn_seek_52, R.id.btn_seek_54, R.id.btn_seek_56, R.id.btn_seek_58,
+            R.id.btn_seek_60, R.id.btn_seek_62, R.id.btn_seek_64, R.id.btn_seek_66, R.id.btn_seek_68,
+            R.id.btn_seek_70, R.id.btn_seek_72, R.id.btn_seek_74, R.id.btn_seek_76, R.id.btn_seek_78,
+            R.id.btn_seek_80, R.id.btn_seek_82, R.id.btn_seek_84, R.id.btn_seek_86, R.id.btn_seek_88,
+            R.id.btn_seek_90, R.id.btn_seek_92, R.id.btn_seek_94, R.id.btn_seek_96, R.id.btn_seek_98,
             R.id.btn_seek_100
         )
         for (i in pcts.indices) {
@@ -466,6 +505,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val prefMgr = PreferenceManager(this)
         val settings: AppSettings = prefMgr.loadSettings()
         continuousPlay = settings.continuousPlay
+        savePlaybackPosition = settings.savePlaybackPosition
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -575,6 +615,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationDate = episode.broadcastAt?.take(10) ?: ""
         notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
         notificationPlaying = true
+        saveLastEpisode(episode)
         ensurePlayerInitialized()
         try {
             player?.let {

@@ -15,5 +15,6 @@ data class Episode(
     var isDisliked: Boolean = false,
     var isCached: Boolean = false,
     var voiceSegments: List<VoiceSegment> = emptyList(),
-    var transcripts: List<Transcript> = emptyList()
+    var transcripts: List<Transcript> = emptyList(),
+    var programName: String? = null
 ) : Serializable
