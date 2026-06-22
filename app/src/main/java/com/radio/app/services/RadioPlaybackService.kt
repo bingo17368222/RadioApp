@@ -91,23 +91,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var currentStreamUrl = ""
     private var progressHandler: Handler? = null
     private var progressRunnable: Runnable? = null
+    private var notificationHandler: Handler? = null
+    private var notificationRunnable: Runnable? = null
     private var skipSeconds = 15
     private var errorRetryCount = 0
     private var isRetrying = false
     private var stablePlayStartTime = 0L
     private var hasStablePlayed = false
+    private var notificationPlaying = false
+    private var notificationTitle = "Radio App"
+    private var notificationSubText = ""
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
     override fun onCreate() {
         super.onCreate()
-        // 延迟初始化ExoPlayer，避免启动时闪退
         audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         autoSkipHandler = Handler(Looper.getMainLooper())
         progressHandler = Handler(Looper.getMainLooper())
+        notificationHandler = Handler(Looper.getMainLooper())
         loadSettings()
         startProgressPolling()
+        startNotificationProgressUpdater()
     }
 
     private fun ensurePlayerInitialized() {
@@ -115,8 +121,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try {
             val httpDataSourceFactory = DefaultHttpDataSource.Factory()
                 .setDefaultRequestProperties(mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36",
-                    "Referer" to "https://www.qingting.fm/"
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36",
+                    "Referer" to "https://www.hndt.com/"
                 ))
             player = ExoPlayer.Builder(this)
                 .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
@@ -130,7 +136,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     isRetrying = false
                                     callback?.onStateChanged(true)
                                     sendStateBroadcast(true)
-                                    startForegroundNotification()
+                                    updateNotification()
                                 }
                                 Player.STATE_ENDED -> {
                                     callback?.onStateChanged(false)
@@ -140,11 +146,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             }
                         }
                         override fun onPlayerError(error: PlaybackException) {
-                            Log.e(TAG, "ExoPlayer error: ${error.message}")
+                            Log.e(TAG, "ExoPlayer error: ${error.message}, cause: ${error.cause?.message}")
                             prepared = false
                             errorRetryCount++
                             if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
                                 val retryDelay = errorRetryCount * 3000L
+                                isRetrying = true
                                 Handler(Looper.getMainLooper()).postDelayed({
                                     try {
                                         player?.let {
@@ -156,12 +163,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         Log.e(TAG, "Retry failed", e)
                                     }
                                 }, retryDelay)
+                            } else {
+                                callback?.onError("播放失败: ${error.message ?: "未知错误"}")
                             }
                         }
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             callback?.onStateChanged(isPlaying)
                             sendStateBroadcast(isPlaying)
-                            startForegroundNotification()
+                            notificationPlaying = isPlaying
+                            updateNotification()
                         }
                     })
                 }
@@ -177,10 +187,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     try {
                         val pos = p.currentPosition
                         val dur = p.duration
-                        // 直播流duration为TIME_UNSET(-9223372036854775807)，不计算进度
                         val effectiveDur = if (dur > 0) dur else if (isLive) -1L else 0L
                         cb.onPositionChanged(pos, effectiveDur)
-                        // 只给回放节目计算缓冲进度
                         if (prepared && !isLive && dur > 0) {
                             val bp = ((pos * 100) / dur).toInt().coerceIn(0, 100)
                             if (bp != bufferPercent) {
@@ -194,6 +202,69 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             progressHandler?.postDelayed(progressRunnable!!, 500)
         }
         progressRunnable?.let { progressHandler?.post(it) }
+    }
+
+    private fun startNotificationProgressUpdater() {
+        notificationRunnable = Runnable {
+            if (!isLive && prepared && player != null) {
+                updateNotificationProgress()
+            }
+            notificationHandler?.postDelayed(notificationRunnable!!, 1000)
+        }
+        notificationRunnable?.let { notificationHandler?.post(it) }
+    }
+
+    private fun updateNotificationProgress() {
+        val p = player ?: return
+        val pos = p.currentPosition
+        val dur = p.duration
+        if (dur <= 0) return
+        try {
+            val remoteViews = RemoteViews(packageName, R.layout.notification_custom)
+            // Re-apply all pending intents
+            applyNotificationIntents(remoteViews)
+
+            // Show progress area
+            remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
+            val progress = if (dur > 0) ((pos * 1000) / dur).toInt().coerceIn(0, 1000) else 0
+            remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
+            remoteViews.setTextViewText(R.id.notification_time_text,
+                "${formatTimeNotif(pos.toInt())}/${formatTimeNotif(dur.toInt())}")
+
+            // Set title and subtitle
+            remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
+            remoteViews.setTextViewText(R.id.notification_subtitle, notificationSubText)
+
+            // Set play/pause
+            remoteViews.setImageViewResource(R.id.play_pause_icon,
+                if (notificationPlaying) R.drawable.notif_pause else R.drawable.notif_play)
+            remoteViews.setTextViewText(R.id.play_pause_text,
+                if (notificationPlaying) "暂停" else "播放")
+
+            applyThemeToNotification(remoteViews)
+
+            val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+                .setContentTitle(notificationTitle)
+                .setContentText(notificationSubText)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentIntent(createContentIntent())
+                .setOngoing(true)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setCustomContentView(remoteViews)
+                .setCustomBigContentView(remoteViews)
+                .build()
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            manager.notify(1, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "updateNotificationProgress failed", e)
+        }
+    }
+
+    private fun formatTimeNotif(millis: Int): String {
+        val seconds = millis / 1000
+        val minutes = seconds / 60
+        val secs = seconds % 60
+        return String.format("%02d:%02d", minutes, secs)
     }
 
     private fun loadSettings() {
@@ -287,8 +358,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 it.prepare()
                 it.playWhenReady = true
             }
+            notificationTitle = station.name
+            notificationSubText = "[直播]"
+            notificationPlaying = true
             requestAudioFocus()
-            startForegroundNotification()
+            updateNotification()
         } catch (e: Exception) {
             Log.e(TAG, "playStation failed", e)
         }
@@ -303,6 +377,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         isRetrying = false
         stopAutoSkipCheck()
         val audioUrl = episode.audioUrl ?: ""
+        currentStreamUrl = audioUrl
+        notificationTitle = episode.title ?: "节目回放"
+        notificationSubText = "[回放]"
+        notificationPlaying = true
         ensurePlayerInitialized()
         try {
             player?.let {
@@ -311,7 +389,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 it.playWhenReady = true
             }
             requestAudioFocus()
-            startForegroundNotification()
+            updateNotification()
             startAutoSkipCheck()
         } catch (e: Exception) {
             Log.e(TAG, "playEpisode failed", e)
@@ -362,9 +440,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
     fun getDuration(): Long {
         val dur = player?.duration ?: 0L
-        // 直播流返回TIME_UNSET，返回-1表示未知
         return if (dur < 0) -1L else dur
     }
+    fun getBufferedPercentage(): Int = player?.bufferedPercentage ?: 0
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
     fun getBufferPercent(): Int = player?.bufferedPercentage ?: 0
@@ -467,20 +545,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         autoSkipRunnable = null
     }
 
-    private fun startForegroundNotification() {
+    private fun createContentIntent(): PendingIntent {
         val openIntent = Intent(this, PlayerActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
-        val contentIntent = PendingIntent.getActivity(
+        return PendingIntent.getActivity(
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val title = currentEpisode?.title
-            ?: currentStation?.name
-            ?: "Radio App"
-        val playing = player?.isPlaying ?: false
+    }
 
-        // 7个按钮的PendingIntent
+    private fun applyNotificationIntents(remoteViews: RemoteViews) {
+        val playing = player?.isPlaying ?: false
         val rewindPI = PendingIntent.getService(this, 1,
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_REWIND },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -503,8 +579,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_FORWARD },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        // 使用自定义RemoteViews实现7个按钮
-        val remoteViews = RemoteViews(packageName, R.layout.notification_custom)
         remoteViews.setOnClickPendingIntent(R.id.btn_rewind, rewindPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_prev_segment, prevSegPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_prev_episode, prevEpPI)
@@ -512,31 +586,47 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setOnClickPendingIntent(R.id.btn_next_episode, nextEpPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_next_segment, nextSegPI)
         remoteViews.setOnClickPendingIntent(R.id.btn_forward, forwardPI)
-        // 设置播放/暂停图标和文字（使用非vector的notif_* drawable）
+    }
+
+    private fun updateNotification() {
+        val playing = player?.isPlaying ?: false
+        val remoteViews = RemoteViews(packageName, R.layout.notification_custom)
+        applyNotificationIntents(remoteViews)
+
         remoteViews.setImageViewResource(R.id.play_pause_icon,
             if (playing) R.drawable.notif_pause else R.drawable.notif_play)
         remoteViews.setTextViewText(R.id.play_pause_text,
             if (playing) "暂停" else "播放")
 
-        val subText = if (isLive) "[直播]" else "[回放]"
-
-        // 设置通知标题和子文本
-        remoteViews.setTextViewText(R.id.notification_title, title)
+        remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
         remoteViews.setTextViewText(R.id.notification_subtitle,
-            if (playing) "正在播放 $subText" else "已暂停 $subText")
+            if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
 
-        // 应用主题颜色到通知栏
+        // 回放模式显示进度条
+        if (!isLive && prepared) {
+            remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
+            val p = player ?: return
+            val pos = p.currentPosition
+            val dur = p.duration
+            if (dur > 0) {
+                val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
+                remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
+                remoteViews.setTextViewText(R.id.notification_time_text,
+                    "${formatTimeNotif(pos.toInt())}/${formatTimeNotif(dur.toInt())}")
+            }
+        } else {
+            remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.GONE)
+        }
+
         applyThemeToNotification(remoteViews)
 
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(if (playing) "正在播放 $subText" else "已暂停 $subText")
+            .setContentTitle(notificationTitle)
+            .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(contentIntent)
+            .setContentIntent(createContentIntent())
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // 不使用MediaStyle，避免和自定义RemoteViews冲突
-            // 折叠状态也使用自定义布局
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .build()
@@ -549,38 +639,45 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val bgColor: Int
             val textColor: Int
             val subTextColor: Int
+            val timeTextColor: Int
 
             when (theme) {
                 "dark" -> {
                     bgColor = android.graphics.Color.parseColor("#CC16213e")
                     textColor = android.graphics.Color.parseColor("#e0e0e0")
-                    subTextColor = android.graphics.Color.parseColor("#a0a0a0")
+                    subTextColor = android.graphics.Color.parseColor("#b0b0b0")
+                    timeTextColor = android.graphics.Color.parseColor("#90caf9")
                 }
                 "fresh" -> {
                     bgColor = android.graphics.Color.parseColor("#CCFFFFFF")
                     textColor = android.graphics.Color.parseColor("#1A1A1A")
-                    subTextColor = android.graphics.Color.parseColor("#666666")
+                    subTextColor = android.graphics.Color.parseColor("#555555")
+                    timeTextColor = android.graphics.Color.parseColor("#1976D2")
                 }
                 "classic" -> {
                     bgColor = android.graphics.Color.parseColor("#CCFFFFFF")
                     textColor = android.graphics.Color.parseColor("#2C1810")
-                    subTextColor = android.graphics.Color.parseColor("#8B7355")
+                    subTextColor = android.graphics.Color.parseColor("#7B6B5A")
+                    timeTextColor = android.graphics.Color.parseColor("#8B4513")
                 }
                 "minimal" -> {
                     bgColor = android.graphics.Color.parseColor("#CCFFFFFF")
                     textColor = android.graphics.Color.parseColor("#2D1B3D")
-                    subTextColor = android.graphics.Color.parseColor("#7D6B8A")
+                    subTextColor = android.graphics.Color.parseColor("#6B5A7B")
+                    timeTextColor = android.graphics.Color.parseColor("#673AB7")
                 }
                 else -> {
                     bgColor = android.graphics.Color.parseColor("#CC16213e")
                     textColor = android.graphics.Color.parseColor("#e0e0e0")
-                    subTextColor = android.graphics.Color.parseColor("#a0a0a0")
+                    subTextColor = android.graphics.Color.parseColor("#b0b0b0")
+                    timeTextColor = android.graphics.Color.parseColor("#90caf9")
                 }
             }
 
             remoteViews.setInt(R.id.notification_root, "setBackgroundColor", bgColor)
             remoteViews.setTextColor(R.id.notification_title, textColor)
             remoteViews.setTextColor(R.id.notification_subtitle, subTextColor)
+            remoteViews.setTextColor(R.id.notification_time_text, timeTextColor)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply theme to notification", e)
         }
@@ -598,6 +695,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     override fun onDestroy() {
         super.onDestroy()
         progressRunnable?.let { progressHandler?.removeCallbacks(it) }
+        notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }
         stopAutoSkipCheck()
         abandonAudioFocus()
         serviceScope.cancel()

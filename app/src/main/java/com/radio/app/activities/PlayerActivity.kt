@@ -38,7 +38,8 @@ class PlayerActivity : AppCompatActivity() {
     private var hasErrorToastShown = false
     private var episodeList: ArrayList<Episode> = ArrayList()
     private var currentEpisodeIndex = -1
-
+    private var isDragging = false
+    private var dragPositionText = ""
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -46,16 +47,13 @@ class PlayerActivity : AppCompatActivity() {
             playbackService = binder.getService()
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
-            // 服务绑定成功后，开始播放
             if (currentStation != null) {
-                // 直播电台：使用 playStation
                 playbackService?.playStation(currentStation!!)
             } else {
                 val audioUrl = currentEpisode?.audioUrl
                 if (!audioUrl.isNullOrBlank()) {
-                    val isLive = currentEpisode?.isLive ?: false
                     currentEpisode?.let { episode ->
-                        playbackService?.playEpisode(episode, isLive)
+                        playbackService?.playEpisode(episode, false)
                     }
                 }
             }
@@ -78,6 +76,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvAiProgress.visibility = View.GONE
                 }
                 binding.tvLiveIndicator.text = if (hasError) "播放失败" else if (playing) "播放中" else "已暂停"
+                binding.tvLiveIndicator.visibility = if (playing || hasError) View.VISIBLE else View.GONE
             }
         }
 
@@ -85,13 +84,21 @@ class PlayerActivity : AppCompatActivity() {
             runOnUiThread {
                 val pos = position.toInt()
                 val dur = duration.toInt()
+                if (isDragging) return  // 拖动时不更新进度条位置
                 if (dur > 0) {
                     binding.seekBar.max = dur
                     binding.seekBar.progress = pos
                     binding.tvCurrentTime.text = "${formatTime(pos)} / ${formatTime(dur)}"
+                    // 更新缓存进度
+                    val bufferedPercent = playbackService?.getBufferedPercentage() ?: 0
+                    binding.seekBarCache.max = dur
+                    binding.seekBarCache.progress = pos + (dur * bufferedPercent / 100)
+                    binding.tvCacheProgress.text = "缓存: ${bufferedPercent}%"
+                    binding.tvTotalTime.text = formatTime(dur)
                 } else {
-                    // Bug 2: 直播流 duration <= 0，显示已播放时间
                     binding.tvCurrentTime.text = "直播 ${formatTime(pos)}"
+                    binding.seekBarCache.visibility = View.GONE
+                    binding.tvCacheProgress.visibility = View.GONE
                 }
             }
         }
@@ -101,6 +108,8 @@ class PlayerActivity : AppCompatActivity() {
                 if (hasError) return@runOnUiThread
                 binding.tvAiProgress.text = "缓冲: ${percent}%"
                 binding.tvAiProgress.visibility = if (percent >= 100) View.GONE else View.VISIBLE
+                binding.progressBuffer.progress = percent
+                binding.progressBuffer.visibility = if (percent >= 100) View.GONE else View.VISIBLE
             }
         }
 
@@ -125,7 +134,6 @@ class PlayerActivity : AppCompatActivity() {
 
         currentEpisode = intent.getSerializableExtra("episode") as? Episode
         if (currentEpisode == null) {
-            // 尝试从单独的字段中构建 Episode 对象（兼容旧调用方式）
             val audioUrl = intent.getStringExtra("audio_url") ?: intent.getStringExtra("stream_url")
             if (audioUrl.isNullOrBlank()) {
                 Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show()
@@ -134,14 +142,12 @@ class PlayerActivity : AppCompatActivity() {
             }
             val isLive = intent.getBooleanExtra("is_live", false)
             if (isLive) {
-                // 直播电台：构建 RadioStation 对象
                 currentStation = RadioStation().apply {
                     id = intent.getStringExtra("station_id") ?: ""
                     name = intent.getStringExtra("station_name") ?: ""
                     streamUrl = audioUrl
                     this.isLive = true
                 }
-                // 同时构建一个 Episode 用于 UI 显示
                 currentEpisode = Episode().apply {
                     id = intent.getStringExtra("station_id") ?: ""
                     title = intent.getStringExtra("station_name") ?: ""
@@ -161,16 +167,13 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        // 读取 voice_segments extra
         @Suppress("UNCHECKED_CAST")
         voiceSegments = (intent.getSerializableExtra("voice_segments") as? ArrayList<VoiceSegment>) ?: emptyList()
 
-        // 读取 episode 列表和 index
         @Suppress("UNCHECKED_CAST")
         episodeList = (intent.getSerializableExtra("episode_list") as? ArrayList<Episode>) ?: ArrayList()
         currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
 
-        // 最终校验：确保 audioUrl 有效
         if (currentEpisode?.audioUrl.isNullOrBlank()) {
             Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show()
             finish()
@@ -186,21 +189,29 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvStationName.text = currentEpisode?.title
         binding.tvNetworkUrl.text = "网络: ${currentEpisode?.audioUrl}"
         binding.tvNetworkUrl.visibility = View.VISIBLE
-        // 回放模式下显示缓存URL信息
+
         val isLive = currentEpisode?.isLive ?: false
         if (!isLive) {
-            binding.tvCacheUrl.text = "缓存: 未缓存（使用直播流回放）"
+            // 回放模式：显示缓存URL（基于网络URL构造本地缓存路径）
+            val audioUrl = currentEpisode?.audioUrl ?: ""
+            val cacheFileName = extractCacheFileName(audioUrl)
+            binding.tvCacheUrl.text = "本地缓存: ${cacheDir.absolutePath}/episodes/$cacheFileName"
             binding.tvCacheUrl.visibility = View.VISIBLE
+            binding.tvCacheProgress.visibility = View.VISIBLE
+            binding.seekBarCache.visibility = View.VISIBLE
         } else {
             binding.tvCacheUrl.visibility = View.GONE
+            binding.tvCacheProgress.visibility = View.GONE
+            binding.seekBarCache.visibility = View.GONE
         }
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
         binding.tvCurrentTime.text = "00:00 / 00:00"
-        // 直播流不显示缓冲进度
+        binding.tvTotalTime.text = "00:00"
+        binding.tvCacheProgress.text = "缓存: 0%"
+        binding.progressBuffer.visibility = View.GONE
         binding.tvAiProgress.visibility = View.GONE
 
-        // Bug 5: 设置片段列表 adapter
         segmentAdapter = VoiceSegmentAdapter()
         segmentAdapter?.setSegments(voiceSegments)
         segmentAdapter?.setOnSegmentClickListener(object : VoiceSegmentAdapter.OnSegmentClickListener {
@@ -208,7 +219,6 @@ class PlayerActivity : AppCompatActivity() {
                 playbackService?.seekTo(segment.start)
             }
             override fun onSegmentLongClick(position: Int, segment: VoiceSegment) {
-                // 长按标记为干货/水分
                 val isDry = !segment.isEffectiveDry()
                 playbackService?.markSegment(position, isDry)
                 segmentAdapter?.notifyItemChanged(position)
@@ -223,7 +233,6 @@ class PlayerActivity : AppCompatActivity() {
             binding.recyclerSegments.visibility = View.VISIBLE
         }
 
-        // 节目导航：非直播且有列表时显示
         val isLiveNav = currentEpisode?.isLive ?: false
         if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
             binding.layoutEpisodeNav.visibility = View.VISIBLE
@@ -241,9 +250,18 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             binding.layoutEpisodeNav.visibility = View.GONE
         }
+    }
 
-        // ExoPlayer 自带缓存，不需要手动轮询缓存路径
-        binding.tvCacheUrl.visibility = View.GONE
+    private fun extractCacheFileName(url: String): String {
+        // 保留网络来源命名风格，截取URL最后路径部分作为文件名
+        return try {
+            val path = java.net.URL(url).path
+            val name = path.substringAfterLast("/")
+            if (name.isBlank()) "unknown.mp4" else name
+        } catch (e: Exception) {
+            val name = url.substringAfterLast("/")
+            if (name.isBlank()) "unknown.mp4" else name
+        }
     }
 
     private fun setupListeners() {
@@ -257,32 +275,26 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        // Bug 3: btnPrevSegment 应该跳转到上一片段，而不是停止播放
         binding.btnPrevSegment.setOnClickListener {
             playbackService?.jumpToPrevSegment()
         }
 
-        // Bug 3: btnNextSegment 绑定跳转到下一片段
         binding.btnNextSegment.setOnClickListener {
             playbackService?.jumpToNextSegment()
         }
 
-        // Bug 3: btnSkipForward 使用 Service 的 skipForward()（15秒）
         binding.btnSkipForward.setOnClickListener {
             playbackService?.skipForward()
         }
 
-        // Bug 3: btnSkipBackward 使用 Service 的 skipBackward()（15秒）
         binding.btnSkipBackward.setOnClickListener {
             playbackService?.skipBackward()
         }
 
-        // Bug 3: btnClose 关闭 Activity
         binding.btnClose.setOnClickListener {
             finish()
         }
 
-        // Bug 6: btnGenerateSubtitle 生成字幕
         binding.btnGenerateSubtitle.setOnClickListener {
             val episode = currentEpisode ?: return@setOnClickListener
             if (episode.id.isBlank()) {
@@ -294,7 +306,6 @@ class PlayerActivity : AppCompatActivity() {
             bindSubtitleService(episode)
         }
 
-        // btnSubtitleToggle: 切换字幕/片段列表显示
         binding.btnSubtitleToggle.setOnClickListener {
             if (binding.subtitleView.visibility == View.VISIBLE) {
                 binding.subtitleView.visibility = View.GONE
@@ -308,12 +319,19 @@ class PlayerActivity : AppCompatActivity() {
         binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
-                    playbackService?.seekTo(progress.toLong())
+                    val dur = seekBar?.max ?: 0
+                    binding.tvCurrentTime.text = "${formatTime(progress)} / ${formatTime(dur)}"
                 }
             }
 
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                isDragging = true
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                isDragging = false
+                seekBar?.let { playbackService?.seekTo(it.progress.toLong()) }
+            }
         })
     }
 
@@ -337,7 +355,6 @@ class PlayerActivity : AppCompatActivity() {
                         subtitleList.add(transcript)
                         runOnUiThread {
                             binding.tvAiProgress.text = "字幕: ${transcript.text}"
-                            // 同时更新 SubtitleView 显示
                             binding.subtitleView.setSubtitles(subtitleList)
                             binding.subtitleView.visibility = View.VISIBLE
                             binding.recyclerSegments.visibility = View.GONE
@@ -367,7 +384,6 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun bindSubtitleService(episode: Episode) {
         if (subtitleServiceBound && subtitleService != null) {
-            // 已经绑定，直接生成
             subtitleService?.generateSubtitlesForEpisode(
                 episode.id,
                 episode.audioUrl,
@@ -416,12 +432,20 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvStationName.text = episode.title
         binding.tvNetworkUrl.text = "网络: ${episode.audioUrl}"
         binding.tvNetworkUrl.visibility = View.VISIBLE
-        binding.tvCacheUrl.text = "缓存: 未缓存（使用直播流回放）"
+        val cacheFileName = extractCacheFileName(episode.audioUrl ?: "")
+        binding.tvCacheUrl.text = "本地缓存: ${cacheDir.absolutePath}/episodes/$cacheFileName"
         binding.tvCacheUrl.visibility = View.VISIBLE
+        binding.tvCacheProgress.text = "缓存: 0%"
+        binding.tvCacheProgress.visibility = View.VISIBLE
+        binding.seekBarCache.visibility = View.VISIBLE
         binding.tvEpisodeNavHint.text = " ${index + 1}/${episodeList.size} "
         binding.tvLiveIndicator.text = "准备播放..."
+        binding.tvLiveIndicator.visibility = View.VISIBLE
         binding.tvCurrentTime.text = "00:00 / 00:00"
+        binding.tvTotalTime.text = "00:00"
         binding.seekBar.progress = 0
+        binding.seekBarCache.progress = 0
+        binding.progressBuffer.progress = 0
         hasError = false
         hasErrorToastShown = false
         playbackService?.playEpisode(episode, false)

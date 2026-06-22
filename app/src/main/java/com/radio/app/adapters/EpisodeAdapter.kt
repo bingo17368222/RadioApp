@@ -72,6 +72,8 @@ class EpisodeAdapter(
         }
 
         holder.btnPlay.setOnClickListener { listener?.onEpisodeClick(episode) }
+        // 点击节目名称也可进入回放
+        holder.tvTitle.setOnClickListener { listener?.onEpisodeClick(episode) }
         holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
             true

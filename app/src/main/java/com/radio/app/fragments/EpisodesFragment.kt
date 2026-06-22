@@ -83,6 +83,27 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         return v
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 恢复上次选择的日期和电台
+        val settings = AppSettings.getInstance(requireContext())
+        if (settings.lastSelectedDate.isNotBlank()) {
+            try {
+                val savedDate = dateFormat.parse(settings.lastSelectedDate)
+                if (savedDate != null) {
+                    selectedDate.time = savedDate
+                    buildDatePills()
+                }
+            } catch (_: Exception) {}
+        }
+        if (settings.lastSelectedStationId.isNotBlank()) {
+            selectedStationId = settings.lastSelectedStationId
+            selectedStationName = EpisodeApiService.getStationName(settings.lastSelectedStationId)
+            buildStationPills()
+            loadEpisodes(settings.lastSelectedStationId, dateFormat.format(selectedDate.time))
+        }
+    }
+
     private fun showDatePickerDialog() {
         val year = selectedDate.get(Calendar.YEAR)
         val month = selectedDate.get(Calendar.MONTH)
@@ -250,6 +271,12 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     private fun loadEpisodes(stationId: String, dateStr: String) {
+        // 保存用户选择
+        val settings = AppSettings.getInstance(requireContext())
+        settings.lastSelectedDate = dateStr
+        settings.lastSelectedStationId = stationId
+        settings.save(requireContext())
+
         progressBar?.visibility = View.VISIBLE
         adapter = EpisodeAdapter(requireContext(), episodes, this)
         recyclerView?.adapter = adapter

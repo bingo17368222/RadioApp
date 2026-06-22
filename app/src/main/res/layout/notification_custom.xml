@@ -53,6 +53,39 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- 回放进度条区域（仅回放时显示） -->
+    <LinearLayout
+        android:id="@+id/notification_progress_area"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="2dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/notification_time_text"
+            android:layout_width="80dp"
+            android:layout_height="wrap_content"
+            android:text="00:00/00:00"
+            android:textSize="10sp"
+            android:textColor="#CCCCCC"
+            android:maxLines="1" />
+
+        <ProgressBar
+            android:id="@+id/notification_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="0dp"
+            android:layout_height="10dp"
+            android:layout_weight="1"
+            android:max="1000"
+            android:progress="0"
+            android:progressDrawable="@drawable/notification_progress_drawable" />
+    </LinearLayout>
+
     <!-- 7个按钮 -->
     <LinearLayout
         android:layout_width="match_parent"
@@ -71,7 +104,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33000000"
+            android:background="#334488CC"
             android:padding="2dp">
             <ImageView
                 android:layout_width="16dp"
@@ -93,7 +126,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33000000"
+            android:background="#3344AA66"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -116,7 +149,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33000000"
+            android:background="#33CC7722"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -139,7 +172,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#55000000"
+            android:background="#55FF6644"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -164,7 +197,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33000000"
+            android:background="#33CC7722"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -187,7 +220,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33000000"
+            android:background="#3344AA66"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -210,7 +243,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33000000"
+            android:background="#334488CC"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView

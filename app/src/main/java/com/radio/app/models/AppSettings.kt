@@ -70,6 +70,8 @@ class AppSettings private constructor() {
     var autoCache: Boolean = false
     var dislikedEpisodes: MutableList<String> = mutableListOf()
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
+    var lastSelectedDate: String = ""
+    var lastSelectedStationId: String = ""
 
     /** Gson 安全访问：确保字段不为 null */
     fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
@@ -103,6 +105,10 @@ class AppSettings private constructor() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
+        // 加载上次选择的日期和电台
+        lastSelectedDate = prefs.getString("last_selected_date", "") ?: ""
+        lastSelectedStationId = prefs.getString("last_selected_station_id", "") ?: ""
 
         // 加载播放次数
         val playCountJson = prefs.getString("station_play_count", "{}") ?: "{}"
@@ -138,6 +144,8 @@ class AppSettings private constructor() {
             val playCountObj = org.json.JSONObject()
             stationPlayCount.forEach { (k, v) -> playCountObj.put(k, v) }
             putString("station_play_count", playCountObj.toString())
+            putString("last_selected_date", lastSelectedDate)
+            putString("last_selected_station_id", lastSelectedStationId)
             apply()
         }
     }
