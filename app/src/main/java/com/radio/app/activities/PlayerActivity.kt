@@ -145,13 +145,8 @@ class PlayerActivity : AppCompatActivity() {
                     cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
                     return@Runnable
                 }
-                // 对于回放，用 bufferedPosition / duration 计算真实缓存进度
-                val bufferedPos = svc.getBufferedPosition()
-                val cachePct = if (bufferedPos > 0) {
-                    ((bufferedPos * 100) / dur).toInt().coerceIn(0, 100)
-                } else {
-                    svc.getBufferedPercentage()
-                }
+                // 使用后台下载进度（非 ExoPlayer 缓冲进度，MP4 不适用）
+                val cachePct = svc.getDownloadProgress()
 
                 runOnUiThread {
                     binding.seekBarCache.max = dur.toInt()

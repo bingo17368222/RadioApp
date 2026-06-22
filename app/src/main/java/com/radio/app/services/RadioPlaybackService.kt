@@ -42,9 +42,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener {
 
@@ -116,6 +114,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationSubText = ""
     private var notificationDate = ""
     private var downloadingJob: kotlinx.coroutines.Job? = null
+    private var positionRestoreRequested = false
+
+    // 后台下载进度（供 UI 读取）
+    @Volatile
+    private var downloadProgressPct = 0
+    @Volatile
+    private var downloadTotalBytes = 0L
+    @Volatile
+    private var downloadDoneBytes = 0L
+    private val downloadActive = AtomicBoolean(false)
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -153,16 +161,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     prepared = true
                                     isRetrying = false
                                     errorRetryCount = 0
+                                    // 仅在首次就绪时恢复位置，避免 seek 引发状态循环
+                                    if (positionRestoreRequested) {
+                                        positionRestoreRequested = false
+                                        applySavedPosition()
+                                    }
                                     callback?.onStateChanged(true)
-                                    sendStateBroadcast(true)
                                     updateNotification()
-                                    applySavedPosition()
-                                    // 后台下载音频文件到本地缓存
+                                    // 后台下载音频文件
                                     startBackgroundDownload()
                                 }
                                 Player.STATE_ENDED -> {
                                     callback?.onStateChanged(false)
-                                    sendStateBroadcast(false)
                                     clearSavedPosition()
                                     stopAutoSkipCheck()
                                 }
@@ -189,7 +199,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
                             callback?.onStateChanged(isPlaying)
-                            sendStateBroadcast(isPlaying)
                             notificationPlaying = isPlaying
                             updateNotification()
                         }
@@ -202,18 +211,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isLive) return
         val url = currentStreamUrl
         if (url.isBlank() || !url.startsWith("http")) return
-        // 取文件名
+        if (downloadActive.get()) return  // 已有下载任务进行中
         val fileName = extractCacheFileName(url)
-        val cacheDir = File(cacheDir, "episodes")
-        if (!cacheDir.exists()) cacheDir.mkdirs()
-        val targetFile = File(cacheDir, fileName)
-        // 已存在则跳过
+        val episodesDir = File(cacheDir, "episodes")
+        if (!episodesDir.exists()) episodesDir.mkdirs()
+        val targetFile = File(episodesDir, fileName)
+        // 已存在则直接标记完成
         if (targetFile.exists() && targetFile.length() > 0) {
-            Log.d(TAG, "Cache already exists: ${targetFile.absolutePath}")
+            downloadProgressPct = 100
+            downloadDoneBytes = targetFile.length()
+            downloadTotalBytes = targetFile.length()
             sendCacheUpdateBroadcast(targetFile.length(), targetFile.absolutePath)
             return
         }
-        // 后台下载
+        downloadActive.set(true)
+        downloadProgressPct = 0
+        downloadDoneBytes = 0
+        downloadTotalBytes = 0
         downloadingJob?.cancel()
         downloadingJob = serviceScope.launch {
             try {
@@ -228,10 +242,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                 if (connection.responseCode != 200) {
                     Log.e(TAG, "Download failed: HTTP ${connection.responseCode}")
+                    downloadActive.set(false)
                     return@launch
                 }
 
-                val contentLength = connection.contentLength
+                downloadTotalBytes = connection.contentLength.toLong()
                 val input = connection.inputStream
                 val output = FileOutputStream(targetFile)
                 val buffer = ByteArray(8192)
@@ -242,10 +257,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 while (input.read(buffer).also { bytesRead = it } != -1) {
                     output.write(buffer, 0, bytesRead)
                     totalRead += bytesRead
-                    if (contentLength > 0) {
-                        val pct = ((totalRead * 100) / contentLength).toInt()
+                    downloadDoneBytes = totalRead
+                    if (downloadTotalBytes > 0) {
+                        val pct = ((totalRead * 100) / downloadTotalBytes).toInt()
                         if (pct - lastProgress >= 5) {
                             lastProgress = pct
+                            downloadProgressPct = pct
                             sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
                         }
                     }
@@ -253,12 +270,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 output.close()
                 input.close()
                 connection.disconnect()
+                downloadProgressPct = 100
+                downloadDoneBytes = downloadTotalBytes.coerceAtLeast(totalRead)
                 sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
                 Log.d(TAG, "Download complete: ${targetFile.absolutePath} (${totalRead} bytes)")
             } catch (e: Exception) {
                 Log.e(TAG, "Download error: ${e.message}")
-                // 删除不完整的文件
                 try { targetFile.delete() } catch (_: Exception) {}
+            } finally {
+                downloadActive.set(false)
             }
         }
     }
@@ -524,6 +544,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         currentStation = station; currentEpisode = null; isLive = true
         prepared = false; currentStreamUrl = station.streamUrl ?: ""
         errorRetryCount = 0; isRetrying = false; stopAutoSkipCheck()
+        positionRestoreRequested = false
+        downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         ensurePlayerInitialized()
         try {
             player?.let {
@@ -540,6 +562,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
         stopAutoSkipCheck()
+        positionRestoreRequested = true  // 下次 STATE_READY 时恢复位置
+        downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         currentStreamUrl = episode.audioUrl ?: ""
         notificationTitle = episode.title ?: "节目回放"
         notificationDate = episode.broadcastAt?.take(10) ?: ""
@@ -561,6 +585,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun stop() {
         stopAutoSkipCheck(); saveCurrentPosition()
         downloadingJob?.cancel()
+        downloadActive.set(false)
         player?.let { it.stop(); abandonAudioFocus() }
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
@@ -583,21 +608,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getCurrentStreamUrl(): String = currentStreamUrl
     fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
     fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
-    fun getBufferedPercentage(): Int {
-        val p = player ?: return 0
-        val builtIn = p.bufferedPercentage
-        if (builtIn in 1..99) return builtIn
-        val dur = p.duration
-        if (dur <= 0) return 0
-        return ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
-    }
-    fun getBufferedPosition(): Long {
-        return player?.bufferedPosition ?: 0L
-    }
+    fun getBufferedPercentage(): Int = player?.bufferedPercentage ?: 0
+    fun getBufferedPosition(): Long = player?.bufferedPosition ?: 0L
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
-    fun getBufferPercent(): Int = player?.bufferedPercentage ?: 0
     fun setCallback(cb: Callback?) { callback = cb }
+
+    /** 获取后台下载进度（0-100），用于缓存进度显示 */
+    fun getDownloadProgress(): Int = downloadProgressPct
+    fun getDownloadTotalBytes(): Long = downloadTotalBytes
+    fun getDownloadDoneBytes(): Long = downloadDoneBytes
+    fun isDownloading(): Boolean = downloadActive.get()
 
     fun jumpToNextSegment() {
         val segments = currentEpisode?.voiceSegments ?: return
@@ -760,6 +781,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         positionSaveRunnable?.let { positionSaveHandler?.removeCallbacks(it) }
         stopAutoSkipCheck()
         downloadingJob?.cancel()
+        downloadActive.set(false)
         saveCurrentPosition()
         abandonAudioFocus()
         serviceScope.cancel()
