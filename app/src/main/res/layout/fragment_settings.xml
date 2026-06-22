@@ -203,6 +203,38 @@
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:layout_marginTop="2dp" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="预缓存数量:"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="14sp" />
+                    <EditText
+                        android:id="@+id/et_preload_cache_count"
+                        android:layout_width="80dp"
+                        android:layout_height="40dp"
+                        android:layout_marginStart="8dp"
+                        android:text="10"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="14sp"
+                        android:inputType="number"
+                        android:gravity="center"
+                        android:background="@drawable/bg_card"
+                        android:padding="4dp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="个"
+                        android:textColor="?attr/appTextSecondary"
+                        android:textSize="14sp"
+                        android:layout_marginStart="4dp" />
+                </LinearLayout>
             </LinearLayout>
             <View
                 android:layout_width="match_parent"
@@ -234,7 +266,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="播放时自动降低其他应用音量，来电时暂停播放"
+                    android:text="导航或其他应用播放时暂停播放，之后自动恢复播放"
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:layout_marginTop="2dp" />

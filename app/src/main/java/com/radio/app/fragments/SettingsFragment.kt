@@ -74,7 +74,7 @@ class SettingsFragment : Fragment() {
         binding.spinnerSubtitleLang.adapter = langAdapter
         binding.spinnerVoiceLang.adapter = langAdapter
 
-        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "久爱听")
+        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "就AI听")
         val aiModelAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, aiModelLabels)
         aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAiModel.adapter = aiModelAdapter
@@ -151,6 +151,16 @@ class SettingsFragment : Fragment() {
             if (suppressListeners) return@setOnCheckedChangeListener
             settings.autoCache = isChecked
             save()
+        }
+        binding.etPreloadCacheCount.setOnFocusChangeListener { _, hasFocus ->
+            if (suppressListeners || hasFocus) return@setOnFocusChangeListener
+            val count = binding.etPreloadCacheCount.text.toString().toIntOrNull()
+            if (count != null && count > 0 && count <= 100) {
+                settings.preloadCacheCount = count
+                save()
+            } else {
+                binding.etPreloadCacheCount.setText(settings.preloadCacheCount.toString())
+            }
         }
         binding.switchAudioFocus.setOnCheckedChangeListener { _, isChecked ->
             if (suppressListeners) return@setOnCheckedChangeListener
@@ -258,6 +268,7 @@ class SettingsFragment : Fragment() {
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchAutoCache.isChecked = settings.autoCache
         binding.switchAudioFocus.isChecked = settings.audioFocus
+        binding.etPreloadCacheCount.setText(settings.preloadCacheCount.toString())
 
         suppressListeners = true
 

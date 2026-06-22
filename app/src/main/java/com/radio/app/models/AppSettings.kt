@@ -60,7 +60,7 @@ class AppSettings private constructor() {
     var customColors: CustomColors = CustomColors()
     var keywordConfig: KeywordConfig = KeywordConfig()
     var preloadCache: Boolean = false
-    var preloadCacheCount: Int = 1
+    var preloadCacheCount: Int = 10
     var enablePreprocessing: Boolean = false
     var preprocessingCount: Int = 1
     var audioFocus: Boolean = true

@@ -38,6 +38,8 @@ class PreferenceManager(private val context: Context) {
                     if (jsonObj.has("autoDownload")) s.autoDownload = jsonObj.getBoolean("autoDownload")
                     if (jsonObj.has("autoCache")) s.autoCache = jsonObj.getBoolean("autoCache")
                     if (jsonObj.has("audioFocus")) s.audioFocus = jsonObj.getBoolean("audioFocus")
+                    if (jsonObj.has("preloadCacheCount")) s.preloadCacheCount = jsonObj.getInt("preloadCacheCount")
+                    if (jsonObj.has("preloadCache")) s.preloadCache = jsonObj.getBoolean("preloadCache")
                 } catch (e: Exception) {
                     Log.w("PreferenceManager", "JSON parse fallback failed", e)
                 }
