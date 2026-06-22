@@ -42,14 +42,6 @@
                 android:maxLines="1"
                 android:ellipsize="end" />
         </LinearLayout>
-        <ImageButton
-            android:id="@+id/btn_generate_subtitle"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_alignParentEnd="true"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@android:drawable/ic_menu_edit"
-            android:contentDescription="Generate Subtitle" />
     </RelativeLayout>
 
     <TextView
@@ -339,4 +331,53 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:visibility="gone" />
+
+    <!-- AI处理进度条 -->
+    <ProgressBar
+        android:id="@+id/progress_ai"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginTop="8dp"
+        android:max="100"
+        android:progress="0"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_ai_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="?attr/appTextSecondary"
+        android:textSize="12sp"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginTop="4dp" />
+
+    <!-- AI操作按钮区域（字幕生成 + AI分段） -->
+    <LinearLayout
+        android:id="@+id/layout_ai_buttons"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="4dp">
+        <Button
+            android:id="@+id/btn_generate_subtitle"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="生成字幕"
+            android:textSize="13sp"
+            android:layout_marginEnd="4dp" />
+        <Button
+            android:id="@+id/btn_ai_segment"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="AI分段"
+            android:textSize="13sp"
+            android:layout_marginStart="4dp" />
+    </LinearLayout>
 </LinearLayout>
