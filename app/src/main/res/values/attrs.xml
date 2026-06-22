@@ -30,4 +30,5 @@
 
     <!-- 通知栏 -->
     <attr name="appNotificationBackground" format="color" />
+    <attr name="appNotificationText" format="color" />
 </resources>

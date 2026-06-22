@@ -69,6 +69,7 @@ class AppSettings private constructor() {
     var autoDownload: Boolean = false
     var autoCache: Boolean = false
     var dislikedEpisodes: MutableList<String> = mutableListOf()
+    var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
 
     /** Gson 安全访问：确保字段不为 null */
     fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
@@ -102,6 +103,20 @@ class AppSettings private constructor() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
+        // 加载播放次数
+        val playCountJson = prefs.getString("station_play_count", "{}") ?: "{}"
+        try {
+            val obj = org.json.JSONObject(playCountJson)
+            stationPlayCount.clear()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                stationPlayCount[key] = obj.getInt(key)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     fun save(context: Context) {
@@ -120,6 +135,9 @@ class AppSettings private constructor() {
             val arr = JSONArray()
             dislikedEpisodes.forEach { arr.put(it) }
             putString("disliked_episodes", arr.toString())
+            val playCountObj = org.json.JSONObject()
+            stationPlayCount.forEach { (k, v) -> playCountObj.put(k, v) }
+            putString("station_play_count", playCountObj.toString())
             apply()
         }
     }
@@ -137,6 +155,28 @@ class AppSettings private constructor() {
     }
 
     fun isDisliked(episodeId: String): Boolean = dislikedEpisodes.contains(episodeId)
+
+    fun toggleDislikedEpisode(context: Context, episodeId: String): Boolean {
+        return if (dislikedEpisodes.contains(episodeId)) {
+            dislikedEpisodes.remove(episodeId)
+            save(context)
+            false
+        } else {
+            dislikedEpisodes.add(episodeId)
+            save(context)
+            true
+        }
+    }
+
+    fun incrementStationPlayCount(context: Context, stationId: String) {
+        val count = stationPlayCount.getOrDefault(stationId, 0) + 1
+        stationPlayCount[stationId] = count
+        save(context)
+    }
+
+    fun getStationPlayCount(stationId: String): Int {
+        return stationPlayCount.getOrDefault(stationId, 0)
+    }
 
     data class CustomColors(
         var primary: String = "#0f3460",

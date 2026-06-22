@@ -23,6 +23,17 @@
             android:textColor="?attr/appTextPrimary" />
 
         <Button
+            android:id="@+id/btn_date_picker"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="📅 选日期"
+            android:textSize="13sp"
+            android:textColor="?attr/colorOnPrimary"
+            android:backgroundTint="?attr/colorPrimary"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp" />
+
+        <Button
             android:id="@+id/btn_today"
             android:layout_width="wrap_content"
             android:layout_height="36dp"
@@ -31,7 +42,8 @@
             android:textColor="?attr/colorOnPrimary"
             android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="12dp"
-            android:paddingEnd="12dp" />
+            android:paddingEnd="12dp"
+            android:layout_marginStart="8dp" />
 
         <Button
             android:id="@+id/btn_refresh"
@@ -43,6 +55,19 @@
             android:backgroundTint="?attr/colorPrimary"
             android:layout_marginStart="8dp" />
     </LinearLayout>
+
+    <!-- 选中日期显示 -->
+    <TextView
+        android:id="@+id/tv_selected_date"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="2026年6月21日"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:textColor="?attr/appTextPrimary"
+        android:gravity="center"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp" />
 
     <HorizontalScrollView
         android:layout_width="match_parent"

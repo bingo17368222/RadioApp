@@ -26,6 +26,7 @@ import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
 import com.radio.app.models.VoiceSegment
 import com.radio.app.utils.PreferenceManager
+import com.radio.app.utils.ThemeManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -524,6 +525,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setTextViewText(R.id.notification_subtitle,
             if (playing) "正在播放 $subText" else "已暂停 $subText")
 
+        // 应用主题颜色到通知栏
+        applyThemeToNotification(remoteViews)
+
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(if (playing) "正在播放 $subText" else "已暂停 $subText")
@@ -537,6 +541,49 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setCustomBigContentView(remoteViews)
             .build()
         startForeground(1, notification)
+    }
+
+    private fun applyThemeToNotification(remoteViews: RemoteViews) {
+        try {
+            val theme = ThemeManager.getCurrentTheme(this)
+            val bgColor: Int
+            val textColor: Int
+            val subTextColor: Int
+
+            when (theme) {
+                "dark" -> {
+                    bgColor = android.graphics.Color.parseColor("#CC16213e")
+                    textColor = android.graphics.Color.parseColor("#e0e0e0")
+                    subTextColor = android.graphics.Color.parseColor("#a0a0a0")
+                }
+                "fresh" -> {
+                    bgColor = android.graphics.Color.parseColor("#CCFFFFFF")
+                    textColor = android.graphics.Color.parseColor("#1A1A1A")
+                    subTextColor = android.graphics.Color.parseColor("#666666")
+                }
+                "classic" -> {
+                    bgColor = android.graphics.Color.parseColor("#CCFFFFFF")
+                    textColor = android.graphics.Color.parseColor("#2C1810")
+                    subTextColor = android.graphics.Color.parseColor("#8B7355")
+                }
+                "minimal" -> {
+                    bgColor = android.graphics.Color.parseColor("#CCFFFFFF")
+                    textColor = android.graphics.Color.parseColor("#2D1B3D")
+                    subTextColor = android.graphics.Color.parseColor("#7D6B8A")
+                }
+                else -> {
+                    bgColor = android.graphics.Color.parseColor("#CC16213e")
+                    textColor = android.graphics.Color.parseColor("#e0e0e0")
+                    subTextColor = android.graphics.Color.parseColor("#a0a0a0")
+                }
+            }
+
+            remoteViews.setInt(R.id.notification_root, "setBackgroundColor", bgColor)
+            remoteViews.setTextColor(R.id.notification_title, textColor)
+            remoteViews.setTextColor(R.id.notification_subtitle, subTextColor)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply theme to notification", e)
+        }
     }
 
     private fun sendStateBroadcast(playing: Boolean) {

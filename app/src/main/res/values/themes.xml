@@ -31,6 +31,7 @@
         <item name="appNavActive">#e94560</item>
         <item name="appNavInactive">#a0a0a0</item>
         <item name="appNotificationBackground">#16213e</item>
+        <item name="appNotificationText">#e0e0e0</item>
     </style>
 
     <!-- 清新主题（默认） -->
@@ -63,6 +64,7 @@
         <item name="appNavActive">#7ED321</item>
         <item name="appNavInactive">#999999</item>
         <item name="appNotificationBackground">#FFFFFF</item>
+        <item name="appNotificationText">#1A1A1A</item>
     </style>
 
     <!-- 经典主题 -->
@@ -95,6 +97,7 @@
         <item name="appNavActive">#E74C3C</item>
         <item name="appNavInactive">#B0A090</item>
         <item name="appNotificationBackground">#FFFFFF</item>
+        <item name="appNotificationText">#2C1810</item>
     </style>
 
     <!-- 极简主题 -->
@@ -127,5 +130,6 @@
         <item name="appNavActive">#9B59B6</item>
         <item name="appNavInactive">#A090B0</item>
         <item name="appNotificationBackground">#FFFFFF</item>
+        <item name="appNotificationText">#2D1B3D</item>
     </style>
 </resources>

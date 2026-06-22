@@ -119,7 +119,37 @@ class RadioApiService private constructor() {
             country = "China"
             bitrate = 64
             lastCheckOk = true
-            currentProgram = "河南新闻"
+            currentProgram = "河南新闻广播"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-economy"
+            name = "河南经济广播 FM103.2"
+            streamUrl = "https://stream.hndt.com/live/jingji/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "河南经济广播"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-traffic"
+            name = "河南交通广播 FM104.1"
+            streamUrl = "https://stream.hndt.com/live/jiaotong/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "河南交通广播"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-opera"
+            name = "河南戏曲广播 FM97.6"
+            streamUrl = "https://stream.hndt.com/live/yule/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "河南戏曲广播"
         })
 
         list.add(RadioStation().apply {
@@ -133,53 +163,13 @@ class RadioApiService private constructor() {
         })
 
         list.add(RadioStation().apply {
-            id = "henan-traffic"
-            name = "河南交通广播 FM104.1"
-            streamUrl = "https://stream.hndt.com/live/jiaotong/playlist.m3u8"
-            country = "China"
-            bitrate = 64
-            lastCheckOk = true
-            currentProgram = "河南交通"
-        })
-
-        list.add(RadioStation().apply {
-            id = "henan-economy"
-            name = "河南经济广播 FM103.2"
-            streamUrl = "https://stream.hndt.com/live/jingji/playlist.m3u8"
-            country = "China"
-            bitrate = 64
-            lastCheckOk = true
-            currentProgram = "河南经济"
-        })
-
-        list.add(RadioStation().apply {
-            id = "henan-opera"
-            name = "河南戏曲广播 FM97.6"
-            streamUrl = "https://stream.hndt.com/live/yule/playlist.m3u8"
-            country = "China"
-            bitrate = 64
-            lastCheckOk = true
-            currentProgram = "河南戏曲"
-        })
-
-        list.add(RadioStation().apply {
-            id = "henan-edu"
-            name = "河南教育广播 FM106.6"
-            streamUrl = "https://stream.hndt.com/live/jiaoyu/playlist.m3u8"
-            country = "China"
-            bitrate = 64
-            lastCheckOk = true
-            currentProgram = "河南教育"
-        })
-
-        list.add(RadioStation().apply {
             id = "henan-rural"
-            name = "河南农村广播 FM107.4"
+            name = "大象资讯台 FM107.4"
             streamUrl = "https://stream.hndt.com/live/nongcun/playlist.m3u8"
             country = "China"
             bitrate = 64
             lastCheckOk = true
-            currentProgram = "河南农村"
+            currentProgram = "大象资讯台"
         })
 
         list.add(RadioStation().apply {
@@ -203,13 +193,33 @@ class RadioApiService private constructor() {
         })
 
         list.add(RadioStation().apply {
+            id = "henan-edu"
+            name = "河南教育广播 FM106.6"
+            streamUrl = "https://stream.hndt.com/live/jiaoyu/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "河南教育广播"
+        })
+
+        list.add(RadioStation().apply {
             id = "henan-info"
-            name = "乐龄105.6 FM105.6"
-            streamUrl = "https://stream.hndt.com/live/xinxi/playlist.m3u8"
+            name = "信息广播 FM105.6"
+            streamUrl = "https://stream.hndt.com/live/leling/playlist.m3u8"
             country = "China"
             bitrate = 64
             lastCheckOk = true
             currentProgram = "乐龄1056"
+        })
+
+        list.add(RadioStation().apply {
+            id = "henan-bigradio"
+            name = "Big Radio FM93.6"
+            streamUrl = "https://stream.hndt.com/live/gudian/playlist.m3u8"
+            country = "China"
+            bitrate = 64
+            lastCheckOk = true
+            currentProgram = "Big Radio"
         })
 
         // === 央广电台 ===
