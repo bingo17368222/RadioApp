@@ -19,6 +19,8 @@ import com.radio.app.models.VoiceSegment
 import com.radio.app.services.RadioPlaybackService
 import com.radio.app.adapters.VoiceSegmentAdapter
 import com.radio.app.services.SubtitleGeneratorService
+import com.radio.app.models.AppSettings
+import com.radio.app.utils.PreferenceManager
 
 class PlayerActivity : AppCompatActivity() {
 
@@ -41,6 +43,8 @@ class PlayerActivity : AppCompatActivity() {
     private var isDragging = false
     private var cacheProgressHandler: Handler? = null
     private var cacheProgressRunnable: Runnable? = null
+    private var aiProcessing = false
+    private var pendingAiTaskType: String? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -245,6 +249,8 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvCacheProgress.text = "缓存: 0%"
         binding.progressBuffer.visibility = View.GONE
         binding.tvAiProgress.visibility = View.GONE
+        binding.progressAi.visibility = View.GONE
+        binding.tvAiStatus.visibility = View.GONE
 
         segmentAdapter = VoiceSegmentAdapter()
         segmentAdapter?.setSegments(voiceSegments)
@@ -315,9 +321,20 @@ class PlayerActivity : AppCompatActivity() {
                 Toast.makeText(this, "无法生成字幕：缺少节目ID", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            binding.tvAiProgress.text = "字幕生成中..."
-            binding.tvAiProgress.visibility = View.VISIBLE
-            bindSubtitleService(episode)
+            if (aiProcessing) return@setOnClickListener
+            startAiProcessing("subtitle")
+            bindSubtitleService(episode, "subtitle")
+        }
+
+        binding.btnAiSegment.setOnClickListener {
+            val episode = currentEpisode ?: return@setOnClickListener
+            if (episode.id.isBlank()) {
+                Toast.makeText(this, "无法AI分段：缺少节目ID", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (aiProcessing) return@setOnClickListener
+            startAiProcessing("segment")
+            bindSubtitleService(episode, "segment")
         }
 
         binding.btnSubtitleToggle.setOnClickListener {
@@ -356,33 +373,82 @@ class PlayerActivity : AppCompatActivity() {
             subtitleService = binder.getService()
             subtitleServiceBound = true
             val episode = currentEpisode ?: return
-            subtitleService?.generateSubtitlesForEpisode(
-                episode.id, episode.audioUrl,
-                object : SubtitleGeneratorService.SubtitleCallback {
-                    private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
-                    override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
-                        subtitleList.add(transcript)
-                        runOnUiThread {
-                            binding.tvAiProgress.text = "字幕: ${transcript.text}"
-                            binding.subtitleView.setSubtitles(subtitleList)
-                            binding.subtitleView.visibility = View.VISIBLE
-                            binding.recyclerSegments.visibility = View.GONE
+            val taskType = pendingAiTaskType
+            pendingAiTaskType = null
+            if (taskType == "segment") {
+                subtitleService?.generateSegmentsForEpisode(
+                    episode.id, episode.audioUrl,
+                    object : SubtitleGeneratorService.SegmentCallback {
+                        override fun onSegmentGenerated(segment: VoiceSegment) {
+                            runOnUiThread {
+                                val updated = voiceSegments.toMutableList()
+                                updated.add(segment)
+                                voiceSegments = updated
+                                segmentAdapter?.setSegments(voiceSegments)
+                                binding.recyclerSegments.visibility = View.VISIBLE
+                            }
+                        }
+                        override fun onProgressUpdate(progress: Int, total: Int) {
+                            runOnUiThread {
+                                binding.progressAi.progress = progress
+                                binding.tvAiStatus.text = buildStatusText("segment", progress)
+                            }
+                        }
+                        override fun onComplete(segments: List<VoiceSegment>) {
+                            runOnUiThread {
+                                voiceSegments = segments
+                                segmentAdapter?.setSegments(segments)
+                                binding.recyclerSegments.visibility = View.VISIBLE
+                                finishAiProcessing()
+                                Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        override fun onError(error: String) {
+                            runOnUiThread {
+                                finishAiProcessing()
+                                binding.tvAiStatus.text = "AI分段失败: $error"
+                                binding.tvAiStatus.visibility = View.VISIBLE
+                                Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
-                    override fun onProgressUpdate(progress: Int, total: Int) {
-                        runOnUiThread {
-                            binding.tvAiProgress.text = "字幕生成: $progress/$total"
-                            binding.tvAiProgress.visibility = View.VISIBLE
+                )
+            } else {
+                subtitleService?.generateSubtitlesForEpisode(
+                    episode.id, episode.audioUrl,
+                    object : SubtitleGeneratorService.SubtitleCallback {
+                        private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
+                        override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
+                            subtitleList.add(transcript)
+                            runOnUiThread {
+                                binding.subtitleView.setSubtitles(subtitleList)
+                                binding.subtitleView.visibility = View.VISIBLE
+                                binding.recyclerSegments.visibility = View.GONE
+                            }
+                        }
+                        override fun onProgressUpdate(progress: Int, total: Int) {
+                            runOnUiThread {
+                                binding.progressAi.progress = progress
+                                binding.tvAiStatus.text = buildStatusText("subtitle", progress)
+                            }
+                        }
+                        override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
+                            runOnUiThread {
+                                finishAiProcessing()
+                                Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        override fun onError(error: String) {
+                            runOnUiThread {
+                                finishAiProcessing()
+                                binding.tvAiStatus.text = "字幕生成失败: $error"
+                                binding.tvAiStatus.visibility = View.VISIBLE
+                                Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
-                    override fun onError(error: String) {
-                        runOnUiThread {
-                            binding.tvAiProgress.text = "字幕生成失败: $error"
-                            Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            )
+                )
+            }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             subtitleService = null
@@ -390,37 +456,85 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun bindSubtitleService(episode: Episode) {
+    private fun bindSubtitleService(episode: Episode, taskType: String) {
         if (subtitleServiceBound && subtitleService != null) {
-            subtitleService?.generateSubtitlesForEpisode(
-                episode.id, episode.audioUrl,
-                object : SubtitleGeneratorService.SubtitleCallback {
-                    private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
-                    override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
-                        subtitleList.add(transcript)
-                        runOnUiThread {
-                            binding.tvAiProgress.text = "字幕: ${transcript.text}"
-                            binding.subtitleView.setSubtitles(subtitleList)
-                            binding.subtitleView.visibility = View.VISIBLE
-                            binding.recyclerSegments.visibility = View.GONE
+            if (taskType == "segment") {
+                subtitleService?.generateSegmentsForEpisode(
+                    episode.id, episode.audioUrl,
+                    object : SubtitleGeneratorService.SegmentCallback {
+                        override fun onSegmentGenerated(segment: VoiceSegment) {
+                            runOnUiThread {
+                                val updated = voiceSegments.toMutableList()
+                                updated.add(segment)
+                                voiceSegments = updated
+                                segmentAdapter?.setSegments(voiceSegments)
+                                binding.recyclerSegments.visibility = View.VISIBLE
+                            }
+                        }
+                        override fun onProgressUpdate(progress: Int, total: Int) {
+                            runOnUiThread {
+                                binding.progressAi.progress = progress
+                                binding.tvAiStatus.text = buildStatusText("segment", progress)
+                            }
+                        }
+                        override fun onComplete(segments: List<VoiceSegment>) {
+                            runOnUiThread {
+                                voiceSegments = segments
+                                segmentAdapter?.setSegments(segments)
+                                binding.recyclerSegments.visibility = View.VISIBLE
+                                finishAiProcessing()
+                                Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        override fun onError(error: String) {
+                            runOnUiThread {
+                                finishAiProcessing()
+                                binding.tvAiStatus.text = "AI分段失败: $error"
+                                binding.tvAiStatus.visibility = View.VISIBLE
+                                Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
-                    override fun onProgressUpdate(progress: Int, total: Int) {
-                        runOnUiThread {
-                            binding.tvAiProgress.text = "字幕生成: $progress/$total"
-                            binding.tvAiProgress.visibility = View.VISIBLE
+                )
+            } else {
+                subtitleService?.generateSubtitlesForEpisode(
+                    episode.id, episode.audioUrl,
+                    object : SubtitleGeneratorService.SubtitleCallback {
+                        private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
+                        override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
+                            subtitleList.add(transcript)
+                            runOnUiThread {
+                                binding.subtitleView.setSubtitles(subtitleList)
+                                binding.subtitleView.visibility = View.VISIBLE
+                                binding.recyclerSegments.visibility = View.GONE
+                            }
+                        }
+                        override fun onProgressUpdate(progress: Int, total: Int) {
+                            runOnUiThread {
+                                binding.progressAi.progress = progress
+                                binding.tvAiStatus.text = buildStatusText("subtitle", progress)
+                            }
+                        }
+                        override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
+                            runOnUiThread {
+                                finishAiProcessing()
+                                Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        override fun onError(error: String) {
+                            runOnUiThread {
+                                finishAiProcessing()
+                                binding.tvAiStatus.text = "字幕生成失败: $error"
+                                binding.tvAiStatus.visibility = View.VISIBLE
+                                Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
-                    override fun onError(error: String) {
-                        runOnUiThread {
-                            binding.tvAiProgress.text = "字幕生成失败: $error"
-                            Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            )
+                )
+            }
             return
         }
+        pendingAiTaskType = taskType
         val intent = Intent(this, SubtitleGeneratorService::class.java)
         bindService(intent, subtitleServiceConnection, Context.BIND_AUTO_CREATE)
     }
@@ -467,6 +581,53 @@ class PlayerActivity : AppCompatActivity() {
         val minutes = seconds / 60
         val secs = seconds % 60
         return String.format("%02d:%02d", minutes, secs)
+    }
+
+    private fun getCurrentAiModelLabel(): String {
+        val settings = AppSettings.getInstance(this)
+        return when (settings.safeAiModel()) {
+            AppSettings.AI_MODEL_WENXIN -> "文心一言"
+            AppSettings.AI_MODEL_DEEPSEEK -> "DeepSeek"
+            AppSettings.AI_MODEL_QWEN -> "通义千问"
+            AppSettings.AI_MODEL_FUNASR -> "FunASR"
+            AppSettings.AI_MODEL_WHISPER -> "Whisper"
+            AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+            else -> settings.safeAiModel()
+        }
+    }
+
+    private fun getCurrentAsrLabel(): String {
+        val settings = AppSettings.getInstance(this)
+        return when (settings.safeAsrProvider()) {
+            AppSettings.ASR_BAIDU -> "百度ASR"
+            AppSettings.ASR_FUNASR -> "FunASR"
+            AppSettings.ASR_WHISPER -> "Whisper"
+            AppSettings.ASR_VOSK -> "Vosk离线"
+            else -> settings.safeAsrProvider()
+        }
+    }
+
+    private fun startAiProcessing(taskType: String) {
+        aiProcessing = true
+        binding.progressAi.progress = 0
+        binding.progressAi.visibility = View.VISIBLE
+        binding.tvAiStatus.visibility = View.VISIBLE
+        binding.tvAiStatus.text = buildStatusText(taskType, 0)
+        binding.btnGenerateSubtitle.isEnabled = false
+        binding.btnAiSegment.isEnabled = false
+    }
+
+    private fun finishAiProcessing() {
+        aiProcessing = false
+        binding.progressAi.visibility = View.GONE
+        binding.tvAiStatus.visibility = View.GONE
+        binding.btnGenerateSubtitle.isEnabled = true
+        binding.btnAiSegment.isEnabled = true
+    }
+
+    private fun buildStatusText(taskType: String, progress: Int): String {
+        val modelLabel = if (taskType == "segment") getCurrentAiModelLabel() else getCurrentAsrLabel()
+        return if (taskType == "segment") "AI分段: $progress% (模型: $modelLabel)" else "字幕生成: $progress% (引擎: $modelLabel)"
     }
 
     override fun onDestroy() {
