@@ -430,17 +430,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setCustomBigContentView(remoteViews)
             .build()
 
-        notification.flags = notification.flags or Notification.FLAG_NO_CLEAR
+        notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         manager.notify(NOTIFICATION_ID, notification)
     }
 
     private fun applySeekIntents(remoteViews: RemoteViews) {
-        val pcts = listOf(0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)
-        val ids = listOf(R.id.btn_seek_0, R.id.btn_seek_10, R.id.btn_seek_20, R.id.btn_seek_30,
-            R.id.btn_seek_40, R.id.btn_seek_50, R.id.btn_seek_60, R.id.btn_seek_70,
-            R.id.btn_seek_80, R.id.btn_seek_90, R.id.btn_seek_100)
+        // 20个跳转点，每5%一个，精度更高
+        val pcts = FloatArray(21) { it * 0.05f }
+        val ids = intArrayOf(
+            R.id.btn_seek_0, R.id.btn_seek_5, R.id.btn_seek_10, R.id.btn_seek_15,
+            R.id.btn_seek_20, R.id.btn_seek_25, R.id.btn_seek_30, R.id.btn_seek_35,
+            R.id.btn_seek_40, R.id.btn_seek_45, R.id.btn_seek_50, R.id.btn_seek_55,
+            R.id.btn_seek_60, R.id.btn_seek_65, R.id.btn_seek_70, R.id.btn_seek_75,
+            R.id.btn_seek_80, R.id.btn_seek_85, R.id.btn_seek_90, R.id.btn_seek_95,
+            R.id.btn_seek_100
+        )
         for (i in pcts.indices) {
             val pi = PendingIntent.getService(this, 20 + i,
                 Intent(this, RadioPlaybackService::class.java).apply {

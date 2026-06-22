@@ -53,7 +53,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- 回放进度条区域（仅回放时显示，可点击跳转，11个跳转点） -->
+    <!-- 回放进度条区域（仅回放时显示，20个跳转点：0%,5%,10%...95%,100%） -->
     <LinearLayout
         android:id="@+id/notification_progress_area"
         android:layout_width="match_parent"
@@ -74,82 +74,48 @@
             android:textColor="#CCCCCC"
             android:maxLines="1" />
 
-        <!-- 进度条框架 -->
+        <!-- 进度条框架：32dp高度防误触，20个5%精度点击区域 -->
         <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="32dp"
             android:layout_marginTop="2dp">
 
             <ProgressBar
                 android:id="@+id/notification_progress"
                 style="?android:attr/progressBarStyleHorizontal"
                 android:layout_width="match_parent"
-                android:layout_height="24dp"
+                android:layout_height="32dp"
                 android:max="1000"
                 android:progress="0"
                 android:progressDrawable="@drawable/notification_progress_drawable" />
 
-            <!-- 进度条点击区域（11个跳转点：0%, 10%, 20%...100%），高度24dp防误触 -->
+            <!-- 20个跳转点：0%, 5%, 10%, 15%... 95%, 100% -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="24dp"
+                android:layout_height="32dp"
                 android:orientation="horizontal">
 
-                <LinearLayout
-                    android:id="@+id/btn_seek_0"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_10"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_20"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_30"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_40"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_50"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_60"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_70"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_80"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_90"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
-                <LinearLayout
-                    android:id="@+id/btn_seek_100"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_0"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_5"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_10" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_15" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_20" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_25" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_30" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_35" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_40" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_45" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_50" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_55" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_60" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_65" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_70" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_75" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_80" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_85" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_90" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_95" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
+                <LinearLayout android:id="@+id/btn_seek_100" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
             </LinearLayout>
         </FrameLayout>
     </LinearLayout>
