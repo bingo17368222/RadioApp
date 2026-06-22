@@ -54,6 +54,7 @@ class PlayerActivity : AppCompatActivity() {
                 val audioUrl = currentEpisode?.audioUrl
                 if (!audioUrl.isNullOrBlank()) {
                     currentEpisode?.let { episode ->
+                        // 始终以回放模式播放，不使用 episode.isLive（API可能标记错误）
                         playbackService?.playEpisode(episode, false)
                     }
                 }
@@ -130,21 +131,30 @@ class PlayerActivity : AppCompatActivity() {
         cacheProgressRunnable = Runnable {
             try {
                 val svc = playbackService ?: return@Runnable
-                val bufferedPct = svc.getBufferedPercentage()
-                // 如果播放正常但缓存进度为0，基于播放位置估算
                 val dur = svc.getDuration()
-                val finalPct = if (bufferedPct <= 1 && dur > 0 && svc.isPrepared()) {
-                    val pos = svc.getCurrentPosition()
-                    val estimatedPct = ((pos * 100) / dur).toInt().coerceIn(0, 100)
-                    if (svc.isPlaying()) maxOf(estimatedPct, bufferedPct) else bufferedPct
-                } else bufferedPct
+                if (dur <= 0) {
+                    // 直播模式不显示缓存
+                    runOnUiThread {
+                        binding.seekBarCache.visibility = View.GONE
+                        binding.tvCacheProgress.visibility = View.GONE
+                    }
+                    cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
+                    return@Runnable
+                }
+                // 对于回放，用 bufferedPosition / duration 计算真实缓存进度
+                val bufferedPos = svc.getBufferedPosition()
+                val cachePct = if (bufferedPos > 0) {
+                    ((bufferedPos * 100) / dur).toInt().coerceIn(0, 100)
+                } else {
+                    svc.getBufferedPercentage()
+                }
 
                 runOnUiThread {
                     binding.seekBarCache.max = dur.toInt()
-                    binding.seekBarCache.progress = ((dur * finalPct) / 100).toInt()
-                    binding.tvCacheProgress.text = "缓存: $finalPct%"
-                    binding.tvCacheProgress.visibility = if (dur > 0) View.VISIBLE else View.GONE
-                    binding.seekBarCache.visibility = if (dur > 0) View.VISIBLE else View.GONE
+                    binding.seekBarCache.progress = ((dur * cachePct) / 100).toInt()
+                    binding.tvCacheProgress.text = "缓存: $cachePct%"
+                    binding.tvCacheProgress.visibility = View.VISIBLE
+                    binding.seekBarCache.visibility = View.VISIBLE
                 }
             } catch (_: Exception) {}
             cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
@@ -215,7 +225,9 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvNetworkUrl.text = "网络: ${currentEpisode?.audioUrl}"
         binding.tvNetworkUrl.visibility = View.VISIBLE
 
+        // 从EpisodesFragment进入时，is_live始终为false，以回放模式处理
         val isLive = currentEpisode?.isLive ?: false
+        val isReplay = !isLive || currentEpisode?.audioUrl?.startsWith("http") == true
         if (!isLive) {
             val audioUrl = currentEpisode?.audioUrl ?: ""
             val cacheFileName = extractCacheFileName(audioUrl)

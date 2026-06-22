@@ -206,13 +206,13 @@ class EpisodeApiService private constructor() {
 
                 // 判断该节目是否已结束：endTime < now
                 // 如果已结束，尝试从VOD API获取回放URL
-                // 优先用 endTimeSec，失败则用 dayMidnight
+                // 先用 endTimeSec 获取，按标题匹配；失败则用 dayMidnight
                 var replayUrl: String? = null
                 val endTimeSec = endTime / 1000
                 if (endTimeSec < nowTimestamp) {
-                    replayUrl = tryFetchVodUrl(cid, endTimeSec)
+                    replayUrl = tryFetchVodUrl(cid, endTimeSec, title)
                     if (replayUrl == null) {
-                        replayUrl = tryFetchVodUrl(cid, dayMidnight)
+                        replayUrl = tryFetchVodUrl(cid, dayMidnight, title)
                     }
                 }
 

@@ -319,16 +319,37 @@ class SettingsFragment : Fragment() {
         }, 500)
     }
 
+    private val AUDIO_EXTENSIONS = setOf(
+        ".mp3", ".mp4", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".wma",
+        ".m3u8", ".ts", ".m3u", ".opus", ".amr", ".mid", ".midi"
+    )
+
     private fun calculateCacheSize(): Long {
         var size = 0L
-        // 扫描内部缓存目录
-        size += calculateDirSize(requireContext().cacheDir)
-        // 扫描外部缓存目录
-        requireContext().externalCacheDir?.let { size += calculateDirSize(it) }
-        // 扫描 files 目录（可能有下载的缓存文件）
-        size += calculateDirSize(requireContext().filesDir)
-        requireContext().getExternalFilesDir(null)?.let { size += calculateDirSize(it) }
+        size += calculateAudioDirSize(requireContext().cacheDir)
+        requireContext().externalCacheDir?.let { size += calculateAudioDirSize(it) }
+        size += calculateAudioDirSize(requireContext().filesDir)
+        requireContext().getExternalFilesDir(null)?.let { size += calculateAudioDirSize(it) }
         return size
+    }
+
+    private fun calculateAudioDirSize(dir: File?): Long {
+        if (dir == null || !dir.exists()) return 0
+        var size = 0L
+        val files = dir.listFiles()
+        if (files != null) {
+            for (file in files) {
+                size += if (file.isDirectory) calculateAudioDirSize(file)
+                else if (isAudioFile(file.name)) file.length()
+                else 0
+            }
+        }
+        return size
+    }
+
+    private fun isAudioFile(name: String): Boolean {
+        val lower = name.lowercase()
+        return AUDIO_EXTENSIONS.any { lower.endsWith(it) }
     }
 
     private fun calculateDirSize(dir: File?): Long {
@@ -345,11 +366,11 @@ class SettingsFragment : Fragment() {
 
     private fun showClearCacheDialog() {
         val allFiles = mutableListOf<File>()
-        // 扫描多个可能的缓存目录
-        scanFilesRecursive(requireContext().cacheDir, allFiles)
-        requireContext().externalCacheDir?.let { scanFilesRecursive(it, allFiles) }
-        scanFilesRecursive(requireContext().filesDir, allFiles)
-        requireContext().getExternalFilesDir(null)?.let { scanFilesRecursive(it, allFiles) }
+        // 仅扫描音频缓存文件
+        scanAudioFilesRecursive(requireContext().cacheDir, allFiles)
+        requireContext().externalCacheDir?.let { scanAudioFilesRecursive(it, allFiles) }
+        scanAudioFilesRecursive(requireContext().filesDir, allFiles)
+        requireContext().getExternalFilesDir(null)?.let { scanAudioFilesRecursive(it, allFiles) }
 
         if (allFiles.isEmpty()) {
             Toast.makeText(requireContext(), "暂无缓存文件", Toast.LENGTH_SHORT).show()
@@ -422,6 +443,14 @@ class SettingsFragment : Fragment() {
         for (f in files) {
             if (f.isDirectory) scanFilesRecursive(f, result)
             else result.add(f)
+        }
+    }
+
+    private fun scanAudioFilesRecursive(dir: File?, result: MutableList<File>) {
+        val files = dir?.listFiles() ?: return
+        for (f in files) {
+            if (f.isDirectory) scanAudioFilesRecursive(f, result)
+            else if (isAudioFile(f.name)) result.add(f)
         }
     }
 

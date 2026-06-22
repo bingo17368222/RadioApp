@@ -295,7 +295,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         applyThemeToNotification(remoteViews)
         applySeekIntents(remoteViews)
 
-        // 播放中设为 ongoing 防止误划，暂停时允许划掉
+        // 播放中始终固定通知栏，防止误划
         val deleteIntent = PendingIntent.getService(this, 99,
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -305,9 +305,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
-            .setOngoing(playing)       // 播放中不可划掉，暂停后可划掉
-            .setAutoCancel(true)
-            .setDeleteIntent(deleteIntent)  // 划掉时停止服务
+            .setOngoing(true)           // 始终固定，不可划掉
+            .setAutoCancel(false)       // 不自动取消
+            .setDeleteIntent(deleteIntent)  // 划掉时停止服务（通过通知栏设置清除）
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
@@ -487,14 +487,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
     fun getBufferedPercentage(): Int {
         val p = player ?: return 0
-        // 优先使用 ExoPlayer 内置 bufferedPercentage
         val builtIn = p.bufferedPercentage
         if (builtIn in 1..99) return builtIn
-        // 如果内置为0或100，用 bufferedPosition 计算
         val dur = p.duration
         if (dur <= 0) return 0
         val calc = ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
         return maxOf(builtIn, calc)
+    }
+    fun getBufferedPosition(): Long {
+        val p = player ?: return 0L
+        return p.bufferedPosition
     }
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
