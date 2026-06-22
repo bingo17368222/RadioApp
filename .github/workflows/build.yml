@@ -29,15 +29,16 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
-      - name: Show Build Errors
-        if: failure()
+      - name: Show Build Log
+        if: always() && !cancelled()
         run: |
-          echo "=== BUILD LOG (last 200 lines) ==="
-          tail -200 build.log || true
+          echo "=== BUILD LOG (last 300 lines) ==="
+          tail -300 build.log || true
           echo "=== ERROR SUMMARY ==="
-          grep -n "error:" build.log | head -30 || true
+          grep -in "error" build.log | head -50 || true
 
       - name: Debug APK location
+        if: always() && !cancelled()
         run: |
           echo "=== Listing APK outputs ==="
           find app/build/outputs -name "*.apk" 2>/dev/null || echo "No APK files found"
@@ -45,6 +46,14 @@ jobs:
           ls -la app/build/outputs/apk/ 2>/dev/null || echo "No apk directory"
           echo "=== Checking debug directory ==="
           ls -la app/build/outputs/apk/debug/ 2>/dev/null || echo "No debug directory"
+
+      - name: Upload Build Log
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
