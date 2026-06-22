@@ -188,6 +188,11 @@ class EpisodeApiService private constructor() {
             val streamUrl = STATION_STREAM_URLS[stationId] ?: ""
             val episodes = mutableListOf<Episode>()
 
+            // 计算当天0点时间戳
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            dateFormat.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+            val dayMidnight = dateFormat.parse(dateStr)?.time?.div(1000) ?: (nowTimestamp / 86400 * 86400)
+
             for (i in 0 until programs.length()) {
                 val prog = programs.getJSONObject(i)
                 val beginTime = prog.optLong("beginTime", 0) * 1000
@@ -201,10 +206,11 @@ class EpisodeApiService private constructor() {
 
                 // 判断该节目是否已结束：endTime < now
                 // 如果已结束，尝试从VOD API获取回放URL
+                // 使用当天0点时间戳而非节目结束时间戳
                 var replayUrl: String? = null
                 val endTimeSec = endTime / 1000
                 if (endTimeSec < nowTimestamp) {
-                    replayUrl = tryFetchVodUrl(cid, endTimeSec)
+                    replayUrl = tryFetchVodUrl(cid, dayMidnight)
                 }
 
                 val ep = Episode().apply {

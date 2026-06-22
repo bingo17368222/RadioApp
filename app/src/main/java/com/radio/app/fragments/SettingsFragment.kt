@@ -152,6 +152,11 @@ class SettingsFragment : Fragment() {
             settings.autoCache = isChecked
             save()
         }
+        binding.switchAudioFocus.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.audioFocus = isChecked
+            save()
+        }
 
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -252,6 +257,7 @@ class SettingsFragment : Fragment() {
         binding.switchContinuousPlay.isChecked = settings.continuousPlay
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchAutoCache.isChecked = settings.autoCache
+        binding.switchAudioFocus.isChecked = settings.audioFocus
 
         suppressListeners = true
 
@@ -314,8 +320,12 @@ class SettingsFragment : Fragment() {
     }
 
     private fun calculateCacheSize(): Long {
-        val cacheDir = requireContext().cacheDir
-        return calculateDirSize(cacheDir)
+        var size = 0L
+        // 扫描内部缓存目录
+        size += calculateDirSize(requireContext().cacheDir)
+        // 扫描外部缓存目录
+        requireContext().externalCacheDir?.let { size += calculateDirSize(it) }
+        return size
     }
 
     private fun calculateDirSize(dir: File?): Long {
@@ -331,9 +341,11 @@ class SettingsFragment : Fragment() {
     }
 
     private fun showClearCacheDialog() {
-        val cacheDir = requireContext().cacheDir
         val allFiles = mutableListOf<File>()
-        scanFilesRecursive(cacheDir, allFiles)
+        // 扫描内部缓存目录
+        scanFilesRecursive(requireContext().cacheDir, allFiles)
+        // 扫描外部缓存目录
+        requireContext().externalCacheDir?.let { scanFilesRecursive(it, allFiles) }
 
         if (allFiles.isEmpty()) {
             Toast.makeText(requireContext(), "暂无缓存文件", Toast.LENGTH_SHORT).show()
@@ -341,8 +353,16 @@ class SettingsFragment : Fragment() {
         }
 
         val files = allFiles.toTypedArray()
+        val cachePath = requireContext().cacheDir.absolutePath
+        val extCachePath = requireContext().externalCacheDir?.absolutePath ?: ""
         val fileNames = Array(files.size) { i ->
-            files[i].absolutePath.replace(cacheDir.absolutePath, "...") + " (" + formatSize(files[i].length()) + ")"
+            val path = files[i].absolutePath
+            val shortPath = when {
+                extCachePath.isNotEmpty() && path.startsWith(extCachePath) -> "[外部]" + path.replace(extCachePath, "...")
+                path.startsWith(cachePath) -> "[内部]" + path.replace(cachePath, "...")
+                else -> path
+            }
+            shortPath + " (" + formatSize(files[i].length()) + ")"
         }
         val checked = BooleanArray(files.size) { true }
         showClearCacheDialogWithButtons(files, fileNames, checked)

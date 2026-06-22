@@ -12,14 +12,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
-import com.radio.app.database.RadioDatabaseHelper
+import com.radio.app.models.AppSettings
 
 class DislikedEpisodesActivity : AppCompatActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: DislikedAdapter
-    private lateinit var dbHelper: RadioDatabaseHelper
-    private val dislikedList = mutableListOf<Array<String>>()
+    private lateinit var settings: AppSettings
+    private val dislikedList = mutableListOf<Pair<String, String>>()
     private lateinit var tvTitle: TextView
     private lateinit var btnBack: ImageButton
 
@@ -32,7 +32,7 @@ class DislikedEpisodesActivity : AppCompatActivity() {
         tvTitle.text = "不喜欢的节目"
         btnBack.setOnClickListener { finish() }
 
-        dbHelper = RadioDatabaseHelper.getInstance(this)
+        settings = AppSettings.getInstance(this)
         recyclerView = findViewById(R.id.recycler_view)
         adapter = DislikedAdapter()
         recyclerView.layoutManager = LinearLayoutManager(this)
@@ -42,15 +42,18 @@ class DislikedEpisodesActivity : AppCompatActivity() {
 
     private fun loadDislikedEpisodes() {
         dislikedList.clear()
-        val db = dbHelper.readableDatabase
-        val cursor = db.query("disliked_episodes", null, null, null, null, null, "created_at DESC")
-        while (cursor.moveToNext()) {
-            val id = cursor.getString(0)
-            val title = cursor.getString(1) ?: ""
-            val station = cursor.getString(2) ?: ""
-            dislikedList.add(arrayOf(id, title, station))
+        // 从 AppSettings 读取不喜欢列表（格式: "stationId::title"）
+        for (entry in settings.dislikedEpisodes) {
+            val parts = entry.split("::")
+            if (parts.size >= 2) {
+                val stationId = parts[0]
+                val title = parts[1]
+                val stationName = com.radio.app.network.EpisodeApiService.getStationName(stationId)
+                dislikedList.add(Pair(entry, "$title ($stationName)"))
+            } else {
+                dislikedList.add(Pair(entry, entry))
+            }
         }
-        cursor.close()
         adapter.notifyDataSetChanged()
 
         val tvEmpty = findViewById<View>(R.id.tv_empty)
@@ -66,10 +69,14 @@ class DislikedEpisodesActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val item = dislikedList[position]
-            holder.tvTitle.text = item[1]
-            holder.tvStation.text = item[2]
+            val key = item.first
+            val displayText = item.second
+            holder.tvTitle.text = displayText
+            holder.tvStation.text = if (displayText.contains("(")) {
+                displayText.substringAfterLast("(").removeSuffix(")")
+            } else ""
             holder.btnRemove.setOnClickListener {
-                dbHelper.removeDislikedEpisode(item[0])
+                settings.removeDislikedEpisode(this@DislikedEpisodesActivity, key)
                 dislikedList.removeAt(position)
                 notifyDataSetChanged()
                 Toast.makeText(this@DislikedEpisodesActivity, "已取消不喜欢", Toast.LENGTH_SHORT).show()

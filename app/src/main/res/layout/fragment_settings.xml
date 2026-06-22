@@ -31,6 +31,13 @@
                 android:text="AI模型"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="选择用于语音识别和字幕生成的AI模型"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
             <Spinner
                 android:id="@+id/spinner_ai_model"
                 android:layout_width="match_parent"
@@ -47,6 +54,13 @@
                 android:text="ASR方案"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="语音识别引擎方案，支持在线和离线识别"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
             <Spinner
                 android:id="@+id/spinner_asr_provider"
                 android:layout_width="match_parent"
@@ -60,20 +74,32 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="自动跳过水分"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="16sp" />
-                <Switch
-                    android:id="@+id/switch_auto_skip"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="自动跳过水分"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_auto_skip"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+                <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:checked="true" />
+                    android:text="自动跳过广告、音乐等非内容片段"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
             </LinearLayout>
             <View
                 android:layout_width="match_parent"
@@ -83,20 +109,32 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="连续播放"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="16sp" />
-                <Switch
-                    android:id="@+id/switch_continuous_play"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="连续播放"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_continuous_play"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+                <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:checked="true" />
+                    android:text="当前节目播放完毕后自动播放下一节目"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
             </LinearLayout>
             <View
                 android:layout_width="match_parent"
@@ -106,19 +144,31 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="自动下载缓存"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="16sp" />
-                <Switch
-                    android:id="@+id/switch_auto_download"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="自动下载缓存"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_auto_download"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+                <TextView
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
+                    android:layout_height="wrap_content"
+                    android:text="播放节目时自动将音频缓存到本地存储"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
             </LinearLayout>
             <View
                 android:layout_width="match_parent"
@@ -128,19 +178,31 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="启用预缓存"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="16sp" />
-                <Switch
-                    android:id="@+id/switch_auto_cache"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="启用预缓存"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_auto_cache"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content" />
+                </LinearLayout>
+                <TextView
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
+                    android:layout_height="wrap_content"
+                    android:text="提前缓存即将播放的节目内容"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
             </LinearLayout>
             <View
                 android:layout_width="match_parent"
@@ -150,20 +212,32 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical">
-                <TextView
-                    android:layout_width="0dp"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="启用音频焦点"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="14sp" />
-                <Switch
-                    android:id="@+id/switch_audio_focus"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="启用音频焦点"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="14sp" />
+                    <Switch
+                        android:id="@+id/switch_audio_focus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+                <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:checked="true" />
+                    android:text="播放时自动降低其他应用音量，来电时暂停播放"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
             </LinearLayout>
         </LinearLayout>
 
@@ -189,6 +263,13 @@
                 android:text="界面风格"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="选择深色、清新、经典、极简或自定义配色方案"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
             <Spinner
                 android:id="@+id/spinner_theme"
                 android:layout_width="match_parent"
@@ -234,6 +315,13 @@
                 android:text="字幕大小"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="调节字幕显示的文字大小"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
             <Spinner
                 android:id="@+id/spinner_subtitle_size"
                 android:layout_width="match_parent"
@@ -250,6 +338,13 @@
                 android:text="字幕语言"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="字幕显示的语言"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
             <Spinner
                 android:id="@+id/spinner_subtitle_lang"
                 android:layout_width="match_parent"
@@ -266,6 +361,13 @@
                 android:text="语音识别语言"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="语音识别时使用的语言"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
             <Spinner
                 android:id="@+id/spinner_voice_lang"
                 android:layout_width="match_parent"
@@ -289,74 +391,139 @@
             android:background="@drawable/bg_card"
             android:padding="16dp"
             android:layout_marginBottom="24dp">
-            <TextView
-                android:id="@+id/tv_disliked_episodes"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="不喜欢的节目"
-                android:textColor="?attr/appAccent"
-                android:textSize="16sp"
-                android:padding="12dp"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true" />
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/tv_disliked_episodes"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="不喜欢的节目"
+                    android:textColor="?attr/appAccent"
+                    android:textSize="16sp"
+                    android:padding="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="管理已标记为不喜欢的节目列表"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingStart="12dp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:background="?attr/appDivider" />
-            <TextView
-                android:id="@+id/tv_keyword_settings"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="关键词设置"
-                android:textColor="?attr/appAccent"
-                android:textSize="16sp"
-                android:padding="12dp"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true" />
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/tv_keyword_settings"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="关键词设置"
+                    android:textColor="?attr/appAccent"
+                    android:textSize="16sp"
+                    android:padding="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="设置自动跳过水分时的关键词匹配规则"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingStart="12dp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:background="?attr/appDivider" />
-            <TextView
-                android:id="@+id/btn_manage_offline_engine"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="离线引擎管理"
-                android:textColor="?attr/appAccent"
-                android:textSize="16sp"
-                android:padding="12dp"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true" />
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/btn_manage_offline_engine"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="离线引擎管理"
+                    android:textColor="?attr/appAccent"
+                    android:textSize="16sp"
+                    android:padding="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="管理本地离线语音识别模型文件"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingStart="12dp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:background="?attr/appDivider" />
-            <TextView
-                android:id="@+id/tv_cache_size"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="缓存大小: 计算中..."
-                android:textColor="?attr/appTextPrimary"
-                android:textSize="14sp"
-                android:padding="12dp" />
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/tv_cache_size"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="缓存大小: 计算中..."
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="14sp"
+                    android:padding="12dp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="当前缓存文件占用的存储空间"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingStart="12dp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:background="?attr/appDivider" />
-            <TextView
-                android:id="@+id/btn_clear_cache"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="清理缓存"
-                android:textColor="?attr/appAccent"
-                android:textSize="16sp"
-                android:padding="12dp"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true" />
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/btn_clear_cache"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="清理缓存"
+                    android:textColor="?attr/appAccent"
+                    android:textSize="16sp"
+                    android:padding="12dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="选择并删除不需要的缓存文件，释放存储空间"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingStart="12dp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

@@ -45,6 +45,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         private const val TAG = "RadioPlaybackService"
         private const val MAX_ERROR_RETRY = 3
         private const val NOTIFICATION_ID = 1
+        private const val POSITION_SAVE_INTERVAL = 15000L
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -56,6 +57,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val ACTION_PREV_EPISODE = "com.radio.app.PREV_EPISODE"
         const val ACTION_NEXT_EPISODE = "com.radio.app.NEXT_EPISODE"
         const val ACTION_SEEK_PCT = "com.radio.app.SEEK_PCT"
+        const val ACTION_SEEK_SEC = "com.radio.app.SEEK_SEC"
 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
@@ -65,6 +67,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val EXTRA_CACHE_PERCENT = "cache_percent"
         const val EXTRA_CACHE_PATH = "cache_path"
         const val EXTRA_SEEK_PCT = "seek_pct"
+        const val EXTRA_SEEK_SEC = "seek_sec"
     }
 
     interface Callback {
@@ -96,11 +99,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var progressRunnable: Runnable? = null
     private var notificationHandler: Handler? = null
     private var notificationRunnable: Runnable? = null
+    private var positionSaveHandler: Handler? = null
+    private var positionSaveRunnable: Runnable? = null
     private var skipSeconds = 15
     private var errorRetryCount = 0
     private var isRetrying = false
-    private var stablePlayStartTime = 0L
-    private var hasStablePlayed = false
     private var notificationPlaying = false
     private var notificationTitle = "Radio App"
     private var notificationSubText = ""
@@ -115,9 +118,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         autoSkipHandler = Handler(Looper.getMainLooper())
         progressHandler = Handler(Looper.getMainLooper())
         notificationHandler = Handler(Looper.getMainLooper())
+        positionSaveHandler = Handler(Looper.getMainLooper())
         loadSettings()
         startProgressPolling()
         startNotificationProgressUpdater()
+        startPositionSaver()
     }
 
     private fun ensurePlayerInitialized() {
@@ -141,20 +146,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     callback?.onStateChanged(true)
                                     sendStateBroadcast(true)
                                     updateNotification()
+                                    // 恢复播放位置
+                                    applySavedPosition()
                                 }
                                 Player.STATE_ENDED -> {
                                     callback?.onStateChanged(false)
                                     sendStateBroadcast(false)
+                                    clearSavedPosition()
                                     stopAutoSkipCheck()
                                 }
                             }
                         }
                         override fun onPlayerError(error: PlaybackException) {
-                            Log.e(TAG, "ExoPlayer error: ${error.message}, cause: ${error.cause?.message}")
+                            Log.e(TAG, "ExoPlayer error: ${error.message}")
                             prepared = false
                             errorRetryCount++
                             if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
-                                val retryDelay = errorRetryCount * 3000L
                                 isRetrying = true
                                 Handler(Looper.getMainLooper()).postDelayed({
                                     try {
@@ -163,10 +170,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                             it.prepare()
                                             it.play()
                                         }
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Retry failed", e)
-                                    }
-                                }, retryDelay)
+                                    } catch (e: Exception) { Log.e(TAG, "Retry failed", e) }
+                                }, errorRetryCount * 3000L)
                             } else {
                                 callback?.onError("播放失败: ${error.message ?: "未知错误"}")
                             }
@@ -179,9 +184,49 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                     })
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "ExoPlayer init failed", e)
+        } catch (e: Exception) { Log.e(TAG, "ExoPlayer init failed", e) }
+    }
+
+    private fun applySavedPosition() {
+        val ep = currentEpisode ?: return
+        val episodeKey = "${ep.stationId}::${ep.title}"
+        val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+        if (savedPos > 0 && !isLive) {
+            player?.seekTo(savedPos)
+            Log.d(TAG, "Restored position: ${savedPos}ms for $episodeKey")
         }
+    }
+
+    private fun startPositionSaver() {
+        positionSaveRunnable = Runnable {
+            if (!isLive && prepared && player?.isPlaying == true) {
+                saveCurrentPosition()
+            }
+            positionSaveHandler?.postDelayed(positionSaveRunnable!!, POSITION_SAVE_INTERVAL)
+        }
+        positionSaveRunnable?.let { positionSaveHandler?.post(it) }
+    }
+
+    private fun saveCurrentPosition() {
+        val ep = currentEpisode ?: return
+        val pos = player?.currentPosition ?: return
+        if (pos <= 0) return
+        val episodeKey = "${ep.stationId}::${ep.title}"
+        getSharedPreferences("playback_positions", MODE_PRIVATE)
+            .edit().putLong(episodeKey, pos).apply()
+    }
+
+    private fun clearSavedPosition() {
+        val ep = currentEpisode ?: return
+        val episodeKey = "${ep.stationId}::${ep.title}"
+        getSharedPreferences("playback_positions", MODE_PRIVATE)
+            .edit().remove(episodeKey).apply()
+    }
+
+    fun getSavedPosition(episode: Episode?): Long {
+        val ep = episode ?: return -1L
+        val episodeKey = "${ep.stationId}::${ep.title}"
+        return getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
     }
 
     private fun startProgressPolling() {
@@ -200,7 +245,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 cb.onBufferUpdate(bp)
                             }
                         }
-                    } catch (_: Exception) { /* ignore */ }
+                    } catch (_: Exception) {}
                 }
             }
             progressHandler?.postDelayed(progressRunnable!!, 500)
@@ -211,427 +256,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun startNotificationProgressUpdater() {
         notificationRunnable = Runnable {
             if (!isLive && prepared && player != null) {
-                updateNotificationProgress()
+                updateNotification()
             }
             notificationHandler?.postDelayed(notificationRunnable!!, 1000)
         }
         notificationRunnable?.let { notificationHandler?.post(it) }
-    }
-
-    private fun updateNotificationProgress() {
-        val p = player ?: return
-        val pos = p.currentPosition
-        val dur = p.duration
-        if (dur <= 0) return
-        try {
-            val remoteViews = RemoteViews(packageName, R.layout.notification_custom)
-            applyNotificationIntents(remoteViews)
-
-            remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
-            val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
-            remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
-            remoteViews.setTextViewText(R.id.notification_time_text,
-                "${formatTimeNotif(pos.toInt())}/${formatTimeNotif(dur.toInt())}")
-
-            remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
-            remoteViews.setTextViewText(R.id.notification_subtitle, notificationSubText)
-
-            remoteViews.setImageViewResource(R.id.play_pause_icon,
-                if (notificationPlaying) R.drawable.notif_pause else R.drawable.notif_play)
-            remoteViews.setTextViewText(R.id.play_pause_text,
-                if (notificationPlaying) "暂停" else "播放")
-
-            applyThemeToNotification(remoteViews)
-            applySeekIntents(remoteViews)
-
-            val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
-                .setContentTitle(notificationTitle)
-                .setContentText(notificationSubText)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentIntent(createContentIntent())
-                .setOngoing(false)
-                .setAutoCancel(true)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setCustomContentView(remoteViews)
-                .setCustomBigContentView(remoteViews)
-                .build()
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            manager.notify(NOTIFICATION_ID, notification)
-        } catch (e: Exception) {
-            Log.e(TAG, "updateNotificationProgress failed", e)
-        }
-    }
-
-    private fun applySeekIntents(remoteViews: RemoteViews) {
-        val seek0PI = PendingIntent.getService(this, 10,
-            Intent(this, RadioPlaybackService::class.java).apply {
-                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0f)
-            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val seek25PI = PendingIntent.getService(this, 11,
-            Intent(this, RadioPlaybackService::class.java).apply {
-                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0.25f)
-            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val seek50PI = PendingIntent.getService(this, 12,
-            Intent(this, RadioPlaybackService::class.java).apply {
-                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0.50f)
-            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val seek75PI = PendingIntent.getService(this, 13,
-            Intent(this, RadioPlaybackService::class.java).apply {
-                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0.75f)
-            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val seek100PI = PendingIntent.getService(this, 14,
-            Intent(this, RadioPlaybackService::class.java).apply {
-                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 1.0f)
-            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-        remoteViews.setOnClickPendingIntent(R.id.btn_seek_0, seek0PI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_seek_25, seek25PI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_seek_50, seek50PI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_seek_75, seek75PI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_seek_100, seek100PI)
-    }
-
-    private fun formatTimeNotif(millis: Int): String {
-        val seconds = millis / 1000
-        val minutes = seconds / 60
-        val secs = seconds % 60
-        return String.format("%02d:%02d", minutes, secs)
-    }
-
-    private fun loadSettings() {
-        val prefMgr = PreferenceManager(this)
-        val settings: AppSettings = prefMgr.loadSettings()
-        continuousPlay = settings.continuousPlay
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        intent?.action?.let { action ->
-            when (action) {
-                ACTION_PLAY -> play()
-                ACTION_PAUSE -> pause()
-                ACTION_STOP -> stop()
-                ACTION_PREV_SEGMENT -> jumpToPrevSegment()
-                ACTION_NEXT_SEGMENT -> jumpToNextSegment()
-                ACTION_REWIND -> skipBackward()
-                ACTION_FORWARD -> skipForward()
-                ACTION_PREV_EPISODE -> notifyPrevEpisode()
-                ACTION_NEXT_EPISODE -> notifyNextEpisode()
-                ACTION_SEEK_PCT -> {
-                    val pct = intent.getFloatExtra(EXTRA_SEEK_PCT, 0f)
-                    seekToPercent(pct)
-                }
-            }
-        }
-        return START_NOT_STICKY
-    }
-
-    private fun seekToPercent(pct: Float) {
-        if (isLive || !prepared) return
-        val dur = player?.duration ?: 0L
-        if (dur <= 0) return
-        val pos = (dur * pct).toLong()
-        player?.seekTo(pos)
-    }
-
-    private fun requestAudioFocus(): Boolean {
-        val am = audioManager ?: return false
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setWillPauseWhenDucked(true)
-                .setAcceptsDelayedFocusGain(false)
-                .setOnAudioFocusChangeListener(this)
-                .build()
-            audioFocusRequest = request
-            am.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        } else {
-            @Suppress("DEPRECATION")
-            am.requestAudioFocus(
-                this,
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
-            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        }
-    }
-
-    private fun abandonAudioFocus() {
-        val am = audioManager ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
-            am.abandonAudioFocusRequest(audioFocusRequest!!)
-        } else {
-            @Suppress("DEPRECATION")
-            am.abandonAudioFocus(this)
-        }
-    }
-
-    override fun onAudioFocusChange(focusChange: Int) {
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_GAIN -> play()
-            AudioManager.AUDIOFOCUS_LOSS -> pause()
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                player?.takeIf { it.isPlaying }?.volume = 0.3f
-            }
-            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT,
-            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK -> {
-                player?.volume = 1.0f
-                play()
-            }
-        }
-    }
-
-    fun playStation(station: RadioStation) {
-        currentStation = station
-        currentEpisode = null
-        isLive = true
-        prepared = false
-        currentStreamUrl = station.streamUrl ?: ""
-        errorRetryCount = 0
-        isRetrying = false
-        stopAutoSkipCheck()
-        ensurePlayerInitialized()
-        try {
-            player?.let {
-                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                it.prepare()
-                it.playWhenReady = true
-            }
-            notificationTitle = station.name
-            notificationSubText = "[直播]"
-            notificationDate = ""
-            notificationPlaying = true
-            requestAudioFocus()
-            updateNotification()
-        } catch (e: Exception) {
-            Log.e(TAG, "playStation failed", e)
-        }
-    }
-
-    fun playEpisode(episode: Episode, live: Boolean) {
-        currentEpisode = episode
-        currentStation = null
-        isLive = live
-        prepared = false
-        errorRetryCount = 0
-        isRetrying = false
-        stopAutoSkipCheck()
-        val audioUrl = episode.audioUrl ?: ""
-        currentStreamUrl = audioUrl
-        notificationTitle = episode.title ?: "节目回放"
-        // 提取日期信息
-        notificationDate = episode.broadcastAt?.take(10) ?: ""
-        notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
-        notificationPlaying = true
-        ensurePlayerInitialized()
-        try {
-            player?.let {
-                it.setMediaItem(MediaItem.fromUri(audioUrl))
-                it.prepare()
-                it.playWhenReady = true
-            }
-            requestAudioFocus()
-            updateNotification()
-            startAutoSkipCheck()
-        } catch (e: Exception) {
-            Log.e(TAG, "playEpisode failed", e)
-        }
-    }
-
-    fun play() {
-        player?.play()
-    }
-
-    fun pause() {
-        player?.pause()
-    }
-
-    fun stop() {
-        stopAutoSkipCheck()
-        player?.let {
-            it.stop()
-            abandonAudioFocus()
-            stopForeground(true)
-            stopSelf()
-        }
-    }
-
-    fun seekTo(pos: Long) {
-        if (!isLive && prepared) {
-            player?.seekTo(pos)
-        }
-    }
-
-    fun skipForward() {
-        if (isLive || !prepared) return
-        val pPos = (player?.currentPosition ?: 0) + skipSeconds * 1000
-        val dur = player?.duration ?: 0
-        val finalPos = if (dur > 0 && pPos > dur) dur else pPos
-        player?.seekTo(finalPos)
-    }
-
-    fun skipBackward() {
-        if (isLive || !prepared) return
-        player?.seekTo(maxOf(0, (player?.currentPosition ?: 0) - skipSeconds * 1000))
-    }
-
-    fun isPlaying(): Boolean = player?.isPlaying ?: false
-    fun isLive(): Boolean = isLive
-    fun isPrepared(): Boolean = prepared
-    fun getCurrentStreamUrl(): String = currentStreamUrl
-    fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
-    fun getDuration(): Long {
-        val dur = player?.duration ?: 0L
-        return if (dur < 0) -1L else dur
-    }
-    fun getBufferedPercentage(): Int = player?.bufferedPercentage ?: 0
-    fun getCurrentEpisode(): Episode? = currentEpisode
-    fun getCurrentStation(): RadioStation? = currentStation
-    fun getBufferPercent(): Int = player?.bufferedPercentage ?: 0
-    fun setCallback(cb: Callback?) { callback = cb }
-
-    fun jumpToNextSegment() {
-        val segments = currentEpisode?.voiceSegments ?: return
-        val currentPos = player?.currentPosition ?: 0L
-        for (seg in segments) {
-            if (seg.start > currentPos) {
-                seekTo(seg.start)
-                return
-            }
-        }
-    }
-
-    private fun notifyPrevEpisode() {
-        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-            putExtra(EXTRA_IS_PLAYING, false)
-            putExtra("action", "prev_episode")
-        }
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-    }
-
-    private fun notifyNextEpisode() {
-        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-            putExtra(EXTRA_IS_PLAYING, false)
-            putExtra("action", "next_episode")
-        }
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-    }
-
-    fun jumpToPrevSegment() {
-        val segments = currentEpisode?.voiceSegments ?: return
-        val currentPos = player?.currentPosition ?: 0L
-        var prev: VoiceSegment? = null
-        for (i in segments.indices) {
-            if (segments[i].end >= currentPos) {
-                if (i > 0) prev = segments[i - 1]
-                break
-            }
-        }
-        prev?.let { seekTo(it.start) } ?: segments.firstOrNull()?.let { seekTo(it.start) }
-    }
-
-    fun markSegment(index: Int, isDry: Boolean) {
-        val segments = currentEpisode?.voiceSegments ?: return
-        if (index < 0 || index >= segments.size) return
-        val seg = segments[index]
-        seg.isManuallyMarked = true
-        seg.hasVoice = isDry
-        seg.label = if (isDry) "手动标记:干货" else "手动标记:水分"
-        currentEpisode?.id?.let { episodeId ->
-            RadioDatabaseHelper.getInstance(this).saveManualSegmentMark(
-                episodeId, seg.start, seg.end, isDry
-            )
-        }
-    }
-
-    fun setSkipThisTime(index: Int, skip: Boolean) {
-        val segments = currentEpisode?.voiceSegments ?: return
-        if (index < 0 || index >= segments.size) return
-        segments[index].isSkipThisTime = skip
-    }
-
-    private fun startAutoSkipCheck() {
-        stopAutoSkipCheck()
-        autoSkipRunnable = Runnable {
-            player?.let { p ->
-                if (p.isPlaying && !isLive) {
-                    val segments = currentEpisode?.voiceSegments
-                    if (segments != null) {
-                        val currentPos = p.currentPosition
-                        for (seg in segments) {
-                            if (currentPos >= seg.start && currentPos < seg.end) {
-                                if (seg.shouldAutoSkip()) jumpToNextDrySegment(seg)
-                                break
-                            }
-                        }
-                    }
-                }
-            }
-            autoSkipHandler?.postDelayed(autoSkipRunnable!!, 1000)
-        }
-        autoSkipRunnable?.let { autoSkipHandler?.postDelayed(it, 1000) }
-    }
-
-    private fun jumpToNextDrySegment(currentSeg: VoiceSegment) {
-        val segments = currentEpisode?.voiceSegments ?: return
-        for (seg in segments) {
-            if (seg.start > currentSeg.end && seg.isEffectiveDry()) {
-                seekTo(seg.start)
-                return
-            }
-        }
-    }
-
-    private fun stopAutoSkipCheck() {
-        autoSkipRunnable?.let { autoSkipHandler?.removeCallbacks(it) }
-        autoSkipRunnable = null
-    }
-
-    private fun createContentIntent(): PendingIntent {
-        val openIntent = Intent(this, PlayerActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        return PendingIntent.getActivity(
-            this, 0, openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
-
-    private fun applyNotificationIntents(remoteViews: RemoteViews) {
-        val playing = player?.isPlaying ?: false
-        val rewindPI = PendingIntent.getService(this, 1,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_REWIND },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val prevSegPI = PendingIntent.getService(this, 2,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_SEGMENT },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val prevEpPI = PendingIntent.getService(this, 3,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_EPISODE },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val playPausePI = PendingIntent.getService(this, 4,
-            Intent(this, RadioPlaybackService::class.java).apply { action = if (playing) ACTION_PAUSE else ACTION_PLAY },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val nextEpPI = PendingIntent.getService(this, 5,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_EPISODE },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val nextSegPI = PendingIntent.getService(this, 6,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_SEGMENT },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val forwardPI = PendingIntent.getService(this, 7,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_FORWARD },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-        remoteViews.setOnClickPendingIntent(R.id.btn_rewind, rewindPI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_prev_segment, prevSegPI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_prev_episode, prevEpPI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_play_pause, playPausePI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_next_episode, nextEpPI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_next_segment, nextSegPI)
-        remoteViews.setOnClickPendingIntent(R.id.btn_forward, forwardPI)
     }
 
     private fun updateNotification() {
@@ -641,8 +270,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         remoteViews.setImageViewResource(R.id.play_pause_icon,
             if (playing) R.drawable.notif_pause else R.drawable.notif_play)
-        remoteViews.setTextViewText(R.id.play_pause_text,
-            if (playing) "暂停" else "播放")
+        remoteViews.setTextViewText(R.id.play_pause_text, if (playing) "暂停" else "播放")
 
         remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
         remoteViews.setTextViewText(R.id.notification_subtitle,
@@ -677,17 +305,297 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .build()
-        startForeground(NOTIFICATION_ID, notification)
+
+        // 使用 NotificationManager.notify() 而非 startForeground()
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun applySeekIntents(remoteViews: RemoteViews) {
+        // 以10%为步长，共10个点击点
+        val pcts = listOf(0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)
+        val ids = listOf(R.id.btn_seek_0, R.id.btn_seek_10, R.id.btn_seek_20, R.id.btn_seek_30,
+            R.id.btn_seek_40, R.id.btn_seek_50, R.id.btn_seek_60, R.id.btn_seek_70,
+            R.id.btn_seek_80, R.id.btn_seek_90, R.id.btn_seek_100)
+        for (i in pcts.indices) {
+            val pi = PendingIntent.getService(this, 20 + i,
+                Intent(this, RadioPlaybackService::class.java).apply {
+                    action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, pcts[i])
+                }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            remoteViews.setOnClickPendingIntent(ids[i], pi)
+        }
+    }
+
+    private fun formatTimeNotif(millis: Int): String {
+        val seconds = millis / 1000
+        val minutes = seconds / 60
+        val secs = seconds % 60
+        return String.format("%02d:%02d", minutes, secs)
+    }
+
+    private fun loadSettings() {
+        val prefMgr = PreferenceManager(this)
+        val settings: AppSettings = prefMgr.loadSettings()
+        continuousPlay = settings.continuousPlay
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        intent?.action?.let { action ->
+            when (action) {
+                ACTION_PLAY -> play()
+                ACTION_PAUSE -> pause()
+                ACTION_STOP -> stop()
+                ACTION_PREV_SEGMENT -> jumpToPrevSegment()
+                ACTION_NEXT_SEGMENT -> jumpToNextSegment()
+                ACTION_REWIND -> skipBackward()
+                ACTION_FORWARD -> skipForward()
+                ACTION_PREV_EPISODE -> notifyPrevEpisode()
+                ACTION_NEXT_EPISODE -> notifyNextEpisode()
+                ACTION_SEEK_PCT -> {
+                    val pct = intent.getFloatExtra(EXTRA_SEEK_PCT, 0f)
+                    seekToPercent(pct)
+                }
+                ACTION_SEEK_SEC -> {
+                    val sec = intent.getIntExtra(EXTRA_SEEK_SEC, 0)
+                    seekToSec(sec)
+                }
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun seekToPercent(pct: Float) {
+        if (isLive || !prepared) return
+        val dur = player?.duration ?: 0L
+        if (dur <= 0) return
+        player?.seekTo((dur * pct).toLong())
+    }
+
+    private fun seekToSec(sec: Int) {
+        if (isLive || !prepared) return
+        player?.seekTo((sec * 1000L).coerceAtLeast(0))
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val am = audioManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .setWillPauseWhenDucked(true)
+                .setAcceptsDelayedFocusGain(false)
+                .setOnAudioFocusChangeListener(this).build()
+            audioFocusRequest = request
+            am.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            am.requestAudioFocus(this, AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        val am = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
+            am.abandonAudioFocusRequest(audioFocusRequest!!)
+        } else {
+            @Suppress("DEPRECATION") am.abandonAudioFocus(this)
+        }
+    }
+
+    override fun onAudioFocusChange(focusChange: Int) {
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> play()
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> player?.takeIf { it.isPlaying }?.volume = 0.3f
+            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK -> {
+                player?.volume = 1.0f; play()
+            }
+        }
+    }
+
+    fun playStation(station: RadioStation) {
+        currentStation = station; currentEpisode = null; isLive = true
+        prepared = false; currentStreamUrl = station.streamUrl ?: ""
+        errorRetryCount = 0; isRetrying = false; stopAutoSkipCheck()
+        ensurePlayerInitialized()
+        try {
+            player?.let {
+                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                it.prepare(); it.playWhenReady = true
+            }
+            notificationTitle = station.name; notificationSubText = "[直播]"
+            notificationDate = ""; notificationPlaying = true
+            requestAudioFocus(); updateNotification()
+        } catch (e: Exception) { Log.e(TAG, "playStation failed", e) }
+    }
+
+    fun playEpisode(episode: Episode, live: Boolean) {
+        currentEpisode = episode; currentStation = null; isLive = live
+        prepared = false; errorRetryCount = 0; isRetrying = false
+        stopAutoSkipCheck()
+        currentStreamUrl = episode.audioUrl ?: ""
+        notificationTitle = episode.title ?: "节目回放"
+        notificationDate = episode.broadcastAt?.take(10) ?: ""
+        notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
+        notificationPlaying = true
+        ensurePlayerInitialized()
+        try {
+            player?.let {
+                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                it.prepare(); it.playWhenReady = true
+            }
+            requestAudioFocus(); updateNotification()
+            startAutoSkipCheck()
+        } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
+    }
+
+    fun play() { player?.play() }
+    fun pause() { player?.pause() }
+    fun stop() {
+        stopAutoSkipCheck(); saveCurrentPosition()
+        player?.let { it.stop(); abandonAudioFocus() }
+        (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+            .cancel(NOTIFICATION_ID)
+        stopSelf()
+    }
+    fun seekTo(pos: Long) { if (!isLive && prepared) player?.seekTo(pos) }
+    fun skipForward() {
+        if (isLive || !prepared) return
+        val pPos = (player?.currentPosition ?: 0) + skipSeconds * 1000
+        val dur = player?.duration ?: 0
+        player?.seekTo(if (dur > 0 && pPos > dur) dur else pPos)
+    }
+    fun skipBackward() {
+        if (isLive || !prepared) return
+        player?.seekTo(maxOf(0, (player?.currentPosition ?: 0) - skipSeconds * 1000))
+    }
+    fun isPlaying(): Boolean = player?.isPlaying ?: false
+    fun isLive(): Boolean = isLive
+    fun isPrepared(): Boolean = prepared
+    fun getCurrentStreamUrl(): String = currentStreamUrl
+    fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
+    fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
+    fun getBufferedPercentage(): Int {
+        val p = player ?: return 0
+        val dur = p.duration
+        if (dur <= 0) return 0
+        return ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
+    }
+    fun getCurrentEpisode(): Episode? = currentEpisode
+    fun getCurrentStation(): RadioStation? = currentStation
+    fun getBufferPercent(): Int = player?.bufferedPercentage ?: 0
+    fun setCallback(cb: Callback?) { callback = cb }
+
+    fun jumpToNextSegment() {
+        val segments = currentEpisode?.voiceSegments ?: return
+        val currentPos = player?.currentPosition ?: 0L
+        for (seg in segments) { if (seg.start > currentPos) { seekTo(seg.start); return } }
+    }
+
+    private fun notifyPrevEpisode() {
+        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+            putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "prev_episode")
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+    private fun notifyNextEpisode() {
+        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+            putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+    fun jumpToPrevSegment() {
+        val segments = currentEpisode?.voiceSegments ?: return
+        val currentPos = player?.currentPosition ?: 0L
+        var prev: VoiceSegment? = null
+        for (i in segments.indices) {
+            if (segments[i].end >= currentPos) { if (i > 0) prev = segments[i - 1]; break }
+        }
+        prev?.let { seekTo(it.start) } ?: segments.firstOrNull()?.let { seekTo(it.start) }
+    }
+
+    fun markSegment(index: Int, isDry: Boolean) {
+        val segments = currentEpisode?.voiceSegments ?: return
+        if (index < 0 || index >= segments.size) return
+        val seg = segments[index]
+        seg.isManuallyMarked = true; seg.hasVoice = isDry
+        seg.label = if (isDry) "手动标记:干货" else "手动标记:水分"
+        currentEpisode?.id?.let { episodeId ->
+            RadioDatabaseHelper.getInstance(this).saveManualSegmentMark(episodeId, seg.start, seg.end, isDry)
+        }
+    }
+    fun setSkipThisTime(index: Int, skip: Boolean) {
+        val segments = currentEpisode?.voiceSegments ?: return
+        if (index < 0 || index >= segments.size) return
+        segments[index].isSkipThisTime = skip
+    }
+
+    private fun startAutoSkipCheck() {
+        stopAutoSkipCheck()
+        autoSkipRunnable = Runnable {
+            player?.let { p ->
+                if (p.isPlaying && !isLive) {
+                    val segments = currentEpisode?.voiceSegments ?: return@Runnable
+                    val currentPos = p.currentPosition
+                    for (seg in segments) {
+                        if (currentPos >= seg.start && currentPos < seg.end) {
+                            if (seg.shouldAutoSkip()) jumpToNextDrySegment(seg)
+                            break
+                        }
+                    }
+                }
+            }
+            autoSkipHandler?.postDelayed(autoSkipRunnable!!, 1000)
+        }
+        autoSkipRunnable?.let { autoSkipHandler?.postDelayed(it, 1000) }
+    }
+    private fun jumpToNextDrySegment(currentSeg: VoiceSegment) {
+        val segments = currentEpisode?.voiceSegments ?: return
+        for (seg in segments) {
+            if (seg.start > currentSeg.end && seg.isEffectiveDry()) { seekTo(seg.start); return }
+        }
+    }
+    private fun stopAutoSkipCheck() {
+        autoSkipRunnable?.let { autoSkipHandler?.removeCallbacks(it) }; autoSkipRunnable = null
+    }
+
+    private fun createContentIntent(): PendingIntent {
+        return PendingIntent.getActivity(this, 0,
+            Intent(this, PlayerActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    private fun applyNotificationIntents(remoteViews: RemoteViews) {
+        val playing = player?.isPlaying ?: false
+        remoteViews.setOnClickPendingIntent(R.id.btn_rewind,
+            PendingIntent.getService(this, 1, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_REWIND },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        remoteViews.setOnClickPendingIntent(R.id.btn_prev_segment,
+            PendingIntent.getService(this, 2, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_SEGMENT },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        remoteViews.setOnClickPendingIntent(R.id.btn_prev_episode,
+            PendingIntent.getService(this, 3, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_EPISODE },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        remoteViews.setOnClickPendingIntent(R.id.btn_play_pause,
+            PendingIntent.getService(this, 4, Intent(this, RadioPlaybackService::class.java).apply { action = if (playing) ACTION_PAUSE else ACTION_PLAY },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        remoteViews.setOnClickPendingIntent(R.id.btn_next_episode,
+            PendingIntent.getService(this, 5, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_EPISODE },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        remoteViews.setOnClickPendingIntent(R.id.btn_next_segment,
+            PendingIntent.getService(this, 6, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_SEGMENT },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        remoteViews.setOnClickPendingIntent(R.id.btn_forward,
+            PendingIntent.getService(this, 7, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_FORWARD },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
     }
 
     private fun applyThemeToNotification(remoteViews: RemoteViews) {
         try {
             val theme = ThemeManager.getCurrentTheme(this)
-            val bgColor: Int
-            val textColor: Int
-            val subTextColor: Int
-            val timeTextColor: Int
-
+            val bgColor: Int; val textColor: Int; val subTextColor: Int; val timeTextColor: Int
             when (theme) {
                 "dark" -> {
                     bgColor = android.graphics.Color.parseColor("#CC16213e")
@@ -720,21 +628,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     timeTextColor = android.graphics.Color.parseColor("#90caf9")
                 }
             }
-
             remoteViews.setInt(R.id.notification_root, "setBackgroundColor", bgColor)
             remoteViews.setTextColor(R.id.notification_title, textColor)
             remoteViews.setTextColor(R.id.notification_subtitle, subTextColor)
             remoteViews.setTextColor(R.id.notification_time_text, timeTextColor)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to apply theme to notification", e)
-        }
+        } catch (e: Exception) { Log.e(TAG, "Failed to apply theme", e) }
     }
 
     private fun sendStateBroadcast(playing: Boolean) {
-        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-            putExtra(EXTRA_IS_PLAYING, playing)
-        }
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        LocalBroadcastManager.getInstance(this).sendBroadcast(
+            Intent(BROADCAST_STATE_CHANGED).apply { putExtra(EXTRA_IS_PLAYING, playing) })
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -743,12 +646,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         super.onDestroy()
         progressRunnable?.let { progressHandler?.removeCallbacks(it) }
         notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }
+        positionSaveRunnable?.let { positionSaveHandler?.removeCallbacks(it) }
         stopAutoSkipCheck()
+        saveCurrentPosition()
         abandonAudioFocus()
         serviceScope.cancel()
-        player?.let {
-            it.release()
-            player = null
-        }
+        player?.release()
+        player = null
+        // 移除通知
+        (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+            .cancel(NOTIFICATION_ID)
     }
 }
