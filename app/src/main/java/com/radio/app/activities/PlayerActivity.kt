@@ -93,10 +93,14 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBar.progress = pos
                     binding.tvCurrentTime.text = "${formatTime(pos)} / ${formatTime(dur)}"
                     binding.tvTotalTime.text = formatTime(dur)
-                } else {
+                    binding.tvLiveIndicator.text = "播放中"
+                } else if (playbackService?.isLive() == true) {
                     binding.tvCurrentTime.text = "直播 ${formatTime(pos)}"
                     binding.seekBarCache.visibility = View.GONE
                     binding.tvCacheProgress.visibility = View.GONE
+                } else {
+                    // 回放模式但时长尚未加载，显示缓冲中
+                    binding.tvCurrentTime.text = "缓冲中 ${formatTime(pos)}"
                 }
             }
         }
@@ -227,7 +231,6 @@ class PlayerActivity : AppCompatActivity() {
 
         // 从EpisodesFragment进入时，is_live始终为false，以回放模式处理
         val isLive = currentEpisode?.isLive ?: false
-        val isReplay = !isLive || currentEpisode?.audioUrl?.startsWith("http") == true
         if (!isLive) {
             val audioUrl = currentEpisode?.audioUrl ?: ""
             val cacheFileName = extractCacheFileName(audioUrl)

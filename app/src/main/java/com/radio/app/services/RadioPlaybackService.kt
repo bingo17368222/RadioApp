@@ -31,17 +31,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
-import com.google.android.exoplayer2.upstream.cache.CacheDataSource
-import com.google.android.exoplayer2.upstream.cache.LeastRecentlyUsedCacheEvictor
-import com.google.android.exoplayer2.upstream.cache.SimpleCache
-import com.google.android.exoplayer2.database.StandaloneDatabaseProvider
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener {
 
@@ -50,7 +53,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         private const val MAX_ERROR_RETRY = 3
         private const val NOTIFICATION_ID = 1
         private const val POSITION_SAVE_INTERVAL = 15000L
-        private const val CACHE_MAX_SIZE = 512L * 1024 * 1024 // 512MB
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -113,12 +115,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationTitle = "Radio App"
     private var notificationSubText = ""
     private var notificationDate = ""
+    private var downloadingJob: kotlinx.coroutines.Job? = null
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
-
-    // ExoPlayer 磁盘缓存
-    private var simpleCache: SimpleCache? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -127,24 +127,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         progressHandler = Handler(Looper.getMainLooper())
         notificationHandler = Handler(Looper.getMainLooper())
         positionSaveHandler = Handler(Looper.getMainLooper())
-        initCache()
         loadSettings()
         startProgressPolling()
         startNotificationProgressUpdater()
         startPositionSaver()
-    }
-
-    private fun initCache() {
-        try {
-            val cacheDir = File(cacheDir, "exoplayer_cache")
-            if (!cacheDir.exists()) cacheDir.mkdirs()
-            val evictor = LeastRecentlyUsedCacheEvictor(CACHE_MAX_SIZE)
-            val databaseProvider = StandaloneDatabaseProvider(this)
-            simpleCache = SimpleCache(cacheDir, evictor, databaseProvider)
-            Log.d(TAG, "ExoPlayer cache initialized: ${cacheDir.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to init cache", e)
-        }
     }
 
     private fun ensurePlayerInitialized() {
@@ -156,17 +142,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     "Referer" to "https://www.hndt.com/"
                 ))
 
-            val mediaSourceFactory = if (simpleCache != null) {
-                val cacheDataSourceFactory = CacheDataSource.Factory()
-                    .setCache(simpleCache!!)
-                    .setUpstreamDataSourceFactory(httpDataSourceFactory)
-                DefaultMediaSourceFactory(cacheDataSourceFactory)
-            } else {
-                DefaultMediaSourceFactory(httpDataSourceFactory)
-            }
-
             player = ExoPlayer.Builder(this)
-                .setMediaSourceFactory(mediaSourceFactory)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
                 .build()
                 .apply {
                     addListener(object : Player.Listener {
@@ -180,6 +157,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     sendStateBroadcast(true)
                                     updateNotification()
                                     applySavedPosition()
+                                    // 后台下载音频文件到本地缓存
+                                    startBackgroundDownload()
                                 }
                                 Player.STATE_ENDED -> {
                                     callback?.onStateChanged(false)
@@ -217,6 +196,90 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     })
                 }
         } catch (e: Exception) { Log.e(TAG, "ExoPlayer init failed", e) }
+    }
+
+    private fun startBackgroundDownload() {
+        if (isLive) return
+        val url = currentStreamUrl
+        if (url.isBlank() || !url.startsWith("http")) return
+        // 取文件名
+        val fileName = extractCacheFileName(url)
+        val cacheDir = File(cacheDir, "episodes")
+        if (!cacheDir.exists()) cacheDir.mkdirs()
+        val targetFile = File(cacheDir, fileName)
+        // 已存在则跳过
+        if (targetFile.exists() && targetFile.length() > 0) {
+            Log.d(TAG, "Cache already exists: ${targetFile.absolutePath}")
+            sendCacheUpdateBroadcast(targetFile.length(), targetFile.absolutePath)
+            return
+        }
+        // 后台下载
+        downloadingJob?.cancel()
+        downloadingJob = serviceScope.launch {
+            try {
+                Log.d(TAG, "Downloading audio to: ${targetFile.absolutePath}")
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 30000
+                connection.readTimeout = 60000
+                connection.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
+                connection.setRequestProperty("Referer", "https://www.hndt.com/")
+                connection.connect()
+
+                if (connection.responseCode != 200) {
+                    Log.e(TAG, "Download failed: HTTP ${connection.responseCode}")
+                    return@launch
+                }
+
+                val contentLength = connection.contentLength
+                val input = connection.inputStream
+                val output = FileOutputStream(targetFile)
+                val buffer = ByteArray(8192)
+                var totalRead = 0L
+                var bytesRead: Int
+                var lastProgress = 0
+
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    output.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
+                    if (contentLength > 0) {
+                        val pct = ((totalRead * 100) / contentLength).toInt()
+                        if (pct - lastProgress >= 5) {
+                            lastProgress = pct
+                            sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
+                        }
+                    }
+                }
+                output.close()
+                input.close()
+                connection.disconnect()
+                sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
+                Log.d(TAG, "Download complete: ${targetFile.absolutePath} (${totalRead} bytes)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Download error: ${e.message}")
+                // 删除不完整的文件
+                try { targetFile.delete() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun extractCacheFileName(url: String): String {
+        return try {
+            val path = URL(url).path
+            val name = path.substringAfterLast("/")
+            if (name.isBlank()) "unknown.mp4" else name
+        } catch (e: Exception) {
+            val name = url.substringAfterLast("/")
+            if (name.isBlank()) "unknown.mp4" else name
+        }
+    }
+
+    private fun sendCacheUpdateBroadcast(size: Long, path: String) {
+        val intent = Intent(BROADCAST_CACHE_UPDATE).apply {
+            putExtra(EXTRA_CACHE_PATH, path)
+            putExtra("cache_size", size)
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
     private fun applySavedPosition() {
@@ -328,7 +391,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         applyThemeToNotification(remoteViews)
         applySeekIntents(remoteViews)
 
-        // 始终固定，不可划掉
         val deleteIntent = PendingIntent.getService(this, 99,
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -498,6 +560,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun pause() { player?.pause() }
     fun stop() {
         stopAutoSkipCheck(); saveCurrentPosition()
+        downloadingJob?.cancel()
         player?.let { it.stop(); abandonAudioFocus() }
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
@@ -696,12 +759,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }
         positionSaveRunnable?.let { positionSaveHandler?.removeCallbacks(it) }
         stopAutoSkipCheck()
+        downloadingJob?.cancel()
         saveCurrentPosition()
         abandonAudioFocus()
         serviceScope.cancel()
         player?.release()
         player = null
-        try { simpleCache?.release(); simpleCache = null } catch (_: Exception) {}
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
     }
