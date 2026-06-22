@@ -44,6 +44,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     companion object {
         private const val TAG = "RadioPlaybackService"
         private const val MAX_ERROR_RETRY = 3
+        private const val NOTIFICATION_ID = 1
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -54,6 +55,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val ACTION_FORWARD = "com.radio.app.FORWARD"
         const val ACTION_PREV_EPISODE = "com.radio.app.PREV_EPISODE"
         const val ACTION_NEXT_EPISODE = "com.radio.app.NEXT_EPISODE"
+        const val ACTION_SEEK_PCT = "com.radio.app.SEEK_PCT"
 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
@@ -62,6 +64,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val EXTRA_IS_PLAYING = "is_playing"
         const val EXTRA_CACHE_PERCENT = "cache_percent"
         const val EXTRA_CACHE_PATH = "cache_path"
+        const val EXTRA_SEEK_PCT = "seek_pct"
     }
 
     interface Callback {
@@ -101,6 +104,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationPlaying = false
     private var notificationTitle = "Radio App"
     private var notificationSubText = ""
+    private var notificationDate = ""
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -221,43 +225,70 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (dur <= 0) return
         try {
             val remoteViews = RemoteViews(packageName, R.layout.notification_custom)
-            // Re-apply all pending intents
             applyNotificationIntents(remoteViews)
 
-            // Show progress area
             remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
-            val progress = if (dur > 0) ((pos * 1000) / dur).toInt().coerceIn(0, 1000) else 0
+            val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
             remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
             remoteViews.setTextViewText(R.id.notification_time_text,
                 "${formatTimeNotif(pos.toInt())}/${formatTimeNotif(dur.toInt())}")
 
-            // Set title and subtitle
             remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
             remoteViews.setTextViewText(R.id.notification_subtitle, notificationSubText)
 
-            // Set play/pause
             remoteViews.setImageViewResource(R.id.play_pause_icon,
                 if (notificationPlaying) R.drawable.notif_pause else R.drawable.notif_play)
             remoteViews.setTextViewText(R.id.play_pause_text,
                 if (notificationPlaying) "暂停" else "播放")
 
             applyThemeToNotification(remoteViews)
+            applySeekIntents(remoteViews)
 
             val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setContentTitle(notificationTitle)
                 .setContentText(notificationSubText)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentIntent(createContentIntent())
-                .setOngoing(true)
+                .setOngoing(false)
+                .setAutoCancel(true)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setCustomContentView(remoteViews)
                 .setCustomBigContentView(remoteViews)
                 .build()
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            manager.notify(1, notification)
+            manager.notify(NOTIFICATION_ID, notification)
         } catch (e: Exception) {
             Log.e(TAG, "updateNotificationProgress failed", e)
         }
+    }
+
+    private fun applySeekIntents(remoteViews: RemoteViews) {
+        val seek0PI = PendingIntent.getService(this, 10,
+            Intent(this, RadioPlaybackService::class.java).apply {
+                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0f)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val seek25PI = PendingIntent.getService(this, 11,
+            Intent(this, RadioPlaybackService::class.java).apply {
+                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0.25f)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val seek50PI = PendingIntent.getService(this, 12,
+            Intent(this, RadioPlaybackService::class.java).apply {
+                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0.50f)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val seek75PI = PendingIntent.getService(this, 13,
+            Intent(this, RadioPlaybackService::class.java).apply {
+                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 0.75f)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val seek100PI = PendingIntent.getService(this, 14,
+            Intent(this, RadioPlaybackService::class.java).apply {
+                action = ACTION_SEEK_PCT; putExtra(EXTRA_SEEK_PCT, 1.0f)
+            }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        remoteViews.setOnClickPendingIntent(R.id.btn_seek_0, seek0PI)
+        remoteViews.setOnClickPendingIntent(R.id.btn_seek_25, seek25PI)
+        remoteViews.setOnClickPendingIntent(R.id.btn_seek_50, seek50PI)
+        remoteViews.setOnClickPendingIntent(R.id.btn_seek_75, seek75PI)
+        remoteViews.setOnClickPendingIntent(R.id.btn_seek_100, seek100PI)
     }
 
     private fun formatTimeNotif(millis: Int): String {
@@ -285,9 +316,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 ACTION_FORWARD -> skipForward()
                 ACTION_PREV_EPISODE -> notifyPrevEpisode()
                 ACTION_NEXT_EPISODE -> notifyNextEpisode()
+                ACTION_SEEK_PCT -> {
+                    val pct = intent.getFloatExtra(EXTRA_SEEK_PCT, 0f)
+                    seekToPercent(pct)
+                }
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    private fun seekToPercent(pct: Float) {
+        if (isLive || !prepared) return
+        val dur = player?.duration ?: 0L
+        if (dur <= 0) return
+        val pos = (dur * pct).toLong()
+        player?.seekTo(pos)
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -360,6 +403,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             notificationTitle = station.name
             notificationSubText = "[直播]"
+            notificationDate = ""
             notificationPlaying = true
             requestAudioFocus()
             updateNotification()
@@ -379,7 +423,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val audioUrl = episode.audioUrl ?: ""
         currentStreamUrl = audioUrl
         notificationTitle = episode.title ?: "节目回放"
-        notificationSubText = "[回放]"
+        // 提取日期信息
+        notificationDate = episode.broadcastAt?.take(10) ?: ""
+        notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
         notificationPlaying = true
         ensurePlayerInitialized()
         try {
@@ -602,7 +648,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setTextViewText(R.id.notification_subtitle,
             if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
 
-        // 回放模式显示进度条
         if (!isLive && prepared) {
             remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
             val p = player ?: return
@@ -619,18 +664,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         applyThemeToNotification(remoteViews)
+        applySeekIntents(remoteViews)
 
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
-            .setOngoing(true)
+            .setOngoing(false)
+            .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .build()
-        startForeground(1, notification)
+        startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun applyThemeToNotification(remoteViews: RemoteViews) {

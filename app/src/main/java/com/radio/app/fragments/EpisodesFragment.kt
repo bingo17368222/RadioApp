@@ -46,6 +46,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     private var selectedStationId: String? = null
     private var selectedStationName: String? = null
     private val dateButtons = mutableListOf<TextView>()
+    private var initialLoadDone = false
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -61,22 +62,22 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
         recyclerView?.layoutManager = LinearLayoutManager(context)
 
-        // 今天按钮
         v.findViewById<Button>(R.id.btn_today)?.setOnClickListener {
             selectedDate.timeInMillis = System.currentTimeMillis()
             buildDatePills()
             selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time)) }
         }
 
-        // 日期选择器按钮
         v.findViewById<Button>(R.id.btn_date_picker)?.setOnClickListener {
             showDatePickerDialog()
         }
 
-        // 更新按钮
         v.findViewById<Button>(R.id.btn_refresh)?.setOnClickListener {
             selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time)) }
         }
+
+        // 先恢复上次保存的日期和电台
+        restoreLastSelection()
 
         buildDatePills()
         buildStationPills()
@@ -85,23 +86,27 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
     override fun onResume() {
         super.onResume()
-        // 恢复上次选择的日期和电台
-        val settings = AppSettings.getInstance(requireContext())
-        if (settings.lastSelectedDate.isNotBlank()) {
-            try {
+        // 恢复上次选择的日期 - 但只在首次加载时恢复
+        if (!initialLoadDone) {
+            restoreLastSelection()
+            initialLoadDone = true
+        }
+    }
+
+    private fun restoreLastSelection() {
+        try {
+            val settings = AppSettings.getInstance(requireContext())
+            if (settings.lastSelectedDate.isNotBlank()) {
                 val savedDate = dateFormat.parse(settings.lastSelectedDate)
                 if (savedDate != null) {
                     selectedDate.time = savedDate
-                    buildDatePills()
                 }
-            } catch (_: Exception) {}
-        }
-        if (settings.lastSelectedStationId.isNotBlank()) {
-            selectedStationId = settings.lastSelectedStationId
-            selectedStationName = EpisodeApiService.getStationName(settings.lastSelectedStationId)
-            buildStationPills()
-            loadEpisodes(settings.lastSelectedStationId, dateFormat.format(selectedDate.time))
-        }
+            }
+            if (settings.lastSelectedStationId.isNotBlank()) {
+                selectedStationId = settings.lastSelectedStationId
+                selectedStationName = EpisodeApiService.getStationName(settings.lastSelectedStationId)
+            }
+        } catch (_: Exception) {}
     }
 
     private fun showDatePickerDialog() {
@@ -131,10 +136,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
         val today = Calendar.getInstance()
 
-        // 更新顶部日期显示
         tvSelectedDate?.text = "${selectedDate.get(Calendar.YEAR)}年${selectedDate.get(Calendar.MONTH) + 1}月${selectedDate.get(Calendar.DAY_OF_MONTH)}日"
 
-        // 以用户选择的日期为中心，显示前后各7天（共15天）
         for (i in -7..7) {
             val cal = Calendar.getInstance().apply {
                 timeInMillis = selectedDate.timeInMillis
@@ -193,7 +196,6 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         val settings = AppSettings.getInstance(requireContext())
         val stations = getBuiltinStations()
 
-        // 按播放次数排序（经常播放的在前）
         val sortedStations = stations.sortedByDescending { settings.getStationPlayCount(it.id) }
 
         sortedStations.forEachIndexed { index, station ->
@@ -202,12 +204,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                 textSize = 12f
                 gravity = Gravity.CENTER
                 setPadding(14, 6, 14, 6)
-                if (index == 0 && selectedStationId == null) {
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(getColorPrimary())
-                    selectedStationId = station.id
-                    selectedStationName = station.name
-                } else if (station.id == selectedStationId) {
+                if (station.id == selectedStationId) {
                     setTextColor(Color.WHITE)
                     setBackgroundColor(getColorPrimary())
                 } else {
@@ -230,8 +227,9 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             }
             stationContainer?.addView(pill)
         }
-        // 默认加载第一个电台的节目
-        if (selectedStationId != null) {
+
+        // 仅在首次加载时（没有选中电台）自动加载
+        if (selectedStationId != null && episodes.isEmpty()) {
             loadEpisodes(selectedStationId!!, dateFormat.format(selectedDate.time))
         }
     }
@@ -247,7 +245,6 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     private fun getBuiltinStations(): List<RadioStation> {
-        // 仅包含河南广播网11个电台（支持回放）
         val data = arrayOf(
             arrayOf("henan-news", "新闻广播"),
             arrayOf("henan-economy", "经济广播"),
@@ -276,6 +273,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         settings.lastSelectedDate = dateStr
         settings.lastSelectedStationId = stationId
         settings.save(requireContext())
+        initialLoadDone = true
 
         progressBar?.visibility = View.VISIBLE
         adapter = EpisodeAdapter(requireContext(), episodes, this)
@@ -304,11 +302,10 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     override fun onEpisodeClick(episode: Episode) {
         val audioUrl = episode.audioUrl
         if (audioUrl.isNullOrBlank()) {
-            Toast.makeText(context, "今日节目暂无回放音频，请选择过往日期", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "该节目直播尚未结束，暂无回放音频", Toast.LENGTH_SHORT).show()
             return
         }
 
-        // 记录播放习惯
         episode.stationId?.let { stationId ->
             AppSettings.getInstance(requireContext()).incrementStationPlayCount(requireContext(), stationId)
         }
@@ -331,13 +328,12 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
     override fun onEpisodeLongClick(episode: Episode) {
         val settings = AppSettings.getInstance(requireContext())
-        val isNowDisliked = settings.toggleDislikedEpisode(requireContext(), episode.id)
+        val isNowDisliked = settings.toggleDislikedEpisode(requireContext(), episode)
         if (isNowDisliked) {
             Toast.makeText(context, "已标记为不喜欢: ${episode.title}", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(context, "已取消不喜欢: ${episode.title}", Toast.LENGTH_SHORT).show()
         }
-        // 刷新列表以更新视觉状态
         adapter?.notifyDataSetChanged()
     }
 }

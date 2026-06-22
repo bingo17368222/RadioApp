@@ -39,7 +39,8 @@ class PlayerActivity : AppCompatActivity() {
     private var episodeList: ArrayList<Episode> = ArrayList()
     private var currentEpisodeIndex = -1
     private var isDragging = false
-    private var dragPositionText = ""
+    private var cacheProgressHandler: Handler? = null
+    private var cacheProgressRunnable: Runnable? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -58,6 +59,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             updateUI()
+            startCacheProgressUpdater()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -84,16 +86,11 @@ class PlayerActivity : AppCompatActivity() {
             runOnUiThread {
                 val pos = position.toInt()
                 val dur = duration.toInt()
-                if (isDragging) return@runOnUiThread  // 拖动时不更新进度条位置
+                if (isDragging) return@runOnUiThread
                 if (dur > 0) {
                     binding.seekBar.max = dur
                     binding.seekBar.progress = pos
                     binding.tvCurrentTime.text = "${formatTime(pos)} / ${formatTime(dur)}"
-                    // 更新缓存进度
-                    val bufferedPercent = playbackService?.getBufferedPercentage() ?: 0
-                    binding.seekBarCache.max = dur
-                    binding.seekBarCache.progress = pos + (dur * bufferedPercent / 100)
-                    binding.tvCacheProgress.text = "缓存: ${bufferedPercent}%"
                     binding.tvTotalTime.text = formatTime(dur)
                 } else {
                     binding.tvCurrentTime.text = "直播 ${formatTime(pos)}"
@@ -125,6 +122,25 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun startCacheProgressUpdater() {
+        cacheProgressHandler = Handler(Looper.getMainLooper())
+        cacheProgressRunnable = Runnable {
+            playbackService?.let { svc ->
+                val buffered = svc.getBufferedPercentage()
+                val dur = svc.getDuration()
+                if (dur > 0) {
+                    binding.seekBarCache.max = dur.toInt()
+                    binding.seekBarCache.progress = (dur * buffered / 100).toInt()
+                    binding.tvCacheProgress.text = "缓存: ${buffered}%"
+                    binding.seekBarCache.visibility = View.VISIBLE
+                    binding.tvCacheProgress.visibility = View.VISIBLE
+                }
+            }
+            cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
+        }
+        cacheProgressRunnable?.let { cacheProgressHandler?.post(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -192,7 +208,6 @@ class PlayerActivity : AppCompatActivity() {
 
         val isLive = currentEpisode?.isLive ?: false
         if (!isLive) {
-            // 回放模式：显示缓存URL（基于网络URL构造本地缓存路径）
             val audioUrl = currentEpisode?.audioUrl ?: ""
             val cacheFileName = extractCacheFileName(audioUrl)
             binding.tvCacheUrl.text = "本地缓存: ${cacheDir.absolutePath}/episodes/$cacheFileName"
@@ -253,7 +268,6 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun extractCacheFileName(url: String): String {
-        // 保留网络来源命名风格，截取URL最后路径部分作为文件名
         return try {
             val path = java.net.URL(url).path
             val name = path.substringAfterLast("/")
@@ -267,33 +281,14 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupListeners() {
         binding.btnPlayPause.setOnClickListener {
             playbackService?.let { service ->
-                if (service.isPlaying()) {
-                    service.pause()
-                } else {
-                    service.play()
-                }
+                if (service.isPlaying()) service.pause() else service.play()
             }
         }
-
-        binding.btnPrevSegment.setOnClickListener {
-            playbackService?.jumpToPrevSegment()
-        }
-
-        binding.btnNextSegment.setOnClickListener {
-            playbackService?.jumpToNextSegment()
-        }
-
-        binding.btnSkipForward.setOnClickListener {
-            playbackService?.skipForward()
-        }
-
-        binding.btnSkipBackward.setOnClickListener {
-            playbackService?.skipBackward()
-        }
-
-        binding.btnClose.setOnClickListener {
-            finish()
-        }
+        binding.btnPrevSegment.setOnClickListener { playbackService?.jumpToPrevSegment() }
+        binding.btnNextSegment.setOnClickListener { playbackService?.jumpToNextSegment() }
+        binding.btnSkipForward.setOnClickListener { playbackService?.skipForward() }
+        binding.btnSkipBackward.setOnClickListener { playbackService?.skipBackward() }
+        binding.btnClose.setOnClickListener { finish() }
 
         binding.btnGenerateSubtitle.setOnClickListener {
             val episode = currentEpisode ?: return@setOnClickListener
@@ -323,11 +318,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(progress)} / ${formatTime(dur)}"
                 }
             }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {
-                isDragging = true
-            }
-
+            override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDragging = false
                 seekBar?.let { playbackService?.seekTo(it.progress.toLong()) }
@@ -347,8 +338,7 @@ class PlayerActivity : AppCompatActivity() {
             subtitleServiceBound = true
             val episode = currentEpisode ?: return
             subtitleService?.generateSubtitlesForEpisode(
-                episode.id,
-                episode.audioUrl,
+                episode.id, episode.audioUrl,
                 object : SubtitleGeneratorService.SubtitleCallback {
                     private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
                     override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
@@ -375,7 +365,6 @@ class PlayerActivity : AppCompatActivity() {
                 }
             )
         }
-
         override fun onServiceDisconnected(name: ComponentName?) {
             subtitleService = null
             subtitleServiceBound = false
@@ -385,8 +374,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun bindSubtitleService(episode: Episode) {
         if (subtitleServiceBound && subtitleService != null) {
             subtitleService?.generateSubtitlesForEpisode(
-                episode.id,
-                episode.audioUrl,
+                episode.id, episode.audioUrl,
                 object : SubtitleGeneratorService.SubtitleCallback {
                     private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
                     override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
@@ -419,9 +407,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun updateUI() {
-        playbackService?.let {
-            updatePlayPauseButton(it.isPlaying())
-        }
+        playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
     }
 
     private fun playEpisodeAtIndex(index: Int) {
@@ -466,6 +452,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        cacheProgressRunnable?.let { cacheProgressHandler?.removeCallbacks(it) }
         if (serviceBound) {
             playbackService?.setCallback(null)
             unbindService(serviceConnection)

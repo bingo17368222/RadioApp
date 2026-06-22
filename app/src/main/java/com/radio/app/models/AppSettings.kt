@@ -164,13 +164,25 @@ class AppSettings private constructor() {
 
     fun isDisliked(episodeId: String): Boolean = dislikedEpisodes.contains(episodeId)
 
-    fun toggleDislikedEpisode(context: Context, episodeId: String): Boolean {
-        return if (dislikedEpisodes.contains(episodeId)) {
-            dislikedEpisodes.remove(episodeId)
+    /**
+     * 按节目名称判断是否不喜欢（每天这个节目都不喜欢）
+     */
+    fun isDislikedByTitle(stationId: String?, title: String?): Boolean {
+        if (stationId.isNullOrBlank() || title.isNullOrBlank()) return false
+        val key = "$stationId::$title"
+        return dislikedEpisodes.contains(key)
+    }
+
+    fun toggleDislikedEpisode(context: Context, episode: com.radio.app.models.Episode): Boolean {
+        val stationId = episode.stationId ?: return false
+        val title = episode.title ?: return false
+        val key = "$stationId::$title"
+        return if (dislikedEpisodes.contains(key)) {
+            dislikedEpisodes.remove(key)
             save(context)
             false
         } else {
-            dislikedEpisodes.add(episodeId)
+            dislikedEpisodes.add(key)
             save(context)
             true
         }

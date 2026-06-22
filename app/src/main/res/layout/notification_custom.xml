@@ -53,7 +53,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- 回放进度条区域（仅回放时显示） -->
+    <!-- 回放进度条区域（仅回放时显示，可点击跳转） -->
     <LinearLayout
         android:id="@+id/notification_progress_area"
         android:layout_width="match_parent"
@@ -84,6 +84,41 @@
             android:max="1000"
             android:progress="0"
             android:progressDrawable="@drawable/notification_progress_drawable" />
+
+        <!-- 进度点击区域（5个跳转点） -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="10dp"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:layout_marginStart="-0dp">
+
+            <LinearLayout
+                android:id="@+id/btn_seek_0"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+            <LinearLayout
+                android:id="@+id/btn_seek_25"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+            <LinearLayout
+                android:id="@+id/btn_seek_50"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+            <LinearLayout
+                android:id="@+id/btn_seek_75"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+            <LinearLayout
+                android:id="@+id/btn_seek_100"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 7个按钮 -->
@@ -104,7 +139,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#334488CC"
+            android:background="#884488CC"
             android:padding="2dp">
             <ImageView
                 android:layout_width="16dp"
@@ -126,7 +161,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#3344AA66"
+            android:background="#8833AA55"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -149,7 +184,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33CC7722"
+            android:background="#88DD8833"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -172,7 +207,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#55FF6644"
+            android:background="#AAFF5533"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -197,7 +232,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#33CC7722"
+            android:background="#88DD8833"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -220,7 +255,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#3344AA66"
+            android:background="#8833AA55"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView
@@ -243,7 +278,7 @@
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
-            android:background="#334488CC"
+            android:background="#884488CC"
             android:padding="2dp"
             android:layout_marginStart="1dp">
             <ImageView

@@ -47,13 +47,12 @@ class EpisodeAdapter(
         }
         holder.tvTime.text = timeText
 
-        // 时长·片段数
         val durationMin = episode.duration / 60
         val segments = episode.voiceSegments?.size ?: 0
         holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 
-        // 不喜欢状态指示
-        val isDisliked = settings.isDisliked(episode.id)
+        // 不喜欢状态 - 按节目名称判断（每天该节目都不喜欢）
+        val isDisliked = settings.isDislikedByTitle(episode.stationId, episode.title)
         if (isDisliked) {
             holder.itemView.alpha = 0.5f
             holder.tvTitle.setTextColor(Color.parseColor("#999999"))
@@ -72,7 +71,6 @@ class EpisodeAdapter(
         }
 
         holder.btnPlay.setOnClickListener { listener?.onEpisodeClick(episode) }
-        // 点击节目名称也可进入回放
         holder.tvTitle.setOnClickListener { listener?.onEpisodeClick(episode) }
         holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
