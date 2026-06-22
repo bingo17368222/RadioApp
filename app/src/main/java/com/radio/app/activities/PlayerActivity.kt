@@ -84,7 +84,7 @@ class PlayerActivity : AppCompatActivity() {
             runOnUiThread {
                 val pos = position.toInt()
                 val dur = duration.toInt()
-                if (isDragging) return  // 拖动时不更新进度条位置
+                if (isDragging) return@runOnUiThread  // 拖动时不更新进度条位置
                 if (dur > 0) {
                     binding.seekBar.max = dur
                     binding.seekBar.progress = pos
