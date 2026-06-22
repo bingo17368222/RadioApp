@@ -125,19 +125,28 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun startCacheProgressUpdater() {
+        cacheProgressHandler?.removeCallbacksAndMessages(null)
         cacheProgressHandler = Handler(Looper.getMainLooper())
         cacheProgressRunnable = Runnable {
-            playbackService?.let { svc ->
-                val buffered = svc.getBufferedPercentage()
+            try {
+                val svc = playbackService ?: return@Runnable
+                val bufferedPct = svc.getBufferedPercentage()
+                // 如果播放正常但缓存进度为0，基于播放位置估算
                 val dur = svc.getDuration()
-                if (dur > 0) {
+                val finalPct = if (bufferedPct <= 1 && dur > 0 && svc.isPrepared()) {
+                    val pos = svc.getCurrentPosition()
+                    val estimatedPct = ((pos * 100) / dur).toInt().coerceIn(0, 100)
+                    if (svc.isPlaying()) maxOf(estimatedPct, bufferedPct) else bufferedPct
+                } else bufferedPct
+
+                runOnUiThread {
                     binding.seekBarCache.max = dur.toInt()
-                    binding.seekBarCache.progress = (dur * buffered / 100).toInt()
-                    binding.tvCacheProgress.text = "缓存: ${buffered}%"
-                    binding.seekBarCache.visibility = View.VISIBLE
-                    binding.tvCacheProgress.visibility = View.VISIBLE
+                    binding.seekBarCache.progress = ((dur * finalPct) / 100).toInt()
+                    binding.tvCacheProgress.text = "缓存: $finalPct%"
+                    binding.tvCacheProgress.visibility = if (dur > 0) View.VISIBLE else View.GONE
+                    binding.seekBarCache.visibility = if (dur > 0) View.VISIBLE else View.GONE
                 }
-            }
+            } catch (_: Exception) {}
             cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
         }
         cacheProgressRunnable?.let { cacheProgressHandler?.post(it) }

@@ -146,7 +146,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     callback?.onStateChanged(true)
                                     sendStateBroadcast(true)
                                     updateNotification()
-                                    // 恢复播放位置
                                     applySavedPosition()
                                 }
                                 Player.STATE_ENDED -> {
@@ -284,8 +283,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (dur > 0) {
                 val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
                 remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
+                val totalSec = dur.toInt() / 1000
+                val curSec = pos.toInt() / 1000
                 remoteViews.setTextViewText(R.id.notification_time_text,
-                    "${formatTimeNotif(pos.toInt())}/${formatTimeNotif(dur.toInt())}")
+                    "${formatTimeNotif(curSec)}/${formatTimeNotif(totalSec)}")
             }
         } else {
             remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.GONE)
@@ -294,25 +295,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         applyThemeToNotification(remoteViews)
         applySeekIntents(remoteViews)
 
+        // 播放中设为 ongoing 防止误划，暂停时允许划掉
+        val deleteIntent = PendingIntent.getService(this, 99,
+            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
         val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
-            .setOngoing(false)
+            .setOngoing(playing)       // 播放中不可划掉，暂停后可划掉
             .setAutoCancel(true)
+            .setDeleteIntent(deleteIntent)  // 划掉时停止服务
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
             .build()
 
-        // 使用 NotificationManager.notify() 而非 startForeground()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         manager.notify(NOTIFICATION_ID, notification)
     }
 
     private fun applySeekIntents(remoteViews: RemoteViews) {
-        // 以10%为步长，共10个点击点
+        // 以10%为步长，共11个点击点，每个对应具体秒数
         val pcts = listOf(0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)
         val ids = listOf(R.id.btn_seek_0, R.id.btn_seek_10, R.id.btn_seek_20, R.id.btn_seek_30,
             R.id.btn_seek_40, R.id.btn_seek_50, R.id.btn_seek_60, R.id.btn_seek_70,
@@ -326,8 +332,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
-    private fun formatTimeNotif(millis: Int): String {
-        val seconds = millis / 1000
+    private fun formatTimeNotif(seconds: Int): String {
         val minutes = seconds / 60
         val secs = seconds % 60
         return String.format("%02d:%02d", minutes, secs)
@@ -369,11 +374,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val dur = player?.duration ?: 0L
         if (dur <= 0) return
         player?.seekTo((dur * pct).toLong())
+        // 立即更新通知栏显示
+        updateNotification()
     }
 
     private fun seekToSec(sec: Int) {
         if (isLive || !prepared) return
         player?.seekTo((sec * 1000L).coerceAtLeast(0))
+        updateNotification()
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -479,9 +487,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
     fun getBufferedPercentage(): Int {
         val p = player ?: return 0
+        // 优先使用 ExoPlayer 内置 bufferedPercentage
+        val builtIn = p.bufferedPercentage
+        if (builtIn in 1..99) return builtIn
+        // 如果内置为0或100，用 bufferedPosition 计算
         val dur = p.duration
         if (dur <= 0) return 0
-        return ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
+        val calc = ((p.bufferedPosition * 100) / dur).toInt().coerceIn(0, 100)
+        return maxOf(builtIn, calc)
     }
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
@@ -653,7 +666,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         serviceScope.cancel()
         player?.release()
         player = null
-        // 移除通知
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
     }

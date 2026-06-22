@@ -110,8 +110,9 @@
                 android:text=""
                 android:textColor="?attr/appTextSecondary"
                 android:textSize="10sp"
-                android:maxLines="1"
-                android:ellipsize="middle"
+                android:maxLines="5"
+                android:ellipsize="none"
+                android:scrollbars="horizontal"
                 android:visibility="visible"
                 android:textIsSelectable="true" />
             <TextView
@@ -121,8 +122,9 @@
                 android:text=""
                 android:textColor="?attr/appTextSecondary"
                 android:textSize="10sp"
-                android:maxLines="1"
-                android:ellipsize="middle"
+                android:maxLines="5"
+                android:ellipsize="none"
+                android:scrollbars="horizontal"
                 android:visibility="gone"
                 android:textIsSelectable="true" />
             <TextView

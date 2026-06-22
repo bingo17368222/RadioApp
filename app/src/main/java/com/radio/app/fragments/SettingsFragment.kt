@@ -325,6 +325,9 @@ class SettingsFragment : Fragment() {
         size += calculateDirSize(requireContext().cacheDir)
         // 扫描外部缓存目录
         requireContext().externalCacheDir?.let { size += calculateDirSize(it) }
+        // 扫描 files 目录（可能有下载的缓存文件）
+        size += calculateDirSize(requireContext().filesDir)
+        requireContext().getExternalFilesDir(null)?.let { size += calculateDirSize(it) }
         return size
     }
 
@@ -342,10 +345,11 @@ class SettingsFragment : Fragment() {
 
     private fun showClearCacheDialog() {
         val allFiles = mutableListOf<File>()
-        // 扫描内部缓存目录
+        // 扫描多个可能的缓存目录
         scanFilesRecursive(requireContext().cacheDir, allFiles)
-        // 扫描外部缓存目录
         requireContext().externalCacheDir?.let { scanFilesRecursive(it, allFiles) }
+        scanFilesRecursive(requireContext().filesDir, allFiles)
+        requireContext().getExternalFilesDir(null)?.let { scanFilesRecursive(it, allFiles) }
 
         if (allFiles.isEmpty()) {
             Toast.makeText(requireContext(), "暂无缓存文件", Toast.LENGTH_SHORT).show()
@@ -355,11 +359,15 @@ class SettingsFragment : Fragment() {
         val files = allFiles.toTypedArray()
         val cachePath = requireContext().cacheDir.absolutePath
         val extCachePath = requireContext().externalCacheDir?.absolutePath ?: ""
+        val filesPath = requireContext().filesDir.absolutePath
+        val extFilesPath = requireContext().getExternalFilesDir(null)?.absolutePath ?: ""
         val fileNames = Array(files.size) { i ->
             val path = files[i].absolutePath
             val shortPath = when {
-                extCachePath.isNotEmpty() && path.startsWith(extCachePath) -> "[外部]" + path.replace(extCachePath, "...")
-                path.startsWith(cachePath) -> "[内部]" + path.replace(cachePath, "...")
+                extCachePath.isNotEmpty() && path.startsWith(extCachePath) -> "[外缓存]" + path.replace(extCachePath, "...")
+                path.startsWith(cachePath) -> "[内缓存]" + path.replace(cachePath, "...")
+                extFilesPath.isNotEmpty() && path.startsWith(extFilesPath) -> "[外文件]" + path.replace(extFilesPath, "...")
+                path.startsWith(filesPath) -> "[内文件]" + path.replace(filesPath, "...")
                 else -> path
             }
             shortPath + " (" + formatSize(files[i].length()) + ")"

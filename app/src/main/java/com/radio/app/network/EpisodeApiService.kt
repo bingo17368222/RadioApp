@@ -206,11 +206,14 @@ class EpisodeApiService private constructor() {
 
                 // 判断该节目是否已结束：endTime < now
                 // 如果已结束，尝试从VOD API获取回放URL
-                // 使用当天0点时间戳而非节目结束时间戳
+                // 优先用 endTimeSec，失败则用 dayMidnight
                 var replayUrl: String? = null
                 val endTimeSec = endTime / 1000
                 if (endTimeSec < nowTimestamp) {
-                    replayUrl = tryFetchVodUrl(cid, dayMidnight)
+                    replayUrl = tryFetchVodUrl(cid, endTimeSec)
+                    if (replayUrl == null) {
+                        replayUrl = tryFetchVodUrl(cid, dayMidnight)
+                    }
                 }
 
                 val ep = Episode().apply {
@@ -235,23 +238,31 @@ class EpisodeApiService private constructor() {
     }
 
     /**
-     * 尝试获取单个节目的VOD回放URL
+     * 尝试获取单个节目的VOD回放URL，按标题匹配确保正确节目
      */
-    private fun tryFetchVodUrl(cid: Int, timestamp: Long): String? {
+    private fun tryFetchVodUrl(cid: Int, timestamp: Long, matchTitle: String? = null): String? {
         try {
-            val json = httpGet("$API_BASE/getAuth/vod/program/$cid/$timestamp")
-            if (json == null) return null
+            val url = "$API_BASE/getAuth/vod/program/$cid/$timestamp"
+            Log.d(TAG, "tryFetchVodUrl: $url")
+            val json = httpGet(url) ?: return null
             val obj = JSONObject(json)
             val programs = obj.optJSONArray("programs") ?: return null
             if (programs.length() == 0) return null
             for (i in 0 until programs.length()) {
                 val prog = programs.getJSONObject(i)
+                val title = prog.optString("title", "")
+                // 如果指定了标题，匹配标题
+                if (matchTitle != null && matchTitle.isNotEmpty() && title != matchTitle) continue
                 val playUrl = prog.optJSONArray("playUrl")
                 val downloadUrl = prog.optJSONArray("downloadUrl")
-                return when {
+                val url = when {
                     playUrl != null && playUrl.length() > 0 -> playUrl.getString(0)
                     downloadUrl != null && downloadUrl.length() > 0 -> downloadUrl.getString(0)
                     else -> null
+                }
+                if (url != null) {
+                    Log.d(TAG, "Found VOD url: $url for title=$title")
+                    return url
                 }
             }
         } catch (e: Exception) {
