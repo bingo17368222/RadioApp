@@ -204,15 +204,27 @@ class EpisodeApiService private constructor() {
                 timeFormat.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
                 val timeStr = timeFormat.format(java.util.Date(beginTime))
 
-                // 判断该节目是否已结束：endTime < now
+                // 判断该节目是否已结束：endTime < now (加60秒缓冲)
                 // 如果已结束，尝试从VOD API获取回放URL
-                // 先用 endTimeSec 获取，按标题匹配；失败则用 dayMidnight
+                // 先用 endTimeSec 按标题匹配；失败则用 dayMidnight；仍失败则不带标题匹配
                 var replayUrl: String? = null
                 val endTimeSec = endTime / 1000
-                if (endTimeSec < nowTimestamp) {
+                if (endTimeSec < nowTimestamp + 60) {
+                    // 先按标题匹配
                     replayUrl = tryFetchVodUrl(cid, endTimeSec, title)
+                    // 失败则用当天0点时间戳+标题匹配
                     if (replayUrl == null) {
                         replayUrl = tryFetchVodUrl(cid, dayMidnight, title)
+                    }
+                    // 仍失败则不带标题匹配（取第一个结果）
+                    if (replayUrl == null) {
+                        replayUrl = tryFetchVodUrl(cid, endTimeSec, null)
+                    }
+                    if (replayUrl == null) {
+                        replayUrl = tryFetchVodUrl(cid, dayMidnight, null)
+                    }
+                    if (replayUrl == null) {
+                        Log.w(TAG, "No VOD url for: $title (endTimeSec=$endTimeSec, now=$nowTimestamp)")
                     }
                 }
 
