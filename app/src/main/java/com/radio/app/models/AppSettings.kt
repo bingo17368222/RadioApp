@@ -73,6 +73,7 @@ class AppSettings private constructor() {
     var rememberLastEpisode: Boolean = true
     var wifiOnlyPreCache: Boolean = true
     var notificationStyle: String = "full"
+    var skipSeconds: Int = 15
     var dislikedEpisodes: MutableList<String> = mutableListOf()
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
     var lastSelectedDate: String = ""
@@ -103,6 +104,7 @@ class AppSettings private constructor() {
         rememberLastEpisode = prefs.getBoolean("remember_last_episode", true)
         wifiOnlyPreCache = prefs.getBoolean("wifi_only_precache", true)
         notificationStyle = prefs.getString("notification_style", "full") ?: "full"
+        skipSeconds = prefs.getInt("skip_seconds", 15)
         splitMode = prefs.getString("split_mode", SPLIT_MODE_NONE) ?: SPLIT_MODE_NONE
 
         val dislikedJson = prefs.getString("disliked_episodes", "[]") ?: "[]"
@@ -152,6 +154,7 @@ class AppSettings private constructor() {
             putBoolean("remember_last_episode", rememberLastEpisode)
             putBoolean("wifi_only_precache", wifiOnlyPreCache)
             putString("notification_style", notificationStyle)
+            putInt("skip_seconds", skipSeconds)
             putString("split_mode", splitMode)
             val arr = JSONArray()
             dislikedEpisodes.forEach { arr.put(it) }

@@ -102,63 +102,23 @@ class PlayerActivity : AppCompatActivity() {
             
             val newUrl = currentEpisode?.audioUrl
             
-            // 最强抖动防护：如果服务已启动播放且URL匹配，直接跳过
+            // 核心防抖：如果服务已经播放同一URL，只更新UI
+            if (newUrl != null && playbackService?.isSameEpisodePlaying(newUrl) == true) {
+                updateUI()
+                startCacheProgressUpdater()
+                restoreBackgroundResults()
+                return@onServiceConnected
+            }
+            
+            // 如果服务有任何播放在进行中，不打扰，只更新UI
             if (playbackService?.isPlaybackStarted() == true) {
-                val currentUrl = playbackService?.getCurrentPlayingUrl()
-                if (currentUrl != null && newUrl != null && currentUrl == newUrl) {
-                    updateUI()
-                    startCacheProgressUpdater()
-                    restoreBackgroundResults()
-                    return@onServiceConnected
-                }
-            }
-            
-            // 备用：多层检查
-            val svcPlaying = playbackService?.isPlaying() ?: false
-            val svcPrepared = playbackService?.isPrepared() ?: false
-            val svcEpisode = playbackService?.getCurrentEpisode()
-            val svcUrl = playbackService?.getCurrentStreamUrl()
-            
-            // 1. 服务正在播放且URL完全匹配 → 跳过
-            if (svcPlaying && svcUrl != null && newUrl != null && svcUrl == newUrl) {
-                updateUI()
-                startCacheProgressUpdater()
-                restoreBackgroundResults()
-                return@onServiceConnected
-            }
-            // 2. 服务正在播放且节目相同 → 跳过
-            if (svcPlaying && svcEpisode != null && currentEpisode != null) {
-                val sameEpisode = svcEpisode.stationId == currentEpisode!!.stationId && 
-                                 svcEpisode.title == currentEpisode!!.title
-                if (sameEpisode) {
-                    updateUI()
-                    startCacheProgressUpdater()
-                    restoreBackgroundResults()
-                    return@onServiceConnected
-                }
-            }
-            // 3. 服务已准备就绪且URL匹配（即使暂停中） → 跳过
-            if (svcPrepared && svcUrl != null && newUrl != null && svcUrl == newUrl) {
-                updateUI()
-                startCacheProgressUpdater()
-                restoreBackgroundResults()
-                return@onServiceConnected
-            }
-            // 4. 服务正在播放（任何节目） → 跳过
-            if (svcPlaying) {
-                updateUI()
-                startCacheProgressUpdater()
-                return@onServiceConnected
-            }
-            // 5. 服务未播放但已启动过（正在缓冲中）且URL匹配 → 跳过
-            if (playbackService?.isPlaybackStarted() == true && svcUrl != null && newUrl != null && svcUrl == newUrl) {
                 updateUI()
                 startCacheProgressUpdater()
                 restoreBackgroundResults()
                 return@onServiceConnected
             }
             
-            // 只有服务未播放时才启动新播放
+            // 只有服务完全空闲时才启动新播放
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
             } else {

@@ -62,6 +62,9 @@ class SubtitleGeneratorService : Service() {
     private var executor: ExecutorService? = null
     private var dbHelper: RadioDatabaseHelper? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    // 防止进度回退
+    @Volatile
+    private var lastReportedProgress = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -157,7 +160,23 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
+    /**
+     * 单调进度上报：只有当前进度 >= 上次进度时才上报，防止进度回退
+     */
+    private fun reportProgress(callback: SubtitleCallback, progress: Int, total: Int) {
+        // 只有进度更大时才更新（防止并发导致的回退）
+        if (progress >= lastReportedProgress) {
+            lastReportedProgress = progress
+            callback.onProgressUpdate(progress, total)
+        } else {
+            Log.w(TAG, "Progress regression prevented: $progress < $lastReportedProgress (ignored)")
+        }
+    }
+
     private fun generateWithVosk(episodeId: String, audioUrl: String, callback: SubtitleCallback): Boolean {
+        // 重置进度计数器
+        lastReportedProgress = 0
+        
         // 1. 查找可用的Vosk模型
         val modelPath = findVoskModel()
         if (modelPath == null) {
@@ -166,14 +185,16 @@ class SubtitleGeneratorService : Service() {
             return false
         }
 
-        callback.onProgressUpdate(0, 100)
-        Log.d(TAG, "Using Vosk model: $modelPath")
+        reportProgress(callback, 0, 100)
+        Log.d(TAG, "[Phase 0] Using Vosk model: $modelPath")
 
-        // 2. 下载音频文件（优先使用缓存，带进度回调 0-20%）
-        callback.onProgressUpdate(1, 100)
-        Log.d(TAG, "Starting audio download: $audioUrl")
+        // 2. 下载音频文件（优先使用缓存，带进度回调 0-14%）
+        reportProgress(callback, 1, 100)
+        Log.d(TAG, "[Phase 1] Starting audio download: $audioUrl")
         val audioFile = getAudioFile(audioUrl) { progress ->
-            callback.onProgressUpdate(progress.coerceAtMost(18), 100)
+            // 下载进度映射到 1-14%
+            val mappedProgress = (1 + progress * 13 / 14).coerceAtMost(14)
+            reportProgress(callback, mappedProgress, 100)
         }
         if (audioFile == null) {
             Log.e(TAG, "Audio download failed for $audioUrl")
@@ -191,14 +212,14 @@ class SubtitleGeneratorService : Service() {
             return false
         }
 
-        callback.onProgressUpdate(15, 100)
-        Log.d(TAG, "Audio file ready: ${audioFile.absolutePath} size=${audioFile.length()}")
+        reportProgress(callback, 15, 100)
+        Log.d(TAG, "[Phase 2] Audio file ready: ${audioFile.absolutePath} size=${audioFile.length()}")
 
-        // 3. 将音频解码为16kHz单声道PCM（15-40%进度）
+        // 3. 将音频解码为16kHz单声道PCM（16-40%进度）
         val pcmFile = File(cacheDir, "subtitle_pcm_${Math.abs(audioUrl.hashCode())}.pcm")
         try {
-            callback.onProgressUpdate(18, 100)
-            Log.d(TAG, "Starting PCM decode...")
+            reportProgress(callback, 16, 100)
+            Log.d(TAG, "[Phase 3] Starting PCM decode...")
             // Get audio duration for progress calculation
             val durationExtractor = MediaExtractor()
             var audioDurationUs = 0L
@@ -208,7 +229,7 @@ class SubtitleGeneratorService : Service() {
                     val fmt = durationExtractor.getTrackFormat(i)
                     if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
                         audioDurationUs = fmt.getLong(MediaFormat.KEY_DURATION)
-                        Log.d(TAG, "Audio duration: ${audioDurationUs}us")
+                        Log.d(TAG, "Audio duration: ${audioDurationUs}us (${audioDurationUs / 1000000}s)")
                         break
                     }
                 }
@@ -218,16 +239,18 @@ class SubtitleGeneratorService : Service() {
                 durationExtractor.release()
             }
             decodeToPcm(audioFile, pcmFile, audioDurationUs) { pct ->
-                // PCM解码进度: 18-40%
-                callback.onProgressUpdate(18 + pct * 22 / 100, 100)
+                // PCM解码进度: 16-40%
+                reportProgress(callback, 16 + pct * 24 / 100, 100)
             }
-            Log.d(TAG, "PCM decoded: ${pcmFile.length()} bytes")
-            callback.onProgressUpdate(40, 100)
+            Log.d(TAG, "[Phase 4] PCM decoded: ${pcmFile.length()} bytes")
+            reportProgress(callback, 40, 100)
 
             // 4. 使用Vosk进行语音识别（40-95%进度）
-            Log.d(TAG, "Starting Vosk recognition...")
+            Log.d(TAG, "[Phase 5] Starting Vosk recognition...")
+            Log.d(TAG, "Loading Vosk model from: $modelPath")
             val model = Model(modelPath)
             val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
+            Log.d(TAG, "Vosk model loaded, starting recognition")
 
             val pcmData = pcmFile.readBytes()
             val totalBytes = pcmData.size
@@ -237,8 +260,25 @@ class SubtitleGeneratorService : Service() {
             val allTranscripts = mutableListOf<Transcript>()
             var fullText = StringBuilder()
             var lastPartialOutput = 0L  // 上次输出部分结果的偏移量
+            var lastLogTime = System.currentTimeMillis()
+            var lastOutputTime = System.currentTimeMillis()  // 上次有输出的时间
 
+            val startTime = System.currentTimeMillis()
             while (offset < totalBytes) {
+                // 检查是否超时（超过30秒无输出则告警，超过120秒无输出则中止）
+                val now = System.currentTimeMillis()
+                if (allTranscripts.isEmpty() && now - startTime > 120000) {
+                    Log.e(TAG, "Vosk recognition timeout: no output after 120 seconds, aborting")
+                    recognizer.close()
+                    model.close()
+                    callback.onError("语音识别超时：音频可能无法识别，请检查模型是否匹配")
+                    return false
+                }
+                if (now - lastOutputTime > 30000) {
+                    Log.w(TAG, "Vosk recognition: no output for 30 seconds (offset=$offset/$totalBytes)")
+                    lastOutputTime = now  // 防止重复告警
+                }
+                
                 val chunkSize = minOf(bytesPerChunk, totalBytes - offset)
                 val chunk = pcmData.copyOfRange(offset, offset + chunkSize)
                 offset += chunkSize
@@ -267,7 +307,8 @@ class SubtitleGeneratorService : Service() {
                         dbHelper?.saveTranscript(t)
                         callback.onSubtitleGenerated(t)
                         fullText.append(text).append(" ")
-                        Log.d(TAG, "Vosk segment: $startSec-$endSec: $text")
+                        lastOutputTime = System.currentTimeMillis()
+                        Log.d(TAG, "Vosk result: $startSec-$endSec: $text")
                     }
                 } else {
                     // 尝试获取部分识别结果，确保任何时候都有输出
@@ -289,6 +330,7 @@ class SubtitleGeneratorService : Service() {
                                 }
                                 callback.onSubtitleGenerated(t)
                                 lastPartialOutput = offset.toLong()
+                                lastOutputTime = System.currentTimeMillis()
                                 Log.d(TAG, "Vosk partial: $startSec-$endSec: $partialText")
                             }
                         } catch (_: Exception) {
@@ -299,7 +341,14 @@ class SubtitleGeneratorService : Service() {
 
                 // 更新进度 (40-95%)
                 val progress = 40 + (offset * 55 / totalBytes).toInt()
-                callback.onProgressUpdate(progress.coerceAtMost(95), 100)
+                reportProgress(callback, progress.coerceAtMost(95), 100)
+                
+                // 每10秒输出一次状态日志
+                if (now - lastLogTime > 10000) {
+                    Log.d(TAG, "Vosk progress: offset=$offset/$totalBytes (${offset * 100 / totalBytes}%), segments=${allTranscripts.size}, text='${fullText.take(50)}'")
+                    lastLogTime = now
+                }
+                
                 segmentIndex++
             }
 
@@ -324,8 +373,9 @@ class SubtitleGeneratorService : Service() {
             recognizer.close()
             model.close()
 
-            callback.onProgressUpdate(100, 100)
-            Log.d(TAG, "Vosk recognition complete: ${allTranscripts.size} segments, text='${fullText.take(100)}'")
+            reportProgress(callback, 100, 100)
+            val elapsed = (System.currentTimeMillis() - startTime) / 1000
+            Log.d(TAG, "Vosk recognition complete: ${allTranscripts.size} segments in ${elapsed}s, text='${fullText.take(100)}'")
             callback.onComplete(allTranscripts)
 
             // 清理临时文件
@@ -830,7 +880,17 @@ class SubtitleGeneratorService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "onDestroy: cleaning up resources")
         releaseWakeLock()
         executor?.shutdown()
+        // 清除处理状态，防止下次启动时显示虚假的处理中状态
+        try {
+            getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().clear().apply()
+            Log.d(TAG, "onDestroy: cleared processing state")
+        } catch (_: Exception) {}
+        // 移除通知
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
     }
 }

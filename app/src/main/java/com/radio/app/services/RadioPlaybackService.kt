@@ -18,6 +18,7 @@ import android.util.Log
 import android.os.PowerManager
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import android.support.v4.media.MediaMetadataCompat
 import android.view.KeyEvent
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
@@ -129,7 +130,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationRunnable: Runnable? = null
     private var positionSaveHandler: Handler? = null
     private var positionSaveRunnable: Runnable? = null
-    private var skipSeconds = 5
+    private var skipSeconds = 15
     private var errorRetryCount = 0
     private var isRetrying = false
     private var savePlaybackPosition = true
@@ -192,10 +193,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 注册SharedPreferences监听器，实现通知栏样式热切换
         val prefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
         prefChangeListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "notification_style") {
-                reloadNotificationStyle()
-                val handler = Handler(Looper.getMainLooper())
-                handler.post { updateNotification() }
+            Log.d(TAG, "Pref changed: key=$key")
+            when (key) {
+                "notification_style" -> {
+                    reloadNotificationStyle()
+                    Log.d(TAG, "Hot-switch notification style to: $notificationStyle")
+                    val handler = Handler(Looper.getMainLooper())
+                    handler.post { updateNotification() }
+                }
+                "skip_seconds" -> {
+                    skipSeconds = prefs.getInt("skip_seconds", 15)
+                    Log.d(TAG, "Hot-switch skipSeconds to: $skipSeconds")
+                }
             }
         }
         prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
@@ -247,8 +256,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun updateMediaSessionState() {
         val state = if (player?.isPlaying == true)
             PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val pos = player?.currentPosition ?: 0L
         val builder = PlaybackStateCompat.Builder()
-            .setState(state, player?.currentPosition ?: 0, 1.0f)
+            .setState(state, pos, 1.0f)
             .setActions(
                 PlaybackStateCompat.ACTION_PLAY or
                 PlaybackStateCompat.ACTION_PAUSE or
@@ -259,6 +269,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 PlaybackStateCompat.ACTION_STOP
             )
         mediaSession?.setPlaybackState(builder.build())
+
+        // 设置MediaMetadata，系统需要duration才能显示SeekBar
+        if (!isLive && prepared) {
+            val dur = player?.duration ?: 0L
+            if (dur > 0) {
+                val metadata = MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, notificationTitle)
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, notificationSubText)
+                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, dur)
+                    .build()
+                mediaSession?.setMetadata(metadata)
+            }
+        }
     }
 
     private fun ensurePlayerInitialized() {
@@ -453,20 +476,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.d(TAG, "Pre-cache: already have $cachedCount episodes, target is ${settings.preloadCacheCount}")
             return
         }
-        // 从预缓存列表中获取下一个待下载的节目
+        // 从预缓存列表中获取待下载的节目
         val preCacheList = loadPreCacheList()
         if (preCacheList.isEmpty()) {
             Log.d(TAG, "Pre-cache: no episodes in pre-cache list")
             return
         }
-        // 找到第一个未缓存的节目并下载
         val cachedNames = cachedFiles.map { it.name }.toSet()
+        val needed = settings.preloadCacheCount - cachedCount
+        var downloaded = 0
+        // 跳过不喜欢、循环下载直到达到目标数量
         for (ep in preCacheList) {
+            if (downloaded >= needed) break
             val fileName = extractCacheFileName(ep.audioUrl)
             if (fileName in cachedNames) continue
-            // 下载这个节目
+            // 跳过不喜欢的节目
+            if (settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                Log.d(TAG, "Pre-cache: skipping disliked episode ${ep.title}")
+                continue
+            }
+            Log.d(TAG, "Pre-cache: downloading #${downloaded + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
             downloadPreCacheEpisode(ep)
-            break
+            downloaded++
+            // 每次只触发一个下载，downloadPreCacheEpisode完成后会回调triggerPreCache继续
+            return
+        }
+        if (downloaded == 0) {
+            Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked)")
         }
     }
 
@@ -745,6 +781,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun buildMediaStyleNotification(playing: Boolean, deleteIntent: PendingIntent) {
         val contentText = if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText"
 
+        // 创建展开视图（含进度条和50点seek）
+        val expandedView = RemoteViews(packageName, R.layout.notification_media_expanded)
+        expandedView.setTextViewText(R.id.notification_title, notificationTitle)
+        expandedView.setTextViewText(R.id.notification_subtitle, contentText)
+
+        if (!isLive && prepared) {
+            expandedView.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
+            val p = player
+            if (p != null) {
+                val pos = p.currentPosition
+                val dur = p.duration
+                if (dur > 0) {
+                    val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
+                    expandedView.setProgressBar(R.id.notification_progress, 1000, progress, false)
+                    val totalSec = dur.toInt() / 1000
+                    val curSec = pos.toInt() / 1000
+                    expandedView.setTextViewText(R.id.notification_time_text,
+                        "${formatTimeNotif(curSec)}/${formatTimeNotif(totalSec)}")
+                }
+            }
+            applySeekIntents(expandedView)
+        } else {
+            expandedView.setViewVisibility(R.id.notification_progress_area, android.view.View.GONE)
+        }
+
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(contentText)
@@ -760,14 +821,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 .setShowActionsInCompactView(0, 2, 4)
                 .setMediaSession(mediaSession?.sessionToken))
             // 5个按钮：后退 -5s | 上一节目 | 播放/暂停 | 下一节目 | 前进 +5s
-            .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退5s", 10))
+            .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退", 10))
             .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
             .addAction(createNotificationAction(
                 if (playing) ACTION_PAUSE else ACTION_PLAY,
                 if (playing) R.drawable.notif_pause else R.drawable.notif_play,
                 if (playing) "暂停" else "播放", 12))
             .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
-            .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进5s", 14))
+            .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进", 14))
+            // 展开状态使用自定义布局（含进度条和seek区）
+            .setCustomBigContentView(expandedView)
 
         val notification: Notification = builder.build()
         notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
@@ -864,7 +927,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val settings: AppSettings = prefMgr.loadSettings()
         continuousPlay = settings.continuousPlay
         savePlaybackPosition = settings.savePlaybackPosition
-        notificationStyle = settings.notificationStyle
+        // 从 radio_app_settings 读取（与 AppSettings.save() 和热切换监听器使用同一文件）
+        val appPrefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+        notificationStyle = appPrefs.getString("notification_style", "full") ?: "full"
+        skipSeconds = appPrefs.getInt("skip_seconds", 15)
+        Log.d(TAG, "loadSettings: notificationStyle=$notificationStyle, skipSeconds=$skipSeconds")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
