@@ -25,6 +25,7 @@ import com.radio.app.models.AppSettings
 import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
 import com.radio.app.models.VoiceSegment
+import com.radio.app.utils.NetworkUtils
 import com.radio.app.utils.PreferenceManager
 import com.radio.app.utils.ThemeManager
 import kotlinx.coroutines.CoroutineScope
@@ -134,6 +135,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var downloadingJob: kotlinx.coroutines.Job? = null
     private var positionRestoreRequested = false
     private var isSeekingToPosition = false
+    private var useCompactNotification = false
 
     // 后台下载进度（供 UI 读取）
     @Volatile
@@ -299,6 +301,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 downloadDoneBytes = downloadTotalBytes.coerceAtLeast(totalRead)
                 sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
                 Log.d(TAG, "Download complete: ${targetFile.absolutePath} (${totalRead} bytes)")
+                // 预缓存下一节目
+                try {
+                    val settings = AppSettings.getInstance(this@RadioPlaybackService)
+                    if (settings.preloadCache && settings.autoCache) {
+                        val wifiOk = !settings.wifiOnlyPreCache || NetworkUtils.isWifiConnected(this@RadioPlaybackService)
+                        if (wifiOk) {
+                            sendBroadcast(Intent("com.radio.app.PRECACHE_TRIGGER"))
+                        }
+                    }
+                } catch (e: Exception) { Log.w(TAG, "Precache trigger failed", e) }
             } catch (e: Exception) {
                 Log.e(TAG, "Download error: ${e.message}")
                 try { targetFile.delete() } catch (_: Exception) {}
@@ -422,7 +434,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun updateNotification() {
         val playing = player?.isPlaying ?: false
-        val remoteViews = RemoteViews(packageName, R.layout.notification_custom)
+        val remoteViews = if (useCompactNotification) {
+            RemoteViews(packageName, R.layout.notification_compact)
+        } else {
+            RemoteViews(packageName, R.layout.notification_custom)
+        }
         applyNotificationIntents(remoteViews)
 
         remoteViews.setImageViewResource(R.id.play_pause_icon,
@@ -479,6 +495,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun applySeekIntents(remoteViews: RemoteViews) {
+        try {
         // 50个跳转点，每2%一个，精度更高
         val pcts = FloatArray(51) { it * 0.02f }
         val ids = intArrayOf(
@@ -501,6 +518,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             remoteViews.setOnClickPendingIntent(ids[i], pi)
         }
+        } catch (_: Exception) {}
     }
 
     private fun formatTimeNotif(seconds: Int): String {
@@ -514,6 +532,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val settings: AppSettings = prefMgr.loadSettings()
         continuousPlay = settings.continuousPlay
         savePlaybackPosition = settings.savePlaybackPosition
+        useCompactNotification = settings.useCompactNotification
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -756,27 +775,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun applyNotificationIntents(remoteViews: RemoteViews) {
         val playing = player?.isPlaying ?: false
-        remoteViews.setOnClickPendingIntent(R.id.btn_rewind,
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_rewind,
             PendingIntent.getService(this, 1, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_REWIND },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        remoteViews.setOnClickPendingIntent(R.id.btn_prev_segment,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_prev_segment,
             PendingIntent.getService(this, 2, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_SEGMENT },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        remoteViews.setOnClickPendingIntent(R.id.btn_prev_episode,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_prev_episode,
             PendingIntent.getService(this, 3, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_PREV_EPISODE },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        remoteViews.setOnClickPendingIntent(R.id.btn_play_pause,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_play_pause,
             PendingIntent.getService(this, 4, Intent(this, RadioPlaybackService::class.java).apply { action = if (playing) ACTION_PAUSE else ACTION_PLAY },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        remoteViews.setOnClickPendingIntent(R.id.btn_next_episode,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_next_episode,
             PendingIntent.getService(this, 5, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_EPISODE },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        remoteViews.setOnClickPendingIntent(R.id.btn_next_segment,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_next_segment,
             PendingIntent.getService(this, 6, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_NEXT_SEGMENT },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        remoteViews.setOnClickPendingIntent(R.id.btn_forward,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
+        try { remoteViews.setOnClickPendingIntent(R.id.btn_forward,
             PendingIntent.getService(this, 7, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_FORWARD },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
     }
 
     private fun applyThemeToNotification(remoteViews: RemoteViews) {
@@ -815,10 +834,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     timeTextColor = android.graphics.Color.parseColor("#90caf9")
                 }
             }
-            remoteViews.setInt(R.id.notification_root, "setBackgroundColor", bgColor)
-            remoteViews.setTextColor(R.id.notification_title, textColor)
-            remoteViews.setTextColor(R.id.notification_subtitle, subTextColor)
-            remoteViews.setTextColor(R.id.notification_time_text, timeTextColor)
+            try { remoteViews.setInt(R.id.notification_root, "setBackgroundColor", bgColor) } catch (_: Exception) {}
+            try { remoteViews.setTextColor(R.id.notification_title, textColor) } catch (_: Exception) {}
+            try { remoteViews.setTextColor(R.id.notification_subtitle, subTextColor) } catch (_: Exception) {}
+            try { remoteViews.setTextColor(R.id.notification_time_text, timeTextColor) } catch (_: Exception) {}
         } catch (e: Exception) { Log.e(TAG, "Failed to apply theme", e) }
     }
 

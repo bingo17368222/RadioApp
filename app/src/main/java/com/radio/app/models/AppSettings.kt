@@ -71,6 +71,8 @@ class AppSettings private constructor() {
     var autoCache: Boolean = false
     var savePlaybackPosition: Boolean = true
     var rememberLastEpisode: Boolean = true
+    var wifiOnlyPreCache: Boolean = true
+    var useCompactNotification: Boolean = false
     var dislikedEpisodes: MutableList<String> = mutableListOf()
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
     var lastSelectedDate: String = ""
@@ -98,6 +100,8 @@ class AppSettings private constructor() {
         continuousPlay = prefs.getBoolean("continuous_play", true)
         savePlaybackPosition = prefs.getBoolean("save_playback_position", true)
         rememberLastEpisode = prefs.getBoolean("remember_last_episode", true)
+        wifiOnlyPreCache = prefs.getBoolean("wifi_only_precache", true)
+        useCompactNotification = prefs.getBoolean("compact_notification", false)
         splitMode = prefs.getString("split_mode", SPLIT_MODE_NONE) ?: SPLIT_MODE_NONE
 
         val dislikedJson = prefs.getString("disliked_episodes", "[]") ?: "[]"
@@ -144,6 +148,8 @@ class AppSettings private constructor() {
             putBoolean("continuous_play", continuousPlay)
             putBoolean("save_playback_position", savePlaybackPosition)
             putBoolean("remember_last_episode", rememberLastEpisode)
+            putBoolean("wifi_only_precache", wifiOnlyPreCache)
+            putBoolean("compact_notification", useCompactNotification)
             putString("split_mode", splitMode)
             val arr = JSONArray()
             dislikedEpisodes.forEach { arr.put(it) }

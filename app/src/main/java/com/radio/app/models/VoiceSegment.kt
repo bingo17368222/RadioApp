@@ -10,7 +10,8 @@ data class VoiceSegment(
     var hasVoice: Boolean = false,
     var label: String? = null,
     var isManuallyMarked: Boolean = false,
-    var isSkipThisTime: Boolean = false
+    var isSkipThisTime: Boolean = false,
+    var isSimulated: Boolean = false
 ) : Parcelable, Serializable {
 
     constructor(parcel: Parcel) : this(
@@ -19,7 +20,8 @@ data class VoiceSegment(
         hasVoice = parcel.readByte() != 0.toByte(),
         label = parcel.readString(),
         isManuallyMarked = parcel.readByte() != 0.toByte(),
-        isSkipThisTime = parcel.readByte() != 0.toByte()
+        isSkipThisTime = parcel.readByte() != 0.toByte(),
+        isSimulated = parcel.readByte() != 0.toByte()
     )
 
     override fun writeToParcel(parcel: Parcel, flags: Int) {
@@ -29,6 +31,7 @@ data class VoiceSegment(
         parcel.writeString(label)
         parcel.writeByte(if (isManuallyMarked) 1 else 0)
         parcel.writeByte(if (isSkipThisTime) 1 else 0)
+        parcel.writeByte(if (isSimulated) 1 else 0)
     }
 
     override fun describeContents(): Int = 0

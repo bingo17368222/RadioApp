@@ -53,11 +53,16 @@ class PlayerActivity : AppCompatActivity() {
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
             // 如果服务已在播放相同节目，只更新UI，不重新触发播放（避免seek引起的抖动）
-            val currentPlaying = playbackService?.getCurrentEpisode()
+            val svcPlaying = playbackService?.isPlaying() ?: false
             val currentUrl = playbackService?.getCurrentStreamUrl()
             val newUrl = currentEpisode?.audioUrl
-            if (currentPlaying != null && newUrl != null && currentUrl == newUrl) {
-                // 同一节目，仅更新UI，不重新播放
+            if (svcPlaying && currentUrl != null && newUrl != null && currentUrl == newUrl) {
+                updateUI()
+                startCacheProgressUpdater()
+                return@onServiceConnected
+            }
+            // Also skip if service is already playing (even if URLs don't match exactly)
+            if (svcPlaying && playbackService?.getCurrentEpisode() != null) {
                 updateUI()
                 startCacheProgressUpdater()
                 return@onServiceConnected
@@ -74,6 +79,13 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             updateUI()
+            // Auto-generate simulated segments if none exist
+            if (voiceSegments.isEmpty() && currentEpisode != null) {
+                voiceSegments = generateSimulatedSegments()
+                if (voiceSegments.isNotEmpty()) {
+                    updateSegmentsUI()
+                }
+            }
             startCacheProgressUpdater()
         }
 
@@ -266,7 +278,6 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvAiStatus.visibility = View.GONE
 
         segmentAdapter = VoiceSegmentAdapter()
-        segmentAdapter?.setSegments(voiceSegments)
         segmentAdapter?.setOnSegmentClickListener(object : VoiceSegmentAdapter.OnSegmentClickListener {
             override fun onSegmentClick(position: Int, segment: VoiceSegment) {
                 playbackService?.seekTo(segment.start)
@@ -279,12 +290,7 @@ class PlayerActivity : AppCompatActivity() {
         })
         binding.recyclerSegments.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
         binding.recyclerSegments.adapter = segmentAdapter
-
-        if (voiceSegments.isEmpty()) {
-            binding.recyclerSegments.visibility = View.GONE
-        } else {
-            binding.recyclerSegments.visibility = View.VISIBLE
-        }
+        updateSegmentsUI()
 
         val isLiveNav = currentEpisode?.isLive ?: false
         if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
@@ -412,6 +418,7 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onComplete(segments: List<VoiceSegment>) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
+                                voiceSegments = voiceSegments.filter { !it.isSimulated }
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
@@ -503,6 +510,7 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onComplete(segments: List<VoiceSegment>) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
+                                voiceSegments = voiceSegments.filter { !it.isSimulated }
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
@@ -663,6 +671,37 @@ class PlayerActivity : AppCompatActivity() {
     private fun buildStatusText(taskType: String, progress: Int): String {
         val modelLabel = if (taskType == "segment") getCurrentAiModelLabel() else getCurrentAsrLabel()
         return if (taskType == "segment") "AI分段: $progress% (模型: $modelLabel)" else "字幕生成: $progress% (引擎: $modelLabel)"
+    }
+
+    private fun generateSimulatedSegments(): List<VoiceSegment> {
+        val dur = playbackService?.getDuration()?.toInt() ?: 0
+        if (dur <= 0) return emptyList()
+        val segmentDuration = 60 // seconds
+        val count = (dur / 1000 / segmentDuration).coerceAtMost(120)
+        val segments = mutableListOf<VoiceSegment>()
+        val random = java.util.Random(currentEpisode?.hashCode()?.toLong() ?: System.currentTimeMillis())
+        for (i in 0 until count) {
+            val startMs = i * segmentDuration * 1000
+            val endMs = minOf((i + 1) * segmentDuration * 1000, dur)
+            val seg = VoiceSegment().apply {
+                this.start = startMs.toLong()
+                this.end = endMs.toLong()
+                this.label = "模拟分段 ${i + 1}" // 占位文本
+                this.isSimulated = true
+            }
+            segments.add(seg)
+        }
+        return segments
+    }
+
+    private fun updateSegmentsUI() {
+        if (_binding == null) return
+        segmentAdapter?.setSegments(voiceSegments)
+        if (voiceSegments.isEmpty()) {
+            binding.recyclerSegments.visibility = View.GONE
+        } else {
+            binding.recyclerSegments.visibility = View.VISIBLE
+        }
     }
 
     override fun onDestroy() {

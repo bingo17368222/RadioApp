@@ -157,7 +157,26 @@ class SubtitleGeneratorService : Service() {
         val pcmFile = File(cacheDir, "subtitle_pcm_${Math.abs(audioUrl.hashCode())}.pcm")
         try {
             callback.onProgressUpdate(20, 100)
-            decodeToPcm(audioFile, pcmFile)
+            // Get audio duration for progress calculation
+            val durationExtractor = MediaExtractor()
+            var audioDurationUs = 0L
+            try {
+                durationExtractor.setDataSource(audioFile.absolutePath)
+                for (i in 0 until durationExtractor.trackCount) {
+                    val fmt = durationExtractor.getTrackFormat(i)
+                    if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                        audioDurationUs = fmt.getLong(MediaFormat.KEY_DURATION)
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to get duration for progress: ${e.message}")
+            } finally {
+                durationExtractor.release()
+            }
+            decodeToPcm(audioFile, pcmFile, audioDurationUs) { pct ->
+                callback.onProgressUpdate(20 + pct / 5, 100)  // 20-40%
+            }
             Log.d(TAG, "PCM decoded: ${pcmFile.length()} bytes")
             callback.onProgressUpdate(40, 100)
 
@@ -304,7 +323,7 @@ class SubtitleGeneratorService : Service() {
     /**
      * 使用MediaExtractor + MediaCodec将音频解码为16kHz单声道PCM
      */
-    private fun decodeToPcm(audioFile: File, pcmFile: File) {
+    private fun decodeToPcm(audioFile: File, pcmFile: File, durationUs: Long = 0L, onProgress: ((Int) -> Unit)? = null) {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(audioFile.absolutePath)
@@ -377,6 +396,11 @@ class SubtitleGeneratorService : Service() {
                             // 如果是立体声，取左声道
                             val resampled = resamplePcm(pcmBytes, sampleRate, channelCount, SAMPLE_RATE, 1)
                             fos.write(resampled)
+                            // Report progress based on presentation time
+                            if (durationUs > 0 && onProgress != null) {
+                                val pct = (bufferInfo.presentationTimeUs * 100 / durationUs).toInt().coerceIn(0, 100)
+                                onProgress.invoke(pct)
+                            }
                         }
                         codec.releaseOutputBuffer(outIdx, false)
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {

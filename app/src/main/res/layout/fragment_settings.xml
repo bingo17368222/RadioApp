@@ -342,6 +342,51 @@
                 android:textColor="?attr/appTextSecondary"
                 android:textSize="12sp"
                 android:layout_marginTop="2dp" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider"
+                android:layout_marginVertical="12dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="仅在WiFi下预缓存"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="开启后仅在WiFi网络下自动预缓存节目"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
+            <Switch
+                android:id="@+id/switch_wifi_precache"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:checked="true" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider"
+                android:layout_marginVertical="12dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="紧凑通知栏"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="通知栏按钮较多时使用5按钮紧凑模式"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
+            <Switch
+                android:id="@+id/switch_compact_notification"
+                android:layout_width="match_parent"
+                android:layout_height="48dp" />
         </LinearLayout>
 
         <!-- 界面设置 -->
