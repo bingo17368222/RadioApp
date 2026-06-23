@@ -743,7 +743,7 @@ class PlayerActivity : AppCompatActivity() {
             val seg = VoiceSegment().apply {
                 this.start = startMs.toLong()
                 this.end = endMs.toLong()
-                this.label = "${formatTime(startMs.toLong())} - ${formatTime(endMs.toLong())}"
+                this.label = "${formatTime(startMs)} - ${formatTime(endMs)}"
                 this.isSimulated = true
             }
             segments.add(seg)
