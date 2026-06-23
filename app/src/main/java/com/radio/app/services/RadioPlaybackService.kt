@@ -462,9 +462,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
-        if (!settings.preloadCache) return
+        // 修复：UI开关"启用预缓存"控制的是 autoCache 字段
+        if (!settings.autoCache) {
+            Log.d(TAG, "Pre-cache: disabled (autoCache=false)")
+            return
+        }
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
-            Log.d(TAG, "Pre-cache: skipped (WiFi only)")
+            Log.d(TAG, "Pre-cache: skipped (WiFi only, not on WiFi)")
             return
         }
         // 检查已缓存的节目数量（使用统一的缓存目录）
@@ -472,22 +476,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedCount = cachedFiles.size
-        if (cachedCount >= settings.preloadCacheCount) {
-            Log.d(TAG, "Pre-cache: already have $cachedCount episodes, target is ${settings.preloadCacheCount}")
+        val targetCount = settings.preloadCacheCount
+        Log.d(TAG, "Pre-cache: current cached=$cachedCount, target=$targetCount")
+        if (cachedCount >= targetCount) {
+            Log.d(TAG, "Pre-cache: target reached, no more downloads needed")
             return
         }
         // 从预缓存列表中获取待下载的节目
         val preCacheList = loadPreCacheList()
         if (preCacheList.isEmpty()) {
-            Log.d(TAG, "Pre-cache: no episodes in pre-cache list")
+            Log.d(TAG, "Pre-cache: no episodes in pre-cache list (setPreCacheEpisodeList never called?)")
             return
         }
         val cachedNames = cachedFiles.map { it.name }.toSet()
-        val needed = settings.preloadCacheCount - cachedCount
-        var downloaded = 0
+        val needed = targetCount - cachedCount
+        var started = 0
         // 跳过不喜欢、循环下载直到达到目标数量
         for (ep in preCacheList) {
-            if (downloaded >= needed) break
+            if (started >= needed) break
             val fileName = extractCacheFileName(ep.audioUrl)
             if (fileName in cachedNames) continue
             // 跳过不喜欢的节目
@@ -495,14 +501,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.d(TAG, "Pre-cache: skipping disliked episode ${ep.title}")
                 continue
             }
-            Log.d(TAG, "Pre-cache: downloading #${downloaded + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
+            Log.d(TAG, "Pre-cache: downloading #${started + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
             downloadPreCacheEpisode(ep)
-            downloaded++
+            started++
             // 每次只触发一个下载，downloadPreCacheEpisode完成后会回调triggerPreCache继续
             return
         }
-        if (downloaded == 0) {
-            Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked)")
+        if (started == 0) {
+            Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
         }
     }
 
@@ -820,15 +826,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setShowActionsInCompactView(0, 2, 4)
                 .setMediaSession(mediaSession?.sessionToken))
-            // 5个按钮：后退 -5s | 上一节目 | 播放/暂停 | 下一节目 | 前进 +5s
-            .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退", 10))
+            // 5个按钮：后退 | 上一节目 | 播放/暂停 | 下一节目 | 前进
+            .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退${skipSeconds}s", 10))
             .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
             .addAction(createNotificationAction(
                 if (playing) ACTION_PAUSE else ACTION_PLAY,
                 if (playing) R.drawable.notif_pause else R.drawable.notif_play,
                 if (playing) "暂停" else "播放", 12))
             .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
-            .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进", 14))
+            .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进${skipSeconds}s", 14))
             // 展开状态使用自定义布局（含进度条和seek区）
             .setCustomBigContentView(expandedView)
 
@@ -1013,6 +1019,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun playStation(station: RadioStation) {
+        Log.d(TAG, "playStation called: ${station.name}, playbackStarted before: $playbackStarted, url=${station.streamUrl}")
         currentStation = station; currentEpisode = null; isLive = true
         prepared = false; currentStreamUrl = station.streamUrl ?: ""
         currentPlayingUrl = currentStreamUrl
@@ -1034,6 +1041,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun playEpisode(episode: Episode, live: Boolean) {
+        Log.d(TAG, "playEpisode called: ${episode.title}, playbackStarted before: $playbackStarted, prepared=$prepared, url=${episode.audioUrl}")
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
         stopAutoSkipCheck()

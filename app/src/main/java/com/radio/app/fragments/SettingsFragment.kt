@@ -1,6 +1,7 @@
 package com.radio.app.fragments
 
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -195,6 +196,22 @@ class SettingsFragment : Fragment() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
+        binding.spinnerSkipSeconds.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                settings.skipSeconds = when (position) {
+                    0 -> 5
+                    1 -> 10
+                    2 -> 15
+                    3 -> 30
+                    4 -> 60
+                    else -> 15
+                }
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
@@ -307,6 +324,13 @@ class SettingsFragment : Fragment() {
         }
         binding.spinnerNotificationStyle.setSelection(notificationIndex)
         binding.etPreloadCacheCount.setText(settings.preloadCacheCount.toString())
+
+        // 快进快退时间
+        val skipSecondsIndex = when (settings.skipSeconds) {
+            5 -> 0; 10 -> 1; 15 -> 2; 30 -> 3; 60 -> 4
+            else -> 2
+        }
+        binding.spinnerSkipSeconds.setSelection(skipSecondsIndex)
 
         suppressListeners = true
 
@@ -599,5 +623,22 @@ class SettingsFragment : Fragment() {
 
     private fun save() {
         prefManager.saveSettings(settings)
+        // 同步关键字段到 radio_app_settings，让 RadioPlaybackService 的热切换监听器生效
+        // （PreferenceManager 使用 radio_app_prefs 文件，而服务监听器注册在 radio_app_settings 上）
+        try {
+            requireContext().getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+                .edit()
+                .putString("notification_style", settings.notificationStyle)
+                .putInt("skip_seconds", settings.skipSeconds)
+                .putBoolean("preload_cache", settings.autoCache)
+                .putBoolean("auto_cache", settings.autoCache)
+                .putInt("preload_cache_count", settings.preloadCacheCount)
+                .putBoolean("continuous_play", settings.continuousPlay)
+                .putBoolean("wifi_only_precache", settings.wifiOnlyPreCache)
+                .apply()
+            Log.d("SettingsFragment", "Synced settings to radio_app_settings for hot-switch")
+        } catch (e: Exception) {
+            Log.e("SettingsFragment", "Failed to sync to radio_app_settings", e)
+        }
     }
 }

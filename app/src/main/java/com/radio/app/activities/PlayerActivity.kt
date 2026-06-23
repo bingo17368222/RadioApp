@@ -101,17 +101,33 @@ class PlayerActivity : AppCompatActivity() {
             playbackService?.setCallback(playbackCallback)
             
             val newUrl = currentEpisode?.audioUrl
-            
+            val svcStarted = playbackService?.isPlaybackStarted() ?: false
+            val svcPlaying = playbackService?.isPlaying() ?: false
+            val svcPrepared = playbackService?.isPrepared() ?: false
+            val svcUrl = playbackService?.getCurrentPlayingUrl()
+            val sameEpisode = playbackService?.isSameEpisodePlaying(newUrl ?: "") ?: false
+
+            android.util.Log.d("PlayerActivity", 
+                "=== onServiceConnected DEBUG ===" +
+                "\n  newUrl=$newUrl" +
+                "\n  svcStarted=$svcStarted, svcPlaying=$svcPlaying, svcPrepared=$svcPrepared" +
+                "\n  svcUrl=$svcUrl" +
+                "\n  sameEpisode=$sameEpisode" +
+                "\n  episodeList.size=${episodeList.size}, currentIndex=$currentEpisodeIndex")
+
             // 核心防抖：如果服务已经播放同一URL，只更新UI
-            if (newUrl != null && playbackService?.isSameEpisodePlaying(newUrl) == true) {
+            if (sameEpisode) {
+                android.util.Log.d("PlayerActivity", "JITTER-GUARD: same episode playing, only update UI")
                 updateUI()
                 startCacheProgressUpdater()
                 restoreBackgroundResults()
+                setupPreCacheList()
                 return@onServiceConnected
             }
             
             // 如果服务有任何播放在进行中，不打扰，只更新UI
-            if (playbackService?.isPlaybackStarted() == true) {
+            if (svcStarted) {
+                android.util.Log.d("PlayerActivity", "JITTER-GUARD: service has playback started, only update UI (svcUrl=$svcUrl)")
                 updateUI()
                 startCacheProgressUpdater()
                 restoreBackgroundResults()
@@ -119,6 +135,7 @@ class PlayerActivity : AppCompatActivity() {
             }
             
             // 只有服务完全空闲时才启动新播放
+            android.util.Log.d("PlayerActivity", "JITTER-GUARD: service idle, starting new playback for $newUrl")
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
             } else {
@@ -129,6 +146,7 @@ class PlayerActivity : AppCompatActivity() {
                     }
                 }
             }
+            setupPreCacheList()
             updateUI()
             if (voiceSegments.isEmpty() && currentEpisode != null) {
                 voiceSegments = generateSimulatedSegments()
@@ -140,9 +158,37 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            android.util.Log.d("PlayerActivity", "onServiceDisconnected")
             playbackService = null
             serviceBound = false
         }
+    }
+
+    /**
+     * 设置预缓存列表：取当前节目之后的N个节目传给服务预缓存
+     */
+    private fun setupPreCacheList() {
+        val settings = AppSettings.getInstance(this)
+        if (!settings.autoCache) {
+            android.util.Log.d("PlayerActivity", "setupPreCacheList: pre-cache disabled")
+            return
+        }
+        if (episodeList.isEmpty() || currentEpisodeIndex < 0) {
+            android.util.Log.d("PlayerActivity", "setupPreCacheList: no episode list available (size=${episodeList.size}, index=$currentEpisodeIndex)")
+            return
+        }
+        val count = settings.preloadCacheCount.coerceAtLeast(1)
+        val startIdx = currentEpisodeIndex + 1
+        val endIdx = minOf(startIdx + count, episodeList.size)
+        if (startIdx >= episodeList.size) {
+            android.util.Log.d("PlayerActivity", "setupPreCacheList: no more episodes after current")
+            return
+        }
+        val upcomingEpisodes = episodeList.subList(startIdx, endIdx)
+        android.util.Log.d("PlayerActivity", "setupPreCacheList: setting ${upcomingEpisodes.size} upcoming episodes for pre-cache (from index $startIdx to $endIdx)")
+        playbackService?.setPreCacheEpisodeList(upcomingEpisodes)
+        // 立即触发一次预缓存检查
+        playbackService?.triggerPreCacheIndependently()
     }
 
     private val playbackCallback = object : RadioPlaybackService.Callback {
@@ -799,11 +845,16 @@ class PlayerActivity : AppCompatActivity() {
         }
         if (nextEpisode != null) {
             currentEpisode = nextEpisode
+            // 更新索引
+            val newIdx = episodeList.indexOfFirst { it.id == nextEpisode.id }
+            if (newIdx >= 0) currentEpisodeIndex = newIdx
             saveLastEpisode()
             playbackService?.playEpisode(nextEpisode, false)
             voiceSegments = generateSimulatedSegments()
             if (voiceSegments.isNotEmpty()) updateSegmentsUI()
             updateUI()
+            setupPreCacheList()
+            android.util.Log.d("PlayerActivity", "playNextEpisode: switched to ${nextEpisode.title}, index=$currentEpisodeIndex")
         } else {
             Toast.makeText(this, "没有更多节目了", Toast.LENGTH_SHORT).show()
         }
@@ -826,11 +877,16 @@ class PlayerActivity : AppCompatActivity() {
         }
         if (prevEpisode != null) {
             currentEpisode = prevEpisode
+            // 更新索引
+            val newIdx = episodeList.indexOfFirst { it.id == prevEpisode.id }
+            if (newIdx >= 0) currentEpisodeIndex = newIdx
             saveLastEpisode()
             playbackService?.playEpisode(prevEpisode, false)
             voiceSegments = generateSimulatedSegments()
             if (voiceSegments.isNotEmpty()) updateSegmentsUI()
             updateUI()
+            setupPreCacheList()
+            android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${prevEpisode.title}, index=$currentEpisodeIndex")
         }
     }
 

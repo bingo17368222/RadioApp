@@ -6,4 +6,11 @@
         <item>五按钮紧凑通知栏</item>
         <item>五按钮精简通知栏</item>
     </string-array>
+    <string-array name="skip_seconds_options">
+        <item>5 秒</item>
+        <item>10 秒</item>
+        <item>15 秒</item>
+        <item>30 秒</item>
+        <item>60 秒</item>
+    </string-array>
 </resources>

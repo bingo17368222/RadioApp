@@ -381,6 +381,22 @@
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:entries="@array/notification_styles" />
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider"
+                android:layout_marginVertical="12dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="快进/快退时间"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp" />
+            <Spinner
+                android:id="@+id/spinner_skip_seconds"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:entries="@array/skip_seconds_options" />
         </LinearLayout>
 
         <!-- 界面设置 -->
