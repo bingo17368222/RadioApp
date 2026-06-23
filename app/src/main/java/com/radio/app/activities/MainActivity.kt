@@ -20,8 +20,6 @@ import com.radio.app.fragments.SettingsFragment
 import com.radio.app.models.AppSettings
 import com.radio.app.services.RadioPlaybackService
 import com.radio.app.utils.ThemeManager
-import com.radio.app.utils.PreferenceManager
-
 class MainActivity : AppCompatActivity() {
 
     var playbackService: RadioPlaybackService? = null

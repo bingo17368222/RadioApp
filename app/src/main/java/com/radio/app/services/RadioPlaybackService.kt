@@ -83,10 +83,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 this.id = id
                 this.title = title
                 this.audioUrl = audioUrl
-                this.stationName = prefs.getString("station_name", "")
+                this.stationName = prefs.getString("station_name", "") ?: ""
                 this.stationId = prefs.getString("station_id", "") ?: ""
                 this.duration = prefs.getLong("duration", 0)
-                this.broadcastAt = prefs.getString("broadcast_at", null)
+                this.broadcastAt = prefs.getString("broadcast_at", null) ?: ""
                 this.programName = prefs.getString("program_name", null)
             }
         }
