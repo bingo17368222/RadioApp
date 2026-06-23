@@ -85,21 +85,23 @@ class SubtitleGeneratorService : Service() {
      * 优先使用Vosk离线引擎，不可用则提示用户下载Vosk模型
      */
     fun generateSubtitlesForEpisode(episodeId: String, audioUrl: String, callback: SubtitleCallback) {
+        Log.d(TAG, "generateSubtitlesForEpisode: episodeId=$episodeId, audioUrl=$audioUrl")
         executor?.execute {
             try {
                 val voskModel = findVoskModel()
                 if (voskModel != null) {
+                    Log.d(TAG, "Using Vosk model: $voskModel")
                     val voskSuccess = generateWithVosk(episodeId, audioUrl, callback)
                     if (!voskSuccess) {
-                        Log.w(TAG, "Vosk failed, no fallback available")
+                        Log.e(TAG, "Vosk subtitle generation failed for episodeId=$episodeId")
                         callback.onError("字幕生成失败：音频识别模型不可用，请在离线引擎管理中下载")
                     }
                 } else {
-                    Log.w(TAG, "No Vosk model, cannot generate subtitles")
+                    Log.e(TAG, "No Vosk model found, cannot generate subtitles")
                     callback.onError("未找到离线识别模型，请在离线引擎管理中下载")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Subtitle generation failed", e)
+                Log.e(TAG, "Subtitle generation failed for episodeId=$episodeId", e)
                 callback.onError("字幕生成失败: ${e.message}")
             }
         }
@@ -110,6 +112,7 @@ class SubtitleGeneratorService : Service() {
      * 使用与字幕生成相同的引擎，但输出为VoiceSegment而非Transcript
      */
     fun generateSegmentsForEpisode(episodeId: String, audioUrl: String, callback: SegmentCallback) {
+        Log.d(TAG, "generateSegmentsForEpisode: episodeId=$episodeId, audioUrl=$audioUrl")
         executor?.execute {
             try {
                 val allSegments = mutableListOf<VoiceSegment>()
@@ -128,6 +131,7 @@ class SubtitleGeneratorService : Service() {
                         callback.onProgressUpdate(progress, total)
                     }
                     override fun onError(error: String) {
+                        Log.e(TAG, "Segment generation error: $error")
                         callback.onError(error)
                     }
                     override fun onComplete(transcripts: List<Transcript>) {
@@ -136,17 +140,18 @@ class SubtitleGeneratorService : Service() {
                 }
                 val voskModel = findVoskModel()
                 if (voskModel != null) {
+                    Log.d(TAG, "Using Vosk model for segments: $voskModel")
                     val voskSuccess = generateWithVosk(episodeId, audioUrl, subtitleCallback)
                     if (!voskSuccess) {
-                        Log.w(TAG, "Vosk segment failed, no fallback")
+                        Log.e(TAG, "Vosk segment generation failed for episodeId=$episodeId")
                         callback.onError("AI分段失败：音频识别模型不可用，请在离线引擎管理中下载模型")
                     }
                 } else {
-                    Log.w(TAG, "No Vosk model, cannot generate segments")
+                    Log.e(TAG, "No Vosk model for segments")
                     callback.onError("AI分段失败：未找到离线识别模型，请在离线引擎管理中下载")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Segment generation failed", e)
+                Log.e(TAG, "Segment generation failed for episodeId=$episodeId", e)
                 callback.onError("AI分段失败: ${e.message}")
             }
         }
@@ -156,7 +161,7 @@ class SubtitleGeneratorService : Service() {
         // 1. 查找可用的Vosk模型
         val modelPath = findVoskModel()
         if (modelPath == null) {
-            Log.w(TAG, "No Vosk model found")
+            Log.e(TAG, "No Vosk model found for episodeId=$episodeId")
             callback.onError("未找到Vosk模型，请在离线引擎管理中下载Vosk模型")
             return false
         }
@@ -164,18 +169,24 @@ class SubtitleGeneratorService : Service() {
         callback.onProgressUpdate(0, 100)
         Log.d(TAG, "Using Vosk model: $modelPath")
 
-        // 2. 下载音频文件（优先使用缓存，带进度回调）
+        // 2. 下载音频文件（优先使用缓存，带进度回调 0-20%）
         callback.onProgressUpdate(1, 100)
-        val audioFile = getAudioFile(audioUrl) { progress -> callback.onProgressUpdate(progress, 100) }
+        Log.d(TAG, "Starting audio download: $audioUrl")
+        val audioFile = getAudioFile(audioUrl) { progress ->
+            callback.onProgressUpdate(progress.coerceAtMost(18), 100)
+        }
         if (audioFile == null) {
+            Log.e(TAG, "Audio download failed for $audioUrl")
             callback.onError("音频下载失败：网络不通或音频链接失效")
             return false
         }
         if (!audioFile.exists()) {
+            Log.e(TAG, "Audio file not found after download: ${audioFile.absolutePath}")
             callback.onError("音频文件下载后丢失，请重试")
             return false
         }
         if (audioFile.length() < 1024) {
+            Log.e(TAG, "Audio file too small: ${audioFile.length()} bytes")
             callback.onError("音频文件下载不完整（${audioFile.length()}字节），请检查网络后重试")
             return false
         }
@@ -183,10 +194,11 @@ class SubtitleGeneratorService : Service() {
         callback.onProgressUpdate(15, 100)
         Log.d(TAG, "Audio file ready: ${audioFile.absolutePath} size=${audioFile.length()}")
 
-        // 3. 将音频解码为16kHz单声道PCM
+        // 3. 将音频解码为16kHz单声道PCM（15-40%进度）
         val pcmFile = File(cacheDir, "subtitle_pcm_${Math.abs(audioUrl.hashCode())}.pcm")
         try {
-            callback.onProgressUpdate(20, 100)
+            callback.onProgressUpdate(18, 100)
+            Log.d(TAG, "Starting PCM decode...")
             // Get audio duration for progress calculation
             val durationExtractor = MediaExtractor()
             var audioDurationUs = 0L
@@ -196,6 +208,7 @@ class SubtitleGeneratorService : Service() {
                     val fmt = durationExtractor.getTrackFormat(i)
                     if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
                         audioDurationUs = fmt.getLong(MediaFormat.KEY_DURATION)
+                        Log.d(TAG, "Audio duration: ${audioDurationUs}us")
                         break
                     }
                 }
@@ -205,22 +218,25 @@ class SubtitleGeneratorService : Service() {
                 durationExtractor.release()
             }
             decodeToPcm(audioFile, pcmFile, audioDurationUs) { pct ->
-                callback.onProgressUpdate(20 + pct / 5, 100)  // 20-40%
+                // PCM解码进度: 18-40%
+                callback.onProgressUpdate(18 + pct * 22 / 100, 100)
             }
             Log.d(TAG, "PCM decoded: ${pcmFile.length()} bytes")
             callback.onProgressUpdate(40, 100)
 
-            // 4. 使用Vosk进行语音识别
+            // 4. 使用Vosk进行语音识别（40-95%进度）
+            Log.d(TAG, "Starting Vosk recognition...")
             val model = Model(modelPath)
             val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
 
             val pcmData = pcmFile.readBytes()
             val totalBytes = pcmData.size
-            val bytesPerChunk = SAMPLE_RATE * 2 * 5  // 5秒每块，更快出结果 (16bit = 2 bytes)
+            val bytesPerChunk = SAMPLE_RATE * 2 * 3  // 3秒每块，更快出结果 (16bit = 2 bytes)
             var offset = 0
             var segmentIndex = 0
             val allTranscripts = mutableListOf<Transcript>()
             var fullText = StringBuilder()
+            var lastPartialOutput = 0L  // 上次输出部分结果的偏移量
 
             while (offset < totalBytes) {
                 val chunkSize = minOf(bytesPerChunk, totalBytes - offset)
@@ -251,29 +267,37 @@ class SubtitleGeneratorService : Service() {
                         dbHelper?.saveTranscript(t)
                         callback.onSubtitleGenerated(t)
                         fullText.append(text).append(" ")
+                        Log.d(TAG, "Vosk segment: $startSec-$endSec: $text")
                     }
                 } else {
-                    // 尝试获取部分识别结果，确保30%+时有输出
-                    try {
-                        val partial = recognizer.partialResult
-                        val partialText = parseVoskResult(partial)
-                        if (partialText.isNotEmpty() && partialText.length > 2) {
-                            val startSec = ((offset - chunkSize) / (SAMPLE_RATE * 2.0)).toInt()
-                            val endSec = (offset / (SAMPLE_RATE * 2.0)).toInt()
-                            // 只发送部分结果用于实时显示，不保存到数据库
-                            val t = Transcript().apply {
-                                this.episodeId = episodeId
-                                this.segmentStart = startSec.toLong()
-                                this.segmentEnd = endSec.toLong()
-                                this.text = "[识别中] $partialText"
-                                this.confidence = 0.5
+                    // 尝试获取部分识别结果，确保任何时候都有输出
+                    if (offset - lastPartialOutput >= SAMPLE_RATE * 2 * 2) {
+                        // 每2秒PCM数据尝试一次partialResult
+                        try {
+                            val partial = recognizer.partialResult
+                            val partialText = parseVoskResult(partial)
+                            // 只要有文字就输出，不限制长度
+                            if (partialText.isNotBlank()) {
+                                val startSec = ((offset - chunkSize) / (SAMPLE_RATE * 2.0)).toInt()
+                                val endSec = (offset / (SAMPLE_RATE * 2.0)).toInt()
+                                val t = Transcript().apply {
+                                    this.episodeId = episodeId
+                                    this.segmentStart = startSec.toLong()
+                                    this.segmentEnd = endSec.toLong()
+                                    this.text = "[识别中] $partialText"
+                                    this.confidence = 0.5
+                                }
+                                callback.onSubtitleGenerated(t)
+                                lastPartialOutput = offset
+                                Log.d(TAG, "Vosk partial: $startSec-$endSec: $partialText")
                             }
-                            callback.onSubtitleGenerated(t)
+                        } catch (_: Exception) {
+                            // partialResult is optional
                         }
-                    } catch (_: Exception) {}
+                    }
                 }
 
-                // 更新进度
+                // 更新进度 (40-95%)
                 val progress = 40 + (offset * 55 / totalBytes).toInt()
                 callback.onProgressUpdate(progress.coerceAtMost(95), 100)
                 segmentIndex++
@@ -294,13 +318,14 @@ class SubtitleGeneratorService : Service() {
                 allTranscripts.add(t)
                 dbHelper?.saveTranscript(t)
                 callback.onSubtitleGenerated(t)
+                Log.d(TAG, "Vosk final: $finalText")
             }
 
             recognizer.close()
             model.close()
 
             callback.onProgressUpdate(100, 100)
-            Log.d(TAG, "Vosk recognition complete: ${allTranscripts.size} segments")
+            Log.d(TAG, "Vosk recognition complete: ${allTranscripts.size} segments, text='${fullText.take(100)}'")
             callback.onComplete(allTranscripts)
 
             // 清理临时文件
@@ -308,7 +333,7 @@ class SubtitleGeneratorService : Service() {
             return true
 
         } catch (e: Exception) {
-            Log.e(TAG, "Vosk recognition failed", e)
+            Log.e(TAG, "Vosk recognition failed for episodeId=$episodeId", e)
             pcmFile.delete()
             return false
         }
@@ -669,6 +694,7 @@ class SubtitleGeneratorService : Service() {
             val episodeId = intent.getStringExtra("episode_id") ?: return START_NOT_STICKY
             val audioUrl = intent.getStringExtra("audio_url") ?: return START_NOT_STICKY
             val taskType = intent.getStringExtra("task_type") ?: "subtitle"
+            val taskLabel = if (taskType == "segment") "AI分段" else "字幕生成"
 
             // 获取WakeLock防止CPU休眠
             if (wakeLock == null) {
@@ -677,27 +703,31 @@ class SubtitleGeneratorService : Service() {
             }
             wakeLock?.acquire(3600000) // 最多1小时
 
-            // 启动前台服务
-            startForeground(NOTIFICATION_ID, createProgressNotification(0))
+            // 不调用startForeground，避免与播放通知冲突
+            // 直接使用低优先级通知
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.notify(NOTIFICATION_ID, createProgressNotification(0, taskLabel))
 
             if (taskType == "segment") {
                 generateSegmentsForEpisode(episodeId, audioUrl, object : SegmentCallback {
                     override fun onProgressUpdate(progress: Int, total: Int) {
-                        updateProgressNotification(progress)
+                        updateProgressNotification(progress, taskLabel)
                     }
                     override fun onSegmentGenerated(segment: VoiceSegment) {
                         // 每个片段生成时保存到DB
                         dbHelper?.saveVoiceSegment(episodeId, segment)
                     }
                     override fun onComplete(segments: List<VoiceSegment>) {
+                        Log.d(TAG, "Segment generation complete: ${segments.size} segments")
                         // 保存所有分段到DB
                         dbHelper?.saveVoiceSegments(episodeId, segments)
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        nm.cancel(NOTIFICATION_ID)
                         releaseWakeLock()
                         stopSelf()
                     }
                     override fun onError(error: String) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        Log.e(TAG, "Segment generation error in onStartCommand: $error")
+                        nm.cancel(NOTIFICATION_ID)
                         releaseWakeLock()
                         stopSelf()
                     }
@@ -705,19 +735,21 @@ class SubtitleGeneratorService : Service() {
             } else {
                 generateSubtitlesForEpisode(episodeId, audioUrl, object : SubtitleCallback {
                     override fun onProgressUpdate(progress: Int, total: Int) {
-                        updateProgressNotification(progress)
+                        updateProgressNotification(progress, taskLabel)
                     }
                     override fun onSubtitleGenerated(transcript: Transcript) {
                         // 每个字幕生成时保存到DB
                         dbHelper?.saveTranscript(transcript)
                     }
                     override fun onComplete(transcripts: List<Transcript>) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        Log.d(TAG, "Subtitle generation complete: ${transcripts.size} transcripts")
+                        nm.cancel(NOTIFICATION_ID)
                         releaseWakeLock()
                         stopSelf()
                     }
                     override fun onError(error: String) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        Log.e(TAG, "Subtitle generation error in onStartCommand: $error")
+                        nm.cancel(NOTIFICATION_ID)
                         releaseWakeLock()
                         stopSelf()
                     }
@@ -727,7 +759,7 @@ class SubtitleGeneratorService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun createProgressNotification(progress: Int): Notification {
+    private fun createProgressNotification(progress: Int, taskLabel: String): Notification {
         val contentIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, PlayerActivity::class.java).apply {
@@ -739,16 +771,18 @@ class SubtitleGeneratorService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("正在处理音频")
-            .setContentText("进度: ${progress}%")
+            .setContentText("$taskLabel: ${progress}%")
             .setProgress(100, progress, false)
             .setOngoing(true)
             .setContentIntent(contentIntent)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
             .build()
     }
 
-    private fun updateProgressNotification(progress: Int) {
+    private fun updateProgressNotification(progress: Int, taskLabel: String) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(NOTIFICATION_ID, createProgressNotification(progress))
+        nm.notify(NOTIFICATION_ID, createProgressNotification(progress, taskLabel))
     }
 
     private fun releaseWakeLock() {

@@ -11,8 +11,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 49
-        versionName "1.4.1"
+        versionCode 50
+        versionName "1.4.2"
     }
 
     signingConfigs {

@@ -3,6 +3,7 @@ package com.radio.app.services
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
@@ -15,6 +16,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.os.PowerManager
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
+import android.view.KeyEvent
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -150,6 +154,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var downloadDoneBytes = 0L
     private val downloadActive = AtomicBoolean(false)
 
+    // MediaSession for Bluetooth/media button support
+    private var mediaSession: MediaSessionCompat? = null
+    // 防止切回app时重复启动播放
+    @Volatile
+    private var playbackStarted = false
+    private var currentPlayingUrl = ""
+
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
@@ -161,6 +172,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationHandler = Handler(Looper.getMainLooper())
         positionSaveHandler = Handler(Looper.getMainLooper())
         loadSettings()
+        initMediaSession()
         startProgressPolling()
         startNotificationProgressUpdater()
         startPositionSaver()
@@ -174,6 +186,66 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
         wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RadioApp::PlaybackWakeLock")
         wakeLock?.acquire(24 * 60 * 60 * 1000L)
+    }
+
+    private fun initMediaSession() {
+        val componentName = ComponentName(this, "RadioPlaybackService")
+        mediaSession = MediaSessionCompat(this, "RadioApp", componentName, null)
+        mediaSession?.setCallback(object : MediaSessionCompat.Callback() {
+            override fun onPlay() {
+                play()
+            }
+            override fun onPause() {
+                pause()
+            }
+            override fun onSkipToNext() {
+                notifyNextEpisode()
+            }
+            override fun onSkipToPrevious() {
+                notifyPrevEpisode()
+            }
+            override fun onStop() {
+                pause()
+            }
+            override fun onSeekTo(pos: Long) {
+                seekTo(pos)
+            }
+            override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean {
+                val keyEvent = mediaButtonEvent?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+                if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                    when (keyEvent.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> play()
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> pause()
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                            if (isPlaying()) pause() else play()
+                        }
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> notifyNextEpisode()
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> notifyPrevEpisode()
+                        KeyEvent.KEYCODE_MEDIA_STOP -> pause()
+                    }
+                }
+                return super.onMediaButtonEvent(mediaButtonEvent)
+            }
+        })
+        mediaSession?.isActive = true
+        updateMediaSessionState()
+    }
+
+    private fun updateMediaSessionState() {
+        val state = if (player?.isPlaying == true)
+            PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val builder = PlaybackStateCompat.Builder()
+            .setState(state, player?.currentPosition ?: 0, 1.0f)
+            .setActions(
+                PlaybackStateCompat.ACTION_PLAY or
+                PlaybackStateCompat.ACTION_PAUSE or
+                PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackStateCompat.ACTION_SEEK_TO or
+                PlaybackStateCompat.ACTION_STOP
+            )
+        mediaSession?.setPlaybackState(builder.build())
     }
 
     private fun ensurePlayerInitialized() {
@@ -214,6 +286,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     callback?.onStateChanged(false)
                                     clearSavedPosition()
                                     stopAutoSkipCheck()
+                                    // 连续播放：播放完成后自动播放下一个节目
+                                    if (continuousPlay && !isLive) {
+                                        Log.d(TAG, "Playback ended, triggering next episode")
+                                        notifyNextEpisode()
+                                    }
                                 }
                             }
                         }
@@ -242,6 +319,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             callback?.onStateChanged(isPlaying)
                             notificationPlaying = isPlaying
                             updateNotification()
+                            updateMediaSessionState()
                         }
                     })
                 }
@@ -419,8 +497,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         getSharedPreferences("precache_list", MODE_PRIVATE)
             .edit().putString("episodes", arr.toString()).apply()
-        Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes")
-        // 立即触发预缓存检查
+        Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes, triggering pre-cache")
+        // 立即触发预缓存检查（独立于下载状态）
+        triggerPreCache()
+    }
+
+    /**
+     * 独立触发预缓存：不依赖当前下载状态，按预缓存个数设置缓存节目
+     */
+    fun triggerPreCacheIndependently() {
+        Log.d(TAG, "Pre-cache: independent trigger")
         triggerPreCache()
     }
 
@@ -609,7 +695,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val notification: Notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
             .setSmallIcon(R.drawable.ic_notification)
@@ -621,9 +707,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setShowWhen(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCustomContentView(remoteViews)
-            .setCustomBigContentView(remoteViews)
-            .build()
 
+        // 紧凑模式使用MediaStyle支持seekbar和拖动手势
+        if (notificationStyle == "compact") {
+            builder.setStyle(androidx.media.app.NotificationCompat.MediaStyle()
+                .setShowActionsInCompactView(0, 1, 2)
+                .setMediaSession(mediaSession?.sessionToken))
+        }
+
+        if (notificationStyle == "full") {
+            builder.setCustomBigContentView(remoteViews)
+        }
+
+        val notification: Notification = builder.build()
         notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -776,6 +872,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun playStation(station: RadioStation) {
         currentStation = station; currentEpisode = null; isLive = true
         prepared = false; currentStreamUrl = station.streamUrl ?: ""
+        currentPlayingUrl = currentStreamUrl
+        playbackStarted = true
         errorRetryCount = 0; isRetrying = false; stopAutoSkipCheck()
         positionRestoreRequested = false
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
@@ -788,6 +886,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             notificationTitle = station.name; notificationSubText = "[直播]"
             notificationDate = ""; notificationPlaying = true
             requestAudioFocus(); updateNotification()
+            updateMediaSessionState()
         } catch (e: Exception) { Log.e(TAG, "playStation failed", e) }
     }
 
@@ -798,6 +897,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         positionRestoreRequested = true  // 下次 STATE_READY 时恢复位置
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         currentStreamUrl = episode.audioUrl ?: ""
+        currentPlayingUrl = currentStreamUrl
+        playbackStarted = true
         notificationTitle = episode.title ?: "节目回放"
         notificationDate = episode.broadcastAt?.take(10) ?: ""
         notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
@@ -810,6 +911,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 it.prepare(); it.playWhenReady = true
             }
             requestAudioFocus(); updateNotification()
+            updateMediaSessionState()
             startAutoSkipCheck()
         } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
     }
@@ -840,6 +942,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun isLive(): Boolean = isLive
     fun isPrepared(): Boolean = prepared
     fun getCurrentStreamUrl(): String = currentStreamUrl
+    fun getCurrentPlayingUrl(): String = currentPlayingUrl
+    fun isPlaybackStarted(): Boolean = playbackStarted
+    fun isSameEpisodePlaying(url: String): Boolean {
+        return playbackStarted && currentPlayingUrl.isNotBlank() && currentPlayingUrl == url &&
+                (player?.isPlaying == true || prepared)
+    }
     fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
     fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
     fun getBufferedPercentage(): Int = player?.bufferedPercentage ?: 0
@@ -1019,9 +1127,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         downloadActive.set(false)
         saveCurrentPosition()
         abandonAudioFocus()
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
         serviceScope.cancel()
         player?.release()
         player = null
+        playbackStarted = false
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
     }

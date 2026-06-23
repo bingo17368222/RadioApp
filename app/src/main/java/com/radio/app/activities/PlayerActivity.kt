@@ -1,8 +1,10 @@
 package com.radio.app.activities
 
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.os.Build
 import android.os.Bundle
@@ -49,6 +51,47 @@ class PlayerActivity : AppCompatActivity() {
     private var segmentProcessing = false
     private var pendingAiTaskType: String? = null
 
+    // 广播接收器：处理连续播放、下一集等事件
+    private val episodeActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == RadioPlaybackService.BROADCAST_STATE_CHANGED) {
+                val action = intent.getStringExtra("action")
+                when (action) {
+                    "next_episode" -> {
+                        android.util.Log.d("PlayerActivity", "Received next_episode broadcast")
+                        playNextEpisode()
+                    }
+                    "prev_episode" -> {
+                        android.util.Log.d("PlayerActivity", "Received prev_episode broadcast")
+                        playPrevEpisode()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun saveProcessingState() {
+        getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
+            putBoolean("subtitle_processing", subtitleProcessing)
+            putBoolean("segment_processing", segmentProcessing)
+            putString("processing_episode_id", currentEpisode?.id ?: "")
+        }.apply()
+    }
+
+    private fun restoreProcessingState() {
+        val prefs = getSharedPreferences("player_processing_state", MODE_PRIVATE)
+        val savedEpisodeId = prefs.getString("processing_episode_id", "")
+        val currentId = currentEpisode?.id ?: ""
+        // 只有同一个节目才恢复状态
+        if (savedEpisodeId.isNotBlank() && savedEpisodeId == currentId) {
+            subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
+            segmentProcessing = prefs.getBoolean("segment_processing", false)
+        } else {
+            subtitleProcessing = false
+            segmentProcessing = false
+        }
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as? RadioPlaybackService.LocalBinder ?: return
@@ -56,21 +99,30 @@ class PlayerActivity : AppCompatActivity() {
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
             
-            // 多层抖动防护
+            val newUrl = currentEpisode?.audioUrl
+            
+            // 最强抖动防护：如果服务已播放同一URL，直接跳过
+            if (newUrl != null && playbackService?.isSameEpisodePlaying(newUrl) == true) {
+                updateUI()
+                startCacheProgressUpdater()
+                restoreBackgroundResults()
+                return@onServiceConnected
+            }
+            
+            // 备用：多层检查
             val svcPlaying = playbackService?.isPlaying() ?: false
             val svcPrepared = playbackService?.isPrepared() ?: false
             val svcEpisode = playbackService?.getCurrentEpisode()
-            val newUrl = currentEpisode?.audioUrl
             val svcUrl = playbackService?.getCurrentStreamUrl()
             
-            // 1. 服务正在播放且URL完全匹配 → 跳过，只更新UI
+            // 1. 服务正在播放且URL完全匹配 → 跳过
             if (svcPlaying && svcUrl != null && newUrl != null && svcUrl == newUrl) {
                 updateUI()
                 startCacheProgressUpdater()
                 restoreBackgroundResults()
                 return@onServiceConnected
             }
-            // 2. 服务正在播放且节目相同（通过stationId+title比较） → 跳过
+            // 2. 服务正在播放且节目相同 → 跳过
             if (svcPlaying && svcEpisode != null && currentEpisode != null) {
                 val sameEpisode = svcEpisode.stationId == currentEpisode!!.stationId && 
                                  svcEpisode.title == currentEpisode!!.title
@@ -88,7 +140,7 @@ class PlayerActivity : AppCompatActivity() {
                 restoreBackgroundResults()
                 return@onServiceConnected
             }
-            // 4. 服务正在播放（任何节目） → 跳过，只更新UI
+            // 4. 服务正在播放（任何节目） → 跳过
             if (svcPlaying) {
                 updateUI()
                 startCacheProgressUpdater()
@@ -107,7 +159,6 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             updateUI()
-            // Auto-generate simulated segments if none exist
             if (voiceSegments.isEmpty() && currentEpisode != null) {
                 voiceSegments = generateSimulatedSegments()
                 if (voiceSegments.isNotEmpty()) {
@@ -184,6 +235,7 @@ class PlayerActivity : AppCompatActivity() {
                     hasErrorToastShown = true
                     Toast.makeText(this@PlayerActivity, errorMessage, Toast.LENGTH_LONG).show()
                 }
+                android.util.Log.e("PlayerActivity", "Playback error: $errorMessage")
             }
         }
     }
@@ -268,6 +320,21 @@ class PlayerActivity : AppCompatActivity() {
         episodeList = (intent.getSerializableExtra("episode_list") as? ArrayList<Episode>) ?: ArrayList()
         currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
 
+        // 缓存节目列表用于连续播放
+        if (episodeList.isNotEmpty()) {
+            val arr = org.json.JSONArray()
+            for (ep in episodeList) {
+                val obj = org.json.JSONObject()
+                obj.put("id", ep.id); obj.put("title", ep.title)
+                obj.put("audio_url", ep.audioUrl); obj.put("station_id", ep.stationId)
+                obj.put("station_name", ep.stationName); obj.put("duration", ep.duration)
+                obj.put("broadcast_at", ep.broadcastAt)
+                arr.put(obj)
+            }
+            getSharedPreferences("episode_list_cache", MODE_PRIVATE).edit()
+                .putString("episodes", arr.toString()).apply()
+        }
+
         if (currentEpisode?.audioUrl.isNullOrBlank()) {
             Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show()
             finish()
@@ -276,7 +343,13 @@ class PlayerActivity : AppCompatActivity() {
 
         initViews()
         setupListeners()
+        restoreProcessingState()
         bindPlaybackService()
+        // 注册广播接收器处理连续播放等事件
+        LocalBroadcastManager.getInstance(this).registerReceiver(
+            episodeActionReceiver,
+            IntentFilter(RadioPlaybackService.BROADCAST_STATE_CHANGED)
+        )
     }
 
     private fun initViews() {
@@ -463,6 +536,7 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.tvAiStatus.text = "AI分段失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                                android.util.Log.e("PlayerActivity", "AI Segment error: $error")
                             }
                         }
                     }
@@ -502,6 +576,7 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.tvSubtitleStatus.text = "字幕生成失败: $error"
                                 binding.tvSubtitleStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                                android.util.Log.e("PlayerActivity", "Subtitle error: $error")
                             }
                         }
                     }
@@ -555,6 +630,7 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.tvAiStatus.text = "AI分段失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                                android.util.Log.e("PlayerActivity", "AI Segment error (bound): $error")
                             }
                         }
                     }
@@ -594,6 +670,7 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.tvSubtitleStatus.text = "字幕生成失败: $error"
                                 binding.tvSubtitleStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
+                                android.util.Log.e("PlayerActivity", "Subtitle error (bound): $error")
                             }
                         }
                     }
@@ -692,6 +769,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun startAiProcessing(taskType: String) {
         if (taskType == "subtitle") subtitleProcessing = true
         else if (taskType == "segment") segmentProcessing = true
+        saveProcessingState()
         if (_binding == null) return
         if (taskType == "subtitle") {
             binding.progressSubtitle.progress = 0
@@ -724,11 +802,97 @@ class PlayerActivity : AppCompatActivity() {
                 binding.btnAiSegment.isEnabled = true
             }
         }
+        saveProcessingState()
     }
 
     private fun buildStatusText(taskType: String, progress: Int): String {
         val modelLabel = if (taskType == "segment") getCurrentAiModelLabel() else getCurrentAsrLabel()
         return if (taskType == "segment") "AI分段: $progress% (模型: $modelLabel)" else "字幕生成: $progress% (引擎: $modelLabel)"
+    }
+
+    private fun playNextEpisode() {
+        getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
+            putBoolean("subtitle_processing", false)
+            putBoolean("segment_processing", false)
+        }.apply()
+        val nextEpisode = findAdjacentEpisode(currentEpisode, 1)
+        if (nextEpisode != null) {
+            currentEpisode = nextEpisode
+            saveLastEpisode()
+            playbackService?.playEpisode(nextEpisode, false)
+            voiceSegments = generateSimulatedSegments()
+            if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+            updateUI()
+        } else {
+            Toast.makeText(this, "没有更多节目了", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun playPrevEpisode() {
+        getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
+            putBoolean("subtitle_processing", false)
+            putBoolean("segment_processing", false)
+        }.apply()
+        val prevEpisode = findAdjacentEpisode(currentEpisode, -1)
+        if (prevEpisode != null) {
+            currentEpisode = prevEpisode
+            saveLastEpisode()
+            playbackService?.playEpisode(prevEpisode, false)
+            voiceSegments = generateSimulatedSegments()
+            if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+            updateUI()
+        }
+    }
+
+    private fun findAdjacentEpisode(current: Episode?, direction: Int): Episode? {
+        if (current == null) return null
+        val episodes = getEpisodeList()
+        val idx = episodes.indexOfFirst { it.id == current.id }
+        if (idx < 0) return null
+        val targetIdx = idx + direction
+        return if (targetIdx in episodes.indices) episodes[targetIdx] else null
+    }
+
+    private fun getEpisodeList(): List<Episode> {
+        // 优先使用内存中的列表
+        if (episodeList.isNotEmpty()) return episodeList
+        // 从缓存获取
+        val prefs = getSharedPreferences("episode_list_cache", MODE_PRIVATE)
+        val json = prefs.getString("episodes", null) ?: return emptyList()
+        try {
+            val arr = org.json.JSONArray(json)
+            val list = mutableListOf<Episode>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(Episode().apply {
+                    id = obj.optString("id", "")
+                    title = obj.optString("title", "")
+                    audioUrl = obj.optString("audio_url", "")
+                    stationId = obj.optString("station_id", "")
+                    stationName = obj.optString("station_name", "")
+                    duration = obj.optLong("duration", 0)
+                    broadcastAt = obj.optString("broadcast_at", "")
+                })
+            }
+            return list
+        } catch (e: Exception) {
+            return emptyList()
+        }
+    }
+
+    private fun saveLastEpisode() {
+        currentEpisode?.let { ep ->
+            getSharedPreferences("last_episode", MODE_PRIVATE).edit().apply {
+                putString("episode_id", ep.id)
+                putString("title", ep.title)
+                putString("audio_url", ep.audioUrl)
+                putString("station_name", ep.stationName)
+                putString("station_id", ep.stationId)
+                putLong("duration", ep.duration)
+                putString("broadcast_at", ep.broadcastAt)
+                putString("program_name", ep.programName)
+            }.apply()
+        }
     }
 
     private fun generateSimulatedSegments(): List<VoiceSegment> {
@@ -763,6 +927,27 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 恢复处理状态持久化
+        restoreProcessingState()
+        
+        // 根据处理状态恢复按钮和进度条
+        if (_binding != null) {
+            if (subtitleProcessing) {
+                binding.btnGenerateSubtitle.isEnabled = false
+                binding.progressSubtitle.visibility = View.VISIBLE
+                binding.tvSubtitleStatus.visibility = View.VISIBLE
+            } else {
+                binding.btnGenerateSubtitle.isEnabled = true
+            }
+            if (segmentProcessing) {
+                binding.btnAiSegment.isEnabled = false
+                binding.progressAi.visibility = View.VISIBLE
+                binding.tvAiStatus.visibility = View.VISIBLE
+            } else {
+                binding.btnAiSegment.isEnabled = true
+            }
+        }
+        
         // 恢复字幕生成和AI分段进度：如果服务仍在运行，重新绑定以获取进度更新
         if (!subtitleServiceBound) {
             val episode = currentEpisode
@@ -806,6 +991,9 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
+        } catch (_: Exception) {}
         cacheProgressRunnable?.let { cacheProgressHandler?.removeCallbacks(it) }
         if (serviceBound) {
             playbackService?.setCallback(null)
