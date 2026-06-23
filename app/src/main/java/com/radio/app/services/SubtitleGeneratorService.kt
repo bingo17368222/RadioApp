@@ -288,7 +288,7 @@ class SubtitleGeneratorService : Service() {
                                     this.confidence = 0.5
                                 }
                                 callback.onSubtitleGenerated(t)
-                                lastPartialOutput = offset
+                                lastPartialOutput = offset.toLong()
                                 Log.d(TAG, "Vosk partial: $startSec-$endSec: $partialText")
                             }
                         } catch (_: Exception) {

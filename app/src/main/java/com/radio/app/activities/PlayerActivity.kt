@@ -15,6 +15,7 @@ import android.view.View
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.radio.app.databinding.ActivityPlayerBinding
 import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
@@ -83,7 +84,7 @@ class PlayerActivity : AppCompatActivity() {
         val savedEpisodeId = prefs.getString("processing_episode_id", "")
         val currentId = currentEpisode?.id ?: ""
         // 只有同一个节目才恢复状态
-        if (savedEpisodeId.isNotBlank() && savedEpisodeId == currentId) {
+        if (savedEpisodeId != null && savedEpisodeId.isNotBlank() && savedEpisodeId == currentId) {
             subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
             segmentProcessing = prefs.getBoolean("segment_processing", false)
         } else {
