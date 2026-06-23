@@ -106,19 +106,26 @@ class EpisodeApiService private constructor() {
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
             val auth = generateAuthHeaders()
             for ((key, value) in auth) conn.setRequestProperty(key, value)
-            if (conn.responseCode == 200) {
+            val code = conn.responseCode
+            Log.d(TAG, "HTTP $urlStr -> $code")
+            if (code == 200) {
                 val reader = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
                 val sb = StringBuilder()
                 var line: String?
                 while (reader.readLine().also { line = it } != null) sb.append(line)
                 reader.close()
-                return sb.toString()
+                val body = sb.toString()
+                Log.d(TAG, "HTTP response: ${body.take(200)}...")
+                return body
             } else {
-                Log.e(TAG, "HTTP $urlStr -> ${conn.responseCode}")
+                val errorBody = try {
+                    conn.errorStream?.bufferedReader()?.readText() ?: "(no body)"
+                } catch (_: Exception) { "(read error)" }
+                Log.e(TAG, "HTTP $urlStr -> $code, body=$errorBody")
                 return null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "HTTP error: $urlStr", e)
+            Log.e(TAG, "HTTP error: $urlStr, ${e.message}")
             return null
         } finally {
             conn?.disconnect()
@@ -285,7 +292,14 @@ class EpisodeApiService private constructor() {
     }
 
     private fun fetchVodPrograms(cid: Int, stationId: String, dateStr: String, timestamp: Long): List<Episode> {
-        val json = httpGet("$API_BASE/getAuth/vod/program/$cid/$timestamp") ?: return emptyList()
+        val url = "$API_BASE/getAuth/vod/program/$cid/$timestamp"
+        Log.d(TAG, "fetchVodPrograms: $url (dateStr=$dateStr, timestamp=$timestamp)")
+        val json = httpGet(url)
+        if (json == null) {
+            Log.e(TAG, "fetchVodPrograms: HTTP request failed for $url")
+            return emptyList()
+        }
+        Log.d(TAG, "fetchVodPrograms: response length=${json.length}")
         try {
             val obj = JSONObject(json)
             val programs = obj.optJSONArray("programs") ?: return emptyList()

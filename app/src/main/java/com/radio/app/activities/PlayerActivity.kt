@@ -128,29 +128,16 @@ class PlayerActivity : AppCompatActivity() {
                 return@onServiceConnected
             }
             
-            // 关键修复：如果服务正在播放不同URL，同步Activity状态到服务当前节目
-            // 而不是重新启动播放（避免打断正在播放的节目）
+            // 关键修复：URL不同，说明用户选择了新节目，应该播放新节目
+            // 而不是同步服务正在播放的旧节目
             if (svcStarted && svcUrl != null && svcUrl.isNotBlank()) {
-                val svcEpisode = playbackService?.getCurrentEpisode()
-                if (svcEpisode != null) {
-                    val msg = "Service playing different episode, syncing: ${svcEpisode.title}"
-                    android.util.Log.d("PlayerActivity", msg)
-                    writeJitterLog(msg)
-                    currentEpisode = svcEpisode
-                    val idx = episodeList.indexOfFirst { it.id == svcEpisode.id }
-                    if (idx >= 0) currentEpisodeIndex = idx
-                    saveLastEpisode()
-                    voiceSegments = generateSimulatedSegments()
-                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
-                    updateUI()
-                    startCacheProgressUpdater()
-                    restoreBackgroundResults()
-                    setupPreCacheList()
-                    return@onServiceConnected
-                }
+                val msg = "URL different (svc=$svcUrl, new=$newUrl), playing user's selection"
+                android.util.Log.d("PlayerActivity", msg)
+                writeJitterLog(msg)
+                // 继续执行下面的播放逻辑，不sync
             }
             
-            android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
+            android.util.Log.d("PlayerActivity", "Starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)

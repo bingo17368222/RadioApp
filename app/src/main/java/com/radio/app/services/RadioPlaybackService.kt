@@ -945,11 +945,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val appPrefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
         notificationStyle = appPrefs.getString("notification_style", "full") ?: "full"
         skipSeconds = appPrefs.getInt("skip_seconds", 15)
-        // 修复：如果旧版本残留值为5，迁移到默认值15
-        if (skipSeconds == 5 && !appPrefs.contains("skip_seconds_v2")) {
+        // 强制迁移：旧版本残留值5必须覆盖为15
+        if (skipSeconds == 5) {
             skipSeconds = 15
-            appPrefs.edit().putInt("skip_seconds", 15).putBoolean("skip_seconds_v2", true).apply()
-            Log.d(TAG, "loadSettings: migrated skip_seconds from 5 to 15 (default)")
+            appPrefs.edit().putInt("skip_seconds", 15).apply()
+            // 同时清理 radio_app_prefs 中的旧值
+            try {
+                getSharedPreferences("radio_app_prefs", Context.MODE_PRIVATE)
+                    .edit().putInt("skip_seconds", 15).apply()
+            } catch (_: Exception) {}
+            Log.d(TAG, "loadSettings: FORCED migration skip_seconds from 5 to 15")
         }
         Log.d(TAG, "loadSettings: notificationStyle=$notificationStyle, skipSeconds=$skipSeconds")
     }

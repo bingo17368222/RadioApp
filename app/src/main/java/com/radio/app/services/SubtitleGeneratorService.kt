@@ -174,6 +174,25 @@ class SubtitleGeneratorService : Service() {
         }
         ctx.log("Starting subtitle generation, audioUrl=$audioUrl")
 
+        // 包装回调，同时更新通知
+        val wrappedCallback = object : SubtitleCallback {
+            override fun onSubtitleGenerated(transcript: Transcript) {
+                callback.onSubtitleGenerated(transcript)
+            }
+            override fun onProgressUpdate(progress: Int, total: Int) {
+                callback.onProgressUpdate(progress, total)
+                updateProgressNotification(progress, "字幕生成")
+            }
+            override fun onError(error: String) {
+                callback.onError(error)
+                updateProgressNotification(0, "字幕生成")
+            }
+            override fun onComplete(transcripts: List<Transcript>) {
+                callback.onComplete(transcripts)
+                cleanupTask()
+            }
+        }
+
         executor?.execute {
             try {
                 if (ctx.cancelled.get() || globalCancelled.get()) {
@@ -183,14 +202,14 @@ class SubtitleGeneratorService : Service() {
                 val voskModel = findVoskModel()
                 if (voskModel != null) {
                     ctx.log("Using Vosk model: $voskModel")
-                    val success = generateWithVosk(episodeId, audioUrl, callback, ctx)
+                    val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
                     if (!success && !ctx.cancelled.get()) {
                         ctx.log("Vosk subtitle generation FAILED")
-                        callback.onError("字幕生成失败：音频识别模型不可用，请在离线引擎管理中下载")
+                        wrappedCallback.onError("字幕生成失败：音频识别模型不可用，请在离线引擎管理中下载")
                     }
                 } else {
                     ctx.log("ERROR: No Vosk model found")
-                    callback.onError("未找到离线识别模型，请在离线引擎管理中下载")
+                    wrappedCallback.onError("未找到离线识别模型，请在离线引擎管理中下载")
                 }
             } catch (e: Exception) {
                 ctx.log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
@@ -218,6 +237,25 @@ class SubtitleGeneratorService : Service() {
         }
         ctx.log("Starting segment generation, audioUrl=$audioUrl")
 
+        // 包装回调，同时更新通知
+        val wrappedCallback = object : SegmentCallback {
+            override fun onSegmentGenerated(segment: VoiceSegment) {
+                callback.onSegmentGenerated(segment)
+            }
+            override fun onProgressUpdate(progress: Int, total: Int) {
+                callback.onProgressUpdate(progress, total)
+                updateProgressNotification(progress, "AI分段")
+            }
+            override fun onComplete(segments: List<VoiceSegment>) {
+                callback.onComplete(segments)
+                cleanupTask()
+            }
+            override fun onError(error: String) {
+                callback.onError(error)
+                updateProgressNotification(0, "AI分段")
+            }
+        }
+
         executor?.execute {
             try {
                 if (ctx.cancelled.get() || globalCancelled.get()) {
@@ -234,18 +272,18 @@ class SubtitleGeneratorService : Service() {
                             label = transcript.text
                         )
                         allSegments.add(segment)
-                        callback.onSegmentGenerated(segment)
+                        wrappedCallback.onSegmentGenerated(segment)
                     }
                     override fun onProgressUpdate(progress: Int, total: Int) {
-                        callback.onProgressUpdate(progress, total)
+                        wrappedCallback.onProgressUpdate(progress, total)
                     }
                     override fun onError(error: String) {
                         ctx.log("Segment generation error: $error")
-                        callback.onError(error)
+                        wrappedCallback.onError(error)
                     }
                     override fun onComplete(transcripts: List<Transcript>) {
                         ctx.log("Segment generation complete: ${allSegments.size} segments")
-                        callback.onComplete(allSegments)
+                        wrappedCallback.onComplete(allSegments)
                     }
                 }
                 val voskModel = findVoskModel()
@@ -625,8 +663,15 @@ class SubtitleGeneratorService : Service() {
                             codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            codec.queueInputBuffer(inIdx, 0, sampleSize, extractor.sampleTime, 0)
-                            extractor.advance()
+                            // 关键修复：如果已到达durationUs限制，停止输入更多数据
+                            if (durationUs > 0 && extractor.sampleTime >= durationUs) {
+                                codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                                ctx.log("Decode: reached duration limit at ${extractor.sampleTime / 1000}s, stopping input")
+                            } else {
+                                codec.queueInputBuffer(inIdx, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
                         }
                     }
                 }
@@ -748,7 +793,7 @@ class SubtitleGeneratorService : Service() {
             val taskType = intent.getStringExtra("task_type") ?: "subtitle"
             val taskLabel = if (taskType == "segment") "AI分段" else "字幕生成"
 
-            logToFile("onStartCommand: starting $taskLabel for episode=$episodeId")
+            logToFile("onStartCommand: starting foreground for $taskLabel, episode=$episodeId")
 
             if (wakeLock == null) {
                 val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -756,46 +801,15 @@ class SubtitleGeneratorService : Service() {
             }
             wakeLock?.acquire(3600000)
 
+            // 关键修复：onStartCommand只启动前台通知，不启动任务
+            // 任务由Activity通过binder调用generateSegmentsForEpisode/generateSubtitlesForEpisode启动
+            // 这样Activity的回调才能正确接收进度和结果
             val progressNotification = createProgressNotification(0, taskLabel)
             try { startForeground(NOTIFICATION_ID, progressNotification) }
             catch (e: Exception) { Log.w(TAG, "startForeground failed: ${e.message}") }
 
-            if (taskType == "segment") {
-                generateSegmentsForEpisode(episodeId, audioUrl, object : SegmentCallback {
-                    override fun onProgressUpdate(progress: Int, total: Int) {
-                        updateProgressNotification(progress, taskLabel)
-                    }
-                    override fun onSegmentGenerated(segment: VoiceSegment) {
-                        dbHelper?.saveVoiceSegment(episodeId, segment)
-                    }
-                    override fun onComplete(segments: List<VoiceSegment>) {
-                        logToFile("Segment complete: ${segments.size} segments for episode=$episodeId")
-                        dbHelper?.saveVoiceSegments(episodeId, segments)
-                        cleanupTask()
-                    }
-                    override fun onError(error: String) {
-                        logToFile("Segment error: $error")
-                        cleanupTask()
-                    }
-                })
-            } else {
-                generateSubtitlesForEpisode(episodeId, audioUrl, object : SubtitleCallback {
-                    override fun onProgressUpdate(progress: Int, total: Int) {
-                        updateProgressNotification(progress, taskLabel)
-                    }
-                    override fun onSubtitleGenerated(transcript: Transcript) {
-                        dbHelper?.saveTranscript(transcript)
-                    }
-                    override fun onComplete(transcripts: List<Transcript>) {
-                        logToFile("Subtitle complete: ${transcripts.size} transcripts for episode=$episodeId")
-                        cleanupTask()
-                    }
-                    override fun onError(error: String) {
-                        logToFile("Subtitle error: $error")
-                        cleanupTask()
-                    }
-                })
-            }
+            // 在Activity绑定之前，不启动任务
+            // 任务启动时会通过回调更新通知进度
         }
         return START_NOT_STICKY
     }
