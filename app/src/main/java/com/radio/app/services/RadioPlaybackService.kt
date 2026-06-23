@@ -945,18 +945,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val appPrefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
         notificationStyle = appPrefs.getString("notification_style", "full") ?: "full"
         skipSeconds = appPrefs.getInt("skip_seconds", 15)
+        Log.d(TAG, "loadSettings: raw skip_seconds from prefs = ${appPrefs.getInt("skip_seconds", -1)}")
         // 强制迁移：旧版本残留值5必须覆盖为15
         if (skipSeconds == 5) {
             skipSeconds = 15
             appPrefs.edit().putInt("skip_seconds", 15).apply()
-            // 同时清理 radio_app_prefs 中的旧值
+            // 同时清理所有可能的旧pref文件
             try {
                 getSharedPreferences("radio_app_prefs", Context.MODE_PRIVATE)
                     .edit().putInt("skip_seconds", 15).apply()
             } catch (_: Exception) {}
-            Log.d(TAG, "loadSettings: FORCED migration skip_seconds from 5 to 15")
+            Log.w(TAG, "loadSettings: FORCED migration skip_seconds 5→15")
         }
-        Log.d(TAG, "loadSettings: notificationStyle=$notificationStyle, skipSeconds=$skipSeconds")
+        Log.d(TAG, "loadSettings: final skipSeconds=$skipSeconds, notificationStyle=$notificationStyle")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

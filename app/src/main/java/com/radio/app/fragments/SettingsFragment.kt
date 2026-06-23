@@ -475,12 +475,16 @@ class SettingsFragment : Fragment() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(20, 10, 20, 10)
         }
+        val btnClearAll = Button(requireContext()).apply {
+            text = "清空全部(${files.size}个)"
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(0xFFE53935.toInt())
+        }
         val btnSelectAll = Button(requireContext()).apply { text = "全选" }
         val btnSelectNone = Button(requireContext()).apply { text = "全不选" }
-        val btnInvert = Button(requireContext()).apply { text = "反选" }
+        btnContainer.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.5f))
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         val dialog = AlertDialog.Builder(requireContext())
             .setTitle("选择要删除的缓存文件 (" + files.size + "个)")
@@ -498,17 +502,34 @@ class SettingsFragment : Fragment() {
             .setNegativeButton("取消", null)
             .create()
 
+        // 清空全部按钮：直接删除所有文件
+        btnClearAll.setOnClickListener {
+            AlertDialog.Builder(requireContext())
+                .setTitle("确认清空全部缓存")
+                .setMessage("将删除全部${files.size}个缓存文件，此操作不可撤销。")
+                .setPositiveButton("确认清空") { _, _ ->
+                    var deletedSize = 0L
+                    for (f in files) { if (f.delete()) deletedSize += f.length() }
+                    Toast.makeText(requireContext(), "已清空全部缓存 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show()
+                    updateUI()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+
         btnSelectAll.setOnClickListener {
             for (i in checked.indices) { checked[i] = true; dialog.listView.setItemChecked(i, true) }
         }
         btnSelectNone.setOnClickListener {
             for (i in checked.indices) { checked[i] = false; dialog.listView.setItemChecked(i, false) }
         }
-        btnInvert.setOnClickListener {
-            for (i in checked.indices) { checked[i] = !checked[i]; dialog.listView.setItemChecked(i, checked[i]) }
-        }
         dialog.setView(btnContainer)
         dialog.show()
+        // 限制列表最大高度，防止按钮被挤出屏幕
+        dialog.listView?.let { lv ->
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.4).toInt()
+            lv.layoutParams = lv.layoutParams.apply { height = maxHeight.coerceAtMost(lv.layoutParams.height) }
+        }
     }
 
     private fun scanFilesRecursive(dir: File?, result: MutableList<File>) {

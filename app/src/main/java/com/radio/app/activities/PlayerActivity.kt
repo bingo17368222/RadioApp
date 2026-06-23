@@ -50,6 +50,7 @@ class PlayerActivity : AppCompatActivity() {
     private var cacheProgressRunnable: Runnable? = null
     private var subtitleProcessing = false
     private var segmentProcessing = false
+    private var isFreshStart = false // true if user explicitly clicked an episode from the list
     private var pendingAiTaskType: String? = null
 
     // 广播接收器：处理连续播放、下一集等事件
@@ -87,9 +88,22 @@ class PlayerActivity : AppCompatActivity() {
         if (savedEpisodeId != null && savedEpisodeId.isNotBlank() && savedEpisodeId == currentId) {
             subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
             segmentProcessing = prefs.getBoolean("segment_processing", false)
+            android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing for $currentId")
         } else {
             subtitleProcessing = false
             segmentProcessing = false
+            // 清除残留状态，防止错误恢复
+            if (savedEpisodeId != null && savedEpisodeId.isNotBlank()) {
+                prefs.edit().clear().apply()
+                android.util.Log.d("PlayerActivity", "restoreProcessingState: cleared stale state (saved=$savedEpisodeId != current=$currentId)")
+            }
+        }
+        // 安全兜底：如果Activity是新鲜启动（不是从后台恢复），清除所有处理状态
+        if (isFreshStart) {
+            subtitleProcessing = false
+            segmentProcessing = false
+            prefs.edit().clear().apply()
+            android.util.Log.d("PlayerActivity", "restoreProcessingState: fresh start, cleared all processing state")
         }
     }
 
@@ -128,16 +142,42 @@ class PlayerActivity : AppCompatActivity() {
                 return@onServiceConnected
             }
             
-            // 关键修复：URL不同，说明用户选择了新节目，应该播放新节目
-            // 而不是同步服务正在播放的旧节目
-            if (svcStarted && svcUrl != null && svcUrl.isNotBlank()) {
-                val msg = "URL different (svc=$svcUrl, new=$newUrl), playing user's selection"
-                android.util.Log.d("PlayerActivity", msg)
-                writeJitterLog(msg)
-                // 继续执行下面的播放逻辑，不sync
+            // 关键修复：服务正在播放不同节目
+            // 如果用户主动点击节目（isFreshStart），播放用户选择的节目
+            // 如果只是系统重建Activity，同步到服务当前节目（防止抖动）
+            if (svcStarted) {
+                if (isFreshStart) {
+                    val msg = "Fresh start, playing user's selection: $newUrl"
+                    android.util.Log.d("PlayerActivity", msg)
+                    writeJitterLog(msg)
+                    // 继续执行下面的播放逻辑
+                } else {
+                    val svcEpisode = playbackService?.getCurrentEpisode()
+                    val msg = if (svcEpisode != null) {
+                        "Activity recreation, syncing to service: ${svcEpisode.title}"
+                    } else {
+                        "Activity recreation, syncing to service URL"
+                    }
+                    android.util.Log.d("PlayerActivity", msg)
+                    writeJitterLog(msg)
+                    if (svcEpisode != null) {
+                        currentEpisode = svcEpisode
+                        val idx = episodeList.indexOfFirst { it.id == svcEpisode.id }
+                        if (idx >= 0) currentEpisodeIndex = idx
+                        saveLastEpisode()
+                    }
+                    voiceSegments = generateSimulatedSegments()
+                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                    updateUI()
+                    startCacheProgressUpdater()
+                    restoreBackgroundResults()
+                    setupPreCacheList()
+                    return@onServiceConnected
+                }
             }
             
-            android.util.Log.d("PlayerActivity", "Starting new playback for $newUrl")
+            // 服务完全空闲，启动新播放
+            android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
@@ -332,6 +372,8 @@ class PlayerActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         currentEpisode = intent.getSerializableExtra("episode") as? Episode
+        // 判断是否为用户主动点击节目进入（新鲜启动）vs 系统重建Activity
+        isFreshStart = intent.hasExtra("episode") || intent.hasExtra("episode_id")
         if (currentEpisode == null) {
             val audioUrl = intent.getStringExtra("audio_url") ?: intent.getStringExtra("stream_url")
             if (audioUrl.isNullOrBlank()) {

@@ -564,21 +564,31 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun findVoskModel(): String? {
+        // 1. 检查外部存储手动下载的模型（支持 vosk 和 whisper 目录）
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {
-            val voskDirs = modelsDir.listFiles()?.filter { it.isDirectory && it.name.contains("vosk", ignoreCase = true) }
-            if (!voskDirs.isNullOrEmpty()) {
-                for (dir in voskDirs) {
-                    if (dir.listFiles()?.isNotEmpty() == true) {
+            val modelDirs = modelsDir.listFiles()?.filter {
+                it.isDirectory && (it.name.contains("vosk", ignoreCase = true) || 
+                                   it.name.contains("whisper", ignoreCase = true))
+            }
+            if (!modelDirs.isNullOrEmpty()) {
+                for (dir in modelDirs) {
+                    val files = dir.listFiles()
+                    if (files != null && files.isNotEmpty()) {
+                        logToFile("findVoskModel: found model in ${dir.absolutePath} (${files.size} files)")
                         return dir.absolutePath
                     }
                 }
             }
+            logToFile("findVoskModel: no model found in ${modelsDir.absolutePath}, dirs=${modelsDir.listFiles()?.map { it.name }}")
         }
+        // 2. 检查内置模型
         val internalModelDir = File(filesDir, "vosk-model-small-cn-0.22")
         if (internalModelDir.exists() && internalModelDir.listFiles()?.isNotEmpty() == true) {
+            logToFile("findVoskModel: found built-in model at ${internalModelDir.absolutePath}")
             return internalModelDir.absolutePath
         }
+        logToFile("findVoskModel: no model found. Checked ${modelsDir?.absolutePath} and ${internalModelDir.absolutePath}")
         return null
     }
 

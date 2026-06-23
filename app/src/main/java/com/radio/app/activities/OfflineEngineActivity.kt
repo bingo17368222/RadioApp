@@ -82,9 +82,9 @@ class OfflineEngineActivity : AppCompatActivity() {
         // ===== Vosk 离线语音识别（APK内置 + 可下载） =====
         EngineInfo(
             "Vosk 小模型 (中文)",
-            "Vosk small-cn 中文模型\n大小: 约42MB | 识别率: ~88% | 速度: 快(实时)\n状态: APK内置，无需下载\n适用: 中文语音识别，低资源消耗",
-            "约42MB (内置)",
-            null,
+            "Vosk small-cn 中文模型\n大小: 约42MB | 识别率: ~88% | 速度: 快(实时)\n状态: 支持下载\n适用: 中文语音识别，低资源消耗",
+            "约42MB",
+            "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip",
             "vosk-model-small-cn-0.22"
         ),
         EngineInfo(
@@ -345,22 +345,45 @@ class OfflineEngineActivity : AppCompatActivity() {
         ZipInputStream(zipFile.inputStream()).use { zis ->
             val buffer = ByteArray(8192)
             var entry = zis.nextEntry
+            // 找到zip中的顶层目录名，用于去除嵌套
+            var topLevelDir: String? = null
             while (entry != null) {
-                val outFile = File(destDir, entry.name)
+                if (entry.isDirectory) {
+                    // 找到第一个目录（顶层）
+                    val name = entry.name.trimEnd('/')
+                    if (!name.contains('/') && topLevelDir == null) {
+                        topLevelDir = name
+                    }
+                }
+                entry = zis.nextEntry
+            }
+            // 重新读取
+            zis.closeEntry()
+            val zis2 = ZipInputStream(zipFile.inputStream())
+            entry = zis2.nextEntry
+            while (entry != null) {
+                // 去除顶层目录名
+                var entryName = entry.name
+                if (topLevelDir != null && entryName.startsWith("$topLevelDir/")) {
+                    entryName = entryName.removePrefix("$topLevelDir/")
+                }
+                if (entryName.isBlank()) { entry = zis2.nextEntry; continue }
+                val outFile = File(destDir, entryName)
                 if (entry.isDirectory) {
                     outFile.mkdirs()
                 } else {
                     outFile.parentFile?.mkdirs()
                     FileOutputStream(outFile).use { fos ->
                         var len: Int
-                        while (zis.read(buffer).also { len = it } != -1) {
+                        while (zis2.read(buffer).also { len = it } != -1) {
                             fos.write(buffer, 0, len)
                         }
                     }
                 }
-                zis.closeEntry()
-                entry = zis.nextEntry
+                zis2.closeEntry()
+                entry = zis2.nextEntry
             }
+            zis2.close()
         }
     }
 
