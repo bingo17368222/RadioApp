@@ -52,6 +52,16 @@ class PlayerActivity : AppCompatActivity() {
             playbackService = binder.getService()
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
+            // 如果服务已在播放相同节目，只更新UI，不重新触发播放（避免seek引起的抖动）
+            val currentPlaying = playbackService?.getCurrentEpisode()
+            val currentUrl = playbackService?.getCurrentStreamUrl()
+            val newUrl = currentEpisode?.audioUrl
+            if (currentPlaying != null && newUrl != null && currentUrl == newUrl) {
+                // 同一节目，仅更新UI，不重新播放
+                updateUI()
+                startCacheProgressUpdater()
+                return@onServiceConnected
+            }
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
             } else {
