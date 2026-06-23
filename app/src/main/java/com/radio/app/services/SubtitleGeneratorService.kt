@@ -156,7 +156,7 @@ class SubtitleGeneratorService : Service() {
             return false
         }
 
-        callback.onProgressUpdate(20, 100)
+        callback.onProgressUpdate(30, 100)
         Log.d(TAG, "Online ASR: audio downloaded ${audioFile.length()} bytes")
 
         try {
@@ -188,12 +188,12 @@ class SubtitleGeneratorService : Service() {
             val durationSec = (durationUs / 1_000_000).toInt()
 
             extractor.release()
-            callback.onProgressUpdate(40, 100)
+            callback.onProgressUpdate(35, 100)
 
             // 基于音频时长进行真实分段
-            // 每30秒一个片段，检测音量变化
-            val segmentDuration = 30 // seconds
-            val segmentCount = (durationSec / segmentDuration).coerceAtLeast(1)
+            // 每60秒一个片段，最多120段，避免生成过多分段
+            val segmentDuration = 60
+            val segmentCount = ((durationSec / segmentDuration).coerceAtLeast(1)).coerceAtMost(120)
 
             // 使用音频文件内容哈希生成确定性但不同的字幕
             val fileHash = audioFile.absolutePath.hashCode()
@@ -228,7 +228,7 @@ class SubtitleGeneratorService : Service() {
                 dbHelper?.saveTranscript(t)
                 callback.onSubtitleGenerated(t)
 
-                val progress = 40 + (i + 1) * 55 / segmentCount
+                val progress = 35 + (i + 1) * 60 / segmentCount
                 callback.onProgressUpdate(progress, 100)
             }
 
@@ -699,8 +699,8 @@ class SubtitleGeneratorService : Service() {
                         output.write(buffer, 0, len)
                         downloadedBytes += len
                         if (totalBytes > 0) {
-                            // 下载进度映射到 0-20%
-                            val pct = (downloadedBytes * 20 / totalBytes).toInt()
+                            // 下载进度映射到 0-30%
+                            val pct = (downloadedBytes * 30 / totalBytes).toInt()
                             if (pct > lastReportedPct) {
                                 lastReportedPct = pct
                                 onProgress(pct)

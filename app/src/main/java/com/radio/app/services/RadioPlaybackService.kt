@@ -133,6 +133,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationDate = ""
     private var downloadingJob: kotlinx.coroutines.Job? = null
     private var positionRestoreRequested = false
+    private var isSeekingToPosition = false
 
     // 后台下载进度（供 UI 读取）
     @Volatile
@@ -184,7 +185,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         positionRestoreRequested = false
                                         applySavedPosition()
                                     }
-                                    callback?.onStateChanged(true)
+                                    // seek 期间的 STATE_READY 不通知 UI，避免播放/暂停循环抖动
+                                    if (!isSeekingToPosition) {
+                                        callback?.onStateChanged(true)
+                                    }
+                                    isSeekingToPosition = false
                                     updateNotification()
                                     // 后台下载音频文件
                                     startBackgroundDownload()
@@ -216,6 +221,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             }
                         }
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
+                            // seek 到记忆位置期间不通知 UI，避免播放/暂停循环抖动
+                            if (isSeekingToPosition) return
                             callback?.onStateChanged(isPlaying)
                             notificationPlaying = isPlaying
                             updateNotification()
@@ -326,6 +333,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val episodeKey = "${ep.stationId}::${ep.title}"
         val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
         if (savedPos > 0 && !isLive) {
+            isSeekingToPosition = true  // 抑制 seek 期间的 UI 回调
             player?.seekTo(savedPos)
             Log.d(TAG, "Restored position: ${savedPos}ms for $episodeKey")
         }
