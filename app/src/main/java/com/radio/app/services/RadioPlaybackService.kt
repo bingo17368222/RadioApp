@@ -141,6 +141,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var positionRestoreRequested = false
     private var isSeekingToPosition = false
     private var notificationStyle = "full"
+    // SharedPreferences监听器，用于热切换通知栏样式
+    private var prefChangeListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
 
     // WakeLock保持CPU运行
     private var wakeLock: PowerManager.WakeLock? = null
@@ -186,6 +188,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
         wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RadioApp::PlaybackWakeLock")
         wakeLock?.acquire(24 * 60 * 60 * 1000L)
+        
+        // 注册SharedPreferences监听器，实现通知栏样式热切换
+        val prefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+        prefChangeListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "notification_style") {
+                reloadNotificationStyle()
+                val handler = Handler(Looper.getMainLooper())
+                handler.post { updateNotification() }
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
     }
 
     private fun initMediaSession() {
@@ -426,15 +439,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
-        if (!settings.preloadCache || !settings.autoCache) return
+        if (!settings.preloadCache) return
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
             Log.d(TAG, "Pre-cache: skipped (WiFi only)")
             return
         }
-        // 检查已缓存的节目数量
-        val cacheDir = getExternalFilesDir("episodes") ?: cacheDir
-        if (cacheDir == null) return
-        val cachedFiles = cacheDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
+        // 检查已缓存的节目数量（使用统一的缓存目录）
+        val episodesDir = File(cacheDir, "episodes")
+        if (!episodesDir.exists()) episodesDir.mkdirs()
+        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedCount = cachedFiles.size
         if (cachedCount >= settings.preloadCacheCount) {
             Log.d(TAG, "Pre-cache: already have $cachedCount episodes, target is ${settings.preloadCacheCount}")
@@ -514,7 +527,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val url = episode.audioUrl ?: return
         if (url.isBlank() || !url.startsWith("http")) return
         val fileName = extractCacheFileName(url)
-        val episodesDir = File(getExternalFilesDir("episodes") ?: cacheDir, "episodes")
+        val episodesDir = File(cacheDir, "episodes")
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         if (targetFile.exists() && targetFile.length() > 1024) {
@@ -654,8 +667,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
         val playing = player?.isPlaying ?: false
+
+        val deleteIntent = PendingIntent.getService(this, 99,
+            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        // 紧凑模式：使用系统标准MediaStyle通知栏，支持seekbar和拖动手势
+        if (notificationStyle == "compact") {
+            buildMediaStyleNotification(playing, deleteIntent)
+            return
+        }
+
+        // 其他模式：使用自定义RemoteViews布局
         val remoteViews = when (notificationStyle) {
-            "compact" -> RemoteViews(packageName, R.layout.notification_compact)
             "minimal" -> RemoteViews(packageName, R.layout.notification_minimal)
             else -> RemoteViews(packageName, R.layout.notification_custom)
         }
@@ -691,10 +715,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             applySeekIntents(remoteViews)
         }
 
-        val deleteIntent = PendingIntent.getService(this, 99,
-            Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
@@ -708,13 +728,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCustomContentView(remoteViews)
 
-        // 紧凑模式使用MediaStyle支持seekbar和拖动手势
-        if (notificationStyle == "compact") {
-            builder.setStyle(androidx.media.app.NotificationCompat.MediaStyle()
-                .setShowActionsInCompactView(0, 1, 2)
-                .setMediaSession(mediaSession?.sessionToken))
-        }
-
         if (notificationStyle == "full") {
             builder.setCustomBigContentView(remoteViews)
         }
@@ -726,14 +739,77 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         manager.notify(NOTIFICATION_ID, notification)
     }
 
+    /**
+     * 构建系统标准MediaStyle通知栏（五按钮，支持seekbar和拖动手势）
+     */
+    private fun buildMediaStyleNotification(playing: Boolean, deleteIntent: PendingIntent) {
+        val contentText = if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText"
+
+        val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+            .setContentTitle(notificationTitle)
+            .setContentText(contentText)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentIntent(createContentIntent())
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setDeleteIntent(deleteIntent)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
+                .setShowActionsInCompactView(0, 2, 4)
+                .setMediaSession(mediaSession?.sessionToken))
+            // 5个按钮：后退 -5s | 上一节目 | 播放/暂停 | 下一节目 | 前进 +5s
+            .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退5s", 10))
+            .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
+            .addAction(createNotificationAction(
+                if (playing) ACTION_PAUSE else ACTION_PLAY,
+                if (playing) R.drawable.notif_pause else R.drawable.notif_play,
+                if (playing) "暂停" else "播放", 12))
+            .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
+            .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进5s", 14))
+
+        val notification: Notification = builder.build()
+        notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun createNotificationAction(action: String, iconRes: Int, title: String, requestCode: Int): NotificationCompat.Action {
+        val intent = Intent(this, RadioPlaybackService::class.java).apply {
+            this.action = action
+        }
+        val pi = PendingIntent.getService(this, requestCode, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Action.Builder(iconRes, title, pi).build()
+    }
+
     private fun reloadNotificationStyle() {
         val prefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
         notificationStyle = prefs.getString("notification_style", "full") ?: "full"
     }
 
     private fun buildNotification(): Notification {
+        // 紧凑模式使用MediaStyle
+        if (notificationStyle == "compact") {
+            return NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+                .setContentTitle("Radio App")
+                .setContentText("准备播放")
+                .setSmallIcon(R.drawable.ic_notification)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
+                    .setShowActionsInCompactView(0, 2, 4)
+                    .setMediaSession(mediaSession?.sessionToken))
+                .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退5s", 10))
+                .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
+                .addAction(createNotificationAction(ACTION_PLAY, R.drawable.notif_play, "播放", 12))
+                .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
+                .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进5s", 14))
+                .build()
+        }
         val remoteViews = when (notificationStyle) {
-            "compact" -> RemoteViews(packageName, R.layout.notification_compact)
             "minimal" -> RemoteViews(packageName, R.layout.notification_minimal)
             else -> RemoteViews(packageName, R.layout.notification_custom)
         }
@@ -1118,6 +1194,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     override fun onDestroy() {
         super.onDestroy()
+        // 取消注册监听器
+        prefChangeListener?.let {
+            getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+                .unregisterOnSharedPreferenceChangeListener(it)
+        }
         wakeLock?.let { if (it.isHeld) it.release() }
         progressRunnable?.let { progressHandler?.removeCallbacks(it) }
         notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }

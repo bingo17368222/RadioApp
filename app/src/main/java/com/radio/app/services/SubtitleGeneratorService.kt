@@ -369,15 +369,36 @@ class SubtitleGeneratorService : Service() {
     /**
      * 获取音频文件（优先缓存）
      * 支持M3U8流（直播）和直接音频文件（回放）
+     * 优先复用播放服务已下载的缓存文件，避免重复下载
      */
     private fun getAudioFile(audioUrl: String, onProgress: ((Int) -> Unit)? = null): File? {
-        // 优先检查缓存
+        // 1. 检查SubtitleGeneratorService自身缓存
         val cacheDir = getExternalFilesDir("audio")
         if (cacheDir != null) {
             val cachedFile = File(cacheDir, "${Math.abs(audioUrl.hashCode())}.mp3")
             if (cachedFile.exists() && cachedFile.length() > 1024) {
                 onProgress?.invoke(5)
                 return cachedFile
+            }
+        }
+
+        // 2. 检查RadioPlaybackService的下载缓存 (cacheDir/episodes/)
+        //    播放服务下载音频后缓存在此目录，字幕服务应复用而非重新下载
+        val episodesCacheDir = File(this.cacheDir, "episodes")
+        if (episodesCacheDir.exists()) {
+            try {
+                val path = java.net.URL(audioUrl).path
+                val fileName = path.substringAfterLast("/")
+                if (fileName.isNotBlank()) {
+                    val playbackCachedFile = File(episodesCacheDir, fileName)
+                    if (playbackCachedFile.exists() && playbackCachedFile.length() > 1024) {
+                        Log.d(TAG, "Reusing playback cache: ${playbackCachedFile.absolutePath} (${playbackCachedFile.length()} bytes)")
+                        onProgress?.invoke(5)
+                        return playbackCachedFile
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to check playback cache: ${e.message}")
             }
         }
 
@@ -703,10 +724,14 @@ class SubtitleGeneratorService : Service() {
             }
             wakeLock?.acquire(3600000) // 最多1小时
 
-            // 不调用startForeground，避免与播放通知冲突
-            // 直接使用低优先级通知
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIFICATION_ID, createProgressNotification(0, taskLabel))
+            // 必须调用startForeground()，否则ForegroundServiceDidNotStartInTimeException
+            // 使用低优先级通知，避免与播放通知冲突
+            val progressNotification = createProgressNotification(0, taskLabel)
+            try {
+                startForeground(NOTIFICATION_ID, progressNotification)
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground failed: ${e.message}")
+            }
 
             if (taskType == "segment") {
                 generateSegmentsForEpisode(episodeId, audioUrl, object : SegmentCallback {
@@ -721,13 +746,13 @@ class SubtitleGeneratorService : Service() {
                         Log.d(TAG, "Segment generation complete: ${segments.size} segments")
                         // 保存所有分段到DB
                         dbHelper?.saveVoiceSegments(episodeId, segments)
-                        nm.cancel(NOTIFICATION_ID)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
                         releaseWakeLock()
                         stopSelf()
                     }
                     override fun onError(error: String) {
                         Log.e(TAG, "Segment generation error in onStartCommand: $error")
-                        nm.cancel(NOTIFICATION_ID)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
                         releaseWakeLock()
                         stopSelf()
                     }
@@ -743,13 +768,13 @@ class SubtitleGeneratorService : Service() {
                     }
                     override fun onComplete(transcripts: List<Transcript>) {
                         Log.d(TAG, "Subtitle generation complete: ${transcripts.size} transcripts")
-                        nm.cancel(NOTIFICATION_ID)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
                         releaseWakeLock()
                         stopSelf()
                     }
                     override fun onError(error: String) {
                         Log.e(TAG, "Subtitle generation error in onStartCommand: $error")
-                        nm.cancel(NOTIFICATION_ID)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
                         releaseWakeLock()
                         stopSelf()
                     }

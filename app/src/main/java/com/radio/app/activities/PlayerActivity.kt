@@ -102,12 +102,15 @@ class PlayerActivity : AppCompatActivity() {
             
             val newUrl = currentEpisode?.audioUrl
             
-            // 最强抖动防护：如果服务已播放同一URL，直接跳过
-            if (newUrl != null && playbackService?.isSameEpisodePlaying(newUrl) == true) {
-                updateUI()
-                startCacheProgressUpdater()
-                restoreBackgroundResults()
-                return@onServiceConnected
+            // 最强抖动防护：如果服务已启动播放且URL匹配，直接跳过
+            if (playbackService?.isPlaybackStarted() == true) {
+                val currentUrl = playbackService?.getCurrentPlayingUrl()
+                if (currentUrl != null && newUrl != null && currentUrl == newUrl) {
+                    updateUI()
+                    startCacheProgressUpdater()
+                    restoreBackgroundResults()
+                    return@onServiceConnected
+                }
             }
             
             // 备用：多层检查
@@ -145,6 +148,13 @@ class PlayerActivity : AppCompatActivity() {
             if (svcPlaying) {
                 updateUI()
                 startCacheProgressUpdater()
+                return@onServiceConnected
+            }
+            // 5. 服务未播放但已启动过（正在缓冲中）且URL匹配 → 跳过
+            if (playbackService?.isPlaybackStarted() == true && svcUrl != null && newUrl != null && svcUrl == newUrl) {
+                updateUI()
+                startCacheProgressUpdater()
+                restoreBackgroundResults()
                 return@onServiceConnected
             }
             
@@ -816,7 +826,17 @@ class PlayerActivity : AppCompatActivity() {
             putBoolean("subtitle_processing", false)
             putBoolean("segment_processing", false)
         }.apply()
-        val nextEpisode = findAdjacentEpisode(currentEpisode, 1)
+        var nextEpisode = findAdjacentEpisode(currentEpisode, 1)
+        // 跳过不喜欢的节目（最多跳过10个，避免死循环）
+        var skipCount = 0
+        while (nextEpisode != null && skipCount < 10) {
+            val settings = AppSettings.getInstance(this)
+            if (!settings.isDisliked(nextEpisode.id) && !settings.isDislikedByTitle(nextEpisode.stationId, nextEpisode.title)) {
+                break
+            }
+            skipCount++
+            nextEpisode = findAdjacentEpisode(nextEpisode, 1)
+        }
         if (nextEpisode != null) {
             currentEpisode = nextEpisode
             saveLastEpisode()
@@ -834,7 +854,16 @@ class PlayerActivity : AppCompatActivity() {
             putBoolean("subtitle_processing", false)
             putBoolean("segment_processing", false)
         }.apply()
-        val prevEpisode = findAdjacentEpisode(currentEpisode, -1)
+        var prevEpisode = findAdjacentEpisode(currentEpisode, -1)
+        var skipCount = 0
+        while (prevEpisode != null && skipCount < 10) {
+            val settings = AppSettings.getInstance(this)
+            if (!settings.isDisliked(prevEpisode.id) && !settings.isDislikedByTitle(prevEpisode.stationId, prevEpisode.title)) {
+                break
+            }
+            skipCount++
+            prevEpisode = findAdjacentEpisode(prevEpisode, -1)
+        }
         if (prevEpisode != null) {
             currentEpisode = prevEpisode
             saveLastEpisode()
