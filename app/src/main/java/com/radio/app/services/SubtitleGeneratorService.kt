@@ -104,6 +104,14 @@ class SubtitleGeneratorService : Service() {
         executor = Executors.newFixedThreadPool(2)
         dbHelper = RadioDatabaseHelper.getInstance(this)
 
+        // 确保日志目录存在（外部存储，用户可访问）
+        try {
+            val logDir = getExternalFilesDir("subtitle_logs")
+            if (logDir != null && !logDir.exists()) {
+                logDir.mkdirs()
+            }
+        } catch (_: Exception) {}
+
         // 关键修复：服务启动时清理残留的处理状态，防止force-kill后再次进入app自动启动
         try {
             getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().clear().apply()
@@ -122,16 +130,20 @@ class SubtitleGeneratorService : Service() {
     }
 
     /**
-     * Write global log entry to persistent log file
+     * Write global log entry to persistent log file (external storage, user accessible)
      */
     private fun logToFile(msg: String) {
         try {
-            val logDir = File(cacheDir, "subtitle_logs")
-            if (!logDir.exists()) logDir.mkdirs()
-            val logFile = File(logDir, "service.log")
-            val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
-        } catch (_: Exception) {}
+            val logDir = getExternalFilesDir("subtitle_logs")
+            if (logDir != null) {
+                if (!logDir.exists()) logDir.mkdirs()
+                val logFile = File(logDir, "service.log")
+                val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "logToFile failed", e)
+        }
     }
 
     /**
@@ -259,12 +271,18 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun prepareTaskLogFile(taskType: String, episodeId: String): File {
-        val logDir = File(cacheDir, "subtitle_logs")
-        if (!logDir.exists()) logDir.mkdirs()
-        val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val file = File(logDir, "${taskType}_${Math.abs(episodeId.hashCode())}_$ts.log")
-        if (!file.exists()) file.createNewFile()
-        return file
+        val logDir = getExternalFilesDir("subtitle_logs")
+        if (logDir != null) {
+            if (!logDir.exists()) logDir.mkdirs()
+            val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val file = File(logDir, "${taskType}_${Math.abs(episodeId.hashCode())}_$ts.log")
+            if (!file.exists()) file.createNewFile()
+            return file
+        }
+        // Fallback to cache dir
+        val fallbackDir = File(cacheDir, "subtitle_logs")
+        if (!fallbackDir.exists()) fallbackDir.mkdirs()
+        return File(fallbackDir, "${taskType}_${Math.abs(episodeId.hashCode())}.log")
     }
 
     /**

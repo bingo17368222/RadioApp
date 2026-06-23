@@ -104,6 +104,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         fun onPositionChanged(position: Long, duration: Long)
         fun onBufferUpdate(percent: Int)
         fun onError(errorMessage: String)
+        fun onEpisodeChanged(episode: Episode) {}
     }
 
     inner class LocalBinder : Binder() {
@@ -203,7 +204,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 "skip_seconds" -> {
                     skipSeconds = prefs.getInt("skip_seconds", 15)
-                    Log.d(TAG, "Hot-switch skipSeconds to: $skipSeconds")
+                    Log.d(TAG, "Hot-switch skipSeconds to: $skipSeconds, rebuilding notification")
+                    val handler = Handler(Looper.getMainLooper())
+                    handler.post { updateNotification() }
                 }
             }
         }
@@ -324,8 +327,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     stopAutoSkipCheck()
                                     // 连续播放：播放完成后自动播放下一个节目
                                     if (continuousPlay && !isLive) {
-                                        Log.d(TAG, "Playback ended, triggering next episode")
-                                        notifyNextEpisode()
+                                        Log.d(TAG, "Playback ended, auto-playing next episode")
+                                        autoPlayNextEpisode()
                                     }
                                 }
                             }
@@ -1130,6 +1133,43 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")
         }
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    /**
+     * 自动播放下一个节目（服务端直接执行，跳过不喜欢的节目）
+     * 然后通过回调通知 Activity 更新 UI
+     */
+    private fun autoPlayNextEpisode() {
+        if (currentEpisode == null) return
+        try {
+            val preCacheList = loadPreCacheList()
+            val settings = AppSettings.getInstance(this)
+            val curId = currentEpisode!!.id
+            var nextEpisode: Episode? = null
+            var foundCurrent = false
+            for (ep in preCacheList) {
+                if (!foundCurrent) {
+                    if (ep.id == curId) foundCurrent = true
+                    continue
+                }
+                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                    nextEpisode = ep
+                    break
+                }
+            }
+            if (nextEpisode == null) {
+                Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list, falling back to broadcast")
+                notifyNextEpisode()
+                return
+            }
+            Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")
+            playEpisode(nextEpisode, false)
+            // 通过回调通知 Activity 更新界面
+            callback?.onEpisodeChanged(nextEpisode)
+        } catch (e: Exception) {
+            Log.e(TAG, "autoPlayNextEpisode failed", e)
+            notifyNextEpisode()
+        }
     }
     fun jumpToPrevSegment() {
         val segments = currentEpisode?.voiceSegments ?: return
