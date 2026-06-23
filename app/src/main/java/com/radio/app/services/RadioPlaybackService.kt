@@ -465,13 +465,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
-        // 修复：UI开关"启用预缓存"控制的是 autoCache 字段
+        Log.d(TAG, "Pre-cache check: autoCache=${settings.autoCache}, wifiOnly=${settings.wifiOnlyPreCache}, targetCount=${settings.preloadCacheCount}")
         if (!settings.autoCache) {
             Log.d(TAG, "Pre-cache: disabled (autoCache=false)")
             return
         }
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
-            Log.d(TAG, "Pre-cache: skipped (WiFi only, not on WiFi)")
+            val isWifi = NetworkUtils.isWifiConnected(this)
+            Log.d(TAG, "Pre-cache: skipped (WiFi only, isWifi=$isWifi)")
             return
         }
         // 检查已缓存的节目数量（使用统一的缓存目录）
@@ -480,7 +481,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedCount = cachedFiles.size
         val targetCount = settings.preloadCacheCount
-        Log.d(TAG, "Pre-cache: current cached=$cachedCount, target=$targetCount")
+        Log.d(TAG, "Pre-cache: current cached=$cachedCount, target=$targetCount, cachedFiles=${cachedFiles.map { it.name }}")
         if (cachedCount >= targetCount) {
             Log.d(TAG, "Pre-cache: target reached, no more downloads needed")
             return
@@ -491,6 +492,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.d(TAG, "Pre-cache: no episodes in pre-cache list (setPreCacheEpisodeList never called?)")
             return
         }
+        Log.d(TAG, "Pre-cache: pre-cache list has ${preCacheList.size} episodes: ${preCacheList.joinToString(", ") { it.title ?: "?" }}")
         val cachedNames = cachedFiles.map { it.name }.toSet()
         val needed = targetCount - cachedCount
         var started = 0
@@ -498,7 +500,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         for (ep in preCacheList) {
             if (started >= needed) break
             val fileName = extractCacheFileName(ep.audioUrl)
-            if (fileName in cachedNames) continue
+            if (fileName in cachedNames) {
+                Log.d(TAG, "Pre-cache: already cached: ${ep.title} ($fileName)")
+                continue
+            }
             // 跳过不喜欢的节目
             if (settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)) {
                 Log.d(TAG, "Pre-cache: skipping disliked episode ${ep.title}")
@@ -940,6 +945,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val appPrefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
         notificationStyle = appPrefs.getString("notification_style", "full") ?: "full"
         skipSeconds = appPrefs.getInt("skip_seconds", 15)
+        // 修复：如果旧版本残留值为5，迁移到默认值15
+        if (skipSeconds == 5 && !appPrefs.contains("skip_seconds_v2")) {
+            skipSeconds = 15
+            appPrefs.edit().putInt("skip_seconds", 15).putBoolean("skip_seconds_v2", true).apply()
+            Log.d(TAG, "loadSettings: migrated skip_seconds from 5 to 15 (default)")
+        }
         Log.d(TAG, "loadSettings: notificationStyle=$notificationStyle, skipSeconds=$skipSeconds")
     }
 

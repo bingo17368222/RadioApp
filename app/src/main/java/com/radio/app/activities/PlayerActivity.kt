@@ -128,16 +128,29 @@ class PlayerActivity : AppCompatActivity() {
                 return@onServiceConnected
             }
             
-            // 关键修复：如果URL不同，始终启动新播放（即使服务正在播放其他内容）
-            // 之前svcStarted guard在此处过于激进，导致手动点击不同节目时仍播放原节目
-            if (svcStarted) {
-                val msg = "URL changed (svc=$svcUrl, new=$newUrl), starting new playback"
-                android.util.Log.d("PlayerActivity", msg)
-                writeJitterLog(msg)
-                // 直接启动新播放，不跳过
+            // 关键修复：如果服务正在播放不同URL，同步Activity状态到服务当前节目
+            // 而不是重新启动播放（避免打断正在播放的节目）
+            if (svcStarted && svcUrl != null && svcUrl.isNotBlank()) {
+                val svcEpisode = playbackService?.getCurrentEpisode()
+                if (svcEpisode != null) {
+                    val msg = "Service playing different episode, syncing: ${svcEpisode.title}"
+                    android.util.Log.d("PlayerActivity", msg)
+                    writeJitterLog(msg)
+                    currentEpisode = svcEpisode
+                    val idx = episodeList.indexOfFirst { it.id == svcEpisode.id }
+                    if (idx >= 0) currentEpisodeIndex = idx
+                    saveLastEpisode()
+                    voiceSegments = generateSimulatedSegments()
+                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                    updateUI()
+                    startCacheProgressUpdater()
+                    restoreBackgroundResults()
+                    setupPreCacheList()
+                    return@onServiceConnected
+                }
             }
             
-            android.util.Log.d("PlayerActivity", "Starting new playback for $newUrl")
+            android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
@@ -191,7 +204,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupPreCacheList() {
         val settings = AppSettings.getInstance(this)
         if (!settings.autoCache) {
-            android.util.Log.d("PlayerActivity", "setupPreCacheList: pre-cache disabled")
+            android.util.Log.d("PlayerActivity", "setupPreCacheList: pre-cache disabled (autoCache=false)")
             return
         }
         if (episodeList.isEmpty() || currentEpisodeIndex < 0) {
@@ -200,15 +213,13 @@ class PlayerActivity : AppCompatActivity() {
         }
         val startIdx = currentEpisodeIndex + 1
         if (startIdx >= episodeList.size) {
-            android.util.Log.d("PlayerActivity", "setupPreCacheList: no more episodes after current")
+            android.util.Log.d("PlayerActivity", "setupPreCacheList: no more episodes after current (index=$currentEpisodeIndex, total=${episodeList.size})")
             return
         }
         // 传递所有后续节目（不限数量），服务端会根据preloadCacheCount控制下载数
-        // 这样即使当前列表包含多天节目，也能自动跨天预缓存
         val upcomingEpisodes = episodeList.subList(startIdx, episodeList.size)
-        android.util.Log.d("PlayerActivity", "setupPreCacheList: setting ${upcomingEpisodes.size} upcoming episodes for pre-cache (from index $startIdx to ${episodeList.size})")
+        android.util.Log.d("PlayerActivity", "setupPreCacheList: setting ${upcomingEpisodes.size} upcoming episodes: ${upcomingEpisodes.joinToString(", ") { it.title ?: "?" }}")
         playbackService?.setPreCacheEpisodeList(upcomingEpisodes)
-        // 立即触发一次预缓存检查
         playbackService?.triggerPreCacheIndependently()
     }
 
@@ -751,7 +762,48 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun updateUI() {
         if (_binding == null) return
+        val ep = currentEpisode ?: playbackService?.getCurrentEpisode()
+        if (ep != null && currentEpisode == null) {
+            currentEpisode = ep
+            val idx = episodeList.indexOfFirst { it.id == ep.id }
+            if (idx >= 0) currentEpisodeIndex = idx
+        }
+        // 更新标题
+        if (currentEpisode != null) {
+            binding.tvStationName.text = currentEpisode!!.title ?: "节目回放"
+            binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
+        } else if (currentStation != null) {
+            binding.tvStationName.text = currentStation!!.name
+            binding.tvEpisodeNavHint.text = " [直播] "
+        }
+        // 更新播放/暂停按钮
         playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
+        // 同步seekbar位置
+        if (playbackService?.isPrepared() == true) {
+            val pos = playbackService?.getCurrentPosition() ?: 0L
+            val dur = playbackService?.getDuration() ?: 0L
+            if (dur > 0) {
+                binding.seekBar.max = dur.toInt()
+                binding.seekBar.progress = pos.toInt()
+                binding.tvCurrentTime.text = "${formatTime(pos.toInt())} / ${formatTime(dur.toInt())}"
+                binding.tvTotalTime.text = formatTime(dur.toInt())
+            }
+            binding.tvLiveIndicator.text = if (playbackService?.isPlaying() == true) "播放中" else "已暂停"
+            binding.tvLiveIndicator.visibility = View.VISIBLE
+        }
+        // 更新缓存URL显示
+        if (currentEpisode != null) {
+            val cacheFileName = extractCacheFileName(currentEpisode!!.audioUrl ?: "")
+            binding.tvNetworkUrl.text = "网络: ${currentEpisode!!.audioUrl}"
+            binding.tvNetworkUrl.visibility = View.VISIBLE
+            binding.tvCacheUrl.text = "本地缓存: ${cacheDir.absolutePath}/episodes/$cacheFileName"
+            binding.tvCacheUrl.visibility = View.VISIBLE
+        }
+        // 更新缓存进度
+        if (playbackService?.isLive() == true) {
+            binding.tvCacheProgress.visibility = View.GONE
+            binding.seekBarCache.visibility = View.GONE
+        }
     }
 
     private fun playEpisodeAtIndex(index: Int) {

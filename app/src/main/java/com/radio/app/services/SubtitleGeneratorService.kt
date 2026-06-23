@@ -46,6 +46,7 @@ class SubtitleGeneratorService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "subtitle_progress_channel"
         private const val TASK_TIMEOUT_MS = 10 * 60 * 1000L // 10 minutes hard timeout per task
+        private const val MAX_AUDIO_DURATION_SEC = 1800L // 30分钟最大处理时长，超长音频只处理前30分钟
     }
 
     interface SubtitleCallback {
@@ -360,8 +361,16 @@ class SubtitleGeneratorService : Service() {
             } finally {
                 durationExtractor.release()
             }
+            // 超长音频限制：只处理前 MAX_AUDIO_DURATION_SEC 秒
+            val maxDurationUs = MAX_AUDIO_DURATION_SEC * 1000000L
+            val effectiveDurationUs = if (audioDurationUs > 0 && audioDurationUs > maxDurationUs) {
+                ctx.log("Audio too long (${audioDurationUs / 1000000}s), limiting to ${MAX_AUDIO_DURATION_SEC}s")
+                maxDurationUs
+            } else {
+                audioDurationUs
+            }
 
-            decodeToPcm(audioFile, pcmFile, audioDurationUs, ctx) { pct ->
+            decodeToPcm(audioFile, pcmFile, effectiveDurationUs, ctx) { pct ->
                 if (ctx.cancelled.get()) return@decodeToPcm
                 reportProgress(callback, 16 + pct * 24 / 100, 100, ctx)
             }
