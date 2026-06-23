@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.radio.app.models.PlayProgress
 import com.radio.app.models.Transcript
+import com.radio.app.models.VoiceSegment
 
 class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelper(
     context, DATABASE_NAME, null, DATABASE_VERSION
@@ -14,11 +15,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
         private const val TABLE_VOICE_SEGMENTS_MANUAL = "voice_segments_manual"
+        private const val TABLE_VOICE_SEGMENTS_AI = "voice_segments_ai"
 
         private var instance: RadioDatabaseHelper? = null
 
@@ -34,12 +36,16 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE INDEX idx_transcripts_episode ON $TABLE_TRANSCRIPTS(episode_id)")
         db.execSQL("CREATE TABLE $TABLE_DISLIKED_EPISODES (episode_id TEXT PRIMARY KEY, title TEXT, station_name TEXT, created_at INTEGER)")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
+        db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_DISLIKED_EPISODES (episode_id TEXT PRIMARY KEY, title TEXT, station_name TEXT, created_at INTEGER)")
             db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
+        }
+        if (oldVersion < 3) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
         }
     }
 
@@ -167,5 +173,66 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     fun removeManualSegmentMarks(episodeId: String) {
         val db = writableDatabase
         db.delete(TABLE_VOICE_SEGMENTS_MANUAL, "episode_id = ?", arrayOf(episodeId))
+    }
+
+    // ===== AI Voice Segments =====
+
+    fun saveVoiceSegment(episodeId: String, segment: VoiceSegment) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("episode_id", episodeId)
+            put("segment_start", segment.start)
+            put("segment_end", segment.end)
+            put("has_voice", if (segment.hasVoice) 1 else 0)
+            put("label", segment.label ?: "")
+            put("is_simulated", if (segment.isSimulated) 1 else 0)
+        }
+        db.replace(TABLE_VOICE_SEGMENTS_AI, null, values)
+    }
+
+    fun saveVoiceSegments(episodeId: String, segments: List<VoiceSegment>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            // 先清除旧数据
+            db.delete(TABLE_VOICE_SEGMENTS_AI, "episode_id = ?", arrayOf(episodeId))
+            for (segment in segments) {
+                val values = ContentValues().apply {
+                    put("episode_id", episodeId)
+                    put("segment_start", segment.start)
+                    put("segment_end", segment.end)
+                    put("has_voice", if (segment.hasVoice) 1 else 0)
+                    put("label", segment.label ?: "")
+                    put("is_simulated", if (segment.isSimulated) 1 else 0)
+                }
+                db.insert(TABLE_VOICE_SEGMENTS_AI, null, values)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getVoiceSegments(episodeId: String): List<VoiceSegment> {
+        val segments = mutableListOf<VoiceSegment>()
+        val db = readableDatabase
+        val cursor = db.query(TABLE_VOICE_SEGMENTS_AI, null, "episode_id = ?", arrayOf(episodeId), null, null, "segment_start ASC")
+        while (cursor.moveToNext()) {
+            val seg = VoiceSegment(
+                start = cursor.getLong(cursor.getColumnIndexOrThrow("segment_start")),
+                end = cursor.getLong(cursor.getColumnIndexOrThrow("segment_end")),
+                hasVoice = cursor.getInt(cursor.getColumnIndexOrThrow("has_voice")) == 1,
+                label = cursor.getString(cursor.getColumnIndexOrThrow("label")),
+                isSimulated = cursor.getInt(cursor.getColumnIndexOrThrow("is_simulated")) == 1
+            )
+            segments.add(seg)
+        }
+        cursor.close()
+        return segments
+    }
+
+    fun clearVoiceSegments(episodeId: String) {
+        val db = writableDatabase
+        db.delete(TABLE_VOICE_SEGMENTS_AI, "episode_id = ?", arrayOf(episodeId))
     }
 }

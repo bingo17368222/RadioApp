@@ -72,7 +72,7 @@ class AppSettings private constructor() {
     var savePlaybackPosition: Boolean = true
     var rememberLastEpisode: Boolean = true
     var wifiOnlyPreCache: Boolean = true
-    var useCompactNotification: Boolean = false
+    var notificationStyle: String = "full"
     var dislikedEpisodes: MutableList<String> = mutableListOf()
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
     var lastSelectedDate: String = ""
@@ -94,6 +94,7 @@ class AppSettings private constructor() {
         uiTheme = prefs.getString("ui_theme", THEME_DARK) ?: THEME_DARK
         preloadCache = prefs.getBoolean("preload_cache", false)
         preloadCacheCount = prefs.getInt("preload_cache_count", 1)
+        autoCache = prefs.getBoolean("auto_cache", false)
         enablePreprocessing = prefs.getBoolean("enable_preprocessing", false)
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
         audioFocus = prefs.getBoolean("audio_focus", true)
@@ -101,7 +102,7 @@ class AppSettings private constructor() {
         savePlaybackPosition = prefs.getBoolean("save_playback_position", true)
         rememberLastEpisode = prefs.getBoolean("remember_last_episode", true)
         wifiOnlyPreCache = prefs.getBoolean("wifi_only_precache", true)
-        useCompactNotification = prefs.getBoolean("compact_notification", false)
+        notificationStyle = prefs.getString("notification_style", "full") ?: "full"
         splitMode = prefs.getString("split_mode", SPLIT_MODE_NONE) ?: SPLIT_MODE_NONE
 
         val dislikedJson = prefs.getString("disliked_episodes", "[]") ?: "[]"
@@ -142,6 +143,7 @@ class AppSettings private constructor() {
             putString("ui_theme", uiTheme)
             putBoolean("preload_cache", preloadCache)
             putInt("preload_cache_count", preloadCacheCount)
+            putBoolean("auto_cache", autoCache)
             putBoolean("enable_preprocessing", enablePreprocessing)
             putInt("preprocessing_count", preprocessingCount)
             putBoolean("audio_focus", audioFocus)
@@ -149,7 +151,7 @@ class AppSettings private constructor() {
             putBoolean("save_playback_position", savePlaybackPosition)
             putBoolean("remember_last_episode", rememberLastEpisode)
             putBoolean("wifi_only_precache", wifiOnlyPreCache)
-            putBoolean("compact_notification", useCompactNotification)
+            putString("notification_style", notificationStyle)
             putString("split_mode", splitMode)
             val arr = JSONArray()
             dislikedEpisodes.forEach { arr.put(it) }

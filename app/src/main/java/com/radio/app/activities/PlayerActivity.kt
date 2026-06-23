@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -20,6 +21,7 @@ import com.radio.app.services.RadioPlaybackService
 import com.radio.app.adapters.VoiceSegmentAdapter
 import com.radio.app.services.SubtitleGeneratorService
 import com.radio.app.models.AppSettings
+import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.utils.PreferenceManager
 
 class PlayerActivity : AppCompatActivity() {
@@ -52,28 +54,43 @@ class PlayerActivity : AppCompatActivity() {
             playbackService = binder.getService()
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
-            // 如果服务已在播放相同节目，只更新UI，不重新触发播放（避免seek引起的抖动）
+            
+            // 三层抖动防护
             val svcPlaying = playbackService?.isPlaying() ?: false
-            val currentUrl = playbackService?.getCurrentStreamUrl()
+            val svcEpisode = playbackService?.getCurrentEpisode()
             val newUrl = currentEpisode?.audioUrl
-            if (svcPlaying && currentUrl != null && newUrl != null && currentUrl == newUrl) {
+            val svcUrl = playbackService?.getCurrentStreamUrl()
+            
+            // 1. 服务正在播放且URL完全匹配 → 跳过
+            if (svcPlaying && svcUrl != null && newUrl != null && svcUrl == newUrl) {
                 updateUI()
                 startCacheProgressUpdater()
                 return@onServiceConnected
             }
-            // Also skip if service is already playing (even if URLs don't match exactly)
-            if (svcPlaying && playbackService?.getCurrentEpisode() != null) {
+            // 2. 服务正在播放且节目相同（通过stationId+title比较） → 跳过
+            if (svcPlaying && svcEpisode != null && currentEpisode != null) {
+                val sameEpisode = svcEpisode.stationId == currentEpisode!!.stationId && 
+                                 svcEpisode.title == currentEpisode!!.title
+                if (sameEpisode) {
+                    updateUI()
+                    startCacheProgressUpdater()
+                    return@onServiceConnected
+                }
+            }
+            // 3. 服务正在播放（任何节目） → 跳过，只更新UI
+            if (svcPlaying) {
                 updateUI()
                 startCacheProgressUpdater()
                 return@onServiceConnected
             }
+            
+            // 只有服务未播放时才启动新播放
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
             } else {
                 val audioUrl = currentEpisode?.audioUrl
                 if (!audioUrl.isNullOrBlank()) {
                     currentEpisode?.let { episode ->
-                        // 始终以回放模式播放，不使用 episode.isLive（API可能标记错误）
                         playbackService?.playEpisode(episode, false)
                     }
                 }
@@ -122,6 +139,8 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(pos)} / ${formatTime(dur)}"
                     binding.tvTotalTime.text = formatTime(dur)
                     binding.tvLiveIndicator.text = "播放中"
+                    // 同步字幕显示
+                    binding.subtitleView.setCurrentPosition(position)
                 } else if (playbackService?.isLive() == true) {
                     binding.tvCurrentTime.text = "直播 ${formatTime(pos)}"
                     binding.seekBarCache.visibility = View.GONE
@@ -572,7 +591,18 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         pendingAiTaskType = taskType
-        val intent = Intent(this, SubtitleGeneratorService::class.java)
+        val ep = currentEpisode ?: return
+        // Start foreground service to keep running in background
+        val intent = Intent(this, SubtitleGeneratorService::class.java).apply {
+            putExtra("episode_id", ep.id)
+            putExtra("audio_url", ep.audioUrl)
+            putExtra("task_type", taskType)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
         bindService(intent, subtitleServiceConnection, Context.BIND_AUTO_CREATE)
     }
 
@@ -701,6 +731,43 @@ class PlayerActivity : AppCompatActivity() {
             binding.recyclerSegments.visibility = View.GONE
         } else {
             binding.recyclerSegments.visibility = View.VISIBLE
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 恢复字幕生成进度：如果服务仍在运行，重新绑定以获取进度更新
+        if (!subtitleServiceBound && aiProcessing) {
+            val episode = currentEpisode ?: return
+            val taskType = pendingAiTaskType
+            if (taskType != null) {
+                bindSubtitleService(episode, taskType)
+            }
+        }
+
+        // 检查DB中是否有在后台生成完成的结果
+        val episode = currentEpisode ?: return
+        if (episode.id.isBlank()) return
+
+        val dbHelper = RadioDatabaseHelper.getInstance(this)
+
+        // 检查AI分段结果
+        val dbSegments = dbHelper.getVoiceSegments(episode.id)
+        if (dbSegments.isNotEmpty()) {
+            // 过滤掉模拟分段
+            val realSegments = dbSegments.filter { !it.isSimulated }
+            if (realSegments.isNotEmpty() && (voiceSegments.isEmpty() || voiceSegments.all { it.isSimulated })) {
+                voiceSegments = realSegments
+                updateSegmentsUI()
+            }
+        }
+
+        // 检查字幕结果
+        val dbTranscripts = dbHelper.getTranscripts(episode.id)
+        if (dbTranscripts.isNotEmpty()) {
+            binding.subtitleView.setSubtitles(dbTranscripts)
+            binding.subtitleView.visibility = View.VISIBLE
+            binding.recyclerSegments.visibility = View.GONE
         }
     }
 

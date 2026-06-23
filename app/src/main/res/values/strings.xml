@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">网络收音机</string>
+    <string-array name="notification_styles">
+        <item>七按钮标准通知栏</item>
+        <item>五按钮紧凑通知栏</item>
+        <item>五按钮精简通知栏</item>
+    </string-array>
 </resources>

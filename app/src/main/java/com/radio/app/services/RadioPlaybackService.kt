@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.os.PowerManager
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -135,7 +136,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var downloadingJob: kotlinx.coroutines.Job? = null
     private var positionRestoreRequested = false
     private var isSeekingToPosition = false
-    private var useCompactNotification = false
+    private var notificationStyle = "full"
+
+    // WakeLock保持CPU运行
+    private var wakeLock: PowerManager.WakeLock? = null
 
     // 后台下载进度（供 UI 读取）
     @Volatile
@@ -160,6 +164,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         startProgressPolling()
         startNotificationProgressUpdater()
         startPositionSaver()
+        // 提升为前台服务，防止后台被杀
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(RadioApplication.NOTIFICATION_ID, buildNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(RadioApplication.NOTIFICATION_ID, buildNotification())
+        }
+        // 获取WakeLock保持CPU运行
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RadioApp::PlaybackWakeLock")
+        wakeLock?.acquire(24 * 60 * 60 * 1000L)
     }
 
     private fun ensurePlayerInitialized() {
@@ -249,6 +263,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             downloadDoneBytes = targetFile.length()
             downloadTotalBytes = targetFile.length()
             sendCacheUpdateBroadcast(targetFile.length(), targetFile.absolutePath)
+            triggerPreCache()
             return
         }
         downloadActive.set(true)
@@ -302,15 +317,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
                 Log.d(TAG, "Download complete: ${targetFile.absolutePath} (${totalRead} bytes)")
                 // 预缓存下一节目
-                try {
-                    val settings = AppSettings.getInstance(this@RadioPlaybackService)
-                    if (settings.preloadCache && settings.autoCache) {
-                        val wifiOk = !settings.wifiOnlyPreCache || NetworkUtils.isWifiConnected(this@RadioPlaybackService)
-                        if (wifiOk) {
-                            sendBroadcast(Intent("com.radio.app.PRECACHE_TRIGGER"))
-                        }
-                    }
-                } catch (e: Exception) { Log.w(TAG, "Precache trigger failed", e) }
+                triggerPreCache()
             } catch (e: Exception) {
                 Log.e(TAG, "Download error: ${e.message}")
                 try { targetFile.delete() } catch (_: Exception) {}
@@ -337,6 +344,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             putExtra("cache_size", size)
         }
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    private fun triggerPreCache() {
+        val settings = AppSettings.getInstance(this)
+        if (!settings.preloadCache || !settings.autoCache) return
+        if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) return
+        // 检查已缓存的节目数量
+        val cacheDir = getExternalFilesDir("episodes") ?: cacheDir
+        if (cacheDir == null) return
+        val cachedCount = cacheDir.listFiles()?.filter { it.isFile && it.length() > 1024 }?.size ?: 0
+        if (cachedCount >= settings.preloadCacheCount) {
+            Log.d(TAG, "Pre-cache: already have $cachedCount episodes, target is ${settings.preloadCacheCount}")
+            return
+        }
+        // 在实际项目中，这里会从播放列表获取下一节目并下载
+        // 当前通过广播让外部组件处理
+        Log.d(TAG, "Pre-cache: need more episodes (have $cachedCount, need ${settings.preloadCacheCount})")
+        sendBroadcast(Intent("com.radio.app.PRECACHE_TRIGGER"))
     }
 
     private fun applySavedPosition() {
@@ -434,10 +459,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun updateNotification() {
         val playing = player?.isPlaying ?: false
-        val remoteViews = if (useCompactNotification) {
-            RemoteViews(packageName, R.layout.notification_compact)
-        } else {
-            RemoteViews(packageName, R.layout.notification_custom)
+        val remoteViews = when (notificationStyle) {
+            "compact" -> RemoteViews(packageName, R.layout.notification_compact)
+            "minimal" -> RemoteViews(packageName, R.layout.notification_minimal)
+            else -> RemoteViews(packageName, R.layout.notification_custom)
         }
         applyNotificationIntents(remoteViews)
 
@@ -467,7 +492,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         applyThemeToNotification(remoteViews)
-        applySeekIntents(remoteViews)
+        if (notificationStyle == "full") {
+            applySeekIntents(remoteViews)
+        }
 
         val deleteIntent = PendingIntent.getService(this, 99,
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
@@ -492,6 +519,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun buildNotification(): Notification {
+        val remoteViews = when (notificationStyle) {
+            "compact" -> RemoteViews(packageName, R.layout.notification_compact)
+            "minimal" -> RemoteViews(packageName, R.layout.notification_minimal)
+            else -> RemoteViews(packageName, R.layout.notification_custom)
+        }
+        applyNotificationIntents(remoteViews)
+        if (notificationStyle == "full") {
+            applySeekIntents(remoteViews)
+        }
+        applyThemeToNotification(remoteViews)
+        return NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setCustomContentView(remoteViews)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
     }
 
     private fun applySeekIntents(remoteViews: RemoteViews) {
@@ -532,7 +578,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val settings: AppSettings = prefMgr.loadSettings()
         continuousPlay = settings.continuousPlay
         savePlaybackPosition = settings.savePlaybackPosition
-        useCompactNotification = settings.useCompactNotification
+        notificationStyle = settings.notificationStyle
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -557,7 +603,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun seekToPercent(pct: Float) {
@@ -850,6 +896,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     override fun onDestroy() {
         super.onDestroy()
+        wakeLock?.let { if (it.isHeld) it.release() }
         progressRunnable?.let { progressHandler?.removeCallbacks(it) }
         notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }
         positionSaveRunnable?.let { positionSaveHandler?.removeCallbacks(it) }

@@ -373,20 +373,14 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="紧凑通知栏"
+                android:text="通知栏样式"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="通知栏按钮较多时使用5按钮紧凑模式"
-                android:textColor="?attr/appTextSecondary"
-                android:textSize="12sp"
-                android:layout_marginTop="2dp" />
-            <Switch
-                android:id="@+id/switch_compact_notification"
+            <Spinner
+                android:id="@+id/spinner_notification_style"
                 android:layout_width="match_parent"
-                android:layout_height="48dp" />
+                android:layout_height="48dp"
+                android:entries="@array/notification_styles" />
         </LinearLayout>
 
         <!-- 界面设置 -->

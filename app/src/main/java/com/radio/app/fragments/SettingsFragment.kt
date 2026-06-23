@@ -182,10 +182,17 @@ class SettingsFragment : Fragment() {
             settings.wifiOnlyPreCache = isChecked
             save()
         }
-        binding.switchCompactNotification.setOnCheckedChangeListener { _, isChecked ->
-            if (suppressListeners) return@setOnCheckedChangeListener
-            settings.useCompactNotification = isChecked
-            save()
+        binding.spinnerNotificationStyle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                settings.notificationStyle = when (position) {
+                    1 -> "compact"
+                    2 -> "minimal"
+                    else -> "full"
+                }
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -292,7 +299,13 @@ class SettingsFragment : Fragment() {
         binding.switchSavePosition.isChecked = settings.savePlaybackPosition
         binding.switchRememberEpisode.isChecked = settings.rememberLastEpisode
         binding.switchWifiPrecache.isChecked = settings.wifiOnlyPreCache
-        binding.switchCompactNotification.isChecked = settings.useCompactNotification
+        val notificationStyle = settings.notificationStyle
+        val notificationIndex = when (notificationStyle) {
+            "compact" -> 1
+            "minimal" -> 2
+            else -> 0
+        }
+        binding.spinnerNotificationStyle.setSelection(notificationIndex)
         binding.etPreloadCacheCount.setText(settings.preloadCacheCount.toString())
 
         suppressListeners = true

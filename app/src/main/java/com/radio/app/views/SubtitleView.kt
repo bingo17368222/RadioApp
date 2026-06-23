@@ -21,6 +21,8 @@ class SubtitleView @JvmOverloads constructor(
     private val container: LinearLayout
     private val tvCurrent: TextView
     private var highlightIdx = -1
+    private var currentDisplayIndex = -1
+    private var subtitles = listOf<Transcript>()
 
     interface OnSubtitleClickListener {
         fun onSubtitleClick(startTime: Long)
@@ -35,6 +37,7 @@ class SubtitleView @JvmOverloads constructor(
     }
 
     fun setSubtitles(transcripts: List<Transcript>?) {
+        subtitles = transcripts ?: emptyList()
         container.removeAllViews()
         if (transcripts.isNullOrEmpty()) {
             tvCurrent.text = "暂无字幕"
@@ -103,6 +106,19 @@ class SubtitleView @JvmOverloads constructor(
             scrollView.post { scrollView.smoothScrollTo(0, container.getChildAt(idx).top) }
         }
         highlightIdx = idx
+    }
+
+    fun setCurrentPosition(positionMs: Long) {
+        val currentIndex = subtitles.indexOfLast { it.segmentStart <= positionMs }
+        if (currentIndex != currentDisplayIndex) {
+            currentDisplayIndex = currentIndex
+            if (currentIndex >= 0 && currentIndex < subtitles.size) {
+                val t = subtitles[currentIndex]
+                tvCurrent.text = "[${fmtTime(t.segmentStart)}] ${t.text}"
+                tvCurrent.visibility = VISIBLE
+                tvCurrent.alpha = 1.0f
+            }
+        }
     }
 
     fun addRealtimeSubtitle(t: Transcript) {

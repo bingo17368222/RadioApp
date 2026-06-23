@@ -11,6 +11,7 @@ class RadioApplication : Application() {
 
     companion object {
         const val CHANNEL_ID = "radio_playback_channel"
+        const val NOTIFICATION_ID = 1
     }
 
     override fun onCreate() {
