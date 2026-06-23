@@ -349,19 +349,126 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
         if (!settings.preloadCache || !settings.autoCache) return
-        if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) return
+        if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
+            Log.d(TAG, "Pre-cache: skipped (WiFi only)")
+            return
+        }
         // 检查已缓存的节目数量
         val cacheDir = getExternalFilesDir("episodes") ?: cacheDir
         if (cacheDir == null) return
-        val cachedCount = cacheDir.listFiles()?.filter { it.isFile && it.length() > 1024 }?.size ?: 0
+        val cachedFiles = cacheDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
+        val cachedCount = cachedFiles.size
         if (cachedCount >= settings.preloadCacheCount) {
             Log.d(TAG, "Pre-cache: already have $cachedCount episodes, target is ${settings.preloadCacheCount}")
             return
         }
-        // 在实际项目中，这里会从播放列表获取下一节目并下载
-        // 当前通过广播让外部组件处理
-        Log.d(TAG, "Pre-cache: need more episodes (have $cachedCount, need ${settings.preloadCacheCount})")
-        sendBroadcast(Intent("com.radio.app.PRECACHE_TRIGGER"))
+        // 从预缓存列表中获取下一个待下载的节目
+        val preCacheList = loadPreCacheList()
+        if (preCacheList.isEmpty()) {
+            Log.d(TAG, "Pre-cache: no episodes in pre-cache list")
+            return
+        }
+        // 找到第一个未缓存的节目并下载
+        val cachedNames = cachedFiles.map { it.name }.toSet()
+        for (ep in preCacheList) {
+            val fileName = extractCacheFileName(ep.audioUrl)
+            if (fileName in cachedNames) continue
+            // 下载这个节目
+            downloadPreCacheEpisode(ep)
+            break
+        }
+    }
+
+    private fun loadPreCacheList(): List<Episode> {
+        val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
+        val json = prefs.getString("episodes", "[]") ?: "[]"
+        return try {
+            val arr = org.json.JSONArray(json)
+            val list = mutableListOf<Episode>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val ep = Episode().apply {
+                    id = obj.optString("id", "")
+                    title = obj.optString("title", "")
+                    audioUrl = obj.optString("audio_url", "")
+                    stationName = obj.optString("station_name", "")
+                    stationId = obj.optString("station_id", "")
+                    duration = obj.optLong("duration", 0)
+                    broadcastAt = obj.optString("broadcast_at", "")
+                }
+                if (ep.audioUrl.isNotBlank()) list.add(ep)
+            }
+            list
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun setPreCacheEpisodeList(episodes: List<Episode>) {
+        val arr = org.json.JSONArray()
+        for (ep in episodes) {
+            val obj = org.json.JSONObject()
+            obj.put("id", ep.id ?: "")
+            obj.put("title", ep.title ?: "")
+            obj.put("audio_url", ep.audioUrl ?: "")
+            obj.put("station_name", ep.stationName ?: "")
+            obj.put("station_id", ep.stationId ?: "")
+            obj.put("duration", ep.duration)
+            obj.put("broadcast_at", ep.broadcastAt ?: "")
+            arr.put(obj)
+        }
+        getSharedPreferences("precache_list", MODE_PRIVATE)
+            .edit().putString("episodes", arr.toString()).apply()
+        Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes")
+        // 立即触发预缓存检查
+        triggerPreCache()
+    }
+
+    private fun downloadPreCacheEpisode(episode: Episode) {
+        val url = episode.audioUrl ?: return
+        if (url.isBlank() || !url.startsWith("http")) return
+        val fileName = extractCacheFileName(url)
+        val episodesDir = File(getExternalFilesDir("episodes") ?: cacheDir, "episodes")
+        if (!episodesDir.exists()) episodesDir.mkdirs()
+        val targetFile = File(episodesDir, fileName)
+        if (targetFile.exists() && targetFile.length() > 1024) {
+            triggerPreCache() // 已存在，继续下一个
+            return
+        }
+        Log.d(TAG, "Pre-cache: downloading ${episode.title} from $url")
+        serviceScope.launch {
+            try {
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 30000
+                connection.readTimeout = 120000
+                connection.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
+                connection.setRequestProperty("Referer", "https://www.hndt.com/")
+                connection.connect()
+                if (connection.responseCode != 200) {
+                    Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
+                    triggerPreCache() // 继续下一个
+                    return@launch
+                }
+                val input = connection.inputStream
+                val output = FileOutputStream(targetFile)
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    output.write(buffer, 0, bytesRead)
+                }
+                output.close()
+                input.close()
+                Log.d(TAG, "Pre-cache: downloaded ${targetFile.length()} bytes to ${targetFile.name}")
+                // 继续预缓存下一个
+                triggerPreCache()
+            } catch (e: Exception) {
+                Log.e(TAG, "Pre-cache download error: ${e.message}")
+                // 删除不完整的文件
+                if (targetFile.exists()) targetFile.delete()
+                triggerPreCache() // 继续下一个
+            }
+        }
     }
 
     private fun applySavedPosition() {
@@ -458,6 +565,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun updateNotification() {
+        // 每次更新时重新加载通知栏样式，确保设置更改即时生效
+        reloadNotificationStyle()
         val playing = player?.isPlaying ?: false
         val remoteViews = when (notificationStyle) {
             "compact" -> RemoteViews(packageName, R.layout.notification_compact)
@@ -519,6 +628,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun reloadNotificationStyle() {
+        val prefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+        notificationStyle = prefs.getString("notification_style", "full") ?: "full"
     }
 
     private fun buildNotification(): Notification {

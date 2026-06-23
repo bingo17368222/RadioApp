@@ -332,7 +332,29 @@
         android:layout_weight="1"
         android:visibility="gone" />
 
-    <!-- AI处理进度条 -->
+    <!-- 字幕处理进度条 -->
+    <ProgressBar
+        android:id="@+id/progress_subtitle"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginTop="4dp"
+        android:max="100"
+        android:progress="0"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_subtitle_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="?attr/appTextSecondary"
+        android:textSize="12sp"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginTop="2dp" />
+
+    <!-- AI分段进度条 -->
     <ProgressBar
         android:id="@+id/progress_ai"
         style="?android:attr/progressBarStyleHorizontal"

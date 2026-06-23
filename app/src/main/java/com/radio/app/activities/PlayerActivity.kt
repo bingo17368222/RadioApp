@@ -45,7 +45,8 @@ class PlayerActivity : AppCompatActivity() {
     private var isDragging = false
     private var cacheProgressHandler: Handler? = null
     private var cacheProgressRunnable: Runnable? = null
-    private var aiProcessing = false
+    private var subtitleProcessing = false
+    private var segmentProcessing = false
     private var pendingAiTaskType: String? = null
 
     private val serviceConnection = object : ServiceConnection {
@@ -55,16 +56,18 @@ class PlayerActivity : AppCompatActivity() {
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
             
-            // 三层抖动防护
+            // 多层抖动防护
             val svcPlaying = playbackService?.isPlaying() ?: false
+            val svcPrepared = playbackService?.isPrepared() ?: false
             val svcEpisode = playbackService?.getCurrentEpisode()
             val newUrl = currentEpisode?.audioUrl
             val svcUrl = playbackService?.getCurrentStreamUrl()
             
-            // 1. 服务正在播放且URL完全匹配 → 跳过
+            // 1. 服务正在播放且URL完全匹配 → 跳过，只更新UI
             if (svcPlaying && svcUrl != null && newUrl != null && svcUrl == newUrl) {
                 updateUI()
                 startCacheProgressUpdater()
+                restoreBackgroundResults()
                 return@onServiceConnected
             }
             // 2. 服务正在播放且节目相同（通过stationId+title比较） → 跳过
@@ -74,10 +77,18 @@ class PlayerActivity : AppCompatActivity() {
                 if (sameEpisode) {
                     updateUI()
                     startCacheProgressUpdater()
+                    restoreBackgroundResults()
                     return@onServiceConnected
                 }
             }
-            // 3. 服务正在播放（任何节目） → 跳过，只更新UI
+            // 3. 服务已准备就绪且URL匹配（即使暂停中） → 跳过
+            if (svcPrepared && svcUrl != null && newUrl != null && svcUrl == newUrl) {
+                updateUI()
+                startCacheProgressUpdater()
+                restoreBackgroundResults()
+                return@onServiceConnected
+            }
+            // 4. 服务正在播放（任何节目） → 跳过，只更新UI
             if (svcPlaying) {
                 updateUI()
                 startCacheProgressUpdater()
@@ -359,7 +370,7 @@ class PlayerActivity : AppCompatActivity() {
                 Toast.makeText(this, "无法生成字幕：缺少节目ID", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (aiProcessing) return@setOnClickListener
+            if (subtitleProcessing) return@setOnClickListener
             startAiProcessing("subtitle")
             bindSubtitleService(episode, "subtitle")
         }
@@ -370,7 +381,7 @@ class PlayerActivity : AppCompatActivity() {
                 Toast.makeText(this, "无法AI分段：缺少节目ID", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (aiProcessing) return@setOnClickListener
+            if (segmentProcessing) return@setOnClickListener
             startAiProcessing("segment")
             bindSubtitleService(episode, "segment")
         }
@@ -441,14 +452,14 @@ class PlayerActivity : AppCompatActivity() {
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
-                                finishAiProcessing()
+                                finishAiProcessing("segment")
                                 Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
                             }
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                finishAiProcessing()
+                                finishAiProcessing("segment")
                                 binding.tvAiStatus.text = "AI分段失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
@@ -473,23 +484,23 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                binding.progressAi.progress = progress
-                                binding.tvAiStatus.text = buildStatusText("subtitle", progress)
+                                binding.progressSubtitle.progress = progress
+                                binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getCurrentAsrLabel()})"
                             }
                         }
                         override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                finishAiProcessing()
+                                finishAiProcessing("subtitle")
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
                             }
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                finishAiProcessing()
-                                binding.tvAiStatus.text = "字幕生成失败: $error"
-                                binding.tvAiStatus.visibility = View.VISIBLE
+                                finishAiProcessing("subtitle")
+                                binding.tvSubtitleStatus.text = "字幕生成失败: $error"
+                                binding.tvSubtitleStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -533,14 +544,14 @@ class PlayerActivity : AppCompatActivity() {
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
-                                finishAiProcessing()
+                                finishAiProcessing("segment")
                                 Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
                             }
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                finishAiProcessing()
+                                finishAiProcessing("segment")
                                 binding.tvAiStatus.text = "AI分段失败: $error"
                                 binding.tvAiStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
@@ -565,23 +576,23 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                binding.progressAi.progress = progress
-                                binding.tvAiStatus.text = buildStatusText("subtitle", progress)
+                                binding.progressSubtitle.progress = progress
+                                binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getCurrentAsrLabel()})"
                             }
                         }
                         override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                finishAiProcessing()
+                                finishAiProcessing("subtitle")
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
                             }
                         }
                         override fun onError(error: String) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                finishAiProcessing()
-                                binding.tvAiStatus.text = "字幕生成失败: $error"
-                                binding.tvAiStatus.visibility = View.VISIBLE
+                                finishAiProcessing("subtitle")
+                                binding.tvSubtitleStatus.text = "字幕生成失败: $error"
+                                binding.tvSubtitleStatus.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, error, Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -679,23 +690,40 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun startAiProcessing(taskType: String) {
-        aiProcessing = true
+        if (taskType == "subtitle") subtitleProcessing = true
+        else if (taskType == "segment") segmentProcessing = true
         if (_binding == null) return
-        binding.progressAi.progress = 0
-        binding.progressAi.visibility = View.VISIBLE
-        binding.tvAiStatus.visibility = View.VISIBLE
-        binding.tvAiStatus.text = buildStatusText(taskType, 0)
-        binding.btnGenerateSubtitle.isEnabled = false
-        binding.btnAiSegment.isEnabled = false
+        if (taskType == "subtitle") {
+            binding.progressSubtitle.progress = 0
+            binding.progressSubtitle.visibility = View.VISIBLE
+            binding.tvSubtitleStatus.visibility = View.VISIBLE
+            binding.tvSubtitleStatus.text = "字幕生成: 0% (引擎: ${getCurrentAsrLabel()})"
+            binding.btnGenerateSubtitle.isEnabled = false
+        } else {
+            binding.progressAi.progress = 0
+            binding.progressAi.visibility = View.VISIBLE
+            binding.tvAiStatus.visibility = View.VISIBLE
+            binding.tvAiStatus.text = buildStatusText(taskType, 0)
+            binding.btnAiSegment.isEnabled = false
+        }
     }
 
-    private fun finishAiProcessing() {
-        aiProcessing = false
-        if (_binding == null) return
-        binding.progressAi.visibility = View.GONE
-        binding.tvAiStatus.visibility = View.GONE
-        binding.btnGenerateSubtitle.isEnabled = true
-        binding.btnAiSegment.isEnabled = true
+    private fun finishAiProcessing(taskType: String) {
+        if (taskType == "subtitle") {
+            subtitleProcessing = false
+            if (_binding != null) {
+                binding.progressSubtitle.visibility = View.GONE
+                binding.tvSubtitleStatus.visibility = View.GONE
+                binding.btnGenerateSubtitle.isEnabled = true
+            }
+        } else {
+            segmentProcessing = false
+            if (_binding != null) {
+                binding.progressAi.visibility = View.GONE
+                binding.tvAiStatus.visibility = View.GONE
+                binding.btnAiSegment.isEnabled = true
+            }
+        }
     }
 
     private fun buildStatusText(taskType: String, progress: Int): String {
@@ -706,17 +734,16 @@ class PlayerActivity : AppCompatActivity() {
     private fun generateSimulatedSegments(): List<VoiceSegment> {
         val dur = playbackService?.getDuration()?.toInt() ?: 0
         if (dur <= 0) return emptyList()
-        val segmentDuration = 60 // seconds
-        val count = (dur / 1000 / segmentDuration).coerceAtMost(120)
+        val segmentDuration = 300 // 5分钟一段
+        val count = minOf((dur / 1000 / segmentDuration).coerceAtLeast(3), 20)
         val segments = mutableListOf<VoiceSegment>()
-        val random = java.util.Random(currentEpisode?.hashCode()?.toLong() ?: System.currentTimeMillis())
         for (i in 0 until count) {
-            val startMs = i * segmentDuration * 1000
-            val endMs = minOf((i + 1) * segmentDuration * 1000, dur)
+            val startMs = (i * dur) / count
+            val endMs = if (i == count - 1) dur else ((i + 1) * dur) / count
             val seg = VoiceSegment().apply {
                 this.start = startMs.toLong()
                 this.end = endMs.toLong()
-                this.label = "模拟分段 ${i + 1}" // 占位文本
+                this.label = "${formatTime(startMs.toLong())} - ${formatTime(endMs.toLong())}"
                 this.isSimulated = true
             }
             segments.add(seg)
@@ -736,16 +763,23 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 恢复字幕生成进度：如果服务仍在运行，重新绑定以获取进度更新
-        if (!subtitleServiceBound && aiProcessing) {
-            val episode = currentEpisode ?: return
-            val taskType = pendingAiTaskType
-            if (taskType != null) {
-                bindSubtitleService(episode, taskType)
+        // 恢复字幕生成和AI分段进度：如果服务仍在运行，重新绑定以获取进度更新
+        if (!subtitleServiceBound) {
+            val episode = currentEpisode
+            if (episode != null && episode.id.isNotBlank()) {
+                if (subtitleProcessing) {
+                    bindSubtitleService(episode, "subtitle")
+                }
+                if (segmentProcessing) {
+                    bindSubtitleService(episode, "segment")
+                }
             }
         }
 
-        // 检查DB中是否有在后台生成完成的结果
+        restoreBackgroundResults()
+    }
+
+    private fun restoreBackgroundResults() {
         val episode = currentEpisode ?: return
         if (episode.id.isBlank()) return
 
@@ -754,7 +788,6 @@ class PlayerActivity : AppCompatActivity() {
         // 检查AI分段结果
         val dbSegments = dbHelper.getVoiceSegments(episode.id)
         if (dbSegments.isNotEmpty()) {
-            // 过滤掉模拟分段
             val realSegments = dbSegments.filter { !it.isSimulated }
             if (realSegments.isNotEmpty() && (voiceSegments.isEmpty() || voiceSegments.all { it.isSimulated })) {
                 voiceSegments = realSegments

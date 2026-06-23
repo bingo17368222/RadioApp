@@ -4,22 +4,23 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#CC1a1a2e">
+    android:background="#CC1a1a2e"
+    android:minHeight="64dp">
 
-    <!-- 标题区域 -->
+    <!-- 标题区域（紧凑） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="4dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="2dp"
         android:gravity="center_vertical">
 
         <ImageView
-            android:layout_width="24dp"
-            android:layout_height="24dp"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
             android:src="@drawable/ic_notification"
             android:scaleType="centerInside" />
 
@@ -27,15 +28,17 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:orientation="vertical"
-            android:layout_marginStart="8dp">
+            android:orientation="horizontal"
+            android:layout_marginStart="6dp"
+            android:gravity="center_vertical">
 
             <TextView
                 android:id="@+id/notification_title"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
                 android:text="Radio App"
-                android:textSize="14sp"
+                android:textSize="12sp"
                 android:textStyle="bold"
                 android:textColor="#FFFFFF"
                 android:maxLines="1"
@@ -46,23 +49,24 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="正在播放"
-                android:textSize="12sp"
+                android:textSize="11sp"
                 android:textColor="#CCCCCC"
                 android:maxLines="1"
-                android:ellipsize="end" />
+                android:ellipsize="end"
+                android:layout_marginStart="4dp" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- 回放进度条区域（仅回放时显示，20个跳转点：0%,5%,10%...95%,100%） -->
+    <!-- 回放进度条区域（紧凑） -->
     <LinearLayout
         android:id="@+id/notification_progress_area"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingTop="4dp"
-        android:paddingBottom="2dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="1dp"
         android:visibility="gone">
 
         <TextView
@@ -70,29 +74,27 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="00:00/00:00"
-            android:textSize="10sp"
+            android:textSize="9sp"
             android:textColor="#CCCCCC"
             android:maxLines="1" />
 
-        <!-- 进度条框架：32dp高度防误触，20个5%精度点击区域 -->
         <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="32dp"
-            android:layout_marginTop="2dp">
+            android:layout_height="20dp"
+            android:layout_marginTop="1dp">
 
             <ProgressBar
                 android:id="@+id/notification_progress"
                 style="?android:attr/progressBarStyleHorizontal"
                 android:layout_width="match_parent"
-                android:layout_height="32dp"
+                android:layout_height="20dp"
                 android:max="1000"
                 android:progress="0"
                 android:progressDrawable="@drawable/notification_progress_drawable" />
 
-            <!-- 50个跳转点：0%, 2%, 4%, 6%... 98%, 100% (2%精度) -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="32dp"
+                android:layout_height="20dp"
                 android:orientation="horizontal">
 
                 <LinearLayout android:id="@+id/btn_seek_0"  android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" />
@@ -150,7 +152,7 @@
         </FrameLayout>
     </LinearLayout>
 
-    <!-- 7个按钮 -->
+    <!-- 7个按钮（紧凑布局，减小高度防止被系统隐藏） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -159,90 +161,91 @@
         android:paddingStart="2dp"
         android:paddingEnd="2dp"
         android:paddingTop="2dp"
-        android:paddingBottom="4dp">
+        android:paddingBottom="2dp"
+        android:minHeight="36dp">
 
         <LinearLayout
             android:id="@+id/btn_rewind"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#884488CC"
-            android:padding="2dp">
+            android:padding="1dp">
             <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
                 android:src="@drawable/notif_rewind"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="-5s"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/btn_prev_segment"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#8833AA55"
-            android:padding="2dp"
+            android:padding="1dp"
             android:layout_marginStart="1dp">
             <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
                 android:src="@drawable/notif_skip"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="上片段"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/btn_prev_episode"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#88DD8833"
-            android:padding="2dp"
+            android:padding="1dp"
             android:layout_marginStart="1dp">
             <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
                 android:src="@drawable/notif_prev"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="上节目"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/btn_play_pause"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#AAFF5533"
-            android:padding="2dp"
+            android:padding="1dp"
             android:layout_marginStart="1dp">
             <ImageView
                 android:id="@+id/play_pause_icon"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
                 android:src="@drawable/notif_play"
                 android:scaleType="centerInside" />
             <TextView
@@ -250,76 +253,76 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="播放"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/btn_next_episode"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#88DD8833"
-            android:padding="2dp"
+            android:padding="1dp"
             android:layout_marginStart="1dp">
             <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
                 android:src="@drawable/notif_next"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="下节目"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/btn_next_segment"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#8833AA55"
-            android:padding="2dp"
+            android:padding="1dp"
             android:layout_marginStart="1dp">
             <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
                 android:src="@drawable/notif_skip"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="下片段"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
         <LinearLayout
             android:id="@+id/btn_forward"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_weight="1"
             android:orientation="vertical"
             android:gravity="center"
             android:background="#884488CC"
-            android:padding="2dp"
+            android:padding="1dp"
             android:layout_marginStart="1dp">
             <ImageView
-                android:layout_width="16dp"
-                android:layout_height="16dp"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
                 android:src="@drawable/notif_forward"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="+5s"
-                android:textSize="8sp"
+                android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
     </LinearLayout>

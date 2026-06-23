@@ -65,7 +65,7 @@ class SubtitleGeneratorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newSingleThreadExecutor()
+        executor = Executors.newFixedThreadPool(2)  // 支持字幕和AI分段同时进行
         dbHelper = RadioDatabaseHelper.getInstance(this)
 
         // 创建通知渠道
@@ -216,7 +216,7 @@ class SubtitleGeneratorService : Service() {
 
             val pcmData = pcmFile.readBytes()
             val totalBytes = pcmData.size
-            val bytesPerChunk = SAMPLE_RATE * 2 * 10  // 10秒每块 (16bit = 2 bytes)
+            val bytesPerChunk = SAMPLE_RATE * 2 * 5  // 5秒每块，更快出结果 (16bit = 2 bytes)
             var offset = 0
             var segmentIndex = 0
             val allTranscripts = mutableListOf<Transcript>()
@@ -252,6 +252,25 @@ class SubtitleGeneratorService : Service() {
                         callback.onSubtitleGenerated(t)
                         fullText.append(text).append(" ")
                     }
+                } else {
+                    // 尝试获取部分识别结果，确保30%+时有输出
+                    try {
+                        val partial = recognizer.partialResult
+                        val partialText = parseVoskResult(partial)
+                        if (partialText.isNotEmpty() && partialText.length > 2) {
+                            val startSec = ((offset - chunkSize) / (SAMPLE_RATE * 2.0)).toInt()
+                            val endSec = (offset / (SAMPLE_RATE * 2.0)).toInt()
+                            // 只发送部分结果用于实时显示，不保存到数据库
+                            val t = Transcript().apply {
+                                this.episodeId = episodeId
+                                this.segmentStart = startSec.toLong()
+                                this.segmentEnd = endSec.toLong()
+                                this.text = "[识别中] $partialText"
+                                this.confidence = 0.5
+                            }
+                            callback.onSubtitleGenerated(t)
+                        }
+                    } catch (_: Exception) {}
                 }
 
                 // 更新进度
