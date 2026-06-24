@@ -822,6 +822,35 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed fallback matching", e)
             }
 
+            // 10) 文件名日期兜底匹配：从缓存文件名提取8位日期，匹配 all_episodes 中同一天的节目
+            try {
+                val allEpPrefs = requireContext().getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+                val dateRegex = Regex("\\d{8}")
+                var dateMatchCount = 0
+                for (file in files) {
+                    if (file.name in dislikedFileNames) continue
+                    val dates = dateRegex.findAll(file.name).map { it.value }.toList()
+                    if (dates.isEmpty()) continue
+                    for ((_, value) in allEpPrefs.all) {
+                        if (value !is String) continue
+                        try {
+                            val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                            if (ep.audioUrl.isNullOrBlank()) continue
+                            val isDisliked = (ep.id != null && ep.id.isNotBlank() && settings.isDisliked(ep.id)) ||
+                                    settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
+                            if (isDisliked && dates.any { ep.audioUrl.contains(it) || (ep.title ?: "").contains(it) }) {
+                                dislikedFileNames.add(file.name)
+                                dateMatchCount++
+                                break
+                            }
+                        } catch (e: Exception) { /* skip */ }
+                    }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: date matching added $dateMatchCount disliked files")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed date matching", e)
+            }
+
             android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")
             android.util.Log.d("SettingsFragment", "Cache files count: ${files.size}, names: ${files.map { it.name }}")
             android.util.Log.d("SettingsFragment", "Dislike filter: total disliked file names=${dislikedFileNames.size}, cache files=${files.size}")
@@ -842,16 +871,39 @@ class SettingsFragment : Fragment() {
         dialog.window?.setLayout(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
     }
 
+    private var mediaPlayer: android.media.MediaPlayer? = null
+
     private fun playPcmFile(pcmFile: File) {
         pcmPlaybackActive = false
         try { audioTrack?.stop() } catch (_: Exception) {}
         try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
+        try { mediaPlayer?.stop() } catch (_: Exception) {}
+        try { mediaPlayer?.release() } catch (_: Exception) {}
+        mediaPlayer = null
 
         try {
-            val pcmData = pcmFile.readBytes()
+            // Prefer WAV file for reliable playback (correct sample rate handled by MediaPlayer)
+            val wavFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav")
+            if (wavFile.exists() && wavFile.length() > 44) {
+                android.util.Log.d("SettingsFragment", "playPcmFile: playing WAV: ${wavFile.name}")
+                mediaPlayer = android.media.MediaPlayer().apply {
+                    setDataSource(wavFile.absolutePath)
+                    setAudioAttributes(android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build())
+                    setOnCompletionListener { pcmPlaybackActive = false }
+                    setOnPreparedListener { start() }
+                    prepareAsync()
+                }
+                pcmPlaybackActive = true
+                Toast.makeText(requireContext(), "播放WAV: ${wavFile.name}", Toast.LENGTH_SHORT).show()
+                return
+            }
 
-            // Read sample rate and channels from .info file
+            // Fallback to AudioTrack if WAV not available
+            val pcmData = pcmFile.readBytes()
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             var sampleRate = 16000
             var channels = 1
@@ -862,20 +914,17 @@ class SettingsFragment : Fragment() {
                 val chMatch = Regex("channels=(\\d+)").find(info)
                 if (chMatch != null) channels = chMatch.groupValues[1].toInt()
             }
-            
             val channelMask = if (channels >= 2) android.media.AudioFormat.CHANNEL_OUT_STEREO else android.media.AudioFormat.CHANNEL_OUT_MONO
-            val bytesPerFrame = channels * 2 // 16-bit
+            val bytesPerFrame = channels * 2
             val expectedDurationSec = pcmData.size / (sampleRate * bytesPerFrame)
-            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size}, sampleRate=$sampleRate, channels=$channels, expected=${expectedDurationSec}s")
-            
+            android.util.Log.d("SettingsFragment", "playPcmFile: fallback AudioTrack ${pcmFile.name}, size=${pcmData.size}, sampleRate=$sampleRate, channels=$channels, expected=${expectedDurationSec}s")
+
             val bufferSize = maxOf(
                 android.media.AudioTrack.getMinBufferSize(sampleRate, channelMask, android.media.AudioFormat.ENCODING_PCM_16BIT),
                 4096
             )
-            
-            // Use MODE_STREAM for files larger than 10MB to avoid OOM
             val useStream = pcmData.size > 10 * 1024 * 1024
-            
+
             audioTrack = android.media.AudioTrack(
                 android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
@@ -890,7 +939,7 @@ class SettingsFragment : Fragment() {
                 if (useStream) android.media.AudioTrack.MODE_STREAM else android.media.AudioTrack.MODE_STATIC,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
-            
+
             pcmPlaybackActive = true
             if (useStream) {
                 audioTrack?.play()
@@ -909,7 +958,7 @@ class SettingsFragment : Fragment() {
                 audioTrack?.write(pcmData, 0, pcmData.size)
                 audioTrack?.play()
             }
-            
+
             Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name} (${expectedDurationSec}秒, ${sampleRate}Hz)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             pcmPlaybackActive = false
@@ -922,6 +971,9 @@ class SettingsFragment : Fragment() {
         try { audioTrack?.stop() } catch (_: Exception) {}
         try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
+        try { mediaPlayer?.stop() } catch (_: Exception) {}
+        try { mediaPlayer?.release() } catch (_: Exception) {}
+        mediaPlayer = null
         android.widget.Toast.makeText(requireContext(), "已停止播放", android.widget.Toast.LENGTH_SHORT).show()
     }
 

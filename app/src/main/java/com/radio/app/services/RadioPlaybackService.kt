@@ -1116,6 +1116,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=2")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
+
+            // Also create a WAV file for reliable playback with MediaPlayer
+            try {
+                val wavFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav")
+                writeWavFile(pcmFile, wavFile, outSampleRate, outChannels)
+                writePreCacheLog("decodeToPcmForPreCache: wrote WAV file: $wavFile")
+            } catch (e: Exception) {
+                writePreCacheLog("decodeToPcmForPreCache: failed to write WAV: ${e.message}")
+            }
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
             throw e
@@ -1202,6 +1211,38 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val outBytes = ByteArray(finalShorts.size * 2)
         java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(finalShorts)
         return Pair(outBytes, null)  // 不使用leftover
+    }
+
+    /**
+     * 为PCM数据写入WAV头，生成可被MediaPlayer直接播放的WAV文件
+     */
+    private fun writeWavFile(pcmFile: File, wavFile: File, sampleRate: Int, channels: Int) {
+        val pcmData = pcmFile.readBytes()
+        val byteRate = sampleRate * channels * 2
+        val blockAlign = channels * 2
+        val dataSize = pcmData.size
+        val totalSize = dataSize + 36
+
+        val header = ByteArray(44)
+        val bb = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        bb.put("RIFF".toByteArray())
+        bb.putInt(totalSize)
+        bb.put("WAVE".toByteArray())
+        bb.put("fmt ".toByteArray())
+        bb.putInt(16)           // Subchunk1Size (PCM)
+        bb.putShort(1)          // AudioFormat (PCM)
+        bb.putShort(channels.toShort())
+        bb.putInt(sampleRate)
+        bb.putInt(byteRate)
+        bb.putShort(blockAlign.toShort())
+        bb.putShort(16)         // BitsPerSample
+        bb.put("data".toByteArray())
+        bb.putInt(dataSize)
+
+        wavFile.outputStream().use { out ->
+            out.write(header)
+            out.write(pcmData)
+        }
     }
 
     private fun applySavedPosition() {
