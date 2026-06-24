@@ -36,6 +36,7 @@ class SettingsFragment : Fragment() {
     private lateinit var settings: AppSettings
     private var previousTheme: String? = null
     private var suppressListeners = true
+    private var audioTrack: android.media.AudioTrack? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -55,6 +56,10 @@ class SettingsFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        // Release any active PCM playback
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
         _binding = null
     }
 
@@ -558,6 +563,46 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    private fun playPcmFile(pcmFile: File) {
+        // Stop any current playback
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
+
+        try {
+            val pcmData = pcmFile.readBytes()
+            // PCM format: 16kHz, mono, 16-bit
+            val sampleRate = 16000
+            val bufferSize = android.media.AudioTrack.getMinBufferSize(
+                sampleRate,
+                android.media.AudioFormat.CHANNEL_OUT_MONO,
+                android.media.AudioFormat.ENCODING_PCM_16BIT
+            )
+
+            audioTrack = android.media.AudioTrack(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+                android.media.AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+                maxOf(bufferSize, pcmData.size),
+                android.media.AudioTrack.MODE_STATIC,
+                android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+
+            audioTrack?.write(pcmData, 0, pcmData.size)
+            audioTrack?.play()
+
+            Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name}", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(requireContext(), "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun showPcmCacheDialog() {
         val allFiles = mutableListOf<File>()
         val pcmCacheDir = requireContext().getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
@@ -599,9 +644,11 @@ class SettingsFragment : Fragment() {
         val btnSelectAll = Button(requireContext()).apply { text = "全选"; textSize = 13f }
         val btnSelectNone = Button(requireContext()).apply { text = "全不选"; textSize = 13f }
         val btnInvert = Button(requireContext()).apply { text = "反选"; textSize = 13f }
+        val btnPlay = Button(requireContext()).apply { text = "播放选中"; textSize = 13f }
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnPlay, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         val titleText = "选择要删除的PCM缓存文件 (${files.size}个, 共${formatSize(totalSize)})"
@@ -645,6 +692,14 @@ class SettingsFragment : Fragment() {
             for (i in checked.indices) {
                 checked[i] = !checked[i]
                 dialog.listView.setItemChecked(i, checked[i])
+            }
+        }
+        btnPlay.setOnClickListener {
+            val selectedFiles = files.filterIndexed { i, _ -> checked[i] }
+            if (selectedFiles.isNotEmpty()) {
+                playPcmFile(selectedFiles.first())
+            } else {
+                Toast.makeText(requireContext(), "请先选择一个文件", Toast.LENGTH_SHORT).show()
             }
         }
 

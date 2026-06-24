@@ -551,14 +551,10 @@ class PlayerActivity : AppCompatActivity() {
             binding.layoutEpisodeNav.visibility = View.VISIBLE
             binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
             binding.btnPrevEpisode.setOnClickListener {
-                if (currentEpisodeIndex > 0) {
-                    playEpisodeAtIndex(currentEpisodeIndex - 1)
-                }
+                playPrevEpisode()
             }
             binding.btnNextEpisode.setOnClickListener {
-                if (currentEpisodeIndex < episodeList.size - 1) {
-                    playEpisodeAtIndex(currentEpisodeIndex + 1)
-                }
+                playNextEpisode()
             }
         } else {
             binding.layoutEpisodeNav.visibility = View.GONE
@@ -1054,7 +1050,8 @@ class PlayerActivity : AppCompatActivity() {
             setupPreCacheList()
             android.util.Log.d("PlayerActivity", "playNextEpisode: switched to ${nextEpisode.title}, index=$currentEpisodeIndex")
         } else {
-            Toast.makeText(this, "没有更多节目了", Toast.LENGTH_SHORT).show()
+            // 跨天：当前已是最后一条，尝试获取下一天的节目列表
+            fetchAndPlayCrossDayEpisode(1)
         }
     }
 
@@ -1085,6 +1082,9 @@ class PlayerActivity : AppCompatActivity() {
             updateUI()
             setupPreCacheList()
             android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${prevEpisode.title}, index=$currentEpisodeIndex")
+        } else {
+            // 跨天：当前已是第一条，尝试获取前一天的节目列表
+            fetchAndPlayCrossDayEpisode(-1)
         }
     }
 
@@ -1095,6 +1095,81 @@ class PlayerActivity : AppCompatActivity() {
         if (idx < 0) return null
         val targetIdx = idx + direction
         return if (targetIdx in episodes.indices) episodes[targetIdx] else null
+    }
+
+    /**
+     * 跨天获取相邻日期的节目列表并播放
+     * @param direction 1=下一天, -1=前一天
+     */
+    private fun fetchAndPlayCrossDayEpisode(direction: Int) {
+        val episode = currentEpisode ?: return
+        val stationId = episode.stationId
+        if (stationId.isBlank()) {
+            Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val broadcastAt = episode.broadcastAt ?: ""
+        val currentDateStr = if (broadcastAt.length >= 10) broadcastAt.substring(0, 10) else ""
+        if (currentDateStr.isBlank()) {
+            Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(this, if (direction > 0) "正在获取下一天节目..." else "正在获取前一天节目...", Toast.LENGTH_SHORT).show()
+
+        Thread {
+            try {
+                val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                cal.time = dateFormat.parse(currentDateStr) ?: return@Thread
+                cal.add(java.util.Calendar.DAY_OF_YEAR, direction)
+                val targetDate = dateFormat.format(cal.time)
+
+                android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: fetching $stationId on $targetDate (direction=$direction)")
+                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+
+                if (newEpisodes.isNullOrEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
+                    }
+                    return@Thread
+                }
+
+                // 过滤掉没有有效音频URL的节目
+                val validEpisodes = newEpisodes.filter { it.audioUrl.isNotBlank() && it.audioUrl.startsWith("http") }
+                if (validEpisodes.isEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
+                    }
+                    return@Thread
+                }
+
+                runOnUiThread {
+                    // 更新节目列表为新一天的节目
+                    episodeList = ArrayList(validEpisodes)
+                    // direction > 0 (next): 播放第一天第一个节目
+                    // direction < 0 (prev): 播放最后一天最后一个节目
+                    val targetIndex = if (direction > 0) 0 else validEpisodes.size - 1
+                    currentEpisodeIndex = targetIndex
+                    val targetEpisode = validEpisodes[targetIndex]
+                    currentEpisode = targetEpisode
+                    saveLastEpisode()
+                    playbackService?.playEpisode(targetEpisode, false)
+                    voiceSegments = generateSimulatedSegments()
+                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                    updateUI()
+                    setupPreCacheList()
+                    android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: crossed to $targetDate, playing ${targetEpisode.title}, index=$currentEpisodeIndex")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("PlayerActivity", "fetchAndPlayCrossDayEpisode failed", e)
+                runOnUiThread {
+                    Toast.makeText(this, "获取跨天节目失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     private fun getEpisodeList(): List<Episode> {

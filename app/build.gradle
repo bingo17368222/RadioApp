@@ -11,8 +11,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 61
-        versionName "1.6.0"
+        versionCode 62
+        versionName "1.6.1"
     }
 
     signingConfigs {
@@ -45,6 +45,10 @@ android {
 
     buildFeatures {
         viewBinding true
+    }
+
+    aaptOptions {
+        noCompress 'vosk-model-small-cn-0.22'
     }
 }
 

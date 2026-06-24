@@ -393,7 +393,7 @@ class SubtitleGeneratorService : Service() {
             ctx.startTime = System.currentTimeMillis()
             ctx.lastOutputTime = ctx.startTime
 
-            val bytesPerChunk = SAMPLE_RATE * 2 * 3
+            val bytesPerChunk = SAMPLE_RATE * 2 * 10  // 10 seconds per chunk
             var offset = 0
             val allTranscripts = mutableListOf<Transcript>()
             var fullText = StringBuilder()
@@ -755,7 +755,73 @@ class SubtitleGeneratorService : Service() {
         return binFiles != null && binFiles.isNotEmpty()
     }
 
+    private fun extractBuiltinVoskModel(): String? {
+        val targetDir = File(getExternalFilesDir(null), "models/vosk-model-small-cn-0.22")
+        val markerFile = File(targetDir, ".extracted")
+
+        // Check if already extracted
+        if (markerFile.exists() && isValidVoskModel(targetDir)) {
+            logToFile("Built-in Vosk model already extracted at $targetDir")
+            return targetDir.absolutePath
+        }
+
+        try {
+            val assetManager = assets
+            val assetFiles = assetManager.list("vosk-model-small-cn-0.22") ?: emptyArray()
+            if (assetFiles.isEmpty()) {
+                logToFile("No built-in Vosk model in assets")
+                return null
+            }
+
+            logToFile("Extracting built-in Vosk model from assets (${assetFiles.size} files)...")
+            targetDir.mkdirs()
+
+            // Recursively copy all files from assets
+            fun copyAssetDir(assetPath: String, destDir: File) {
+                val files = assetManager.list(assetPath) ?: return
+                if (files.isEmpty()) {
+                    // It's a file, copy it
+                    val fileName = assetPath.substringAfterLast("/")
+                    val destFile = File(destDir, fileName)
+                    assetManager.open(assetPath).use { input ->
+                        destFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    return
+                }
+                // It's a directory, recurse
+                for (file in files) {
+                    val subAssetPath = "$assetPath/$file"
+                    val subFiles = assetManager.list(subAssetPath) ?: emptyArray()
+                    if (subFiles.isEmpty()) {
+                        val destFile = File(destDir, file)
+                        assetManager.open(subAssetPath).use { input ->
+                            destFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    } else {
+                        val subDir = File(destDir, file)
+                        subDir.mkdirs()
+                        copyAssetDir(subAssetPath, subDir)
+                    }
+                }
+            }
+
+            copyAssetDir("vosk-model-small-cn-0.22", targetDir)
+            markerFile.createNewFile()
+            logToFile("Built-in Vosk model extracted successfully to $targetDir")
+            return targetDir.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract built-in Vosk model", e)
+            logToFile("Failed to extract built-in Vosk model: ${e.message}")
+            return null
+        }
+    }
+
     private fun findVoskModel(): String? {
+        // First, try to extract/use built-in model
+        val builtinModel = extractBuiltinVoskModel()
+        if (builtinModel != null) {
+            return builtinModel
+        }
         // 1. 检查外部存储手动下载的模型（只查找Vosk模型，不查找Whisper ggml模型）
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {

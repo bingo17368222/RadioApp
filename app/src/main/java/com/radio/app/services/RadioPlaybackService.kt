@@ -150,6 +150,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationDate = ""
     private var downloadingJob: kotlinx.coroutines.Job? = null
     private var positionRestoreRequested = false
+    private var pendingStartPosition: Long = -1L
     private var isSeekingToPosition = false
     private var notificationStyle = "full"
     // SharedPreferences监听器，用于热切换通知栏样式
@@ -589,99 +590,81 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
             Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
         }
+        // After the cross-day fetch attempt, if still no episodes to cache:
+        if (started == 0 && preCacheList.all { ep ->
+            settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title) ||
+            extractCacheFileName(ep.audioUrl) in cachedNames
+        }) {
+            writePreCacheLog("Pre-cache: ALL episodes disliked or cached, prompting user")
+            Handler(Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(this, "当前电台所有节目已被标记为不喜欢，无法预缓存。请在节目列表中取消不喜欢标记。", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     /**
      * 跨天获取更多节目用于预缓存
-     * 前后交替：先尝试未来日期，若为空则尝试过往日期，交替进行以最大化覆盖
-     * 最多获取20天（前10天+后10天或任意组合）
+     * 单次调用同时尝试两个方向：先向后（过往日期有VOD），再向前
+     * 最多获取20天
      */
     private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
         val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
         val stationId = prefs.getString("station_id", null)
         val startDate = prefs.getString("current_date", null)
-        val forwardDays = prefs.getInt("forward_days", 0)
-        val backwardDays = prefs.getInt("backward_days", 0)
-        val nextDirection = prefs.getInt("next_direction", 0) // 0=forward, 1=backward
-        
-        writePreCacheLog("fetchMoreDaysForPreCache: stationId=$stationId, startDate=$startDate, forwardDays=$forwardDays, backwardDays=$backwardDays, nextDirection=$nextDirection, existingList.size=${existingList.size}")
-        
+        val daysFetched = prefs.getInt("days_fetched", 0)
+
         if (stationId.isNullOrBlank() || startDate.isNullOrBlank()) {
-            writePreCacheLog("fetchMoreDaysForPreCache: missing stationId or startDate, returning existing list")
-            Log.d(TAG, "Pre-cache cross-day: missing stationId ($stationId) or startDate ($startDate)")
+            writePreCacheLog("fetchMoreDaysForPreCache: missing stationId or startDate")
             return existingList
         }
-        
-        // 最多获取20天的节目（前后各方向累计）
-        val maxAdditionalDays = 20
-        val totalDays = forwardDays + backwardDays
-        if (totalDays >= maxAdditionalDays) {
-            writePreCacheLog("fetchMoreDaysForPreCache: already fetched $totalDays days (forward=$forwardDays, backward=$backwardDays), limit reached")
-            Log.d(TAG, "Pre-cache cross-day: already fetched $totalDays days, limit reached")
+
+        val maxDays = 20
+        if (daysFetched >= maxDays) {
+            writePreCacheLog("fetchMoreDaysForPreCache: already fetched $daysFetched days, limit reached")
             return existingList
         }
-        
+
         val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-        
+
         val resultList = existingList.toMutableList()
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
-        
-        try {
-            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            val startCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            startCal.time = dateFormat.parse(startDate) ?: return existingList
-            
-            // 根据方向确定偏移量：forward为正，backward为负
-            val dayOffset = if (nextDirection == 0) {
-                forwardDays + 1  // 正向：+1, +2, +3, ...
-            } else {
-                -(backwardDays + 1)  // 反向：-1, -2, -3, ...
-            }
-            
-            cal.time = startCal.time
-            cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
-            val targetDate = dateFormat.format(cal.time)
-            val dirLabel = if (dayOffset >= 0) "+$dayOffset" else "$dayOffset"
-            
-            writePreCacheLog("fetchMoreDaysForPreCache: fetching episodes for $stationId on $targetDate (dayOffset=$dirLabel, direction=${if (nextDirection == 0) "forward" else "backward"})")
-            Log.d(TAG, "Pre-cache cross-day: fetching episodes for $stationId on $targetDate (dayOffset=$dirLabel, direction=${if (nextDirection == 0) "forward" else "backward"})")
-            
-            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-            val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
-            
-            if (newEpisodes != null && newEpisodes.isNotEmpty()) {
-                // 过滤掉已存在、已缓存、无音频URL的节目
-                val validNewEpisodes = newEpisodes.filter { ep ->
-                    ep.audioUrl.isNotBlank() &&
-                    ep.audioUrl !in existingUrls &&
-                    extractCacheFileName(ep.audioUrl) !in cachedNames &&
-                    ep.audioUrl.startsWith("http")
+
+        // Try BOTH directions: backward first (past dates have VOD), then forward
+        val directions = listOf(-(daysFetched + 1), daysFetched + 1)
+
+        for (dayOffset in directions) {
+            if (daysFetched >= maxDays) break
+            try {
+                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                cal.time = dateFormat.parse(startDate) ?: continue
+                cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
+                val targetDate = dateFormat.format(cal.time)
+
+                writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=$dayOffset)")
+
+                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+
+                if (newEpisodes != null && newEpisodes.isNotEmpty()) {
+                    val validNewEpisodes = newEpisodes.filter { ep ->
+                        ep.audioUrl.isNotBlank() &&
+                        ep.audioUrl !in existingUrls &&
+                        extractCacheFileName(ep.audioUrl) !in cachedNames &&
+                        ep.audioUrl.startsWith("http")
+                    }
+                    writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
+                    resultList.addAll(validNewEpisodes)
+                } else {
+                    writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate")
                 }
-                writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new ones")
-                Log.d(TAG, "Pre-cache cross-day: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new ones")
-                resultList.addAll(validNewEpisodes)
-            } else {
-                writePreCacheLog("fetchMoreDaysForPreCache: no episodes available for $targetDate (direction=${if (nextDirection == 0) "forward" else "backward"})")
-                Log.d(TAG, "Pre-cache cross-day: no episodes available for $targetDate (direction=${if (nextDirection == 0) "forward" else "backward"})")
+            } catch (e: Exception) {
+                writePreCacheLog("fetchMoreDaysForPreCache: error for offset=$dayOffset: ${e.message}")
             }
-            
-            // 更新方向计数：当前方向+1，并切换到另一方向
-            val editor = prefs.edit()
-            if (nextDirection == 0) {
-                editor.putInt("forward_days", forwardDays + 1)
-            } else {
-                editor.putInt("backward_days", backwardDays + 1)
-            }
-            editor.putInt("next_direction", 1 - nextDirection)
-            editor.apply()
-            
-        } catch (e: Exception) {
-            writePreCacheLog("fetchMoreDaysForPreCache: failed to fetch more days: ${e.message}")
-            Log.e(TAG, "Pre-cache cross-day: failed to fetch more days", e)
         }
-        
+
+        prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
         writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size})")
         return resultList
     }
@@ -1052,15 +1035,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun applySavedPosition() {
-        if (!savePlaybackPosition) return
+        if (!savePlaybackPosition && pendingStartPosition < 0) return
         val ep = currentEpisode ?: return
-        val episodeKey = "${ep.stationId}::${ep.title}"
-        val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+        val savedPos = if (pendingStartPosition >= 0) {
+            val pos = pendingStartPosition
+            pendingStartPosition = -1L
+            pos
+        } else {
+            val episodeKey = "${ep.stationId}::${ep.title}"
+            getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+        }
         if (savedPos > 0 && !isLive) {
-            isSeekingToPosition = true  // 抑制 seek 期间的 UI 回调
-            player?.playWhenReady = false  // Pause briefly to avoid position 0 jitter
+            isSeekingToPosition = true
+            player?.playWhenReady = false
             player?.seekTo(savedPos)
-            Log.d(TAG, "Restored position: ${savedPos}ms for $episodeKey")
+            Log.d(TAG, "Restored position: ${savedPos}ms (from ${if (pendingStartPosition >= 0) "override" else "prefs"})")
         }
     }
 
@@ -1501,8 +1490,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
         stopAutoSkipCheck()
-        // 当明确指定了起始位置时，跳过异步恢复位置逻辑，改为在 prepare 后立即 seek
-        positionRestoreRequested = startPositionMs < 0  // 仅在未指定位置时启用异步恢复
+        if (startPositionMs >= 0) {
+            // 指定了起始位置：延迟到 STATE_READY 再 seek，避免 prepare 未完成时 seek 不可靠
+            pendingStartPosition = startPositionMs
+            positionRestoreRequested = true  // STATE_READY 时由 applySavedPosition() 处理
+        } else {
+            // 全新播放：不恢复位置，直接从头开始
+            pendingStartPosition = -1L
+            positionRestoreRequested = false
+        }
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         currentStreamUrl = episode.audioUrl ?: ""
         currentPlayingUrl = currentStreamUrl
@@ -1517,12 +1513,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 it.prepare()
-                // 如果指定了起始位置，在 prepare() 之后立即 seek，不等 STATE_READY
                 if (startPositionMs >= 0) {
-                    isSeekingToPosition = true
-                    it.playWhenReady = false  // Pause briefly to avoid position 0 jitter
-                    it.seekTo(startPositionMs)
-                    Log.d(TAG, "Seeked to startPosition: ${startPositionMs}ms immediately after prepare")
+                    // 不在此处 seek，等待 STATE_READY 时由 applySavedPosition() 处理
+                    it.playWhenReady = false  // 暂不开始播放，等 seek 完成后再恢复
                 } else {
                     it.playWhenReady = true
                 }
