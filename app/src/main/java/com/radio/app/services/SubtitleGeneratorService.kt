@@ -523,6 +523,7 @@ class SubtitleGeneratorService : Service() {
                 val progress = 40 + (offset * 55 / totalBytes).toInt()
                 reportProgress(callback, progress.coerceAtMost(95), 100, ctx)
 
+                val now = System.currentTimeMillis()
                 if (now - lastLogTime > 15000) {
                     ctx.log("Progress: ${offset * 100 / totalBytes}% (${offset / (SAMPLE_RATE * 2)}s / ${totalBytes / (SAMPLE_RATE * 2)}s), segments=${allTranscripts.size}")
                     lastLogTime = now
