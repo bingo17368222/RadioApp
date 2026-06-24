@@ -374,12 +374,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 callback?.onError("播放失败: ${error.message ?: "未知错误"}")
                             }
                         }
-                        override fun onSeekProcessed() {
-                            // Seek has been processed by the player, now safe to resume playback
-                            if (isSeekingToPosition) {
-                                Log.d(TAG, "onSeekProcessed: seek completed, resuming playback")
+                        override fun onPositionDiscontinuity(
+                            oldPosition: Player.PositionInfo,
+                            newPosition: Player.PositionInfo,
+                            reason: Int
+                        ) {
+                            // Seek completed - resume playback if we were seeking to a position
+                            if (isSeekingToPosition && reason == Player.DISCONTINUITY_REASON_SEEK) {
+                                Log.d(TAG, "onPositionDiscontinuity: seek completed, resuming playback")
                                 player?.playWhenReady = true
-                                // Clear isSeekingToPosition after a short delay to allow position to stabilize
                                 positionSaveHandler?.postDelayed({
                                     isSeekingToPosition = false
                                 }, 2000)
