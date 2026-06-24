@@ -45,10 +45,19 @@ import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener {
@@ -463,15 +472,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
+    /**
+     * 写入预缓存日志到外部存储，方便调试
+     */
+    private fun writePreCacheLog(msg: String) {
+        try {
+            val logDir = getExternalFilesDir("logs")
+            if (logDir != null) {
+                if (!logDir.exists()) logDir.mkdirs()
+                val logFile = File(logDir, "precache.log")
+                val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+                Log.d(TAG, "[PreCache] $msg")
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
+        writePreCacheLog("Pre-cache check: autoCache=${settings.autoCache}, wifiOnly=${settings.wifiOnlyPreCache}, targetCount=${settings.preloadCacheCount}")
         Log.d(TAG, "Pre-cache check: autoCache=${settings.autoCache}, wifiOnly=${settings.wifiOnlyPreCache}, targetCount=${settings.preloadCacheCount}")
         if (!settings.autoCache) {
+            writePreCacheLog("Pre-cache: disabled (autoCache=false)")
             Log.d(TAG, "Pre-cache: disabled (autoCache=false)")
             return
         }
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
             val isWifi = NetworkUtils.isWifiConnected(this)
+            writePreCacheLog("Pre-cache: skipped (WiFi only, isWifi=$isWifi)")
             Log.d(TAG, "Pre-cache: skipped (WiFi only, isWifi=$isWifi)")
             return
         }
@@ -481,24 +509,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedCount = cachedFiles.size
         val targetCount = settings.preloadCacheCount
+        writePreCacheLog("Pre-cache: current cached=$cachedCount, target=$targetCount, cachedFiles=${cachedFiles.map { it.name }}")
         Log.d(TAG, "Pre-cache: current cached=$cachedCount, target=$targetCount, cachedFiles=${cachedFiles.map { it.name }}")
         if (cachedCount >= targetCount) {
+            writePreCacheLog("Pre-cache: target reached, no more downloads needed")
             Log.d(TAG, "Pre-cache: target reached, no more downloads needed")
             return
         }
         // 从预缓存列表中获取待下载的节目
         var preCacheList = loadPreCacheList()
         if (preCacheList.isEmpty()) {
+            writePreCacheLog("Pre-cache: no episodes in pre-cache list, attempting to fetch more days")
             Log.d(TAG, "Pre-cache: no episodes in pre-cache list, attempting to fetch more days")
             // 尝试获取跨天节目来补充列表
             preCacheList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
             if (preCacheList.isEmpty()) {
+                writePreCacheLog("Pre-cache: still no episodes available after fetching more days")
                 Log.d(TAG, "Pre-cache: still no episodes available after fetching more days")
                 return
             }
             // 保存更新后的列表
             savePreCacheList(preCacheList)
         }
+        writePreCacheLog("Pre-cache: pre-cache list has ${preCacheList.size} episodes: ${preCacheList.joinToString(", ") { it.title ?: "?" }}")
         Log.d(TAG, "Pre-cache: pre-cache list has ${preCacheList.size} episodes: ${preCacheList.joinToString(", ") { it.title ?: "?" }}")
         val cachedNames = cachedFiles.map { it.name }.toSet()
         val needed = targetCount - cachedCount
@@ -508,19 +541,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (started >= needed) break
             val fileName = extractCacheFileName(ep.audioUrl)
             if (fileName in cachedNames) {
+                writePreCacheLog("Pre-cache: already cached: ${ep.title} ($fileName)")
                 Log.d(TAG, "Pre-cache: already cached: ${ep.title} ($fileName)")
                 continue
             }
             // 跳过不喜欢的节目
             if (settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                writePreCacheLog("Pre-cache: skipping disliked episode ${ep.title}")
                 Log.d(TAG, "Pre-cache: skipping disliked episode ${ep.title}")
                 continue
             }
             // 跳过没有音频URL的节目
             if (ep.audioUrl.isBlank()) {
+                writePreCacheLog("Pre-cache: skipping episode with empty audioUrl: ${ep.title}")
                 Log.d(TAG, "Pre-cache: skipping episode with empty audioUrl: ${ep.title}")
                 continue
             }
+            writePreCacheLog("Pre-cache: downloading #${started + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
             Log.d(TAG, "Pre-cache: downloading #${started + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
             downloadPreCacheEpisode(ep)
             started++
@@ -529,6 +566,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // 如果列表遍历完了但还没达到目标数量，尝试获取更多天的节目
         if (started < needed) {
+            writePreCacheLog("Pre-cache: ran out of episodes in list (started=$started < needed=$needed), fetching more days")
             Log.d(TAG, "Pre-cache: ran out of episodes in list (started=$started < needed=$needed), fetching more days")
             val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
             if (expandedList.size > preCacheList.size) {
@@ -539,6 +577,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         if (started == 0) {
+            writePreCacheLog("Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
             Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
         }
     }
@@ -553,7 +592,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val startDate = prefs.getString("current_date", null)
         val daysFetched = prefs.getInt("days_fetched", 0)
         
+        writePreCacheLog("fetchMoreDaysForPreCache: stationId=$stationId, startDate=$startDate, daysFetched=$daysFetched, existingList.size=${existingList.size}")
+        
         if (stationId.isNullOrBlank() || startDate.isNullOrBlank()) {
+            writePreCacheLog("fetchMoreDaysForPreCache: missing stationId or startDate, returning existing list")
             Log.d(TAG, "Pre-cache cross-day: missing stationId ($stationId) or startDate ($startDate)")
             return existingList
         }
@@ -561,6 +603,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 最多向前（未来）获取20天的节目
         val maxAdditionalDays = 20
         if (daysFetched >= maxAdditionalDays) {
+            writePreCacheLog("fetchMoreDaysForPreCache: already fetched $daysFetched days, limit reached")
             Log.d(TAG, "Pre-cache cross-day: already fetched $daysFetched days, limit reached")
             return existingList
         }
@@ -583,6 +626,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             
             val targetDate = dateFormat.format(cal.time)
             val dayOffset = daysFetched + 1
+            writePreCacheLog("fetchMoreDaysForPreCache: fetching episodes for $stationId on $targetDate (dayOffset=+$dayOffset)")
             Log.d(TAG, "Pre-cache cross-day: fetching episodes for $stationId on $targetDate (dayOffset=+$dayOffset)")
             
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
@@ -596,9 +640,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     extractCacheFileName(ep.audioUrl) !in cachedNames &&
                     ep.audioUrl.startsWith("http")
                 }
+                writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new ones")
                 Log.d(TAG, "Pre-cache cross-day: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new ones")
                 resultList.addAll(validNewEpisodes)
             } else {
+                writePreCacheLog("fetchMoreDaysForPreCache: no episodes available for $targetDate (may be too far in future)")
                 Log.d(TAG, "Pre-cache cross-day: no episodes available for $targetDate (may be too far in future)")
             }
             
@@ -606,9 +652,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
             
         } catch (e: Exception) {
+            writePreCacheLog("fetchMoreDaysForPreCache: failed to fetch more days: ${e.message}")
             Log.e(TAG, "Pre-cache cross-day: failed to fetch more days", e)
         }
         
+        writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size})")
         return resultList
     }
 
@@ -627,6 +675,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         getSharedPreferences("precache_list", MODE_PRIVATE)
             .edit().putString("episodes", arr.toString()).apply()
+        writePreCacheLog("savePreCacheList: saved ${episodes.size} episodes")
         Log.d(TAG, "Pre-cache list saved: ${episodes.size} episodes")
     }
 
@@ -680,8 +729,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .putString("current_date", currentDate)
             .putInt("days_fetched", 0)  // 重置跨天计数
             .apply()
+        writePreCacheLog("setPreCacheEpisodeList: updated ${episodes.size} episodes, station=$stationId, date=$currentDate")
         Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes, station=$stationId, date=$currentDate")
         // 立即触发预缓存检查（独立于下载状态）
+        writePreCacheLog("setPreCacheEpisodeList: triggering pre-cache check")
         triggerPreCache()
     }
 
@@ -701,9 +752,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         if (targetFile.exists() && targetFile.length() > 1024) {
+            writePreCacheLog("downloadPreCacheEpisode: already exists: ${episode.title} ($fileName)")
             triggerPreCache() // 已存在，继续下一个
             return
         }
+        writePreCacheLog("downloadPreCacheEpisode: starting download: ${episode.title} from $url")
         Log.d(TAG, "Pre-cache: downloading ${episode.title} from $url")
         serviceScope.launch {
             try {
@@ -715,6 +768,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 connection.setRequestProperty("Referer", "https://www.hndt.com/")
                 connection.connect()
                 if (connection.responseCode != 200) {
+                    writePreCacheLog("downloadPreCacheEpisode: HTTP ${connection.responseCode} for ${episode.title}")
                     Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
                     triggerPreCache() // 继续下一个
                     return@launch
@@ -728,16 +782,204 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 output.close()
                 input.close()
+                writePreCacheLog("downloadPreCacheEpisode: downloaded ${targetFile.length()} bytes to ${targetFile.name} for ${episode.title}")
                 Log.d(TAG, "Pre-cache: downloaded ${targetFile.length()} bytes to ${targetFile.name}")
+                // 下载成功后触发PCM预解码
+                startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
                 // 继续预缓存下一个
                 triggerPreCache()
             } catch (e: Exception) {
+                writePreCacheLog("downloadPreCacheEpisode: error downloading ${episode.title}: ${e.message}")
                 Log.e(TAG, "Pre-cache download error: ${e.message}")
                 // 删除不完整的文件
                 if (targetFile.exists()) targetFile.delete()
                 triggerPreCache() // 继续下一个
             }
         }
+    }
+
+    /**
+     * 预缓存下载完成后，后台解码前30分钟音频为PCM并缓存
+     * 后续字幕生成时可直接使用预解码的PCM文件，跳过下载和解码阶段
+     */
+    private fun startPcmPreDecode(episodeId: String, audioFile: File, episodeTitle: String) {
+        if (episodeId.isBlank()) {
+            writePreCacheLog("startPcmPreDecode: empty episodeId, skipping PCM pre-decode")
+            return
+        }
+        writePreCacheLog("startPcmPreDecode: launching PCM pre-decode for $episodeTitle ($episodeId)")
+        serviceScope.launch {
+            try {
+                val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
+                if (pcmCacheDir == null) {
+                    writePreCacheLog("startPcmPreDecode: failed to create pcm_cache dir")
+                    return@launch
+                }
+                if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
+                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+                if (pcmFile.exists() && pcmFile.length() > 1024) {
+                    writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
+                    return@launch
+                }
+                writePreCacheLog("startPcmPreDecode: decoding ${audioFile.length()} bytes from ${audioFile.name} to PCM...")
+                val startTime = System.currentTimeMillis()
+
+                // 获取音频时长
+                val durationExtractor = MediaExtractor()
+                var audioDurationUs = 0L
+                try {
+                    durationExtractor.setDataSource(audioFile.absolutePath)
+                    for (i in 0 until durationExtractor.trackCount) {
+                        val fmt = durationExtractor.getTrackFormat(i)
+                        if (fmt.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                            audioDurationUs = fmt.getLong(MediaFormat.KEY_DURATION)
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    writePreCacheLog("startPcmPreDecode: warning, failed to get duration: ${e.message}")
+                } finally {
+                    durationExtractor.release()
+                }
+                // 只解码前30分钟
+                val maxDurationUs = 30 * 60 * 1000000L // 30 minutes
+                val effectiveDurationUs = if (audioDurationUs > 0 && audioDurationUs > maxDurationUs) {
+                    maxDurationUs
+                } else {
+                    audioDurationUs
+                }
+                writePreCacheLog("startPcmPreDecode: audio duration=${audioDurationUs / 1000000}s, effective=${effectiveDurationUs / 1000000}s")
+
+                // 解码到PCM
+                decodeToPcmForPreCache(audioFile, pcmFile, effectiveDurationUs)
+
+                val elapsed = (System.currentTimeMillis() - startTime) / 1000
+                writePreCacheLog("startPcmPreDecode: PCM pre-decode complete for $episodeTitle, ${pcmFile.length()} bytes in ${elapsed}s")
+            } catch (e: Exception) {
+                writePreCacheLog("startPcmPreDecode: error for $episodeTitle: ${e.message}")
+                Log.e(TAG, "PCM pre-decode failed for $episodeTitle", e)
+            }
+        }
+    }
+
+    /**
+     * 为预缓存解码音频到PCM (16kHz mono 16bit)
+     */
+    private fun decodeToPcmForPreCache(audioFile: File, pcmFile: File, durationUs: Long) {
+        val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        var fos: FileOutputStream? = null
+        try {
+            extractor.setDataSource(audioFile.absolutePath)
+            var audioTrackIndex = -1
+            var audioFormat: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    audioTrackIndex = i; audioFormat = format; break
+                }
+            }
+            if (audioTrackIndex < 0 || audioFormat == null) {
+                writePreCacheLog("decodeToPcmForPreCache: no audio track found")
+                return
+            }
+
+            extractor.selectTrack(audioTrackIndex)
+            val mime = audioFormat.getString(MediaFormat.KEY_MIME)!!
+            codec = MediaCodec.createDecoderByType(mime)
+            codec.configure(audioFormat, null, null, 0)
+            codec.start()
+
+            val bufferInfo = MediaCodec.BufferInfo()
+            fos = FileOutputStream(pcmFile)
+            val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            val outSampleRate = 16000
+            val outChannels = 1
+
+            var inputDone = false
+            var outputDone = false
+            var decodedBytes = 0L
+            val maxPcmBytes = 60_000_000L // 30min @ 16kHz mono 16bit
+            val decodeStartTime = System.currentTimeMillis()
+            val maxDecodeTimeMs = 5 * 60 * 1000L
+
+            while (!outputDone) {
+                val now = System.currentTimeMillis()
+                if (decodedBytes >= maxPcmBytes) { outputDone = true; break }
+                if (now - decodeStartTime > maxDecodeTimeMs) { outputDone = true; break }
+
+                if (!inputDone) {
+                    val inIdx = codec.dequeueInputBuffer(10000)
+                    if (inIdx >= 0) {
+                        val buffer = codec.getInputBuffer(inIdx)!!
+                        val sampleSize = extractor.readSampleData(buffer, 0)
+                        if (sampleSize < 0) {
+                            codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            if (durationUs > 0 && extractor.sampleTime >= durationUs) {
+                                codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                codec.queueInputBuffer(inIdx, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                val outIdx = codec.dequeueOutputBuffer(bufferInfo, 5000)
+                when {
+                    outIdx >= 0 -> {
+                        val buffer = codec.getOutputBuffer(outIdx)!!
+                        if (bufferInfo.size > 0 && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                            val pcmBytes = ByteArray(bufferInfo.size)
+                            buffer.position(bufferInfo.offset)
+                            buffer.get(pcmBytes)
+                            val resampled = resamplePcmForPreCache(pcmBytes, sampleRate, channelCount, outSampleRate, outChannels)
+                            fos.write(resampled)
+                            decodedBytes += resampled.size
+                        }
+                        codec.releaseOutputBuffer(outIdx, false)
+                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            outputDone = true
+                        }
+                    }
+                    outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {}
+                    else -> {}
+                }
+            }
+            writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes PCM bytes")
+        } catch (e: Exception) {
+            writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
+            throw e
+        } finally {
+            try { codec?.stop(); codec?.release() } catch (_: Exception) {}
+            try { fos?.close() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * 为预缓存重采样PCM (复用SubtitleGeneratorService的算法)
+     */
+    private fun resamplePcmForPreCache(input: ByteArray, inSampleRate: Int, inChannels: Int,
+                                       outSampleRate: Int, outChannels: Int): ByteArray {
+        val shorts = ShortArray(input.size / 2)
+        ByteBuffer.wrap(input).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+        val ratio = inSampleRate.toDouble() / outSampleRate
+        val outLength = (shorts.size / inChannels / ratio).toInt() * outChannels
+        val output = ShortArray(outLength.coerceAtLeast(1))
+        var outIdx = 0; var inIdx = 0.0
+        while (outIdx < outLength) {
+            val srcIdx = (inIdx * inChannels).toInt()
+            if (srcIdx < shorts.size) output[outIdx] = shorts[srcIdx]
+            outIdx++; inIdx += ratio
+        }
+        val result = ByteArray(output.size * 2)
+        ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(output)
+        return result
     }
 
     private fun applySavedPosition() {
@@ -1184,12 +1426,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) { Log.e(TAG, "playStation failed", e) }
     }
 
-    fun playEpisode(episode: Episode, live: Boolean) {
-        Log.d(TAG, "playEpisode called: ${episode.title}, playbackStarted before: $playbackStarted, prepared=$prepared, url=${episode.audioUrl}")
+    fun playEpisode(episode: Episode, live: Boolean, startPositionMs: Long = -1L) {
+        Log.d(TAG, "playEpisode called: ${episode.title}, playbackStarted before: $playbackStarted, prepared=$prepared, url=${episode.audioUrl}, startPositionMs=$startPositionMs")
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
         stopAutoSkipCheck()
-        positionRestoreRequested = true  // 下次 STATE_READY 时恢复位置
+        // 当明确指定了起始位置时，跳过异步恢复位置逻辑，改为在 prepare 后立即 seek
+        positionRestoreRequested = startPositionMs < 0  // 仅在未指定位置时启用异步恢复
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         currentStreamUrl = episode.audioUrl ?: ""
         currentPlayingUrl = currentStreamUrl
@@ -1203,7 +1446,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try {
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                it.prepare(); it.playWhenReady = true
+                it.prepare()
+                // 如果指定了起始位置，在 prepare() 之后立即 seek，不等 STATE_READY
+                if (startPositionMs >= 0) {
+                    isSeekingToPosition = true
+                    it.seekTo(startPositionMs)
+                    Log.d(TAG, "Seeked to startPosition: ${startPositionMs}ms immediately after prepare")
+                }
+                it.playWhenReady = true
             }
             requestAudioFocus(); updateNotification()
             updateMediaSessionState()
@@ -1249,6 +1499,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getBufferedPosition(): Long = player?.bufferedPosition ?: 0L
     fun getCurrentEpisode(): Episode? = currentEpisode
     fun getCurrentStation(): RadioStation? = currentStation
+
+    /**
+     * 根据节目信息，从 SharedPreferences 中获取已保存的播放位置（毫秒）
+     * 用于 Activity 重建时恢复播放进度，避免从 0 开始播放导致位置抖动
+     */
+    fun getSavedPositionForEpisode(episode: Episode): Long {
+        val episodeKey = "${episode.stationId}::${episode.title}"
+        return getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+    }
+
     fun setCallback(cb: Callback?) { callback = cb }
 
     /** 获取后台下载进度（0-100），用于缓存进度显示 */

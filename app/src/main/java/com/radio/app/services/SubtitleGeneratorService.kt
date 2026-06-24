@@ -254,6 +254,8 @@ class SubtitleGeneratorService : Service() {
             override fun onComplete(segments: List<VoiceSegment>) {
                 callback.onComplete(segments)
                 updateProgressNotification(100, "AI分段完成")
+                // AI分段完成后关闭通知
+                cleanupTask()
             }
             override fun onError(error: String) {
                 callback.onError(error)
@@ -361,6 +363,150 @@ class SubtitleGeneratorService : Service() {
         reportProgress(callback, 0, 100, ctx)
         ctx.log("[Phase 0] Using Vosk model: $modelPath")
 
+        // Phase 0.5: 检查是否有预解码的PCM缓存
+        var pcmCacheUsed = false
+        val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
+        val pcmCacheFile = pcmCacheDir?.let { File(it, "${episodeId}_30min.pcm") }
+        if (pcmCacheFile != null && pcmCacheFile.exists() && pcmCacheFile.length() > 1024) {
+            ctx.log("[Phase 0.5] PCM cache FOUND: ${pcmCacheFile.absolutePath} (${pcmCacheFile.length()} bytes)")
+            ctx.log("[Phase 0.5] Skipping download and decode phases, loading PCM cache directly")
+            pcmCacheUsed = true
+
+            reportProgress(callback, 15, 100, ctx)
+            ctx.log("[Phase 2] PCM cache loaded, proceeding to recognition")
+
+            val pcmData = pcmCacheFile.readBytes()
+            val totalBytes = pcmData.size
+            reportProgress(callback, 40, 100, ctx)
+
+            // Phase 3: Vosk recognition (40-95%) -- 使用缓存的PCM
+            ctx.log("[Phase 5] Loading Vosk model and starting recognition (from PCM cache)...")
+            val model = Model(modelPath)
+            val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
+            ctx.log("Vosk recognizer initialized")
+
+            ctx.startTime = System.currentTimeMillis()
+            ctx.lastOutputTime = ctx.startTime
+
+            val bytesPerChunk = SAMPLE_RATE * 2 * 3
+            var offset = 0
+            val allTranscripts = mutableListOf<Transcript>()
+            var fullText = StringBuilder()
+            var lastPartialOutput = 0L
+            var lastLogTime = System.currentTimeMillis()
+
+            ctx.log("PCM cache data: $totalBytes bytes, expected ~${totalBytes / (SAMPLE_RATE * 2)} seconds of audio")
+
+            while (offset < totalBytes) {
+                if (ctx.cancelled.get() || globalCancelled.get()) {
+                    ctx.log("Task cancelled at offset=$offset/$totalBytes")
+                    recognizer.close()
+                    model.close()
+                    return false
+                }
+                val taskElapsed = System.currentTimeMillis() - (ctx.startTime - (totalBytes / (SAMPLE_RATE * 2 * 3)).toLong())
+                if (System.currentTimeMillis() - ctx.startTime > TASK_TIMEOUT_MS) {
+                    ctx.log("ERROR: Hard timeout after ${(System.currentTimeMillis() - ctx.startTime) / 1000}s, aborting")
+                    recognizer.close()
+                    model.close()
+                    callback.onError("处理超时（超过10分钟），音频可能过长")
+                    return false
+                }
+                if (allTranscripts.isEmpty() && System.currentTimeMillis() - ctx.startTime > 180000) {
+                    ctx.log("ERROR: No result after 180s of recognition, PCM may be incompatible")
+                    recognizer.close()
+                    model.close()
+                    callback.onError("语音识别超时：音频格式可能不兼容，请尝试其他节目")
+                    return false
+                }
+                if (System.currentTimeMillis() - ctx.lastOutputTime > 60000) {
+                    ctx.log("Warning: no output for ${(System.currentTimeMillis() - ctx.lastOutputTime) / 1000}s at offset=$offset/$totalBytes")
+                }
+
+                val chunkSize = minOf(bytesPerChunk, totalBytes - offset)
+                val chunk = pcmData.copyOfRange(offset, offset + chunkSize)
+                offset += chunkSize
+
+                val shortBuffer = ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                val shorts = ShortArray(shortBuffer.remaining())
+                shortBuffer.get(shorts)
+
+                if (recognizer.acceptWaveForm(shorts, SAMPLE_RATE)) {
+                    val result = recognizer.result
+                    val text = parseVoskResult(result)
+                    if (text.isNotEmpty()) {
+                        val startSec = ((offset - chunkSize) / (SAMPLE_RATE * 2.0)).toInt()
+                        val endSec = (offset / (SAMPLE_RATE * 2.0)).toInt()
+                        val t = Transcript().apply {
+                            this.episodeId = episodeId
+                            this.segmentStart = startSec.toLong()
+                            this.segmentEnd = endSec.toLong()
+                            this.text = text
+                            this.confidence = 0.9
+                        }
+                        allTranscripts.add(t)
+                        dbHelper?.saveTranscript(t)
+                        callback.onSubtitleGenerated(t)
+                        fullText.append(text).append(" ")
+                        ctx.lastOutputTime = System.currentTimeMillis()
+                        ctx.log("Result [$startSec-$endSec]: $text")
+                    }
+                } else {
+                    if (offset - lastPartialOutput >= SAMPLE_RATE * 2 * 2) {
+                        try {
+                            val partial = recognizer.partialResult
+                            val partialText = parseVoskPartial(partial)
+                            if (partialText.isNotBlank()) {
+                                ctx.lastOutputTime = System.currentTimeMillis()
+                                if (allTranscripts.size < 5) {
+                                    ctx.log("Partial: $partialText")
+                                }
+                                lastPartialOutput = offset.toLong()
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                val progress = 40 + (offset * 55 / totalBytes).toInt()
+                reportProgress(callback, progress.coerceAtMost(95), 100, ctx)
+
+                val now = System.currentTimeMillis()
+                if (now - lastLogTime > 15000) {
+                    ctx.log("Progress: ${offset * 100 / totalBytes}% (${offset / (SAMPLE_RATE * 2)}s / ${totalBytes / (SAMPLE_RATE * 2)}s), segments=${allTranscripts.size}")
+                    lastLogTime = now
+                }
+            }
+
+            val finalResult = recognizer.finalResult
+            val finalText = parseVoskResult(finalResult)
+            if (finalText.isNotEmpty()) {
+                val startSec = (offset / (SAMPLE_RATE * 2.0)).toInt()
+                val t = Transcript().apply {
+                    this.episodeId = episodeId
+                    this.segmentStart = startSec.toLong()
+                    this.segmentEnd = (pcmData.size / (SAMPLE_RATE * 2.0)).toInt().toLong()
+                    this.text = finalText
+                    this.confidence = 0.9
+                }
+                allTranscripts.add(t)
+                dbHelper?.saveTranscript(t)
+                callback.onSubtitleGenerated(t)
+                ctx.log("Final: $finalText")
+            }
+
+            recognizer.close()
+            model.close()
+
+            reportProgress(callback, 100, 100, ctx)
+            val elapsed = (System.currentTimeMillis() - ctx.startTime) / 1000
+            ctx.log("COMPLETE (from PCM cache): ${allTranscripts.size} segments in ${elapsed}s")
+            callback.onComplete(allTranscripts)
+
+            return true
+        } else {
+            ctx.log("[Phase 0.5] PCM cache NOT found for episodeId=$episodeId, will download and decode")
+        }
+
         // Phase 1: Download audio (0-14%)
         reportProgress(callback, 1, 100, ctx)
         ctx.log("[Phase 1] Starting audio download: $audioUrl")
@@ -437,7 +583,7 @@ class SubtitleGeneratorService : Service() {
 
             val pcmData = pcmFile.readBytes()
             val totalBytes = pcmData.size
-            val bytesPerChunk = SAMPLE_RATE * 2 * 3  // 3 seconds per chunk
+            val bytesPerChunk = SAMPLE_RATE * 2 * 10  // 10 seconds per chunk
             var offset = 0
             val allTranscripts = mutableListOf<Transcript>()
             var fullText = StringBuilder()
@@ -844,8 +990,12 @@ class SubtitleGeneratorService : Service() {
         val output = ShortArray(outLength)
         var outIdx = 0; var inIdx = 0.0
         while (outIdx < outLength) {
-            val srcIdx = (inIdx * inChannels).toInt()
-            if (srcIdx < shorts.size) output[outIdx] = shorts[srcIdx]
+            val srcIdx = inIdx.toInt() * inChannels
+            val nextIdx = ((inIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - 1)
+            val frac = inIdx - inIdx.toInt()
+            // Linear interpolation for better quality
+            val interpolated = (shorts[srcIdx] * (1.0 - frac) + shorts[nextIdx] * frac).toInt().toShort()
+            output[outIdx] = interpolated
             outIdx++; inIdx += ratio
         }
         val result = ByteArray(output.size * 2)

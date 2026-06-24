@@ -192,7 +192,15 @@ class PlayerActivity : AppCompatActivity() {
                 val audioUrl = currentEpisode?.audioUrl
                 if (!audioUrl.isNullOrBlank()) {
                     currentEpisode?.let { episode ->
-                        playbackService?.playEpisode(episode, false)
+                        if (isFreshStart) {
+                            playbackService?.playEpisode(episode, false)
+                        } else {
+                            val savedPosition = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
+                            val msg = "Service was killed, restoring saved position: ${savedPosition}ms"
+                            android.util.Log.d("PlayerActivity", msg)
+                            writeJitterLog(msg)
+                            playbackService?.playEpisode(episode, false, savedPosition)
+                        }
                     }
                 }
             }
