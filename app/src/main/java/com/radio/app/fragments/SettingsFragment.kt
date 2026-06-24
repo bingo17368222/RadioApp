@@ -719,24 +719,31 @@ class SettingsFragment : Fragment() {
         try {
             val pcmData = pcmFile.readBytes()
 
-            // Read sample rate from .info file, default to 16000
+            // Read sample rate and channels from .info file
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             var sampleRate = 16000
+            var channels = 1
             if (infoFile.exists()) {
                 val info = infoFile.readText()
                 val srMatch = Regex("sampleRate=(\\d+)").find(info)
                 if (srMatch != null) sampleRate = srMatch.groupValues[1].toInt()
+                val chMatch = Regex("channels=(\\d+)").find(info)
+                if (chMatch != null) channels = chMatch.groupValues[1].toInt()
             }
-
-            val expectedDurationSec = pcmData.size / (sampleRate * 2)
-            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size} bytes, sampleRate=$sampleRate, expected=${expectedDurationSec}s")
-
+            
+            val channelMask = if (channels >= 2) android.media.AudioFormat.CHANNEL_OUT_STEREO else android.media.AudioFormat.CHANNEL_OUT_MONO
+            val bytesPerFrame = channels * 2 // 16-bit
+            val expectedDurationSec = pcmData.size / (sampleRate * bytesPerFrame)
+            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size}, sampleRate=$sampleRate, channels=$channels, expected=${expectedDurationSec}s")
+            
             val bufferSize = maxOf(
-                android.media.AudioTrack.getMinBufferSize(sampleRate, android.media.AudioFormat.CHANNEL_OUT_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT),
+                android.media.AudioTrack.getMinBufferSize(sampleRate, channelMask, android.media.AudioFormat.ENCODING_PCM_16BIT),
                 4096
             )
-
-            // Always use MODE_STATIC for simplicity - the PCM files are ~30MB max
+            
+            // Use MODE_STREAM for files larger than 10MB to avoid OOM
+            val useStream = pcmData.size > 10 * 1024 * 1024
+            
             audioTrack = android.media.AudioTrack(
                 android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
@@ -745,17 +752,32 @@ class SettingsFragment : Fragment() {
                 android.media.AudioFormat.Builder()
                     .setSampleRate(sampleRate)
                     .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                    .setChannelMask(channelMask)
                     .build(),
-                maxOf(bufferSize, pcmData.size),
-                android.media.AudioTrack.MODE_STATIC,
+                if (useStream) bufferSize else maxOf(bufferSize, pcmData.size),
+                if (useStream) android.media.AudioTrack.MODE_STREAM else android.media.AudioTrack.MODE_STATIC,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
-
+            
             pcmPlaybackActive = true
-            audioTrack?.write(pcmData, 0, pcmData.size)
-            audioTrack?.play()
-
+            if (useStream) {
+                audioTrack?.play()
+                Thread {
+                    var offset = 0
+                    while (offset < pcmData.size && pcmPlaybackActive && audioTrack != null) {
+                        try {
+                            val track = audioTrack ?: break
+                            val written = track.write(pcmData, offset, minOf(bufferSize, pcmData.size - offset))
+                            if (written <= 0) break
+                            offset += written
+                        } catch (e: Exception) { break }
+                    }
+                }.start()
+            } else {
+                audioTrack?.write(pcmData, 0, pcmData.size)
+                audioTrack?.play()
+            }
+            
             Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name} (${expectedDurationSec}秒, ${sampleRate}Hz)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             pcmPlaybackActive = false

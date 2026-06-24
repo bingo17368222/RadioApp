@@ -79,7 +79,10 @@ class PlayerActivity : AppCompatActivity() {
 
     companion object {
         private var lastHandledTs: Long = 0 // last fresh launch timestamp the app processed
+        @Volatile private var playbackRestartRequested = false
         fun markFreshLaunchHandled(ts: Long) { lastHandledTs = lastHandledTs.coerceAtLeast(ts) }
+        fun isPlaybackRestartPending() = playbackRestartRequested
+        fun setPlaybackRestartPending(v: Boolean) { playbackRestartRequested = v }
     }
 
     // 广播接收器：处理连续播放、下一集等事件
@@ -161,6 +164,7 @@ class PlayerActivity : AppCompatActivity() {
 
             // 核心防抖：如果服务已经播放同一URL，只更新UI（防止抖动）
             if (sameEpisode) {
+                playbackRestartRequested = false  // Clear restart flag on success
                 val msg = "JITTER-GUARD: same episode playing, only update UI"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
@@ -181,6 +185,7 @@ class PlayerActivity : AppCompatActivity() {
                     writeJitterLog(msg)
                     // 继续执行下面的播放逻辑
                 } else {
+                    playbackRestartRequested = false  // Clear restart flag on sync
                     val svcEpisode = playbackService?.getCurrentEpisode()
                     val msg = if (svcEpisode != null) {
                         "Activity recreation, syncing to service: ${svcEpisode.title}"
@@ -206,6 +211,14 @@ class PlayerActivity : AppCompatActivity() {
             }
             
             // 服务完全空闲，启动新播放
+            // 但如果是系统重建且已经请求过播放启动，不要重复请求
+            if (!isFreshStart && playbackRestartRequested) {
+                val msg = "Playback restart already requested, waiting for service to start"
+                android.util.Log.d("PlayerActivity", msg)
+                writeJitterLog(msg)
+                return@onServiceConnected
+            }
+            playbackRestartRequested = true
             android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
             if (currentStation != null) {
@@ -238,6 +251,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            playbackRestartRequested = false
             android.util.Log.d("PlayerActivity", "onServiceDisconnected")
             writeJitterLog("onServiceDisconnected")
             playbackService = null
@@ -1177,18 +1191,33 @@ class PlayerActivity : AppCompatActivity() {
                     return@Thread
                 }
 
+                // 过滤掉已不喜欢的节目
+                val settings = AppSettings.getInstance(this)
+                val nonDisliked = validEpisodes.filter {
+                    !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title)
+                }
+                if (nonDisliked.isEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
+                    }
+                    return@Thread
+                }
+
                 runOnUiThread {
                     // 更新节目列表为新一天的节目
-                    episodeList = ArrayList(validEpisodes)
+                    episodeList = ArrayList(nonDisliked)
                     saveEpisodeListToPrefs()
                     // direction > 0 (next): 播放第一天第一个节目
                     // direction < 0 (prev): 播放最后一天最后一个节目
-                    val targetIndex = if (direction > 0) 0 else validEpisodes.size - 1
+                    val targetIndex = if (direction > 0) 0 else nonDisliked.size - 1
                     currentEpisodeIndex = targetIndex
-                    val targetEpisode = validEpisodes[targetIndex]
+                    val targetEpisode = nonDisliked[targetIndex]
                     currentEpisode = targetEpisode
                     saveLastEpisode()
-                    playbackService?.playEpisode(targetEpisode, false)
+                    val episodeKey = "${targetEpisode.stationId}::${targetEpisode.title}"
+                    val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                    val startPos = if (savedPos > 0) savedPos else -1L
+                    playbackService?.playEpisode(targetEpisode, false, startPos)
                     voiceSegments = generateSimulatedSegments()
                     if (voiceSegments.isNotEmpty()) updateSegmentsUI()
                     updateUI()
@@ -1356,6 +1385,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        playbackRestartRequested = false
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
         } catch (_: Exception) {}

@@ -853,7 +853,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch
                 }
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
                     return@launch
@@ -930,7 +930,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 检查PCM是否已解码
         val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
         if (pcmCacheDir != null) {
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
                 writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
                 return
@@ -968,18 +968,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             codec.configure(audioFormat, null, null, 0)
             codec.start()
 
-            val bufferInfo = MediaCodec.BufferInfo()
-            fos = FileOutputStream(pcmFile)
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            val outSampleRate = sampleRate  // Keep original sample rate - no resampling
-            val outChannels = channelCount  // Keep original channels - no channel conversion
-            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount (no resampling)")
+            val outSampleRate = 16000
+            val outChannels = 1
+            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, will resample to ${outSampleRate}Hz mono")
+            
+            // Don't create fos yet - we'll write after resampling
+            val bos = java.io.ByteArrayOutputStream()
+            val bufferInfo = MediaCodec.BufferInfo()
 
             var inputDone = false
             var outputDone = false
             var decodedBytes = 0L
-            val maxPcmBytes = 300_000_000L // 30min @ 48kHz stereo 16bit (generous upper bound)
+            val maxPcmBytes = 100_000_000L // Raw PCM limit (about 10min @ 48kHz stereo)
             val decodeStartTime = System.currentTimeMillis()
             val maxDecodeTimeMs = 5 * 60 * 1000L
 
@@ -1016,7 +1018,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             val pcmBytes = ByteArray(bufferInfo.size)
                             buffer.position(bufferInfo.offset)
                             buffer.get(pcmBytes)
-                            fos.write(pcmBytes)
+                            bos.write(pcmBytes)
                             decodedBytes += pcmBytes.size
                         }
                         codec.releaseOutputBuffer(outIdx, false)
@@ -1028,12 +1030,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     else -> {}
                 }
             }
-            writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes PCM bytes")
+            writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes raw PCM bytes")
+            
+            // Now resample the entire buffer at once
+            val rawPcm = bos.toByteArray()
+            val resampled = resamplePcmForPreCache(rawPcm, sampleRate, channelCount, outSampleRate, outChannels)
+            fos = FileOutputStream(pcmFile)
+            fos.write(resampled)
+            writePreCacheLog("decodeToPcmForPreCache: resampled to ${resampled.size} bytes (${outSampleRate}Hz mono)")
             writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2)}s")
 
             // After decode loop, write sample rate info
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=$sampleRate\nchannels=$channelCount")
+            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
@@ -1867,8 +1876,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun createContentIntent(): PendingIntent {
-        return PendingIntent.getActivity(this, 0,
-            Intent(this, PlayerActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
+        val intent = Intent(this, com.radio.app.activities.PlayerActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("fresh_launch_ts", System.currentTimeMillis())
+            currentEpisode?.let { ep ->
+                putExtra("episode", ep)
+                putExtra("audio_url", ep.audioUrl)
+                putExtra("station_id", ep.stationId)
+            }
+        }
+        return PendingIntent.getActivity(this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 

@@ -83,7 +83,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         // ===== 阿里 MNN-LLM 离线引擎 =====
         EngineInfo(
             "阿里 MNN-LLM (设备端)",
-            "阿里巴巴 MNN 推理引擎\n状态: 暂不可用\nMNN-LLM 集成功能正在规划中，目前尚未提供可下载的安装包。\n适用: 本地AI内容分析、干货/水分分类",
+            "阿里巴巴 MNN 推理引擎\n状态: 暂不可用\nMNN-LLM 暂无独立可下载的 Android AAR/引擎包。\n替代方案:\n- Google Play 搜索 \"MNN LLM Chat\" 安装独立应用\n- Maven 依赖: com.alibaba.android.mnnkit:core:0.1.3\n- 源码编译: github.com/alibaba/MNN\n适用: 本地AI内容分析、干货/水分分类",
             "—",
             null,
             "mnn-llm",
