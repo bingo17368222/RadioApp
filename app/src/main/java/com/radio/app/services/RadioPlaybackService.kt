@@ -177,9 +177,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var playbackStarted = false
     private var currentPlayingUrl = ""
 
-    // PCM预解码重采样状态：跨chunk保持小数采样位置，避免每个chunk独立重采样导致的速度/音调错误
-    private var preCacheResampleInIdx = 0.0
-
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
@@ -322,19 +319,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     prepared = true
                                     isRetrying = false
                                     errorRetryCount = 0
-                                    // Apply saved position via seek in STATE_READY (when player is prepared)
+                                    Log.d(TAG, "STATE_READY: isSeekingToPosition=$isSeekingToPosition, positionRestoreRequested=$positionRestoreRequested, pendingStartPosition=$pendingStartPosition")
                                     if (positionRestoreRequested) {
                                         positionRestoreRequested = false
                                         applySavedPosition()
-                                        // Don't set playWhenReady = true here! Wait for onSeekProcessed callback
-                                        // Fallback: if onSeekProcessed doesn't fire within 5 seconds, resume anyway
-                                        positionSaveHandler?.postDelayed({
-                                            if (isSeekingToPosition) {
-                                                Log.w(TAG, "STATE_READY: onSeekProcessed timeout, forcing playback resume")
-                                                player?.playWhenReady = true
-                                                isSeekingToPosition = false
-                                            }
-                                        }, 5000)
                                     }
                                     callback?.onStateChanged(true)
                                     updateNotification()
@@ -372,20 +360,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 }, errorRetryCount * 3000L)
                             } else {
                                 callback?.onError("播放失败: ${error.message ?: "未知错误"}")
-                            }
-                        }
-                        override fun onPositionDiscontinuity(
-                            oldPosition: Player.PositionInfo,
-                            newPosition: Player.PositionInfo,
-                            reason: Int
-                        ) {
-                            // Seek completed - resume playback if we were seeking to a position
-                            if (isSeekingToPosition && reason == Player.DISCONTINUITY_REASON_SEEK) {
-                                Log.d(TAG, "onPositionDiscontinuity: seek completed, resuming playback")
-                                player?.playWhenReady = true
-                                positionSaveHandler?.postDelayed({
-                                    isSeekingToPosition = false
-                                }, 2000)
                             }
                         }
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -1000,8 +974,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val outSampleRate = 16000
             val outChannels = 1
             writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, outSampleRate=$outSampleRate, ratio=${sampleRate.toDouble()/outSampleRate}")
-            // 重置重采样状态：每次解码开始时小数采样位置归零，保证跨chunk连续重采样
-            preCacheResampleInIdx = 0.0
 
             var inputDone = false
             var outputDone = false
@@ -1078,7 +1050,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun resamplePcmForPreCache(input: ByteArray, inSampleRate: Int, inChannels: Int,
                                        outSampleRate: Int, outChannels: Int): ByteArray {
-        // Fast path: no resampling needed
         if (inSampleRate == outSampleRate && inChannels == outChannels) {
             return input
         }
@@ -1086,23 +1057,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val shorts = ShortArray(input.size / 2)
         ByteBuffer.wrap(input).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         val ratio = inSampleRate.toDouble() / outSampleRate
-        val inputFrames = shorts.size / inChannels
-        // 输出帧数基于跨chunk连续的小数采样位置计算，避免每个chunk独立重采样导致的速度/音调错误
-        val outLength = ((inputFrames - preCacheResampleInIdx) / ratio).toInt() * outChannels
-        val output = ShortArray(outLength.coerceAtLeast(0))
-        var outIdx = 0
+        val outLength = (shorts.size / inChannels / ratio).toInt() * outChannels
+        val output = ShortArray(outLength.coerceAtLeast(1))
+        var outIdx = 0; var inIdx = 0.0
         while (outIdx < outLength) {
-            val srcIdx = preCacheResampleInIdx.toInt() * inChannels
-            val nextIdx = ((preCacheResampleInIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - inChannels)
-            val frac = preCacheResampleInIdx - preCacheResampleInIdx.toInt()
+            val srcIdx = inIdx.toInt() * inChannels
+            val nextIdx = ((inIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - inChannels)
+            val frac = inIdx - inIdx.toInt()
             val interpolated = (shorts[srcIdx] * (1.0 - frac) + shorts[nextIdx] * frac).toInt().toShort()
             output[outIdx] = interpolated
-            outIdx++
-            preCacheResampleInIdx += ratio
+            outIdx++; inIdx += ratio
         }
-        // 保留小数部分给下一个chunk，使重采样位置在chunk之间连续
-        preCacheResampleInIdx -= inputFrames
-
         val result = ByteArray(output.size * 2)
         ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(output)
         return result
@@ -1123,7 +1088,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             isSeekingToPosition = true
             player?.playWhenReady = false
             player?.seekTo(savedPos)
-            Log.d(TAG, "Restored position: ${savedPos}ms (from ${if (pendingStartPosition >= 0) "override" else "prefs"})")
+            Log.d(TAG, "Restored position: ${savedPos}ms")
+            // Poll for seek completion - check if player position is close to target
+            val targetPos = savedPos
+            positionSaveHandler?.postDelayed(object : Runnable {
+                override fun run() {
+                    val currentPos = player?.currentPosition ?: -1L
+                    if (isSeekingToPosition) {
+                        if (currentPos >= targetPos - 500 && currentPos <= targetPos + 5000) {
+                            // Seek completed - position is at or near target
+                            Log.d(TAG, "Seek completed: currentPos=$currentPos, targetPos=$targetPos, resuming playback")
+                            player?.playWhenReady = true
+                            positionSaveHandler?.postDelayed({ isSeekingToPosition = false }, 2000)
+                        } else {
+                            // Still seeking, keep polling
+                            positionSaveHandler?.postDelayed(this, 200)
+                        }
+                    }
+                }
+            }, 200)
+            // Fallback: force resume after 5 seconds
+            positionSaveHandler?.postDelayed({
+                if (isSeekingToPosition) {
+                    Log.w(TAG, "Seek timeout, forcing playback resume at pos=${player?.currentPosition}")
+                    player?.playWhenReady = true
+                    isSeekingToPosition = false
+                }
+            }, 5000)
         }
     }
 
@@ -1684,6 +1675,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(prevEpisode, false, startPos)
             callback?.onEpisodeChanged(prevEpisode)
+            // Also send broadcast for UI update
+            val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+                putExtra(EXTRA_IS_PLAYING, true)
+                putExtra("episode_title", prevEpisode.title)
+                putExtra("episode_id", prevEpisode.id)
+            }
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+            updateNotification()
         } else {
             val intent = Intent(BROADCAST_STATE_CHANGED).apply {
                 putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "prev_episode")
@@ -1708,6 +1707,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
             callback?.onEpisodeChanged(nextEpisode)
+            // Also send broadcast for UI update
+            val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+                putExtra(EXTRA_IS_PLAYING, true)
+                putExtra("episode_title", nextEpisode.title)
+                putExtra("episode_id", nextEpisode.id)
+            }
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+            updateNotification()
         } else {
             val intent = Intent(BROADCAST_STATE_CHANGED).apply {
                 putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")

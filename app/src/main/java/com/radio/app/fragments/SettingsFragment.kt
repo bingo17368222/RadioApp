@@ -572,41 +572,75 @@ class SettingsFragment : Fragment() {
             // First deselect all
             for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
 
-            // Read episode list from SharedPreferences
-            val prefs = requireContext().getSharedPreferences("episode_list", android.content.Context.MODE_PRIVATE)
-            val json = prefs.getString("list", null)
-            if (json != null) {
-                try {
+            // Build set of disliked episodes' cache file names from ALL available lists
+            // (episode_list 仅包含当天节目，precache_list 包含跨天预缓存节目，两者合并才能覆盖所有缓存文件)
+            val dislikedFileNames = mutableSetOf<String>()
+
+            // 从 audioUrl 提取缓存文件名（与 RadioPlaybackService.extractCacheFileName 逻辑一致）
+            fun extractFileName(audioUrl: String): String {
+                return try {
+                    val path = java.net.URL(audioUrl).path
+                    val name = path.substringAfterLast("/")
+                    if (name.isBlank()) "unknown.mp4" else name
+                } catch (e: Exception) {
+                    val name = audioUrl.substringAfterLast("/")
+                    if (name.isBlank()) "unknown.mp4" else name
+                }
+            }
+
+            // 处理单个 Episode：判断是否不喜欢，若是则记录其缓存文件名
+            fun processEpisode(id: String, stationId: String, title: String, audioUrl: String) {
+                if (audioUrl.isBlank()) return
+                val isDisliked = (id.isNotBlank() && settings.isDisliked(id)) ||
+                        settings.isDislikedByTitle(stationId, title)
+                if (isDisliked) {
+                    dislikedFileNames.add(extractFileName(audioUrl))
+                }
+            }
+
+            // 1) 读取 episode_list（当天节目列表，Gson 序列化，key="list"）
+            try {
+                val episodePrefs = requireContext().getSharedPreferences("episode_list", android.content.Context.MODE_PRIVATE)
+                episodePrefs.getString("list", null)?.let { json ->
                     val gson = com.google.gson.Gson()
                     val type = object : com.google.gson.reflect.TypeToken<List<com.radio.app.models.Episode>>() {}.type
                     val episodes: List<com.radio.app.models.Episode> = gson.fromJson(json, type)
-
-                    // Build set of disliked episodes' cache file names
-                    val dislikedFileNames = mutableSetOf<String>()
                     for (ep in episodes) {
-                        if (settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                            // Extract cache file name from audio URL (same logic as RadioPlaybackService.extractCacheFileName)
-                            val fileName = try {
-                                val url = java.net.URL(ep.audioUrl)
-                                val path = url.path
-                                val name = path.substringAfterLast("/")
-                                if (name.isBlank()) "unknown.mp4" else name
-                            } catch (e: Exception) {
-                                ep.audioUrl.substringAfterLast("/")
-                            }
-                            dislikedFileNames.add(fileName)
-                        }
+                        processEpisode(ep.id ?: "", ep.stationId ?: "", ep.title ?: "", ep.audioUrl ?: "")
                     }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to parse episode_list", e)
+            }
 
-                    // Select files that match disliked episodes
-                    for (i in files.indices) {
-                        if (files[i].name in dislikedFileNames) {
-                            checked[i] = true
-                            listView.setItemChecked(i, true)
-                        }
+            // 2) 读取 precache_list（跨天预缓存列表，org.json.JSONArray 序列化，key="episodes"）
+            // 注意：precache_list 使用 snake_case 字段名(audio_url/station_id 等)，不能用 Gson 直接解析
+            try {
+                val preCachePrefs = requireContext().getSharedPreferences("precache_list", android.content.Context.MODE_PRIVATE)
+                preCachePrefs.getString("episodes", null)?.let { json ->
+                    val arr = org.json.JSONArray(json)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        processEpisode(
+                            obj.optString("id", ""),
+                            obj.optString("station_id", ""),
+                            obj.optString("title", ""),
+                            obj.optString("audio_url", "")
+                        )
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e("SettingsFragment", "Failed to load episode list for dislike filter", e)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to parse precache_list", e)
+            }
+
+            android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")
+            android.util.Log.d("SettingsFragment", "Cache files: ${files.map { it.name }}")
+
+            // Select files that match disliked episodes
+            for (i in files.indices) {
+                if (files[i].name in dislikedFileNames) {
+                    checked[i] = true
+                    listView.setItemChecked(i, true)
                 }
             }
 

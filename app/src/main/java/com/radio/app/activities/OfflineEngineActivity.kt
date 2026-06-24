@@ -79,6 +79,15 @@ class OfflineEngineActivity : AppCompatActivity() {
             "whisper-large"
         ),
 
+        // ===== 阿里 MNN-LLM 离线引擎 =====
+        EngineInfo(
+            "阿里 MNN-LLM (设备端)",
+            "阿里巴巴 MNN 推理引擎\n大小: 约500MB | 推理速度: 快(Tensor加速)\n状态: 支持下载安装\n适用: 本地AI内容分析、干货/水分分类",
+            "约500MB",
+            "https://github.com/alibaba/MNN/releases/download/v1.1.0/MNN_Android_1.1.0.zip",
+            "mnn-llm"
+        ),
+
         // ===== Vosk 离线语音识别（APK内置 + 可下载） =====
         EngineInfo(
             "Vosk 小模型 (中文)",
