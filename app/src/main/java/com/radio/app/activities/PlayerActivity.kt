@@ -1028,33 +1028,34 @@ class PlayerActivity : AppCompatActivity() {
             putBoolean("subtitle_processing", false)
             putBoolean("segment_processing", false)
         }.apply()
-        var nextEpisode = findAdjacentEpisode(currentEpisode, 1)
-        // 跳过不喜欢的节目（最多跳过10个，避免死循环）
+
+        val settings = AppSettings.getInstance(this)
+        val episodes = episodeList
+        if (episodes.isEmpty()) return
+
+        var targetIdx = currentEpisodeIndex + 1
         var skipCount = 0
-        while (nextEpisode != null && skipCount < 10) {
-            val settings = AppSettings.getInstance(this)
-            if (!settings.isDisliked(nextEpisode.id) && !settings.isDislikedByTitle(nextEpisode.stationId, nextEpisode.title)) {
-                break
+        while (targetIdx < episodes.size && skipCount < 20) {
+            val ep = episodes[targetIdx]
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                // Found a non-disliked episode
+                currentEpisode = ep
+                currentEpisodeIndex = targetIdx
+                saveLastEpisode()
+                playbackService?.playEpisode(ep, false)
+                voiceSegments = generateSimulatedSegments()
+                if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                updateUI()
+                setupPreCacheList()
+                android.util.Log.d("PlayerActivity", "playNextEpisode: switched to ${ep.title}, index=$targetIdx (skipped $skipCount disliked)")
+                return
             }
             skipCount++
-            nextEpisode = findAdjacentEpisode(nextEpisode, 1)
+            targetIdx++
         }
-        if (nextEpisode != null) {
-            currentEpisode = nextEpisode
-            // 更新索引
-            val newIdx = episodeList.indexOfFirst { it.id == nextEpisode.id }
-            if (newIdx >= 0) currentEpisodeIndex = newIdx
-            saveLastEpisode()
-            playbackService?.playEpisode(nextEpisode, false)
-            voiceSegments = generateSimulatedSegments()
-            if (voiceSegments.isNotEmpty()) updateSegmentsUI()
-            updateUI()
-            setupPreCacheList()
-            android.util.Log.d("PlayerActivity", "playNextEpisode: switched to ${nextEpisode.title}, index=$currentEpisodeIndex")
-        } else {
-            // 跨天：当前已是最后一条，尝试获取下一天的节目列表
-            fetchAndPlayCrossDayEpisode(1)
-        }
+
+        // No more episodes in current list, try cross-day
+        fetchAndPlayCrossDayEpisode(1)
     }
 
     private fun playPrevEpisode() {
@@ -1062,32 +1063,33 @@ class PlayerActivity : AppCompatActivity() {
             putBoolean("subtitle_processing", false)
             putBoolean("segment_processing", false)
         }.apply()
-        var prevEpisode = findAdjacentEpisode(currentEpisode, -1)
+
+        val settings = AppSettings.getInstance(this)
+        val episodes = episodeList
+        if (episodes.isEmpty()) return
+
+        var targetIdx = currentEpisodeIndex - 1
         var skipCount = 0
-        while (prevEpisode != null && skipCount < 10) {
-            val settings = AppSettings.getInstance(this)
-            if (!settings.isDisliked(prevEpisode.id) && !settings.isDislikedByTitle(prevEpisode.stationId, prevEpisode.title)) {
-                break
+        while (targetIdx >= 0 && skipCount < 20) {
+            val ep = episodes[targetIdx]
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                currentEpisode = ep
+                currentEpisodeIndex = targetIdx
+                saveLastEpisode()
+                playbackService?.playEpisode(ep, false)
+                voiceSegments = generateSimulatedSegments()
+                if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                updateUI()
+                setupPreCacheList()
+                android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${ep.title}, index=$targetIdx (skipped $skipCount disliked)")
+                return
             }
             skipCount++
-            prevEpisode = findAdjacentEpisode(prevEpisode, -1)
+            targetIdx--
         }
-        if (prevEpisode != null) {
-            currentEpisode = prevEpisode
-            // 更新索引
-            val newIdx = episodeList.indexOfFirst { it.id == prevEpisode.id }
-            if (newIdx >= 0) currentEpisodeIndex = newIdx
-            saveLastEpisode()
-            playbackService?.playEpisode(prevEpisode, false)
-            voiceSegments = generateSimulatedSegments()
-            if (voiceSegments.isNotEmpty()) updateSegmentsUI()
-            updateUI()
-            setupPreCacheList()
-            android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${prevEpisode.title}, index=$currentEpisodeIndex")
-        } else {
-            // 跨天：当前已是第一条，尝试获取前一天的节目列表
-            fetchAndPlayCrossDayEpisode(-1)
-        }
+
+        // No more episodes in current list, try cross-day
+        fetchAndPlayCrossDayEpisode(-1)
     }
 
     private fun findAdjacentEpisode(current: Episode?, direction: Int): Episode? {

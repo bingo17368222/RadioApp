@@ -114,15 +114,6 @@ class OfflineEngineActivity : AppCompatActivity() {
             "约1.8GB",
             "https://alphacephei.com/vosk/models/vosk-model-en-us-daanzu-0.22.zip",
             "vosk-model-en-us-daanzu-0.22"
-        ),
-
-        // ===== 阿里 MNN-LLM (APK内置) =====
-        EngineInfo(
-            "阿里 MNN-LLM (设备端)",
-            "阿里巴巴 MNN 推理引擎\n大小: APK内置 | 推理速度: 快(Tensor加速)\n状态: 已集成，无需下载\n适用: 本地AI内容分析、干货/水分分类",
-            "内置",
-            null,
-            "mnn-llm"
         )
     )
 
@@ -164,7 +155,7 @@ class OfflineEngineActivity : AppCompatActivity() {
             val modelDir = modelsDir?.let { File(it, engine.modelDir) }
             val installed = modelDir?.exists() == true && getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE
             if (installed) {
-                btnAction.text = "已安装(删除)"
+                btnAction.text = "已安装(点击删除)"
                 btnAction.setOnClickListener {
                     modelDir?.let { deleteRecursive(it) }
                     btnAction.text = "安装"
@@ -214,7 +205,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                 if (outFile.exists() && outFile.length() > 1024 && !fileName.endsWith(".zip")) {
                     withContext(Dispatchers.Main) {
                         btn.isEnabled = true
-                        btn.text = "已安装(删除)"
+                        btn.text = "已安装(点击删除)"
                         progressBar?.visibility = View.GONE
                     }
                     return@launch
@@ -316,7 +307,7 @@ class OfflineEngineActivity : AppCompatActivity() {
 
                         withContext(Dispatchers.Main) {
                             btn.isEnabled = true
-                            btn.text = "已安装(删除)"
+                            btn.text = "已安装(点击删除)"
                             progressBar?.visibility = View.GONE
                             Toast.makeText(this@OfflineEngineActivity, "${engine.name} 安装完成", Toast.LENGTH_SHORT).show()
                         }

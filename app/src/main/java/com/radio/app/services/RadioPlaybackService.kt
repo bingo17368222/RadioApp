@@ -317,19 +317,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     prepared = true
                                     isRetrying = false
                                     errorRetryCount = 0
-                                    // 仅在首次就绪时恢复位置，避免 seek 引发状态循环
+                                    // 位置恢复已在 prepare 前 seek 完成，无需在此处理
                                     if (positionRestoreRequested) {
                                         positionRestoreRequested = false
-                                        applySavedPosition()
+                                        // 位置已通过 prepare 前 seek 恢复，清除 pendingStartPosition
+                                        pendingStartPosition = -1L
                                     }
-                                    // seek 期间的 STATE_READY 不通知 UI，避免播放/暂停循环抖动
-                                    if (!isSeekingToPosition) {
-                                        callback?.onStateChanged(true)
-                                    }
-                                    // If we were seeking to a position and player is paused, resume playback
-                                    if (isSeekingToPosition && player?.playWhenReady == false) {
-                                        player?.playWhenReady = true
-                                    }
+                                    callback?.onStateChanged(true)
                                     isSeekingToPosition = false
                                     updateNotification()
                                     // 后台下载音频文件
@@ -999,6 +993,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
             writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes PCM bytes")
+            writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2)}s")
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
             throw e
@@ -1014,6 +1009,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun resamplePcmForPreCache(input: ByteArray, inSampleRate: Int, inChannels: Int,
                                        outSampleRate: Int, outChannels: Int): ByteArray {
+        // Fast path: no resampling needed
+        if (inSampleRate == outSampleRate && inChannels == outChannels) {
+            return input
+        }
+
         val shorts = ShortArray(input.size / 2)
         ByteBuffer.wrap(input).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         val ratio = inSampleRate.toDouble() / outSampleRate
@@ -1054,7 +1054,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun startPositionSaver() {
         positionSaveRunnable = Runnable {
-            if (savePlaybackPosition && !isLive && prepared && player?.isPlaying == true) {
+            if (savePlaybackPosition && !isLive && prepared && player?.isPlaying == true
+                && !isSeekingToPosition && pendingStartPosition < 0) {
                 saveCurrentPosition()
             }
             positionSaveHandler?.postDelayed(positionSaveRunnable!!, POSITION_SAVE_INTERVAL)
@@ -1063,6 +1064,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun saveCurrentPosition() {
+        if (isSeekingToPosition || pendingStartPosition >= 0) return  // Don't save during seek/restore
         val ep = currentEpisode ?: return
         val pos = player?.currentPosition ?: return
         if (pos <= 0) return
@@ -1495,11 +1497,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         prepared = false; errorRetryCount = 0; isRetrying = false
         stopAutoSkipCheck()
         if (startPositionMs >= 0) {
-            // 指定了起始位置：延迟到 STATE_READY 再 seek，避免 prepare 未完成时 seek 不可靠
+            // 位置恢复通过 prepare 前 seek 完成
+            positionRestoreRequested = true  // 标记，STATE_READY 时清除 pendingStartPosition
             pendingStartPosition = startPositionMs
-            positionRestoreRequested = true  // STATE_READY 时由 applySavedPosition() 处理
         } else {
-            // 全新播放：不恢复位置，直接从头开始
             pendingStartPosition = -1L
             positionRestoreRequested = false
         }
@@ -1516,13 +1517,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try {
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                it.prepare()
                 if (startPositionMs >= 0) {
-                    // 不在此处 seek，等待 STATE_READY 时由 applySavedPosition() 处理
-                    it.playWhenReady = false  // 暂不开始播放，等 seek 完成后再恢复
+                    // 在 prepare 之前 seek，ExoPlayer 会在 seek 后的位置开始 prepare
+                    it.seekTo(startPositionMs)
+                    it.playWhenReady = true
                 } else {
                     it.playWhenReady = true
                 }
+                it.prepare()
             }
             requestAudioFocus(); updateNotification()
             updateMediaSessionState()

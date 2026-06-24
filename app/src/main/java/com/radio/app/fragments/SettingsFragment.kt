@@ -483,13 +483,15 @@ class SettingsFragment : Fragment() {
     }
 
     private fun showClearCacheDialogWithButtons(files: Array<File>, fileNames: Array<String>, checked: BooleanArray) {
+        // 创建垂直布局：按钮在顶部（固定可见），列表在下方（可滚动）
+        val contentView = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        // 按钮行（始终固定在顶部）
         val btnContainer = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(10, 8, 10, 8)
-        }
-        val btnRow1 = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(10, 0, 10, 8)
         }
         val btnClearAll = Button(requireContext()).apply {
             text = "清空全部(${files.size}个)"
@@ -503,13 +505,20 @@ class SettingsFragment : Fragment() {
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        contentView.addView(btnContainer)
+
+        // ListView（可滚动，位于按钮下方）
+        val listView = android.widget.ListView(requireContext()).apply {
+            choiceMode = android.widget.AbsListView.CHOICE_MODE_MULTIPLE
+            adapter = android.widget.ArrayAdapter(requireContext(), android.R.layout.simple_list_item_multiple_choice, fileNames)
+            for (i in checked.indices) { setItemChecked(i, checked[i]) }
+        }
+        contentView.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val dialog = AlertDialog.Builder(requireContext())
-            .setTitle("选择要删除的缓存文件 (" + files.size + "个)")
-            .setMultiChoiceItems(fileNames, checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
+            .setTitle("选择要删除的缓存文件 (${files.size}个)")
+            .setView(contentView)
             .setPositiveButton("删除选中") { _, _ ->
                 var deletedSize = 0L
                 for (i in files.indices) {
@@ -521,6 +530,11 @@ class SettingsFragment : Fragment() {
             .setNegativeButton("取消", null)
             .create()
 
+        // 点击列表项时同步 checked 数组
+        listView.setOnItemClickListener { _, _, position, _ ->
+            checked[position] = listView.isItemChecked(position)
+        }
+
         // 清空全部按钮：直接删除所有文件
         btnClearAll.setOnClickListener {
             AlertDialog.Builder(requireContext())
@@ -531,36 +545,23 @@ class SettingsFragment : Fragment() {
                     for (f in files) { if (f.delete()) deletedSize += f.length() }
                     Toast.makeText(requireContext(), "已清空全部缓存 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show()
                     updateUI()
+                    dialog.dismiss()
                 }
                 .setNegativeButton("取消", null)
                 .show()
         }
-
         btnSelectAll.setOnClickListener {
-            for (i in checked.indices) { checked[i] = true; dialog.listView.setItemChecked(i, true) }
+            for (i in checked.indices) { checked[i] = true; listView.setItemChecked(i, true) }
         }
         btnSelectNone.setOnClickListener {
-            for (i in checked.indices) { checked[i] = false; dialog.listView.setItemChecked(i, false) }
+            for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
         }
         btnInvert.setOnClickListener {
-            for (i in checked.indices) {
-                checked[i] = !checked[i]
-                dialog.listView.setItemChecked(i, checked[i])
-            }
+            for (i in checked.indices) { checked[i] = !checked[i]; listView.setItemChecked(i, checked[i]) }
         }
-        // 创建垂直布局容纳两行按钮
-        val buttonLayout = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(btnRow1)
-            addView(btnContainer)
-        }
-        dialog.setView(buttonLayout)
+
         dialog.show()
-        // 限制列表最大高度，防止按钮被挤出屏幕
-        dialog.listView?.let { lv ->
-            val maxHeight = (resources.displayMetrics.heightPixels * 0.4).toInt()
-            lv.layoutParams = lv.layoutParams.apply { height = maxHeight.coerceAtMost(lv.layoutParams.height) }
-        }
+        dialog.window?.setLayout(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
     }
 
     private fun playPcmFile(pcmFile: File) {
@@ -573,11 +574,17 @@ class SettingsFragment : Fragment() {
             val pcmData = pcmFile.readBytes()
             // PCM format: 16kHz, mono, 16-bit
             val sampleRate = 16000
+            val expectedDurationSec = pcmData.size / (sampleRate * 2) // 16-bit mono
+            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size} bytes, expected duration=${expectedDurationSec}s")
+
             val bufferSize = android.media.AudioTrack.getMinBufferSize(
                 sampleRate,
                 android.media.AudioFormat.CHANNEL_OUT_MONO,
                 android.media.AudioFormat.ENCODING_PCM_16BIT
             )
+
+            // For large files, use MODE_STREAM
+            val mode = if (pcmData.size > 1024 * 1024) android.media.AudioTrack.MODE_STREAM else android.media.AudioTrack.MODE_STATIC
 
             audioTrack = android.media.AudioTrack(
                 android.media.AudioAttributes.Builder()
@@ -589,13 +596,26 @@ class SettingsFragment : Fragment() {
                     .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
                     .build(),
-                maxOf(bufferSize, pcmData.size),
-                android.media.AudioTrack.MODE_STATIC,
+                maxOf(bufferSize, minOf(pcmData.size, 1024 * 1024)),
+                mode,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
 
-            audioTrack?.write(pcmData, 0, pcmData.size)
-            audioTrack?.play()
+            if (mode == android.media.AudioTrack.MODE_STATIC) {
+                audioTrack?.write(pcmData, 0, pcmData.size)
+                audioTrack?.play()
+            } else {
+                audioTrack?.play()
+                Thread {
+                    var offset = 0
+                    val chunkSize = bufferSize
+                    while (offset < pcmData.size && audioTrack != null) {
+                        val written = audioTrack?.write(pcmData, offset, minOf(chunkSize, pcmData.size - offset)) ?: 0
+                        if (written <= 0) break
+                        offset += written
+                    }
+                }.start()
+            }
 
             Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name}", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
@@ -634,19 +654,29 @@ class SettingsFragment : Fragment() {
 
     private fun showPcmCacheDialogWithButtons(files: Array<File>, fileNames: Array<String>, checked: BooleanArray, pcmCacheDir: File?) {
         val totalSize = files.sumOf { it.length() }
-        val btnContainer = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(10, 8, 10, 8)
+        // 创建垂直布局：按钮在顶部（固定可见），列表在下方（可滚动）
+        val contentView = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
         }
+
+        // 按钮行1（始终固定在顶部）：清空全部
         val btnRow1 = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(10, 0, 10, 8)
+            setPadding(10, 8, 10, 8)
         }
         val btnClearAll = Button(requireContext()).apply {
             text = "清空全部(${files.size}个, ${formatSize(totalSize)})"
             setTextColor(android.graphics.Color.WHITE)
             setBackgroundColor(0xFFE53935.toInt())
             textSize = 13f
+        }
+        btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        contentView.addView(btnRow1)
+
+        // 按钮行2（始终固定在顶部）：全选/全不选/反选/播放/停止
+        val btnContainer = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(10, 0, 10, 8)
         }
         val btnSelectAll = Button(requireContext()).apply { text = "全选"; textSize = 13f }
         val btnSelectNone = Button(requireContext()).apply { text = "全不选"; textSize = 13f }
@@ -658,14 +688,20 @@ class SettingsFragment : Fragment() {
         btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnPlay, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnStop, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        contentView.addView(btnContainer)
+
+        // ListView（可滚动，位于按钮下方）
+        val listView = android.widget.ListView(requireContext()).apply {
+            choiceMode = android.widget.AbsListView.CHOICE_MODE_MULTIPLE
+            adapter = android.widget.ArrayAdapter(requireContext(), android.R.layout.simple_list_item_multiple_choice, fileNames)
+            for (i in checked.indices) { setItemChecked(i, checked[i]) }
+        }
+        contentView.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val titleText = "选择要删除的PCM缓存文件 (${files.size}个, 共${formatSize(totalSize)})"
         val dialog = AlertDialog.Builder(requireContext())
             .setTitle(titleText)
-            .setMultiChoiceItems(fileNames, checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
+            .setView(contentView)
             .setPositiveButton("删除选中") { _, _ ->
                 var deletedSize = 0L
                 for (i in files.indices) {
@@ -677,6 +713,11 @@ class SettingsFragment : Fragment() {
             .setNegativeButton("取消", null)
             .create()
 
+        // 点击列表项时同步 checked 数组
+        listView.setOnItemClickListener { _, _, position, _ ->
+            checked[position] = listView.isItemChecked(position)
+        }
+
         btnClearAll.setOnClickListener {
             AlertDialog.Builder(requireContext())
                 .setTitle("确认清空全部PCM缓存")
@@ -686,22 +727,19 @@ class SettingsFragment : Fragment() {
                     for (f in files) { if (f.delete()) deletedSize += f.length() }
                     Toast.makeText(requireContext(), "已清空全部PCM缓存 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show()
                     updateUI()
+                    dialog.dismiss()
                 }
                 .setNegativeButton("取消", null)
                 .show()
         }
-
         btnSelectAll.setOnClickListener {
-            for (i in checked.indices) { checked[i] = true; dialog.listView.setItemChecked(i, true) }
+            for (i in checked.indices) { checked[i] = true; listView.setItemChecked(i, true) }
         }
         btnSelectNone.setOnClickListener {
-            for (i in checked.indices) { checked[i] = false; dialog.listView.setItemChecked(i, false) }
+            for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
         }
         btnInvert.setOnClickListener {
-            for (i in checked.indices) {
-                checked[i] = !checked[i]
-                dialog.listView.setItemChecked(i, checked[i])
-            }
+            for (i in checked.indices) { checked[i] = !checked[i]; listView.setItemChecked(i, checked[i]) }
         }
         btnPlay.setOnClickListener {
             val selectedFiles = files.filterIndexed { i, _ -> checked[i] }
@@ -722,17 +760,8 @@ class SettingsFragment : Fragment() {
             btnPlay.text = "播放选中"
         }
 
-        val buttonLayout = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(btnRow1)
-            addView(btnContainer)
-        }
-        dialog.setView(buttonLayout)
         dialog.show()
-        dialog.listView?.let { lv ->
-            val maxHeight = (resources.displayMetrics.heightPixels * 0.4).toInt()
-            lv.layoutParams = lv.layoutParams.apply { height = maxHeight.coerceAtMost(lv.layoutParams.height) }
-        }
+        dialog.window?.setLayout(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
     }
 
     private fun scanFilesRecursive(dir: File?, result: MutableList<File>) {
