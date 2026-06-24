@@ -95,9 +95,8 @@ class PlayerActivity : AppCompatActivity() {
         fun isPlaybackInProgress(ctx: android.content.Context): Boolean {
             val prefs = ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE)
             if (!prefs.getBoolean(KEY_PLAYBACK_IN_PROGRESS, false)) return false
-            // If the flag is set but the timestamp is more than 60 seconds old, consider it stale
             val ts = prefs.getLong(KEY_LAST_STARTED_TS, 0L)
-            return System.currentTimeMillis() - ts < 60000
+            return System.currentTimeMillis() - ts < 1800000  // 30 minutes (covers typical background switch duration)
         }
 
         fun setPlaybackInProgress(ctx: android.content.Context, url: String?) {
@@ -261,20 +260,26 @@ class PlayerActivity : AppCompatActivity() {
                 return@onServiceConnected
             }
 
-            // CRITICAL FIX: If the service was killed and restarted, the static flags are gone.
-            // Check if we're within 10 seconds of the last "Starting new playback" timestamp.
-            // If so, this is a restart - don't start a new playback, just sync to the service.
-            val justStartedRecently = isPlaybackInProgress(this@PlayerActivity) && getLastStartedUrl(this@PlayerActivity) == newUrl
-            if (justStartedRecently) {
-                val skipMsg = "Playback was just started recently (within 60s), this is likely a restart - skipping duplicate: $newUrl"
-                android.util.Log.d("PlayerActivity", skipMsg)
-                writeJitterLog(skipMsg)
-                setPlaybackInProgress(this@PlayerActivity, null)  // Clear flag to prevent infinite loop
-                return@onServiceConnected
-            }
             setPlaybackInProgress(this@PlayerActivity, newUrl)
             android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
+
+            // If episode list is empty (activity recreated without intent), try to restore from prefs
+            if (episodeList.isEmpty()) {
+                try {
+                    val prefs = getSharedPreferences("episode_list", MODE_PRIVATE)
+                    val json = prefs.getString("list", null)
+                    if (json != null) {
+                        val gson = com.google.gson.Gson()
+                        val type = object : com.google.gson.reflect.TypeToken<List<com.radio.app.models.Episode>>() {}.type
+                        episodeList = gson.fromJson(json, type) ?: mutableListOf()
+                        android.util.Log.d("PlayerActivity", "Restored episode list from prefs: ${episodeList.size} episodes")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("PlayerActivity", "Failed to restore episode list", e)
+                }
+            }
+
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
             } else {
@@ -364,6 +369,8 @@ class PlayerActivity : AppCompatActivity() {
                     hasError = false
                     hasErrorToastShown = false
                     binding.tvAiProgress.visibility = View.GONE
+                    // Clear playback-in-progress flag once playback is confirmed started
+                    setPlaybackInProgress(this@PlayerActivity, null)
                 }
                 binding.tvLiveIndicator.text = if (hasError) "播放失败" else if (playing) "播放中" else "已暂停"
                 binding.tvLiveIndicator.visibility = if (playing || hasError) View.VISIBLE else View.GONE

@@ -445,6 +445,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 downloadDoneBytes = downloadTotalBytes.coerceAtLeast(totalRead)
                 sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
                 Log.d(TAG, "Download complete: ${targetFile.absolutePath} (${totalRead} bytes)")
+                // Save cache file -> episode mapping for dislike filtering
+                try {
+                    val ep = currentEpisode
+                    if (ep != null) {
+                        val cacheMappingPrefs = getSharedPreferences("cache_episode_mapping", MODE_PRIVATE)
+                        cacheMappingPrefs.edit()
+                            .putString(fileName, com.google.gson.Gson().toJson(ep))
+                            .apply()
+                        Log.d(TAG, "Download: saved cache_episode_mapping for $fileName")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Download: failed to save cache_episode_mapping: ${e.message}")
+                }
                 // 预缓存下一节目
                 triggerPreCache()
                 // 尝试触发当前节目的PCM预解码
@@ -819,6 +832,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 input.close()
                 writePreCacheLog("downloadPreCacheEpisode: downloaded ${targetFile.length()} bytes to ${targetFile.name} for ${episode.title}")
                 Log.d(TAG, "Pre-cache: downloaded ${targetFile.length()} bytes to ${targetFile.name}")
+                // Save cache file -> episode mapping for dislike filtering
+                try {
+                    val cacheMappingPrefs = getSharedPreferences("cache_episode_mapping", MODE_PRIVATE)
+                    cacheMappingPrefs.edit()
+                        .putString(fileName, com.google.gson.Gson().toJson(episode))
+                        .apply()
+                    Log.d(TAG, "Pre-cache: saved cache_episode_mapping for $fileName")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Pre-cache: failed to save cache_episode_mapping: ${e.message}")
+                }
                 // 下载成功后触发PCM预解码
                 startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
                 // 同时检查当前播放节目的PCM预解码
@@ -855,8 +878,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
                 val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
-                    writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
-                    return@launch
+                    // Validate format matches v2.0.1 (16000Hz mono, version=2)
+                    val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+                    if (infoFile.exists()) {
+                        val info = infoFile.readText()
+                        val srMatch = Regex("sampleRate=(\\d+)").find(info)
+                        val chMatch = Regex("channels=(\\d+)").find(info)
+                        val existingSr = srMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                        val existingCh = chMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                        if (existingSr == 16000 && existingCh == 1 && info.contains("version=2")) {
+                            writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
+                            return@launch
+                        }
+                        writePreCacheLog("startPcmPreDecode: PCM format outdated (sr=$existingSr, ch=$existingCh), regenerating")
+                        pcmFile.delete()
+                        infoFile.delete()
+                    } else {
+                        writePreCacheLog("startPcmPreDecode: PCM exists but no .info file, regenerating")
+                        pcmFile.delete()
+                    }
                 }
                 writePreCacheLog("startPcmPreDecode: decoding ${audioFile.length()} bytes from ${audioFile.name} to PCM...")
                 val startTime = System.currentTimeMillis()
@@ -932,8 +972,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (pcmCacheDir != null) {
             val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
-                writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
-                return
+                // Check if existing PCM needs regeneration (format changed in v2.0.1)
+                val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+                if (infoFile.exists()) {
+                    val info = infoFile.readText()
+                    val srMatch = Regex("sampleRate=(\\d+)").find(info)
+                    val chMatch = Regex("channels=(\\d+)").find(info)
+                    val existingSr = srMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    val existingCh = chMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    if (existingSr != 16000 || existingCh != 1 || !info.contains("version=2")) {
+                        writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated (sr=$existingSr, ch=$existingCh, ver=old), regenerating")
+                        pcmFile.delete()
+                        infoFile.delete()
+                        // Fall through to generate new PCM
+                    } else {
+                        writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
+                        return
+                    }
+                } else {
+                    // No .info file, regenerate
+                    writePreCacheLog("startPcmPreDecodeIfNeeded: PCM exists but no .info file, regenerating")
+                    pcmFile.delete()
+                    // Fall through to generate new PCM
+                }
             }
         }
         writePreCacheLog("startPcmPreDecodeIfNeeded: triggering PCM pre-decode from normal cache for ${episode.title}")
@@ -1046,7 +1107,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             // After decode loop, write sample rate info
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels")
+            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=2")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")

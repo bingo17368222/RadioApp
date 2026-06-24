@@ -763,6 +763,28 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed reverse scan", e)
             }
 
+            // 8) 读取 cache_episode_mapping（缓存文件→节目映射，最可靠的数据源）
+            //    下载时直接保存了 cacheFileName → episode JSON 的映射，不受跨天限制
+            try {
+                val mappingPrefs = requireContext().getSharedPreferences("cache_episode_mapping", android.content.Context.MODE_PRIVATE)
+                var mappingCount = 0
+                for ((cacheFileName, value) in mappingPrefs.all) {
+                    if (value !is String) continue
+                    try {
+                        val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                        val isDisliked = (ep.id != null && ep.id.isNotBlank() && settings.isDisliked(ep.id)) ||
+                                settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
+                        if (isDisliked) {
+                            dislikedFileNames.add(cacheFileName)
+                            mappingCount++
+                        }
+                    } catch (e: Exception) { /* skip */ }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: cache_episode_mapping has ${mappingPrefs.all.size} entries, $mappingCount are disliked")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to read cache_episode_mapping", e)
+            }
+
             android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")
             android.util.Log.d("SettingsFragment", "Cache files count: ${files.size}, names: ${files.map { it.name }}")
             android.util.Log.d("SettingsFragment", "Dislike filter: total disliked file names=${dislikedFileNames.size}, cache files=${files.size}")
