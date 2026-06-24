@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- 音频预处理 -->
+    <SwitchPreferenceCompat
+        android:key="enable_preprocessing"
+        android:title="音频预处理"
+        android:summary="缓存完成后自动将音频解码为PCM格式，加速字幕生成"
+        android:defaultValue="true"
+        app:iconSpaceReserved="false" />
+
+    <!-- PCM解码缓存管理 -->
+    <Preference
+        android:key="manage_pcm_cache"
+        android:title="PCM解码缓存管理"
+        android:summary="管理预解码的PCM音频缓存文件，释放存储空间"
+        app:iconSpaceReserved="false" />
+
+</PreferenceScreen>

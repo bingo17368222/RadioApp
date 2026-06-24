@@ -183,6 +183,11 @@ class SettingsFragment : Fragment() {
             settings.wifiOnlyPreCache = isChecked
             save()
         }
+        binding.switchPreprocessing.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.enablePreprocessing = isChecked
+            save()
+        }
         binding.spinnerNotificationStyle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
@@ -295,6 +300,7 @@ class SettingsFragment : Fragment() {
         }
 
         binding.btnClearCache.setOnClickListener { showClearCacheDialog() }
+        binding.btnManagePcmCache.setOnClickListener { showPcmCacheDialog() }
         binding.btnManageOfflineEngine.setOnClickListener {
             startActivity(Intent(requireContext(), OfflineEngineActivity::class.java))
         }
@@ -316,6 +322,7 @@ class SettingsFragment : Fragment() {
         binding.switchSavePosition.isChecked = settings.savePlaybackPosition
         binding.switchRememberEpisode.isChecked = settings.rememberLastEpisode
         binding.switchWifiPrecache.isChecked = settings.wifiOnlyPreCache
+        binding.switchPreprocessing.isChecked = settings.enablePreprocessing
         val notificationStyle = settings.notificationStyle
         val notificationIndex = when (notificationStyle) {
             "compact" -> 1
@@ -551,6 +558,109 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    private fun showPcmCacheDialog() {
+        val allFiles = mutableListOf<File>()
+        val pcmCacheDir = requireContext().getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
+        scanFilesRecursive(pcmCacheDir, allFiles)
+
+        if (allFiles.isEmpty()) {
+            Toast.makeText(requireContext(), "暂无PCM解码缓存文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val files = allFiles.toTypedArray()
+        val pcmPath = pcmCacheDir?.absolutePath ?: ""
+        val fileNames = Array(files.size) { i ->
+            val path = files[i].absolutePath
+            val shortPath = path.replace(pcmPath, "...")
+            shortPath + " (" + formatSize(files[i].length()) + ")"
+        }
+        val checked = BooleanArray(files.size) { true }
+
+        showPcmCacheDialogWithButtons(files, fileNames, checked, pcmCacheDir)
+    }
+
+    private fun showPcmCacheDialogWithButtons(files: Array<File>, fileNames: Array<String>, checked: BooleanArray, pcmCacheDir: File?) {
+        val totalSize = files.sumOf { it.length() }
+        val btnContainer = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(10, 8, 10, 8)
+        }
+        val btnRow1 = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(10, 0, 10, 8)
+        }
+        val btnClearAll = Button(requireContext()).apply {
+            text = "清空全部(${files.size}个, ${formatSize(totalSize)})"
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(0xFFE53935.toInt())
+            textSize = 13f
+        }
+        val btnSelectAll = Button(requireContext()).apply { text = "全选"; textSize = 13f }
+        val btnSelectNone = Button(requireContext()).apply { text = "全不选"; textSize = 13f }
+        val btnInvert = Button(requireContext()).apply { text = "反选"; textSize = 13f }
+        btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+        val titleText = "选择要删除的PCM缓存文件 (${files.size}个, 共${formatSize(totalSize)})"
+        val dialog = AlertDialog.Builder(requireContext())
+            .setTitle(titleText)
+            .setMultiChoiceItems(fileNames, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("删除选中") { _, _ ->
+                var deletedSize = 0L
+                for (i in files.indices) {
+                    if (checked[i] && files[i].delete()) deletedSize += files[i].length()
+                }
+                Toast.makeText(requireContext(), "已删除 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show()
+                updateUI()
+            }
+            .setNegativeButton("取消", null)
+            .create()
+
+        btnClearAll.setOnClickListener {
+            AlertDialog.Builder(requireContext())
+                .setTitle("确认清空全部PCM缓存")
+                .setMessage("将删除全部${files.size}个PCM缓存文件(共${formatSize(totalSize)})，此操作不可撤销。")
+                .setPositiveButton("确认清空") { _, _ ->
+                    var deletedSize = 0L
+                    for (f in files) { if (f.delete()) deletedSize += f.length() }
+                    Toast.makeText(requireContext(), "已清空全部PCM缓存 " + formatSize(deletedSize), Toast.LENGTH_SHORT).show()
+                    updateUI()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+
+        btnSelectAll.setOnClickListener {
+            for (i in checked.indices) { checked[i] = true; dialog.listView.setItemChecked(i, true) }
+        }
+        btnSelectNone.setOnClickListener {
+            for (i in checked.indices) { checked[i] = false; dialog.listView.setItemChecked(i, false) }
+        }
+        btnInvert.setOnClickListener {
+            for (i in checked.indices) {
+                checked[i] = !checked[i]
+                dialog.listView.setItemChecked(i, checked[i])
+            }
+        }
+
+        val buttonLayout = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(btnRow1)
+            addView(btnContainer)
+        }
+        dialog.setView(buttonLayout)
+        dialog.show()
+        dialog.listView?.let { lv ->
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.4).toInt()
+            lv.layoutParams = lv.layoutParams.apply { height = maxHeight.coerceAtMost(lv.layoutParams.height) }
+        }
+    }
+
     private fun scanFilesRecursive(dir: File?, result: MutableList<File>) {
         val files = dir?.listFiles() ?: return
         for (f in files) {
@@ -672,6 +782,7 @@ class SettingsFragment : Fragment() {
                 .putInt("skip_seconds", settings.skipSeconds)
                 .putBoolean("preload_cache", settings.autoCache)
                 .putBoolean("auto_cache", settings.autoCache)
+                .putBoolean("enable_preprocessing", settings.enablePreprocessing)
                 .putInt("preload_cache_count", settings.preloadCacheCount)
                 .putBoolean("continuous_play", settings.continuousPlay)
                 .putBoolean("wifi_only_precache", settings.wifiOnlyPreCache)

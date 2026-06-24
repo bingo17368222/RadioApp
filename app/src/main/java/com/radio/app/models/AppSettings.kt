@@ -62,7 +62,7 @@ class AppSettings private constructor() {
     var keywordConfig: KeywordConfig = KeywordConfig()
     var preloadCache: Boolean = false
     var preloadCacheCount: Int = 10
-    var enablePreprocessing: Boolean = false
+    var enablePreprocessing: Boolean = true
     var preprocessingCount: Int = 1
     var audioFocus: Boolean = true
     var continuousPlay: Boolean = true
@@ -96,7 +96,7 @@ class AppSettings private constructor() {
         preloadCache = prefs.getBoolean("preload_cache", false)
         preloadCacheCount = prefs.getInt("preload_cache_count", 1)
         autoCache = prefs.getBoolean("auto_cache", false)
-        enablePreprocessing = prefs.getBoolean("enable_preprocessing", false)
+        enablePreprocessing = prefs.getBoolean("enable_preprocessing", true)
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
         audioFocus = prefs.getBoolean("audio_focus", true)
         continuousPlay = prefs.getBoolean("continuous_play", true)

@@ -107,9 +107,12 @@ class SubtitleGeneratorService : Service() {
 
         // 确保日志目录存在（外部存储，用户可访问）
         try {
-            val logDir = getExternalFilesDir("subtitle_logs")
-            if (logDir != null && !logDir.exists()) {
-                logDir.mkdirs()
+            val logDir = getExternalFilesDir("logs")
+            if (logDir != null) {
+                val subtitleDir = File(logDir, "subtitle")
+                if (!subtitleDir.exists()) {
+                    subtitleDir.mkdirs()
+                }
             }
         } catch (_: Exception) {}
 
@@ -135,10 +138,11 @@ class SubtitleGeneratorService : Service() {
      */
     private fun logToFile(msg: String) {
         try {
-            val logDir = getExternalFilesDir("subtitle_logs")
+            val logDir = getExternalFilesDir("logs")
             if (logDir != null) {
-                if (!logDir.exists()) logDir.mkdirs()
-                val logFile = File(logDir, "service.log")
+                val subtitleDir = File(logDir, "subtitle")
+                if (!subtitleDir.exists()) subtitleDir.mkdirs()
+                val logFile = File(subtitleDir, "service.log")
                 val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
                 FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
             }
@@ -320,16 +324,17 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun prepareTaskLogFile(taskType: String, episodeId: String): File {
-        val logDir = getExternalFilesDir("subtitle_logs")
+        val logDir = getExternalFilesDir("logs")
         if (logDir != null) {
-            if (!logDir.exists()) logDir.mkdirs()
+            val subtitleDir = File(logDir, "subtitle")
+            if (!subtitleDir.exists()) subtitleDir.mkdirs()
             val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val file = File(logDir, "${taskType}_${Math.abs(episodeId.hashCode())}_$ts.log")
+            val file = File(subtitleDir, "${taskType}_${Math.abs(episodeId.hashCode())}_$ts.log")
             if (!file.exists()) file.createNewFile()
             return file
         }
         // Fallback to cache dir
-        val fallbackDir = File(cacheDir, "subtitle_logs")
+        val fallbackDir = File(cacheDir, "logs/subtitle")
         if (!fallbackDir.exists()) fallbackDir.mkdirs()
         return File(fallbackDir, "${taskType}_${Math.abs(episodeId.hashCode())}.log")
     }
@@ -396,6 +401,7 @@ class SubtitleGeneratorService : Service() {
             var lastLogTime = System.currentTimeMillis()
 
             ctx.log("PCM cache data: $totalBytes bytes, expected ~${totalBytes / (SAMPLE_RATE * 2)} seconds of audio")
+            ctx.log("Vosk recognition config: sampleRate=$SAMPLE_RATE, chunkSize=$bytesPerChunk (${bytesPerChunk / (SAMPLE_RATE * 2)}s), totalChunks~${totalBytes / bytesPerChunk}")
 
             while (offset < totalBytes) {
                 if (ctx.cancelled.get() || globalCancelled.get()) {
@@ -467,12 +473,12 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
 
-                val progress = 40 + (offset * 55 / totalBytes).toInt()
+                val progress = 40 + (offset.toLong() * 55 / totalBytes).toInt()
                 reportProgress(callback, progress.coerceAtMost(95), 100, ctx)
 
                 val now = System.currentTimeMillis()
                 if (now - lastLogTime > 15000) {
-                    ctx.log("Progress: ${offset * 100 / totalBytes}% (${offset / (SAMPLE_RATE * 2)}s / ${totalBytes / (SAMPLE_RATE * 2)}s), segments=${allTranscripts.size}")
+                    ctx.log("Progress: ${offset.toLong() * 100 / totalBytes}% (${offset / (SAMPLE_RATE * 2)}s / ${totalBytes / (SAMPLE_RATE * 2)}s), segments=${allTranscripts.size}")
                     lastLogTime = now
                 }
             }
@@ -591,6 +597,7 @@ class SubtitleGeneratorService : Service() {
             var lastLogTime = System.currentTimeMillis()
 
             ctx.log("PCM data: $totalBytes bytes, expected ~${totalBytes / (SAMPLE_RATE * 2)} seconds of audio")
+            ctx.log("Vosk recognition config: sampleRate=$SAMPLE_RATE, chunkSize=$bytesPerChunk (${bytesPerChunk / (SAMPLE_RATE * 2)}s), totalChunks~${totalBytes / bytesPerChunk}")
 
             while (offset < totalBytes) {
                 // Cancellation check
@@ -666,12 +673,12 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
 
-                val progress = 40 + (offset * 55 / totalBytes).toInt()
+                val progress = 40 + (offset.toLong() * 55 / totalBytes).toInt()
                 reportProgress(callback, progress.coerceAtMost(95), 100, ctx)
 
                 val now = System.currentTimeMillis()
                 if (now - lastLogTime > 15000) {
-                    ctx.log("Progress: ${offset * 100 / totalBytes}% (${offset / (SAMPLE_RATE * 2)}s / ${totalBytes / (SAMPLE_RATE * 2)}s), segments=${allTranscripts.size}")
+                    ctx.log("Progress: ${offset.toLong() * 100 / totalBytes}% (${offset / (SAMPLE_RATE * 2)}s / ${totalBytes / (SAMPLE_RATE * 2)}s), segments=${allTranscripts.size}")
                     lastLogTime = now
                 }
             }

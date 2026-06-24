@@ -20,12 +20,19 @@ import com.radio.app.databinding.ActivityPlayerBinding
 import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
 import com.radio.app.models.VoiceSegment
+import com.radio.app.models.Transcript
 import com.radio.app.services.RadioPlaybackService
 import com.radio.app.adapters.VoiceSegmentAdapter
 import com.radio.app.services.SubtitleGeneratorService
 import com.radio.app.models.AppSettings
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.utils.PreferenceManager
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import android.view.LayoutInflater
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import android.graphics.Color
 
 class PlayerActivity : AppCompatActivity() {
 
@@ -54,6 +61,18 @@ class PlayerActivity : AppCompatActivity() {
     private var pendingAiTaskType: String? = null
     private var isActivityRecreated = false // true if system is recreating this activity (config change, etc.)
     private var freshLaunchTs: Long = 0 // timestamp from intent, used to detect real fresh launches
+
+    // Feature B: Real-time position tracking
+    private var currentPlaybackPositionMs: Long = 0
+    private var subtitleTranscripts: List<Transcript> = emptyList()
+    private var subtitleAdapter: SubtitleEntryAdapter? = null
+    private val positionUpdateHandler = Handler(Looper.getMainLooper())
+    private val positionUpdateRunnable = object : Runnable {
+        override fun run() {
+            updateCurrentPositionHighlight()
+            positionUpdateHandler.postDelayed(this, 500)
+        }
+    }
 
     companion object {
         private var lastHandledTs: Long = 0 // last fresh launch timestamp the app processed
@@ -285,6 +304,8 @@ class PlayerActivity : AppCompatActivity() {
                 if (_binding == null) return@runOnUiThread
                 val pos = position.toInt()
                 val dur = duration.toInt()
+                // Feature B: store current playback position
+                currentPlaybackPositionMs = position
                 if (isDragging) return@runOnUiThread
                 if (dur > 0) {
                     binding.seekBar.max = dur
@@ -506,6 +527,7 @@ class PlayerActivity : AppCompatActivity() {
         segmentAdapter = VoiceSegmentAdapter()
         segmentAdapter?.setOnSegmentClickListener(object : VoiceSegmentAdapter.OnSegmentClickListener {
             override fun onSegmentClick(position: Int, segment: VoiceSegment) {
+                // Feature C: click to seek
                 playbackService?.seekTo(segment.start)
             }
             override fun onSegmentLongClick(position: Int, segment: VoiceSegment) {
@@ -514,9 +536,14 @@ class PlayerActivity : AppCompatActivity() {
                 segmentAdapter?.notifyItemChanged(position)
             }
         })
-        binding.recyclerSegments.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this)
+        binding.recyclerSegments.layoutManager = LinearLayoutManager(this)
         binding.recyclerSegments.adapter = segmentAdapter
         updateSegmentsUI()
+
+        // Feature A: subtitle RecyclerView setup
+        subtitleAdapter = SubtitleEntryAdapter()
+        binding.recyclerSubtitles.layoutManager = LinearLayoutManager(this)
+        binding.recyclerSubtitles.adapter = subtitleAdapter
 
         val isLiveNav = currentEpisode?.isLive ?: false
         if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
@@ -676,6 +703,11 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.subtitleView.setSubtitles(subtitleList)
                                 binding.subtitleView.visibility = View.VISIBLE
                                 binding.recyclerSegments.visibility = View.GONE
+                                // Feature A: update subtitle RecyclerView
+                                subtitleTranscripts = subtitleList.toList()
+                                subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                                binding.tvSubtitleTitle.visibility = View.VISIBLE
+                                binding.recyclerSubtitles.visibility = View.VISIBLE
                             }
                         }
                         override fun onProgressUpdate(progress: Int, total: Int) {
@@ -689,6 +721,11 @@ class PlayerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
                                 finishAiProcessing("subtitle")
+                                // Feature A: update subtitle RecyclerView with final list
+                                subtitleTranscripts = transcripts
+                                subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                                binding.tvSubtitleTitle.visibility = View.VISIBLE
+                                binding.recyclerSubtitles.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -770,6 +807,11 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.subtitleView.setSubtitles(subtitleList)
                                 binding.subtitleView.visibility = View.VISIBLE
                                 binding.recyclerSegments.visibility = View.GONE
+                                // Feature A: update subtitle RecyclerView
+                                subtitleTranscripts = subtitleList.toList()
+                                subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                                binding.tvSubtitleTitle.visibility = View.VISIBLE
+                                binding.recyclerSubtitles.visibility = View.VISIBLE
                             }
                         }
                         override fun onProgressUpdate(progress: Int, total: Int) {
@@ -783,6 +825,11 @@ class PlayerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
                                 finishAiProcessing("subtitle")
+                                // Feature A: update subtitle RecyclerView with final list
+                                subtitleTranscripts = transcripts
+                                subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                                binding.tvSubtitleTitle.visibility = View.VISIBLE
+                                binding.recyclerSubtitles.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -1126,6 +1173,9 @@ class PlayerActivity : AppCompatActivity() {
         // 恢复处理状态持久化
         restoreProcessingState()
         
+        // Feature B: start position update for highlighting
+        positionUpdateHandler.post(positionUpdateRunnable)
+        
         // 根据处理状态恢复按钮和进度条
         if (_binding != null) {
             if (subtitleProcessing) {
@@ -1182,7 +1232,18 @@ class PlayerActivity : AppCompatActivity() {
             binding.subtitleView.setSubtitles(dbTranscripts)
             binding.subtitleView.visibility = View.VISIBLE
             binding.recyclerSegments.visibility = View.GONE
+            // Feature A: restore subtitle RecyclerView
+            subtitleTranscripts = dbTranscripts
+            subtitleAdapter?.setTranscripts(subtitleTranscripts)
+            binding.tvSubtitleTitle.visibility = View.VISIBLE
+            binding.recyclerSubtitles.visibility = View.VISIBLE
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Feature B: stop position update when activity is not visible
+        positionUpdateHandler.removeCallbacks(positionUpdateRunnable)
     }
 
     override fun onDestroy() {
@@ -1191,6 +1252,8 @@ class PlayerActivity : AppCompatActivity() {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
         } catch (_: Exception) {}
         cacheProgressRunnable?.let { cacheProgressHandler?.removeCallbacks(it) }
+        // Feature B: stop position update
+        positionUpdateHandler.removeCallbacks(positionUpdateRunnable)
         if (serviceBound) {
             playbackService?.setCallback(null)
             unbindService(serviceConnection)
@@ -1201,5 +1264,120 @@ class PlayerActivity : AppCompatActivity() {
             subtitleServiceBound = false
         }
         _binding = null
+    }
+
+    // Feature B: update highlight for both subtitle and segment lists based on current playback position
+    private fun updateCurrentPositionHighlight() {
+        if (_binding == null) return
+        val pos = currentPlaybackPositionMs
+
+        // Update subtitle highlight
+        if (subtitleTranscripts.isNotEmpty()) {
+            val subtitleIdx = findClosestTranscriptIndex(pos)
+            subtitleAdapter?.setCurrentHighlightIndex(subtitleIdx)
+            if (subtitleIdx >= 0) {
+                binding.recyclerSubtitles.post {
+                    (binding.recyclerSubtitles.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(subtitleIdx, 0)
+                }
+            }
+        }
+
+        // Update segment highlight
+        if (voiceSegments.isNotEmpty()) {
+            val segIdx = findClosestSegmentIndex(pos)
+            segmentAdapter?.setCurrentSegmentIndex(segIdx)
+            if (segIdx >= 0) {
+                binding.recyclerSegments.post {
+                    (binding.recyclerSegments.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(segIdx, 0)
+                }
+            }
+        }
+    }
+
+    private fun findClosestTranscriptIndex(positionMs: Long): Int {
+        var closestIdx = -1
+        var closestDiff = Long.MAX_VALUE
+        for (i in subtitleTranscripts.indices) {
+            val t = subtitleTranscripts[i]
+            val diff = kotlin.math.abs(t.startTime - positionMs)
+            if (diff < closestDiff) {
+                closestDiff = diff
+                closestIdx = i
+            }
+        }
+        return closestIdx
+    }
+
+    private fun findClosestSegmentIndex(positionMs: Long): Int {
+        var closestIdx = -1
+        var closestDiff = Long.MAX_VALUE
+        for (i in voiceSegments.indices) {
+            val s = voiceSegments[i]
+            val diff = kotlin.math.abs(s.start - positionMs)
+            if (diff < closestDiff) {
+                closestDiff = diff
+                closestIdx = i
+            }
+        }
+        return closestIdx
+    }
+
+    // Feature A: Subtitle entry adapter for RecyclerView
+    inner class SubtitleEntryAdapter : RecyclerView.Adapter<SubtitleEntryAdapter.ViewHolder>() {
+
+        private var transcripts: List<Transcript> = emptyList()
+        private var highlightedIndex: Int = -1
+
+        fun setTranscripts(transcripts: List<Transcript>) {
+            this.transcripts = transcripts
+            notifyDataSetChanged()
+        }
+
+        fun setCurrentHighlightIndex(index: Int) {
+            val old = this.highlightedIndex
+            this.highlightedIndex = index
+            if (old >= 0 && old < transcripts.size) notifyItemChanged(old)
+            if (index >= 0 && index < transcripts.size) notifyItemChanged(index)
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(
+                android.R.layout.simple_list_item_2, parent, false
+            )
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val transcript = transcripts[position]
+            holder.tvTimestamp.text = formatTimeMs(transcript.startTime)
+            holder.tvText.text = transcript.text ?: ""
+
+            val ctx = holder.itemView.context
+            if (position == highlightedIndex) {
+                holder.itemView.setBackgroundColor(ContextCompat.getColor(ctx, android.R.color.holo_blue_light))
+            } else {
+                holder.itemView.setBackgroundColor(Color.TRANSPARENT)
+            }
+
+            // Feature C: click to seek
+            holder.itemView.setOnClickListener {
+                playbackService?.seekTo(transcript.startTime)
+            }
+        }
+
+        override fun getItemCount(): Int = transcripts.size
+
+        private fun formatTimeMs(ms: Long): String {
+            val totalSeconds = (ms / 1000).toInt()
+            val hours = totalSeconds / 3600
+            val minutes = (totalSeconds % 3600) / 60
+            val seconds = totalSeconds % 60
+            return String.format("%02d:%02d:%02d", hours, minutes, seconds)
+        }
+
+        inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvTimestamp: TextView = view.findViewById(android.R.id.text1)
+            val tvText: TextView = view.findViewById(android.R.id.text2)
+        }
     }
 }
