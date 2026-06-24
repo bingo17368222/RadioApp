@@ -322,6 +322,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             putExtra("transcripts", ArrayList(episode.transcripts))
             putExtra("episode_list", ArrayList(episodes))
             putExtra("episode_index", episodes.indexOf(episode))
+            // 传递新鲜启动时间戳，用于PlayerActivity判断是否用户主动点击
+            putExtra("fresh_launch_ts", System.currentTimeMillis())
         }
         startActivity(intent)
     }

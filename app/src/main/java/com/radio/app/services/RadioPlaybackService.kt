@@ -487,10 +487,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
         // 从预缓存列表中获取待下载的节目
-        val preCacheList = loadPreCacheList()
+        var preCacheList = loadPreCacheList()
         if (preCacheList.isEmpty()) {
-            Log.d(TAG, "Pre-cache: no episodes in pre-cache list (setPreCacheEpisodeList never called?)")
-            return
+            Log.d(TAG, "Pre-cache: no episodes in pre-cache list, attempting to fetch more days")
+            // 尝试获取跨天节目来补充列表
+            preCacheList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
+            if (preCacheList.isEmpty()) {
+                Log.d(TAG, "Pre-cache: still no episodes available after fetching more days")
+                return
+            }
+            // 保存更新后的列表
+            savePreCacheList(preCacheList)
         }
         Log.d(TAG, "Pre-cache: pre-cache list has ${preCacheList.size} episodes: ${preCacheList.joinToString(", ") { it.title ?: "?" }}")
         val cachedNames = cachedFiles.map { it.name }.toSet()
@@ -509,15 +516,118 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.d(TAG, "Pre-cache: skipping disliked episode ${ep.title}")
                 continue
             }
+            // 跳过没有音频URL的节目
+            if (ep.audioUrl.isBlank()) {
+                Log.d(TAG, "Pre-cache: skipping episode with empty audioUrl: ${ep.title}")
+                continue
+            }
             Log.d(TAG, "Pre-cache: downloading #${started + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
             downloadPreCacheEpisode(ep)
             started++
             // 每次只触发一个下载，downloadPreCacheEpisode完成后会回调triggerPreCache继续
             return
         }
+        // 如果列表遍历完了但还没达到目标数量，尝试获取更多天的节目
+        if (started < needed) {
+            Log.d(TAG, "Pre-cache: ran out of episodes in list (started=$started < needed=$needed), fetching more days")
+            val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
+            if (expandedList.size > preCacheList.size) {
+                savePreCacheList(expandedList)
+                // 递归调用继续预缓存
+                triggerPreCache()
+                return
+            }
+        }
         if (started == 0) {
             Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
         }
+    }
+
+    /**
+     * 跨天获取更多节目用于预缓存
+     * 从当前日期往后，每天获取节目，直到积累足够的节目或无法获取更多天
+     */
+    private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
+        val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
+        val stationId = prefs.getString("station_id", null)
+        val startDate = prefs.getString("current_date", null)
+        val daysFetched = prefs.getInt("days_fetched", 0)
+        
+        if (stationId.isNullOrBlank() || startDate.isNullOrBlank()) {
+            Log.d(TAG, "Pre-cache cross-day: missing stationId ($stationId) or startDate ($startDate)")
+            return existingList
+        }
+        
+        // 最多向前（未来）获取20天的节目
+        val maxAdditionalDays = 20
+        if (daysFetched >= maxAdditionalDays) {
+            Log.d(TAG, "Pre-cache cross-day: already fetched $daysFetched days, limit reached")
+            return existingList
+        }
+        
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+        dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+        
+        val resultList = existingList.toMutableList()
+        val existingUrls = resultList.map { it.audioUrl }.toSet()
+        val cachedNames = cachedFiles.map { it.name }.toSet()
+        
+        // 向更晚日期（未来）获取节目
+        try {
+            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+            val startCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+            startCal.time = dateFormat.parse(startDate) ?: return existingList
+            // 从 startDate 向后（未来）推进：+1天, +2天, ..., +20天
+            cal.time = startCal.time
+            cal.add(java.util.Calendar.DAY_OF_YEAR, (daysFetched + 1))
+            
+            val targetDate = dateFormat.format(cal.time)
+            val dayOffset = daysFetched + 1
+            Log.d(TAG, "Pre-cache cross-day: fetching episodes for $stationId on $targetDate (dayOffset=+$dayOffset)")
+            
+            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+            val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+            
+            if (newEpisodes != null && newEpisodes.isNotEmpty()) {
+                // 过滤掉已存在、已缓存、无音频URL的节目
+                val validNewEpisodes = newEpisodes.filter { ep ->
+                    ep.audioUrl.isNotBlank() &&
+                    ep.audioUrl !in existingUrls &&
+                    extractCacheFileName(ep.audioUrl) !in cachedNames &&
+                    ep.audioUrl.startsWith("http")
+                }
+                Log.d(TAG, "Pre-cache cross-day: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new ones")
+                resultList.addAll(validNewEpisodes)
+            } else {
+                Log.d(TAG, "Pre-cache cross-day: no episodes available for $targetDate (may be too far in future)")
+            }
+            
+            // 更新已获取天数计数
+            prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Pre-cache cross-day: failed to fetch more days", e)
+        }
+        
+        return resultList
+    }
+
+    private fun savePreCacheList(episodes: List<Episode>) {
+        val arr = org.json.JSONArray()
+        for (ep in episodes) {
+            val obj = org.json.JSONObject()
+            obj.put("id", ep.id ?: "")
+            obj.put("title", ep.title ?: "")
+            obj.put("audio_url", ep.audioUrl ?: "")
+            obj.put("station_name", ep.stationName ?: "")
+            obj.put("station_id", ep.stationId ?: "")
+            obj.put("duration", ep.duration)
+            obj.put("broadcast_at", ep.broadcastAt ?: "")
+            arr.put(obj)
+        }
+        getSharedPreferences("precache_list", MODE_PRIVATE)
+            .edit().putString("episodes", arr.toString()).apply()
+        Log.d(TAG, "Pre-cache list saved: ${episodes.size} episodes")
     }
 
     private fun loadPreCacheList(): List<Episode> {
@@ -558,9 +668,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             obj.put("broadcast_at", ep.broadcastAt ?: "")
             arr.put(obj)
         }
+        // 保存电台ID和当前日期用于跨天预缓存
+        val stationId = episodes.firstOrNull()?.stationId ?: currentEpisode?.stationId ?: ""
+        val broadcastAt = episodes.firstOrNull()?.broadcastAt ?: currentEpisode?.broadcastAt ?: ""
+        val currentDate = if (broadcastAt.length >= 10) broadcastAt.substring(0, 10) else ""
+        
         getSharedPreferences("precache_list", MODE_PRIVATE)
-            .edit().putString("episodes", arr.toString()).apply()
-        Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes, triggering pre-cache")
+            .edit()
+            .putString("episodes", arr.toString())
+            .putString("station_id", stationId)
+            .putString("current_date", currentDate)
+            .putInt("days_fetched", 0)  // 重置跨天计数
+            .apply()
+        Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes, station=$stationId, date=$currentDate")
         // 立即触发预缓存检查（独立于下载状态）
         triggerPreCache()
     }
@@ -739,6 +859,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (playing) R.drawable.notif_pause else R.drawable.notif_play)
         remoteViews.setTextViewText(R.id.play_pause_text, if (playing) "暂停" else "播放")
 
+        // 动态更新快进快退按钮文字
+        try { remoteViews.setTextViewText(R.id.rewind_text, "-${skipSeconds}s") } catch (_: Exception) {}
+        try { remoteViews.setTextViewText(R.id.forward_text, "+${skipSeconds}s") } catch (_: Exception) {}
+
         remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
         remoteViews.setTextViewText(R.id.notification_subtitle,
             if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
@@ -879,11 +1003,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                     .setShowActionsInCompactView(0, 2, 4)
                     .setMediaSession(mediaSession?.sessionToken))
-                .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退5s", 10))
+                .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退${skipSeconds}s", 10))
                 .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
                 .addAction(createNotificationAction(ACTION_PLAY, R.drawable.notif_play, "播放", 12))
                 .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
-                .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进5s", 14))
+                .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进${skipSeconds}s", 14))
                 .build()
         }
         val remoteViews = when (notificationStyle) {

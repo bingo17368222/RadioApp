@@ -135,51 +135,63 @@ class EpisodeApiService private constructor() {
     fun getEpisodesByDate(stationId: String, dateStr: String, callback: ApiCallback<List<Episode>>) {
         executor.execute {
             try {
-                val cid = STATION_TO_CID[stationId]
-                if (cid == null) { callback.onError("未知电台: $stationId"); return@execute }
-
-                val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                dateFormat.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
-                val targetDate = dateFormat.parse(dateStr) ?: run {
-                    callback.onError("无效日期: $dateStr"); return@execute
-                }
-
-                val today = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
-                val targetCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
-                targetCal.time = targetDate
-                today.set(Calendar.HOUR_OF_DAY, 0); today.set(Calendar.MINUTE, 0)
-                today.set(Calendar.SECOND, 0); today.set(Calendar.MILLISECOND, 0)
-                targetCal.set(Calendar.HOUR_OF_DAY, 0); targetCal.set(Calendar.MINUTE, 0)
-                targetCal.set(Calendar.SECOND, 0); targetCal.set(Calendar.MILLISECOND, 0)
-
-                val isToday = targetCal.timeInMillis == today.timeInMillis
-                val isFuture = targetCal.timeInMillis > today.timeInMillis
-
-                if (isFuture) {
-                    callback.onError("无法获取未来日期的节目单")
-                    return@execute
-                }
-
-                val now = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
-                val nowTimestamp = now.timeInMillis / 1000
-
-                val episodes = if (isToday) {
-                    // 今天：先获取节目列表，再为已过时间的节目获取VOD
-                    fetchTodayWithVod(cid, stationId, dateStr, nowTimestamp)
+                val episodes = fetchEpisodesByDateSync(stationId, dateStr)
+                if (episodes != null) {
+                    if (episodes.isEmpty()) {
+                        callback.onError("该日期暂无节目数据")
+                    } else {
+                        callback.onSuccess(episodes)
+                    }
                 } else {
-                    val timestamp = targetCal.timeInMillis / 1000
-                    fetchVodPrograms(cid, stationId, dateStr, timestamp)
-                }
-
-                if (episodes.isEmpty()) {
-                    callback.onError("该日期暂无节目数据")
-                } else {
-                    callback.onSuccess(episodes)
+                    callback.onError("获取节目失败")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "getEpisodesByDate failed", e)
                 callback.onError(e.message ?: "Unknown error")
             }
+        }
+    }
+
+    /**
+     * 同步获取指定日期的节目列表（在后台线程中调用）
+     */
+    fun fetchEpisodesByDateSync(stationId: String, dateStr: String): List<Episode>? {
+        try {
+            val cid = STATION_TO_CID[stationId] ?: return null
+
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            dateFormat.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+            val targetDate = dateFormat.parse(dateStr) ?: return null
+
+            val today = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
+            val targetCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
+            targetCal.time = targetDate
+            today.set(Calendar.HOUR_OF_DAY, 0); today.set(Calendar.MINUTE, 0)
+            today.set(Calendar.SECOND, 0); today.set(Calendar.MILLISECOND, 0)
+            targetCal.set(Calendar.HOUR_OF_DAY, 0); targetCal.set(Calendar.MINUTE, 0)
+            targetCal.set(Calendar.SECOND, 0); targetCal.set(Calendar.MILLISECOND, 0)
+
+            val isToday = targetCal.timeInMillis == today.timeInMillis
+            val isFuture = targetCal.timeInMillis > today.timeInMillis
+
+            if (isFuture) {
+                Log.d(TAG, "fetchEpisodesByDateSync: future date $dateStr, returning empty")
+                return emptyList()
+            }
+
+            val now = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
+            val nowTimestamp = now.timeInMillis / 1000
+
+            val episodes = if (isToday) {
+                fetchTodayWithVod(cid, stationId, dateStr, nowTimestamp)
+            } else {
+                val timestamp = targetCal.timeInMillis / 1000
+                fetchVodPrograms(cid, stationId, dateStr, timestamp)
+            }
+            return episodes
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchEpisodesByDateSync failed for $stationId $dateStr", e)
+            return null
         }
     }
 

@@ -182,6 +182,7 @@ class SubtitleGeneratorService : Service() {
             override fun onProgressUpdate(progress: Int, total: Int) {
                 callback.onProgressUpdate(progress, total)
                 updateProgressNotification(progress, "字幕生成")
+                ctx.lastReportedProgress = progress
             }
             override fun onError(error: String) {
                 callback.onError(error)
@@ -189,11 +190,12 @@ class SubtitleGeneratorService : Service() {
             }
             override fun onComplete(transcripts: List<Transcript>) {
                 callback.onComplete(transcripts)
-                cleanupTask()
+                updateProgressNotification(100, "字幕生成完成")
             }
         }
 
         executor?.execute {
+            var taskFailed = false
             try {
                 if (ctx.cancelled.get() || globalCancelled.get()) {
                     ctx.log("Task cancelled before start")
@@ -209,15 +211,17 @@ class SubtitleGeneratorService : Service() {
                     }
                 } else {
                     ctx.log("ERROR: No Vosk model found")
-                    wrappedCallback.onError("未找到离线识别模型，请在离线引擎管理中下载")
+                    wrappedCallback.onError("未找到离线识别模型，请在离线引擎管理中下载Vosk模型")
                 }
             } catch (e: Exception) {
+                taskFailed = true
                 ctx.log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 Log.e(TAG, "Subtitle generation failed for episodeId=$episodeId", e)
-                if (!ctx.cancelled.get()) callback.onError("字幕生成失败: ${e.message}")
+                if (!ctx.cancelled.get()) wrappedCallback.onError("字幕生成失败: ${e.message}")
             } finally {
                 activeTasks.remove(episodeId)
-                ctx.log("Task ended, active tasks remaining: ${activeTasks.size}")
+                ctx.log("Task ended${if (taskFailed) " (failed)" else ""}, active tasks remaining: ${activeTasks.size}")
+                cleanupTask()
             }
         }
     }
@@ -245,10 +249,11 @@ class SubtitleGeneratorService : Service() {
             override fun onProgressUpdate(progress: Int, total: Int) {
                 callback.onProgressUpdate(progress, total)
                 updateProgressNotification(progress, "AI分段")
+                ctx.lastReportedProgress = progress
             }
             override fun onComplete(segments: List<VoiceSegment>) {
                 callback.onComplete(segments)
-                cleanupTask()
+                updateProgressNotification(100, "AI分段完成")
             }
             override fun onError(error: String) {
                 callback.onError(error)
@@ -257,6 +262,7 @@ class SubtitleGeneratorService : Service() {
         }
 
         executor?.execute {
+            var taskFailed = false
             try {
                 if (ctx.cancelled.get() || globalCancelled.get()) {
                     ctx.log("Task cancelled before start")
@@ -292,19 +298,21 @@ class SubtitleGeneratorService : Service() {
                     val success = generateWithVosk(episodeId, audioUrl, subtitleCallback, ctx)
                     if (!success && !ctx.cancelled.get()) {
                         ctx.log("Vosk segment generation FAILED")
-                        callback.onError("AI分段失败：音频识别模型不可用，请在离线引擎管理中下载模型")
+                        wrappedCallback.onError("AI分段失败：音频识别模型不可用，请在离线引擎管理中下载模型")
                     }
                 } else {
                     ctx.log("ERROR: No Vosk model for segments")
-                    callback.onError("AI分段失败：未找到离线识别模型，请在离线引擎管理中下载")
+                    wrappedCallback.onError("AI分段失败：未找到离线识别模型，请在离线引擎管理中下载Vosk模型")
                 }
             } catch (e: Exception) {
+                taskFailed = true
                 ctx.log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 Log.e(TAG, "Segment generation failed for episodeId=$episodeId", e)
-                if (!ctx.cancelled.get()) callback.onError("AI分段失败: ${e.message}")
+                if (!ctx.cancelled.get()) wrappedCallback.onError("AI分段失败: ${e.message}")
             } finally {
                 activeTasks.remove(segKey)
-                ctx.log("Segment task ended, active tasks remaining: ${activeTasks.size}")
+                ctx.log("Segment task ended${if (taskFailed) " (failed)" else ""}, active tasks remaining: ${activeTasks.size}")
+                cleanupTask()
             }
         }
     }
@@ -423,6 +431,10 @@ class SubtitleGeneratorService : Service() {
             val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
             ctx.log("Vosk recognizer initialized")
 
+            // 重置开始时间，避免下载+解码阶段消耗的时间计入识别超时
+            ctx.startTime = System.currentTimeMillis()
+            ctx.lastOutputTime = ctx.startTime
+
             val pcmData = pcmFile.readBytes()
             val totalBytes = pcmData.size
             val bytesPerChunk = SAMPLE_RATE * 2 * 3  // 3 seconds per chunk
@@ -442,27 +454,26 @@ class SubtitleGeneratorService : Service() {
                     model.close()
                     return false
                 }
-                // Hard timeout check
-                val elapsed = System.currentTimeMillis() - ctx.startTime
-                if (elapsed > TASK_TIMEOUT_MS) {
-                    ctx.log("ERROR: Hard timeout after ${elapsed / 1000}s, aborting")
+                // Hard timeout check (10 min from task start, not just recognition)
+                val taskElapsed = System.currentTimeMillis() - (ctx.startTime - (totalBytes / (SAMPLE_RATE * 2 * 3)).toLong()) // approximate
+                if (System.currentTimeMillis() - ctx.startTime > TASK_TIMEOUT_MS) {
+                    ctx.log("ERROR: Hard timeout after ${(System.currentTimeMillis() - ctx.startTime) / 1000}s, aborting")
                     recognizer.close()
                     model.close()
                     callback.onError("处理超时（超过10分钟），音频可能过长")
                     return false
                 }
-                // No-output timeout check
-                val now = System.currentTimeMillis()
-                if (allTranscripts.isEmpty() && now - ctx.startTime > 120000) {
-                    ctx.log("ERROR: No result after 120s, model may be incompatible")
+                // No-output timeout: 3分钟无结果才报错（之前120秒太短，下载+解码已消耗时间）
+                if (allTranscripts.isEmpty() && System.currentTimeMillis() - ctx.startTime > 180000) {
+                    ctx.log("ERROR: No result after 180s of recognition, PCM may be incompatible")
                     recognizer.close()
                     model.close()
-                    callback.onError("语音识别超时：模型可能不匹配该音频格式")
+                    callback.onError("语音识别超时：音频格式可能不兼容，请尝试其他节目")
                     return false
                 }
-                if (now - ctx.lastOutputTime > 45000) {
-                    ctx.log("Warning: no output for ${(now - ctx.lastOutputTime) / 1000}s at offset=$offset/$totalBytes")
-                    ctx.lastOutputTime = now
+                if (System.currentTimeMillis() - ctx.lastOutputTime > 60000) {
+                    ctx.log("Warning: no output for ${(System.currentTimeMillis() - ctx.lastOutputTime) / 1000}s at offset=$offset/$totalBytes")
+                    // 不立即失败，继续尝试
                 }
 
                 val chunkSize = minOf(bytesPerChunk, totalBytes - offset)
@@ -563,32 +574,68 @@ class SubtitleGeneratorService : Service() {
         } catch (_: Exception) { "" }
     }
 
+    /**
+     * 验证目录是否包含有效的Vosk模型
+     * Vosk模型需要特定文件结构：am/final.mdl, conf/model.conf, ivector/final.ie 等
+     */
+    private fun isValidVoskModel(dir: File): Boolean {
+        if (!dir.isDirectory) return false
+        // 检查Vosk模型特征文件
+        val hasAmDir = File(dir, "am").exists() && File(File(dir, "am"), "final.mdl").exists()
+        val hasConf = File(dir, "conf").exists() && File(File(dir, "conf"), "model.conf").exists()
+        val hasGraph = File(dir, "graph").exists() || File(dir, "HCLG.fst").exists()
+        val hasMdlFile = dir.listFiles()?.any { it.name.endsWith(".mdl") } == true
+        val valid = (hasAmDir && hasConf) || (hasMdlFile && hasConf) || (hasGraph && hasConf)
+        if (valid) {
+            logToFile("isValidVoskModel: ${dir.name} is a valid Vosk model")
+        }
+        return valid
+    }
+
+    /**
+     * 检查目录是否是Whisper模型（ggml格式，供whisper.cpp使用，当前版本不支持）
+     */
+    private fun isWhisperModel(dir: File): Boolean {
+        if (!dir.isDirectory) return false
+        val binFiles = dir.listFiles()?.filter { it.name.endsWith(".bin") && it.name.startsWith("ggml") }
+        return binFiles != null && binFiles.isNotEmpty()
+    }
+
     private fun findVoskModel(): String? {
-        // 1. 检查外部存储手动下载的模型（支持 vosk 和 whisper 目录）
+        // 1. 检查外部存储手动下载的模型（只查找Vosk模型，不查找Whisper ggml模型）
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {
-            val modelDirs = modelsDir.listFiles()?.filter {
-                it.isDirectory && (it.name.contains("vosk", ignoreCase = true) || 
-                                   it.name.contains("whisper", ignoreCase = true))
-            }
+            val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
             if (!modelDirs.isNullOrEmpty()) {
+                // 优先查找名称包含vosk的目录
+                val voskDirs = modelDirs.filter { it.name.contains("vosk", ignoreCase = true) }
+                for (dir in voskDirs) {
+                    if (isValidVoskModel(dir)) {
+                        logToFile("findVoskModel: found Vosk model (by name) in ${dir.absolutePath}")
+                        return dir.absolutePath
+                    }
+                }
+                // 其次查找其他目录，但验证是否是有效Vosk模型（排除Whisper）
                 for (dir in modelDirs) {
-                    val files = dir.listFiles()
-                    if (files != null && files.isNotEmpty()) {
-                        logToFile("findVoskModel: found model in ${dir.absolutePath} (${files.size} files)")
+                    if (isWhisperModel(dir)) {
+                        logToFile("findVoskModel: skipping Whisper model in ${dir.name} (not supported in this version)")
+                        continue
+                    }
+                    if (isValidVoskModel(dir)) {
+                        logToFile("findVoskModel: found valid Vosk model in ${dir.absolutePath}")
                         return dir.absolutePath
                     }
                 }
             }
-            logToFile("findVoskModel: no model found in ${modelsDir.absolutePath}, dirs=${modelsDir.listFiles()?.map { it.name }}")
+            logToFile("findVoskModel: no Vosk model found in ${modelsDir.absolutePath}, dirs=${modelDirs?.map { it.name }}")
         }
         // 2. 检查内置模型
         val internalModelDir = File(filesDir, "vosk-model-small-cn-0.22")
-        if (internalModelDir.exists() && internalModelDir.listFiles()?.isNotEmpty() == true) {
-            logToFile("findVoskModel: found built-in model at ${internalModelDir.absolutePath}")
+        if (internalModelDir.exists() && isValidVoskModel(internalModelDir)) {
+            logToFile("findVoskModel: found built-in Vosk model at ${internalModelDir.absolutePath}")
             return internalModelDir.absolutePath
         }
-        logToFile("findVoskModel: no model found. Checked ${modelsDir?.absolutePath} and ${internalModelDir.absolutePath}")
+        logToFile("findVoskModel: no Vosk model found. Checked ${modelsDir?.absolutePath} and ${internalModelDir.absolutePath}")
         return null
     }
 
@@ -633,6 +680,8 @@ class SubtitleGeneratorService : Service() {
         ctx: TaskContext, onProgress: ((Int) -> Unit)? = null
     ) {
         val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
+        var fos: FileOutputStream? = null
         try {
             extractor.setDataSource(audioFile.absolutePath)
             var audioTrackIndex = -1
@@ -648,21 +697,60 @@ class SubtitleGeneratorService : Service() {
 
             extractor.selectTrack(audioTrackIndex)
             val mime = audioFormat.getString(MediaFormat.KEY_MIME)!!
-            val codec = MediaCodec.createDecoderByType(mime)
+            ctx.log("Decode: audio mime=$mime, durationUs=$durationUs")
+            codec = MediaCodec.createDecoderByType(mime)
             codec.configure(audioFormat, null, null, 0)
             codec.start()
 
             val bufferInfo = MediaCodec.BufferInfo()
-            val fos = FileOutputStream(pcmFile)
+            fos = FileOutputStream(pcmFile)
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            ctx.log("Decode: sampleRate=$sampleRate, channels=$channelCount")
 
             var inputDone = false
             var outputDone = false
             var decodedBytes = 0L
+            var lastProgressBytes = 0L
+            var lastProgressTime = System.currentTimeMillis()
+            var decodeStartTime = System.currentTimeMillis()
+            // 最大解码时长：5分钟（足够解码30分钟音频）
+            val MAX_DECODE_TIME_MS = 5 * 60 * 1000L
+            // 无进展超时：30秒没有新输出就认为卡住了
+            val NO_PROGRESS_TIMEOUT_MS = 30000L
+            // 硬限制：最大PCM输出字节数（对应30分钟@16kHz-mono-16bit）
+            val MAX_PCM_BYTES = 60_000_000L
+
+            // 计算每次进度报告应该间隔的字节数（约1%进度）
+            val progressStepBytes = MAX_PCM_BYTES / 100
 
             while (!outputDone) {
                 if (ctx.cancelled.get() || globalCancelled.get()) break
+
+                // 硬限制检查：解码输出超过预期上限时强制停止
+                if (decodedBytes >= MAX_PCM_BYTES) {
+                    ctx.log("Decode: hard byte limit reached ($decodedBytes >= $MAX_PCM_BYTES), stopping")
+                    outputDone = true
+                    break
+                }
+
+                // 解码超时检查
+                val now = System.currentTimeMillis()
+                val elapsed = now - decodeStartTime
+                if (elapsed > MAX_DECODE_TIME_MS) {
+                    ctx.log("Decode: timeout after ${elapsed/1000}s, forcing end")
+                    outputDone = true
+                    break
+                }
+                // 无进展超时检查
+                if (decodedBytes > lastProgressBytes) {
+                    lastProgressBytes = decodedBytes
+                    lastProgressTime = now
+                } else if (now - lastProgressTime > NO_PROGRESS_TIMEOUT_MS && inputDone) {
+                    ctx.log("Decode: no output for ${(now-lastProgressTime)/1000}s after input done, forcing end")
+                    outputDone = true
+                    break
+                }
 
                 if (!inputDone) {
                     val inIdx = codec.dequeueInputBuffer(10000)
@@ -672,8 +760,9 @@ class SubtitleGeneratorService : Service() {
                         if (sampleSize < 0) {
                             codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
+                            ctx.log("Decode: input EOF reached")
                         } else {
-                            // 关键修复：如果已到达durationUs限制，停止输入更多数据
+                            // 如果已到达durationUs限制，停止输入更多数据
                             if (durationUs > 0 && extractor.sampleTime >= durationUs) {
                                 codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 inputDone = true
@@ -685,31 +774,61 @@ class SubtitleGeneratorService : Service() {
                         }
                     }
                 }
-                val outIdx = codec.dequeueOutputBuffer(bufferInfo, 10000)
-                when {
-                    outIdx >= 0 -> {
-                        val buffer = codec.getOutputBuffer(outIdx)!!
-                        if (bufferInfo.size > 0 && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                            val pcmBytes = ByteArray(bufferInfo.size)
-                            buffer.position(bufferInfo.offset)
-                            buffer.get(pcmBytes)
-                            val resampled = resamplePcm(pcmBytes, sampleRate, channelCount, SAMPLE_RATE, 1)
-                            fos.write(resampled)
-                            decodedBytes += resampled.size
-                            if (durationUs > 0) {
-                                val pct = (bufferInfo.presentationTimeUs * 100 / durationUs).toInt().coerceIn(0, 100)
+
+                // 多次尝试 dequeue output 以确保解码器完全排空
+                var outputDrained = false
+                var drainAttempts = 0
+                while (!outputDrained && drainAttempts < 10) {
+                    drainAttempts++
+                    val outIdx = codec.dequeueOutputBuffer(bufferInfo, 5000)
+                    when {
+                        outIdx >= 0 -> {
+                            val buffer = codec.getOutputBuffer(outIdx)!!
+                            if (bufferInfo.size > 0 && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                                val pcmBytes = ByteArray(bufferInfo.size)
+                                buffer.position(bufferInfo.offset)
+                                buffer.get(pcmBytes)
+                                val resampled = resamplePcm(pcmBytes, sampleRate, channelCount, SAMPLE_RATE, 1)
+                                fos.write(resampled)
+                                decodedBytes += resampled.size
+                                // 进度报告：基于字节偏移估算（避免时间戳不准确）
+                                val pct = (decodedBytes * 100 / MAX_PCM_BYTES).toInt().coerceIn(0, 99)
                                 onProgress?.invoke(pct)
                             }
+                            codec.releaseOutputBuffer(outIdx, false)
+                            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                                outputDone = true
+                                outputDrained = true
+                                ctx.log("Decode: output EOF received")
+                            }
+                            // 硬限制检查在输出后立即执行
+                            if (decodedBytes >= MAX_PCM_BYTES) {
+                                ctx.log("Decode: hard byte limit reached during drain, stopping")
+                                outputDone = true
+                                outputDrained = true
+                            }
                         }
-                        codec.releaseOutputBuffer(outIdx, false)
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
+                        outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                            outputDrained = true
+                        }
+                        else -> {
+                            // INFO_OUTPUT_FORMAT_CHANGED etc.
+                            outputDrained = true
+                        }
                     }
                 }
             }
-            codec.stop(); codec.release(); fos.close(); extractor.release()
-            ctx.log("Decode complete: $decodedBytes PCM bytes")
+            // 确保进度报告到100%
+            onProgress?.invoke(100)
+            ctx.log("Decode complete: $decodedBytes PCM bytes in ${(System.currentTimeMillis() - decodeStartTime)/1000}s")
+            try { codec.stop(); codec.release() } catch (_: Exception) {}
+            try { fos.close() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
         } catch (e: Exception) {
             Log.e(TAG, "decodeToPcm failed", e)
+            ctx.log("Decode EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
+            try { codec?.stop(); codec?.release() } catch (_: Exception) {}
+            try { fos?.close() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
             throw e
         }
@@ -825,9 +944,20 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun cleanupTask() {
-        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
-        releaseWakeLock()
-        if (activeTasks.isEmpty()) stopSelf()
+        // 只有当没有任何活跃任务时才停止前台服务和移除通知
+        if (activeTasks.isEmpty()) {
+            logToFile("cleanupTask: no more active tasks, stopping foreground")
+            try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+            releaseWakeLock()
+            stopSelf()
+        } else {
+            logToFile("cleanupTask: ${activeTasks.size} tasks still active, keeping notification")
+            // 还有其他任务在运行，更新通知显示剩余任务
+            val remainingTask = activeTasks.values.firstOrNull()
+            if (remainingTask != null) {
+                updateProgressNotification(remainingTask.lastReportedProgress, remainingTask.taskType)
+            }
+        }
     }
 
     private fun createProgressNotification(progress: Int, taskLabel: String): Notification {

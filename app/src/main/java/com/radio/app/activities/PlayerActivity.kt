@@ -52,6 +52,13 @@ class PlayerActivity : AppCompatActivity() {
     private var segmentProcessing = false
     private var isFreshStart = false // true if user explicitly clicked an episode from the list
     private var pendingAiTaskType: String? = null
+    private var isActivityRecreated = false // true if system is recreating this activity (config change, etc.)
+    private var freshLaunchTs: Long = 0 // timestamp from intent, used to detect real fresh launches
+
+    companion object {
+        private var lastHandledTs: Long = 0 // last fresh launch timestamp the app processed
+        fun markFreshLaunchHandled(ts: Long) { lastHandledTs = lastHandledTs.coerceAtLeast(ts) }
+    }
 
     // 广播接收器：处理连续播放、下一集等事件
     private val episodeActionReceiver = object : BroadcastReceiver() {
@@ -371,9 +378,22 @@ class PlayerActivity : AppCompatActivity() {
         _binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 使用时间戳判断是否为真正的新鲜启动
+        // 系统重建Activity时，intent会保留旧数据，但fresh_launch_ts仍然为旧值
+        // 通过对比lastHandledTs来判断是否已经处理过这个启动
+        freshLaunchTs = intent.getLongExtra("fresh_launch_ts", 0)
+        isActivityRecreated = savedInstanceState != null
+        
+        // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过
+        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandledTs
+        if (isFreshStart) {
+            markFreshLaunchHandled(freshLaunchTs)
+        }
+        
+        android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandledTs, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
+        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandledTs, isFreshStart=$isFreshStart, action=${intent.action}")
+
         currentEpisode = intent.getSerializableExtra("episode") as? Episode
-        // 判断是否为用户主动点击节目进入（新鲜启动）vs 系统重建Activity
-        isFreshStart = intent.hasExtra("episode") || intent.hasExtra("episode_id")
         if (currentEpisode == null) {
             val audioUrl = intent.getStringExtra("audio_url") ?: intent.getStringExtra("stream_url")
             if (audioUrl.isNullOrBlank()) {

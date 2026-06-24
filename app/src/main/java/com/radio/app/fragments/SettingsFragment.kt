@@ -473,18 +473,25 @@ class SettingsFragment : Fragment() {
     private fun showClearCacheDialogWithButtons(files: Array<File>, fileNames: Array<String>, checked: BooleanArray) {
         val btnContainer = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 10, 20, 10)
+            setPadding(10, 8, 10, 8)
+        }
+        val btnRow1 = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(10, 0, 10, 8)
         }
         val btnClearAll = Button(requireContext()).apply {
             text = "清空全部(${files.size}个)"
             setTextColor(android.graphics.Color.WHITE)
             setBackgroundColor(0xFFE53935.toInt())
+            textSize = 13f
         }
-        val btnSelectAll = Button(requireContext()).apply { text = "全选" }
-        val btnSelectNone = Button(requireContext()).apply { text = "全不选" }
-        btnContainer.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.5f))
+        val btnSelectAll = Button(requireContext()).apply { text = "全选"; textSize = 13f }
+        val btnSelectNone = Button(requireContext()).apply { text = "全不选"; textSize = 13f }
+        val btnInvert = Button(requireContext()).apply { text = "反选"; textSize = 13f }
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         val dialog = AlertDialog.Builder(requireContext())
             .setTitle("选择要删除的缓存文件 (" + files.size + "个)")
@@ -523,7 +530,19 @@ class SettingsFragment : Fragment() {
         btnSelectNone.setOnClickListener {
             for (i in checked.indices) { checked[i] = false; dialog.listView.setItemChecked(i, false) }
         }
-        dialog.setView(btnContainer)
+        btnInvert.setOnClickListener {
+            for (i in checked.indices) {
+                checked[i] = !checked[i]
+                dialog.listView.setItemChecked(i, checked[i])
+            }
+        }
+        // 创建垂直布局容纳两行按钮
+        val buttonLayout = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(btnRow1)
+            addView(btnContainer)
+        }
+        dialog.setView(buttonLayout)
         dialog.show()
         // 限制列表最大高度，防止按钮被挤出屏幕
         dialog.listView?.let { lv ->

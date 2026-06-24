@@ -79,9 +79,10 @@
                 android:src="@drawable/notif_rewind"
                 android:scaleType="centerInside" />
             <TextView
+                android:id="@+id/rewind_text"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="-5s"
+                android:text="-15s"
                 android:textSize="10sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
@@ -173,9 +174,10 @@
                 android:src="@drawable/notif_forward"
                 android:scaleType="centerInside" />
             <TextView
+                android:id="@+id/forward_text"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="+5s"
+                android:text="+15s"
                 android:textSize="10sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
