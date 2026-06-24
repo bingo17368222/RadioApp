@@ -691,8 +691,29 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed to scan playback_positions", e)
             }
 
+            // 6) 读取 all_episodes 持久化存储（跨天累积的所有节目）
+            try {
+                val allEpPrefs = requireContext().getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+                val allEntries = allEpPrefs.all
+                var allEpCount = 0
+                for ((_, value) in allEntries) {
+                    if (value !is String) continue
+                    try {
+                        val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java)
+                        if (ep != null && ep.audioUrl != null) {
+                            processEpisode(ep.id ?: "", ep.stationId ?: "", ep.title ?: "", ep.audioUrl ?: "")
+                            allEpCount++
+                        }
+                    } catch (e: Exception) { /* skip malformed entries */ }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: loaded $allEpCount episodes from all_episodes persistent store")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to read all_episodes", e)
+            }
+
             android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")
             android.util.Log.d("SettingsFragment", "Cache files count: ${files.size}, names: ${files.map { it.name }}")
+            android.util.Log.d("SettingsFragment", "Dislike filter: total disliked file names=${dislikedFileNames.size}, cache files=${files.size}")
 
             // Select files that match disliked episodes
             for (i in files.indices) {

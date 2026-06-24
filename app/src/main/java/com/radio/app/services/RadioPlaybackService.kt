@@ -972,22 +972,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             val outSampleRate = 16000
             val outChannels = 1
-            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, will resample to ${outSampleRate}Hz mono")
+            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, will resample to ${outSampleRate}Hz mono (streaming)")
             
-            // Don't create fos yet - we'll write after resampling
-            val bos = java.io.ByteArrayOutputStream()
+            fos = FileOutputStream(pcmFile)
             val bufferInfo = MediaCodec.BufferInfo()
 
+            // Cross-chunk leftover buffer for seamless resampling
+            var leftoverShorts: ShortArray? = null
+            val ratio = sampleRate.toDouble() / outSampleRate
+            
             var inputDone = false
             var outputDone = false
             var decodedBytes = 0L
-            val maxPcmBytes = 100_000_000L // Raw PCM limit (about 10min @ 48kHz stereo)
+            var resampledBytes = 0L
+            val maxPcmBytes = 60_000_000L // 30min @ 16kHz mono 16bit = ~57MB
             val decodeStartTime = System.currentTimeMillis()
             val maxDecodeTimeMs = 5 * 60 * 1000L
 
             while (!outputDone) {
                 val now = System.currentTimeMillis()
-                if (decodedBytes >= maxPcmBytes) { outputDone = true; break }
+                if (resampledBytes >= maxPcmBytes) { outputDone = true; break }
                 if (now - decodeStartTime > maxDecodeTimeMs) { outputDone = true; break }
 
                 if (!inputDone) {
@@ -1018,8 +1022,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             val pcmBytes = ByteArray(bufferInfo.size)
                             buffer.position(bufferInfo.offset)
                             buffer.get(pcmBytes)
-                            bos.write(pcmBytes)
                             decodedBytes += pcmBytes.size
+                            
+                            // Convert chunk to shorts
+                            val chunkShorts = ShortArray(pcmBytes.size / 2)
+                            java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
+                            
+                            // Prepend leftover from previous chunk
+                            val combinedShorts = if (leftoverShorts != null) {
+                                val combined = ShortArray(leftoverShorts!!.size + chunkShorts.size)
+                                System.arraycopy(leftoverShorts!!, 0, combined, 0, leftoverShorts!!.size)
+                                System.arraycopy(chunkShorts, 0, combined, leftoverShorts!!.size, chunkShorts.size)
+                                combined
+                            } else {
+                                chunkShorts
+                            }
+                            
+                            // Resample combined buffer
+                            val resampled = resampleChunkForPreCache(combinedShorts, sampleRate, channelCount, outSampleRate, outChannels)
+                            leftoverShorts = resampled.second
+                            
+                            // Write resampled data to file
+                            val outBytes = resampled.first
+                            fos.write(outBytes)
+                            resampledBytes += outBytes.size
                         }
                         codec.releaseOutputBuffer(outIdx, false)
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -1030,15 +1056,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     else -> {}
                 }
             }
-            writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes raw PCM bytes")
             
-            // Now resample the entire buffer at once
-            val rawPcm = bos.toByteArray()
-            val resampled = resamplePcmForPreCache(rawPcm, sampleRate, channelCount, outSampleRate, outChannels)
-            fos = FileOutputStream(pcmFile)
-            fos.write(resampled)
-            writePreCacheLog("decodeToPcmForPreCache: resampled to ${resampled.size} bytes (${outSampleRate}Hz mono)")
-            writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2)}s")
+            // Flush any remaining samples in leftover
+            if (leftoverShorts != null && leftoverShorts!!.size >= channelCount) {
+                // Process remaining samples - produce as many output samples as possible
+                val remainingShorts = leftoverShorts!!
+                val inFrames = remainingShorts.size / channelCount
+                val outFrames = (inFrames / ratio).toInt()
+                if (outFrames > 0) {
+                    val outShorts = ShortArray(outFrames * outChannels)
+                    var outIdx = 0; var inPos = 0.0
+                    while (outIdx < outShorts.size) {
+                        val srcFrame = inPos.toInt()
+                        val srcIdx = srcFrame * channelCount
+                        if (srcFrame + 1 >= inFrames) break
+                        val nextIdx = (srcFrame + 1) * channelCount
+                        val frac = inPos - srcFrame
+                        outShorts[outIdx] = ((remainingShorts[srcIdx] * (1.0 - frac) + remainingShorts[nextIdx] * frac).toInt()).toShort()
+                        outIdx++; inPos += ratio
+                    }
+                    if (outIdx > 0) {
+                        val finalBytes = ByteArray(outIdx * 2)
+                        java.nio.ByteBuffer.wrap(finalBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts, 0, outIdx)
+                        fos.write(finalBytes)
+                        resampledBytes += finalBytes.size
+                    }
+                }
+            }
+            
+            writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes raw bytes, resampled to $resampledBytes bytes")
+            writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2 * outChannels)}s")
 
             // After decode loop, write sample rate info
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
@@ -1055,31 +1102,60 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * 为预缓存重采样PCM (复用SubtitleGeneratorService的算法)
+     * 流式重采样PCM chunk，返回(重采样字节, 剩余未消费的shorts)
+     * 剩余shorts需要拼接到下一个chunk的开头以实现无缝重采样
      */
-    private fun resamplePcmForPreCache(input: ByteArray, inSampleRate: Int, inChannels: Int,
-                                       outSampleRate: Int, outChannels: Int): ByteArray {
+    private fun resampleChunkForPreCache(input: ShortArray, inSampleRate: Int, inChannels: Int,
+                                         outSampleRate: Int, outChannels: Int): Pair<ByteArray, ShortArray?> {
         if (inSampleRate == outSampleRate && inChannels == outChannels) {
-            return input
+            val bytes = ByteArray(input.size * 2)
+            java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(input)
+            return Pair(bytes, null)
         }
 
-        val shorts = ShortArray(input.size / 2)
-        ByteBuffer.wrap(input).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         val ratio = inSampleRate.toDouble() / outSampleRate
-        val outLength = (shorts.size / inChannels / ratio).toInt() * outChannels
-        val output = ShortArray(outLength.coerceAtLeast(1))
-        var outIdx = 0; var inIdx = 0.0
-        while (outIdx < outLength) {
-            val srcIdx = inIdx.toInt() * inChannels
-            val nextIdx = ((inIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - inChannels)
-            val frac = inIdx - inIdx.toInt()
-            val interpolated = (shorts[srcIdx] * (1.0 - frac) + shorts[nextIdx] * frac).toInt().toShort()
-            output[outIdx] = interpolated
-            outIdx++; inIdx += ratio
+        val inputFrames = input.size / inChannels
+        
+        // We need at least 2 frames to interpolate. Keep at least 1 frame as leftover for interpolation with next chunk.
+        val usableFrames = inputFrames - 1
+        if (usableFrames <= 0) {
+            return Pair(ByteArray(0), input)
         }
-        val result = ByteArray(output.size * 2)
-        ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(output)
-        return result
+        
+        val outFrames = (usableFrames / ratio).toInt()
+        if (outFrames <= 0) {
+            return Pair(ByteArray(0), input)
+        }
+        
+        val outShorts = ShortArray(outFrames * outChannels)
+        var outIdx = 0; var inPos = 0.0
+        while (outIdx < outShorts.size) {
+            val srcFrame = inPos.toInt()
+            if (srcFrame + 1 >= inputFrames) break  // Need next frame for interpolation
+            val srcIdx = srcFrame * inChannels
+            val nextIdx = (srcFrame + 1) * inChannels
+            val frac = inPos - srcFrame
+            // Simple linear interpolation (take first channel for stereo->mono)
+            val sample = (input[srcIdx] * (1.0 - frac) + input[nextIdx] * frac).toInt().toShort()
+            for (c in 0 until outChannels) {
+                outShorts[outIdx + c] = sample
+            }
+            outIdx += outChannels
+            inPos += ratio
+        }
+        
+        // Calculate leftover: how many input frames were NOT fully consumed
+        val consumedFrames = inPos.toInt()
+        val leftoverFrames = inputFrames - consumedFrames
+        val leftoverShorts = if (leftoverFrames > 0) {
+            val leftover = ShortArray(leftoverFrames * inChannels)
+            System.arraycopy(input, consumedFrames * inChannels, leftover, 0, leftover.size)
+            leftover
+        } else null
+        
+        val outBytes = ByteArray(outIdx * 2)
+        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts, 0, outIdx)
+        return Pair(outBytes, leftoverShorts)
     }
 
     private fun applySavedPosition() {

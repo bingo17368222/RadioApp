@@ -80,6 +80,7 @@ class PlayerActivity : AppCompatActivity() {
     companion object {
         private var lastHandledTs: Long = 0 // last fresh launch timestamp the app processed
         @Volatile private var playbackRestartRequested = false
+        @Volatile private var lastStartedEpisodeUrl: String? = null  // Track last started episode URL to prevent duplicate playback
         fun markFreshLaunchHandled(ts: Long) { lastHandledTs = lastHandledTs.coerceAtLeast(ts) }
         fun isPlaybackRestartPending() = playbackRestartRequested
         fun setPlaybackRestartPending(v: Boolean) { playbackRestartRequested = v }
@@ -165,6 +166,7 @@ class PlayerActivity : AppCompatActivity() {
             // 核心防抖：如果服务已经播放同一URL，只更新UI（防止抖动）
             if (sameEpisode) {
                 playbackRestartRequested = false  // Clear restart flag on success
+                lastStartedEpisodeUrl = null  // Clear on success
                 val msg = "JITTER-GUARD: same episode playing, only update UI"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
@@ -180,12 +182,20 @@ class PlayerActivity : AppCompatActivity() {
             // 如果只是系统重建Activity，同步到服务当前节目（防止抖动）
             if (svcStarted) {
                 if (isFreshStart) {
+                    // CRITICAL: Don't start if we already started the same URL
+                    if (lastStartedEpisodeUrl == newUrl && playbackRestartRequested) {
+                        val skipMsg = "Fresh start: already starting same URL, skipping: $newUrl"
+                        android.util.Log.d("PlayerActivity", skipMsg)
+                        writeJitterLog(skipMsg)
+                        return@onServiceConnected
+                    }
                     val msg = "Fresh start, playing user's selection: $newUrl"
                     android.util.Log.d("PlayerActivity", msg)
                     writeJitterLog(msg)
                     // 继续执行下面的播放逻辑
                 } else {
                     playbackRestartRequested = false  // Clear restart flag on sync
+                    lastStartedEpisodeUrl = null  // Clear on sync
                     val svcEpisode = playbackService?.getCurrentEpisode()
                     val msg = if (svcEpisode != null) {
                         "Activity recreation, syncing to service: ${svcEpisode.title}"
@@ -210,14 +220,16 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             
-            // 服务完全空闲，启动新播放
-            // 但如果是系统重建且已经请求过播放启动，不要重复请求
-            if (!isFreshStart && playbackRestartRequested) {
-                val msg = "Playback restart already requested, waiting for service to start"
+            // Service idle, starting new playback
+            // CRITICAL: Don't start playback if we already started the same episode URL recently
+            // This prevents multiple rapid relaunches from causing jitter
+            if (lastStartedEpisodeUrl == newUrl && playbackRestartRequested) {
+                val msg = "Already starting playback for same URL, skipping duplicate: $newUrl"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
                 return@onServiceConnected
             }
+            lastStartedEpisodeUrl = newUrl
             playbackRestartRequested = true
             android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
@@ -252,6 +264,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             playbackRestartRequested = false
+            lastStartedEpisodeUrl = null
             android.util.Log.d("PlayerActivity", "onServiceDisconnected")
             writeJitterLog("onServiceDisconnected")
             playbackService = null
@@ -594,8 +607,27 @@ class PlayerActivity : AppCompatActivity() {
             val gson = com.google.gson.Gson()
             val json = gson.toJson(episodeList)
             getSharedPreferences("episode_list", MODE_PRIVATE).edit().putString("list", json).apply()
+
+            // Also save to persistent all-episodes store for cross-day dislike filtering
+            saveEpisodesToPersistentStore(episodeList)
         } catch (e: Exception) {
             android.util.Log.e("PlayerActivity", "Failed to save episode list", e)
+        }
+    }
+
+    private fun saveEpisodesToPersistentStore(episodes: List<Episode>) {
+        try {
+            val prefs = getSharedPreferences("all_episodes", MODE_PRIVATE)
+            val editor = prefs.edit()
+            for (ep in episodes) {
+                if (ep.audioUrl.isNullOrBlank()) continue
+                val key = ep.audioUrl  // Use audio URL as unique key
+                val json = com.google.gson.Gson().toJson(ep)
+                editor.putString(key, json)
+            }
+            editor.apply()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "Failed to save to persistent episode store", e)
         }
     }
 
@@ -1386,6 +1418,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         playbackRestartRequested = false
+        lastStartedEpisodeUrl = null
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
         } catch (_: Exception) {}
