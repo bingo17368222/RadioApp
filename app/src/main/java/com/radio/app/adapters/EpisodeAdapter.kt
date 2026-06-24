@@ -63,6 +63,21 @@ class EpisodeAdapter(
             holder.tvDislikeIndicator.visibility = View.GONE
         }
 
+        // 检查是否已缓存
+        val cacheFileName = try {
+            val url = java.net.URL(episode.audioUrl)
+            url.path.substringAfterLast("/")
+        } catch (e: Exception) {
+            episode.audioUrl.substringAfterLast("/")
+        }
+        val cacheFile = java.io.File(ctx.cacheDir, "episodes/$cacheFileName")
+        val isCached = cacheFile.exists() && cacheFile.length() > 1024
+        if (isCached) {
+            holder.tvCachedIndicator.visibility = View.VISIBLE
+        } else {
+            holder.tvCachedIndicator.visibility = View.GONE
+        }
+
         // 是否有回放URL
         if (episode.audioUrl.isNullOrBlank()) {
             holder.btnPlay.setImageResource(android.R.drawable.ic_menu_info_details)
@@ -86,5 +101,6 @@ class EpisodeAdapter(
         val tvDescription: TextView = view.findViewById(R.id.tv_description)
         val btnPlay: ImageView = view.findViewById(R.id.btn_play)
         val tvDislikeIndicator: TextView = view.findViewById(R.id.tv_dislike_indicator)
+        val tvCachedIndicator: TextView = view.findViewById(R.id.tv_cached_indicator)
     }
 }

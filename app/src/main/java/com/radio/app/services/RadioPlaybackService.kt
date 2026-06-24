@@ -177,6 +177,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var playbackStarted = false
     private var currentPlayingUrl = ""
 
+    // PCM预解码重采样状态：跨chunk保持小数采样位置，避免每个chunk独立重采样导致的速度/音调错误
+    private var preCacheResampleInIdx = 0.0
+
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
@@ -323,16 +326,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     if (positionRestoreRequested) {
                                         positionRestoreRequested = false
                                         applySavedPosition()
-                                    }
-                                    // If seeking, resume playback; isSeekingToPosition cleared with delay
-                                    if (isSeekingToPosition && player?.playWhenReady == false) {
-                                        player?.playWhenReady = true
+                                        // Don't set playWhenReady = true here! Wait for onSeekProcessed callback
+                                        // Fallback: if onSeekProcessed doesn't fire within 5 seconds, resume anyway
+                                        positionSaveHandler?.postDelayed({
+                                            if (isSeekingToPosition) {
+                                                Log.w(TAG, "STATE_READY: onSeekProcessed timeout, forcing playback resume")
+                                                player?.playWhenReady = true
+                                                isSeekingToPosition = false
+                                            }
+                                        }, 5000)
                                     }
                                     callback?.onStateChanged(true)
-                                    // Delay clearing isSeekingToPosition to allow seek to complete
-                                    positionSaveHandler?.postDelayed({
-                                        isSeekingToPosition = false
-                                    }, 3000)
                                     updateNotification()
                                     // 后台下载音频文件
                                     startBackgroundDownload()
@@ -368,6 +372,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 }, errorRetryCount * 3000L)
                             } else {
                                 callback?.onError("播放失败: ${error.message ?: "未知错误"}")
+                            }
+                        }
+                        override fun onSeekProcessed() {
+                            // Seek has been processed by the player, now safe to resume playback
+                            if (isSeekingToPosition) {
+                                Log.d(TAG, "onSeekProcessed: seek completed, resuming playback")
+                                player?.playWhenReady = true
+                                // Clear isSeekingToPosition after a short delay to allow position to stabilize
+                                positionSaveHandler?.postDelayed({
+                                    isSeekingToPosition = false
+                                }, 2000)
                             }
                         }
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -982,6 +997,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val outSampleRate = 16000
             val outChannels = 1
             writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, outSampleRate=$outSampleRate, ratio=${sampleRate.toDouble()/outSampleRate}")
+            // 重置重采样状态：每次解码开始时小数采样位置归零，保证跨chunk连续重采样
+            preCacheResampleInIdx = 0.0
 
             var inputDone = false
             var outputDone = false
@@ -1066,17 +1083,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val shorts = ShortArray(input.size / 2)
         ByteBuffer.wrap(input).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         val ratio = inSampleRate.toDouble() / outSampleRate
-        val outLength = (shorts.size / inChannels / ratio).toInt() * outChannels
-        val output = ShortArray(outLength.coerceAtLeast(1))
-        var outIdx = 0; var inIdx = 0.0
+        val inputFrames = shorts.size / inChannels
+        // 输出帧数基于跨chunk连续的小数采样位置计算，避免每个chunk独立重采样导致的速度/音调错误
+        val outLength = ((inputFrames - preCacheResampleInIdx) / ratio).toInt() * outChannels
+        val output = ShortArray(outLength.coerceAtLeast(0))
+        var outIdx = 0
         while (outIdx < outLength) {
-            val srcIdx = inIdx.toInt() * inChannels
-            val nextIdx = ((inIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - 1)
-            val frac = inIdx - inIdx.toInt()
+            val srcIdx = preCacheResampleInIdx.toInt() * inChannels
+            val nextIdx = ((preCacheResampleInIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - inChannels)
+            val frac = preCacheResampleInIdx - preCacheResampleInIdx.toInt()
             val interpolated = (shorts[srcIdx] * (1.0 - frac) + shorts[nextIdx] * frac).toInt().toShort()
             output[outIdx] = interpolated
-            outIdx++; inIdx += ratio
+            outIdx++
+            preCacheResampleInIdx += ratio
         }
+        // 保留小数部分给下一个chunk，使重采样位置在chunk之间连续
+        preCacheResampleInIdx -= inputFrames
+
         val result = ByteArray(output.size * 2)
         ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(output)
         return result

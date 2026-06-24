@@ -465,6 +465,7 @@ class PlayerActivity : AppCompatActivity() {
 
         @Suppress("UNCHECKED_CAST")
         episodeList = (intent.getSerializableExtra("episode_list") as? ArrayList<Episode>) ?: ArrayList()
+        saveEpisodeListToPrefs()
         currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
 
         // 缓存节目列表用于连续播放
@@ -571,6 +572,16 @@ class PlayerActivity : AppCompatActivity() {
         } catch (e: Exception) {
             val name = url.substringAfterLast("/")
             if (name.isBlank()) "unknown.mp4" else name
+        }
+    }
+
+    private fun saveEpisodeListToPrefs() {
+        try {
+            val gson = com.google.gson.Gson()
+            val json = gson.toJson(episodeList)
+            getSharedPreferences("episode_list", MODE_PRIVATE).edit().putString("list", json).apply()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "Failed to save episode list", e)
         }
     }
 
@@ -1169,6 +1180,7 @@ class PlayerActivity : AppCompatActivity() {
                 runOnUiThread {
                     // 更新节目列表为新一天的节目
                     episodeList = ArrayList(validEpisodes)
+                    saveEpisodeListToPrefs()
                     // direction > 0 (next): 播放第一天第一个节目
                     // direction < 0 (prev): 播放最后一天最后一个节目
                     val targetIndex = if (direction > 0) 0 else validEpisodes.size - 1

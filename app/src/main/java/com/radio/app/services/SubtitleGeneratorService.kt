@@ -98,6 +98,9 @@ class SubtitleGeneratorService : Service() {
     private val activeTasks = ConcurrentHashMap<String, TaskContext>()
     private val globalCancelled = AtomicBoolean(false)
 
+    // 字幕生成重采样状态：跨chunk保持小数采样位置，避免每个chunk独立重采样导致的速度/音调错误
+    private var subtitleResampleInIdx = 0.0
+
     override fun onCreate() {
         super.onCreate()
         executor = Executors.newFixedThreadPool(2)
@@ -498,6 +501,8 @@ class SubtitleGeneratorService : Service() {
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             ctx.log("Decode: sampleRate=$sampleRate, channels=$channelCount")
+            // 重置重采样状态：每次解码开始时小数采样位置归零，保证跨chunk连续重采样
+            subtitleResampleInIdx = 0.0
 
             var inputDone = false
             var outputDone = false
@@ -627,21 +632,32 @@ class SubtitleGeneratorService : Service() {
 
     private fun resamplePcm(input: ByteArray, inSampleRate: Int, inChannels: Int,
                             outSampleRate: Int, outChannels: Int): ByteArray {
+        // Fast path: no resampling needed
+        if (inSampleRate == outSampleRate && inChannels == outChannels) {
+            return input
+        }
+
         val shorts = ShortArray(input.size / 2)
         ByteBuffer.wrap(input).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         val ratio = inSampleRate.toDouble() / outSampleRate
-        val outLength = (shorts.size / inChannels / ratio).toInt() * outChannels
-        val output = ShortArray(outLength)
-        var outIdx = 0; var inIdx = 0.0
+        val inputFrames = shorts.size / inChannels
+        // 输出帧数基于跨chunk连续的小数采样位置计算，避免每个chunk独立重采样导致的速度/音调错误
+        val outLength = ((inputFrames - subtitleResampleInIdx) / ratio).toInt() * outChannels
+        val output = ShortArray(outLength.coerceAtLeast(0))
+        var outIdx = 0
         while (outIdx < outLength) {
-            val srcIdx = inIdx.toInt() * inChannels
-            val nextIdx = ((inIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - 1)
-            val frac = inIdx - inIdx.toInt()
+            val srcIdx = subtitleResampleInIdx.toInt() * inChannels
+            val nextIdx = ((subtitleResampleInIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - inChannels)
+            val frac = subtitleResampleInIdx - subtitleResampleInIdx.toInt()
             // Linear interpolation for better quality
             val interpolated = (shorts[srcIdx] * (1.0 - frac) + shorts[nextIdx] * frac).toInt().toShort()
             output[outIdx] = interpolated
-            outIdx++; inIdx += ratio
+            outIdx++
+            subtitleResampleInIdx += ratio
         }
+        // 保留小数部分给下一个chunk，使重采样位置在chunk之间连续
+        subtitleResampleInIdx -= inputFrames
+
         val result = ByteArray(output.size * 2)
         ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(output)
         return result

@@ -571,27 +571,45 @@ class SettingsFragment : Fragment() {
             val settings = AppSettings.getInstance(requireContext())
             // First deselect all
             for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
-            // Select files from disliked episodes
-            for (i in files.indices) {
-                val fileName = files[i].name
-                for (dislikedEntry in settings.dislikedEpisodes) {
-                    // Check if the file name contains the disliked entry (ID or stationId::title key)
-                    if (fileName.contains(dislikedEntry) || dislikedEntry.contains(fileName)) {
-                        checked[i] = true
-                        listView.setItemChecked(i, true)
-                        break
+
+            // Read episode list from SharedPreferences
+            val prefs = requireContext().getSharedPreferences("episode_list", android.content.Context.MODE_PRIVATE)
+            val json = prefs.getString("list", null)
+            if (json != null) {
+                try {
+                    val gson = com.google.gson.Gson()
+                    val type = object : com.google.gson.reflect.TypeToken<List<com.radio.app.models.Episode>>() {}.type
+                    val episodes: List<com.radio.app.models.Episode> = gson.fromJson(json, type)
+
+                    // Build set of disliked episodes' cache file names
+                    val dislikedFileNames = mutableSetOf<String>()
+                    for (ep in episodes) {
+                        if (settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                            // Extract cache file name from audio URL (same logic as RadioPlaybackService.extractCacheFileName)
+                            val fileName = try {
+                                val url = java.net.URL(ep.audioUrl)
+                                val path = url.path
+                                val name = path.substringAfterLast("/")
+                                if (name.isBlank()) "unknown.mp4" else name
+                            } catch (e: Exception) {
+                                ep.audioUrl.substringAfterLast("/")
+                            }
+                            dislikedFileNames.add(fileName)
+                        }
                     }
-                    // Also check MD5 hash of the disliked entry
-                    val entryHash = java.security.MessageDigest.getInstance("MD5")
-                        .digest(dislikedEntry.toByteArray())
-                        .joinToString("") { "%02x".format(it) }
-                    if (fileName.contains(entryHash) || entryHash.contains(fileName)) {
-                        checked[i] = true
-                        listView.setItemChecked(i, true)
-                        break
+
+                    // Select files that match disliked episodes
+                    for (i in files.indices) {
+                        if (files[i].name in dislikedFileNames) {
+                            checked[i] = true
+                            listView.setItemChecked(i, true)
+                        }
                     }
+                } catch (e: Exception) {
+                    android.util.Log.e("SettingsFragment", "Failed to load episode list for dislike filter", e)
                 }
             }
+
             val selectedCount = checked.count { it }
             Toast.makeText(requireContext(), "已选中${selectedCount}个不喜欢节目的缓存", Toast.LENGTH_SHORT).show()
         }

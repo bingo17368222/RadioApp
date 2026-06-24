@@ -91,6 +91,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             restoreLastSelection()
             initialLoadDone = true
         }
+        // 刷新列表以更新缓存状态标记（从播放页返回后缓存可能已变化）
+        adapter?.notifyDataSetChanged()
     }
 
     private fun restoreLastSelection() {
