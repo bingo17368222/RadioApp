@@ -785,6 +785,43 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed to read cache_episode_mapping", e)
             }
 
+            // 9) 备用匹配：对每个缓存文件，遍历 all_episodes 查找 audioUrl 包含该文件名的 disliked episode
+            try {
+                val allEpPrefs = requireContext().getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+                var fallbackCount = 0
+                for (file in files) {
+                    if (file.name in dislikedFileNames) continue  // Already matched
+                    for ((_, value) in allEpPrefs.all) {
+                        if (value !is String) continue
+                        try {
+                            val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                            if (ep.audioUrl.isNullOrBlank()) continue
+                            val urlFileName = try {
+                                java.net.URL(ep.audioUrl).path.substringAfterLast("/")
+                            } catch (e: Exception) {
+                                ep.audioUrl.substringAfterLast("/")
+                            }
+                            // Match by exact file name, or by base name without extension, or by date pattern in URL
+                            val matches = urlFileName == file.name ||
+                                    urlFileName.substringBeforeLast(".") == file.name.substringBeforeLast(".") ||
+                                    (file.name.substringBeforeLast(".").length >= 8 && ep.audioUrl.contains(file.name.substringBeforeLast(".")))
+                            if (matches) {
+                                val isDisliked = (ep.id != null && ep.id.isNotBlank() && settings.isDisliked(ep.id)) ||
+                                        settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
+                                if (isDisliked) {
+                                    dislikedFileNames.add(file.name)
+                                    fallbackCount++
+                                    break
+                                }
+                            }
+                        } catch (e: Exception) { /* skip */ }
+                    }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: fallback matching added $fallbackCount disliked files")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed fallback matching", e)
+            }
+
             android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")
             android.util.Log.d("SettingsFragment", "Cache files count: ${files.size}, names: ${files.map { it.name }}")
             android.util.Log.d("SettingsFragment", "Dislike filter: total disliked file names=${dislikedFileNames.size}, cache files=${files.size}")

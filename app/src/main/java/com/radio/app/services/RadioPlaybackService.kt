@@ -314,6 +314,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 .build()
                 .apply {
                     addListener(object : Player.Listener {
+                        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                            if (reason == Player.DISCONTINUITY_REASON_SEEK && isSeekingToPosition) {
+                                val actualPos = player?.currentPosition ?: -1L
+                                Log.d(TAG, "SEEK completed: actual position=$actualPos ms, starting playback now")
+                                player?.playWhenReady = true
+                            }
+                        }
                         override fun onPlaybackStateChanged(state: Int) {
                             when (state) {
                                 Player.STATE_READY -> {
@@ -1139,11 +1146,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val ratio = inSampleRate.toDouble() / outSampleRate
         val inputFrames = input.size / inChannels
 
-        // Step 1: 转换为单声道（取第一个声道）
+        // Step 1: 转换为单声道（多声道时取平均值，避免只取一个声道导致相位抵消/音量减半）
         val monoInput: ShortArray = if (inChannels > 1) {
             val arr = ShortArray(inputFrames)
             for (i in 0 until inputFrames) {
-                arr[i] = input[i * inChannels]
+                var sum = 0
+                for (c in 0 until inChannels) {
+                    sum += input[i * inChannels + c].toInt()
+                }
+                arr[i] = (sum / inChannels).toShort()
             }
             arr
         } else {
@@ -1207,10 +1218,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (savedPos > 0 && !isLive) {
             isSeekingToPosition = true
             lastPositionRestoreTime = System.currentTimeMillis()
+            player?.playWhenReady = false  // Keep paused until seek completes
             player?.seekTo(savedPos)
-            player?.playWhenReady = true
-            Log.d(TAG, "Restored position: ${savedPos}ms, will not save position for 30s")
-            // Clear isSeekingToPosition after 30 seconds (enough for streaming seek to complete)
+            Log.d(TAG, "Restored position: ${savedPos}ms, waiting for seek completion before play, will not save position for 30s")
+            // Safety fallback: if onPositionDiscontinuity never fires, clear flag after 30 seconds
             positionSaveHandler?.postDelayed({
                 isSeekingToPosition = false
                 Log.d(TAG, "Position restore grace period ended, position saving enabled")
