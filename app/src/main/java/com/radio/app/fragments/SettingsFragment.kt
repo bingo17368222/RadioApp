@@ -669,7 +669,7 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed to parse last_episode", e)
             }
 
-            // 5) 读取 playback_positions 的所有键（stationId::title），识别按标题不喜欢的节目（用于调试）
+            // 5) 读取 playback_positions 的所有键（stationId::title），识别按标题不喜欢的节目
             //    playback_positions 记录了所有播放过的节目（跨天），可用于发现不在任何列表中的不喜欢节目
             try {
                 val posPrefs = requireContext().getSharedPreferences("playback_positions", android.content.Context.MODE_PRIVATE)
@@ -683,10 +683,29 @@ class SettingsFragment : Fragment() {
                         val title = parts[1]
                         if (settings.isDislikedByTitle(stationId, title)) {
                             dislikedByKeyCount++
+                            // Search all_episodes for this episode to get its audioUrl
+                            val allEpPrefs = requireContext().getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+                            for ((_, value) in allEpPrefs.all) {
+                                if (value !is String) continue
+                                try {
+                                    val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                                    if (ep.stationId == stationId && ep.title == title && !ep.audioUrl.isNullOrBlank()) {
+                                        val fileName = try {
+                                            java.net.URL(ep.audioUrl).path.substringAfterLast("/")
+                                        } catch (e: Exception) {
+                                            ep.audioUrl.substringAfterLast("/")
+                                        }
+                                        if (fileName.isNotBlank()) {
+                                            dislikedFileNames.add(fileName)
+                                        }
+                                        break
+                                    }
+                                } catch (e: Exception) { /* skip */ }
+                            }
                         }
                     }
                 }
-                android.util.Log.d("SettingsFragment", "Dislike filter: playback_positions has ${allKeys.size} keys, $dislikedByKeyCount are disliked by title")
+                android.util.Log.d("SettingsFragment", "Dislike filter: playback_positions has ${allKeys.size} keys, $dislikedByKeyCount are disliked by title, added to dislikedFileNames")
             } catch (e: Exception) {
                 android.util.Log.e("SettingsFragment", "Failed to scan playback_positions", e)
             }
@@ -709,6 +728,39 @@ class SettingsFragment : Fragment() {
                 android.util.Log.d("SettingsFragment", "Dislike filter: loaded $allEpCount episodes from all_episodes persistent store")
             } catch (e: Exception) {
                 android.util.Log.e("SettingsFragment", "Failed to read all_episodes", e)
+            }
+
+            // 7) 终极方案：直接遍历 all_episodes 找所有 disliked episode，
+            //    然后对每个 cache file 反向查找是否匹配任何 disliked episode 的 audioUrl
+            try {
+                val allEpPrefs = requireContext().getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+                val allEntries = allEpPrefs.all
+                // Build a map from cache file name → disliked status
+                for ((_, value) in allEntries) {
+                    if (value !is String) continue
+                    try {
+                        val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                        if (ep.audioUrl.isNullOrBlank()) continue
+                        // Check if this episode is disliked
+                        val isDisliked = (ep.id != null && ep.id.isNotBlank() && settings.isDisliked(ep.id)) ||
+                                settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
+                        if (isDisliked) {
+                            // Extract the file name part of the URL
+                            val audioFileName = try {
+                                val path = java.net.URL(ep.audioUrl).path
+                                path.substringAfterLast("/")
+                            } catch (e: Exception) {
+                                ep.audioUrl.substringAfterLast("/")
+                            }
+                            if (audioFileName.isNotBlank()) {
+                                dislikedFileNames.add(audioFileName)
+                            }
+                        }
+                    } catch (e: Exception) { /* skip */ }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: after reverse scan, total disliked file names=${dislikedFileNames.size}")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed reverse scan", e)
             }
 
             android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")

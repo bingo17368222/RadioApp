@@ -78,12 +78,45 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     companion object {
-        private var lastHandledTs: Long = 0 // last fresh launch timestamp the app processed
-        @Volatile private var playbackRestartRequested = false
-        @Volatile private var lastStartedEpisodeUrl: String? = null  // Track last started episode URL to prevent duplicate playback
-        fun markFreshLaunchHandled(ts: Long) { lastHandledTs = lastHandledTs.coerceAtLeast(ts) }
-        fun isPlaybackRestartPending() = playbackRestartRequested
-        fun setPlaybackRestartPending(v: Boolean) { playbackRestartRequested = v }
+        private const val PREF_NAME = "jitter_guard"
+        private const val KEY_LAST_STARTED_URL = "last_started_url"
+        private const val KEY_LAST_STARTED_TS = "last_started_ts"
+        private const val KEY_PLAYBACK_IN_PROGRESS = "playback_in_progress"
+
+        fun markFreshLaunchHandled(ctx: android.content.Context, ts: Long) {
+            val prefs = ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE)
+            prefs.edit().putLong("lastHandledTs", ts).apply()
+        }
+
+        fun getLastHandledTs(ctx: android.content.Context): Long {
+            return ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE).getLong("lastHandledTs", 0L)
+        }
+
+        fun isPlaybackInProgress(ctx: android.content.Context): Boolean {
+            val prefs = ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(KEY_PLAYBACK_IN_PROGRESS, false)) return false
+            // If the flag is set but the timestamp is more than 60 seconds old, consider it stale
+            val ts = prefs.getLong(KEY_LAST_STARTED_TS, 0L)
+            return System.currentTimeMillis() - ts < 60000
+        }
+
+        fun setPlaybackInProgress(ctx: android.content.Context, url: String?) {
+            val prefs = ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE)
+            val editor = prefs.edit()
+            if (url == null) {
+                editor.putBoolean(KEY_PLAYBACK_IN_PROGRESS, false)
+                editor.remove(KEY_LAST_STARTED_URL)
+            } else {
+                editor.putBoolean(KEY_PLAYBACK_IN_PROGRESS, true)
+                editor.putString(KEY_LAST_STARTED_URL, url)
+                editor.putLong(KEY_LAST_STARTED_TS, System.currentTimeMillis())
+            }
+            editor.apply()
+        }
+
+        fun getLastStartedUrl(ctx: android.content.Context): String? {
+            return ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE).getString(KEY_LAST_STARTED_URL, null)
+        }
     }
 
     // 广播接收器：处理连续播放、下一集等事件
@@ -165,8 +198,7 @@ class PlayerActivity : AppCompatActivity() {
 
             // 核心防抖：如果服务已经播放同一URL，只更新UI（防止抖动）
             if (sameEpisode) {
-                playbackRestartRequested = false  // Clear restart flag on success
-                lastStartedEpisodeUrl = null  // Clear on success
+                setPlaybackInProgress(this@PlayerActivity, null)  // Clear restart flag on success
                 val msg = "JITTER-GUARD: same episode playing, only update UI"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
@@ -183,7 +215,7 @@ class PlayerActivity : AppCompatActivity() {
             if (svcStarted) {
                 if (isFreshStart) {
                     // CRITICAL: Don't start if we already started the same URL
-                    if (lastStartedEpisodeUrl == newUrl && playbackRestartRequested) {
+                    if (getLastStartedUrl(this@PlayerActivity) == newUrl && isPlaybackInProgress(this@PlayerActivity)) {
                         val skipMsg = "Fresh start: already starting same URL, skipping: $newUrl"
                         android.util.Log.d("PlayerActivity", skipMsg)
                         writeJitterLog(skipMsg)
@@ -194,8 +226,7 @@ class PlayerActivity : AppCompatActivity() {
                     writeJitterLog(msg)
                     // 继续执行下面的播放逻辑
                 } else {
-                    playbackRestartRequested = false  // Clear restart flag on sync
-                    lastStartedEpisodeUrl = null  // Clear on sync
+                    setPlaybackInProgress(this@PlayerActivity, null)  // Clear restart flag on sync
                     val svcEpisode = playbackService?.getCurrentEpisode()
                     val msg = if (svcEpisode != null) {
                         "Activity recreation, syncing to service: ${svcEpisode.title}"
@@ -223,14 +254,25 @@ class PlayerActivity : AppCompatActivity() {
             // Service idle, starting new playback
             // CRITICAL: Don't start playback if we already started the same episode URL recently
             // This prevents multiple rapid relaunches from causing jitter
-            if (lastStartedEpisodeUrl == newUrl && playbackRestartRequested) {
+            if (getLastStartedUrl(this@PlayerActivity) == newUrl && isPlaybackInProgress(this@PlayerActivity)) {
                 val msg = "Already starting playback for same URL, skipping duplicate: $newUrl"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
                 return@onServiceConnected
             }
-            lastStartedEpisodeUrl = newUrl
-            playbackRestartRequested = true
+
+            // CRITICAL FIX: If the service was killed and restarted, the static flags are gone.
+            // Check if we're within 10 seconds of the last "Starting new playback" timestamp.
+            // If so, this is a restart - don't start a new playback, just sync to the service.
+            val justStartedRecently = isPlaybackInProgress(this@PlayerActivity) && getLastStartedUrl(this@PlayerActivity) == newUrl
+            if (justStartedRecently) {
+                val skipMsg = "Playback was just started recently (within 60s), this is likely a restart - skipping duplicate: $newUrl"
+                android.util.Log.d("PlayerActivity", skipMsg)
+                writeJitterLog(skipMsg)
+                setPlaybackInProgress(this@PlayerActivity, null)  // Clear flag to prevent infinite loop
+                return@onServiceConnected
+            }
+            setPlaybackInProgress(this@PlayerActivity, newUrl)
             android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
             writeJitterLog("Starting new playback for $newUrl")
             if (currentStation != null) {
@@ -263,8 +305,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            playbackRestartRequested = false
-            lastStartedEpisodeUrl = null
+            setPlaybackInProgress(this@PlayerActivity, null)
             android.util.Log.d("PlayerActivity", "onServiceDisconnected")
             writeJitterLog("onServiceDisconnected")
             playbackService = null
@@ -442,15 +483,16 @@ class PlayerActivity : AppCompatActivity() {
         // 通过对比lastHandledTs来判断是否已经处理过这个启动
         freshLaunchTs = intent.getLongExtra("fresh_launch_ts", 0)
         isActivityRecreated = savedInstanceState != null
-        
+
+        val lastHandled = getLastHandledTs(this)
         // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过
-        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandledTs
+        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled
         if (isFreshStart) {
-            markFreshLaunchHandled(freshLaunchTs)
+            markFreshLaunchHandled(this, freshLaunchTs)
         }
-        
-        android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandledTs, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
-        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandledTs, isFreshStart=$isFreshStart, action=${intent.action}")
+
+        android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
+        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, action=${intent.action}")
 
         currentEpisode = intent.getSerializableExtra("episode") as? Episode
         if (currentEpisode == null) {
@@ -1417,8 +1459,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        playbackRestartRequested = false
-        lastStartedEpisodeUrl = null
+        setPlaybackInProgress(this, null)
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
         } catch (_: Exception) {}

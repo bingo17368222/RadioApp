@@ -942,6 +942,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     /**
      * 为预缓存解码音频到PCM (16kHz mono 16bit)
+     * 使用简单的线性插值重采样，不使用leftover机制，避免chunk边界处理误差导致"低沉缓慢"问题
      */
     private fun decodeToPcmForPreCache(audioFile: File, pcmFile: File, durationUs: Long) {
         val extractor = MediaExtractor()
@@ -972,15 +973,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             val outSampleRate = 16000
             val outChannels = 1
-            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, will resample to ${outSampleRate}Hz mono (streaming)")
-            
+            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, will resample to ${outSampleRate}Hz mono (simple, no leftover)")
+
             fos = FileOutputStream(pcmFile)
             val bufferInfo = MediaCodec.BufferInfo()
 
-            // Cross-chunk leftover buffer for seamless resampling
-            var leftoverShorts: ShortArray? = null
-            val ratio = sampleRate.toDouble() / outSampleRate
-            
             var inputDone = false
             var outputDone = false
             var decodedBytes = 0L
@@ -1023,26 +1020,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             buffer.position(bufferInfo.offset)
                             buffer.get(pcmBytes)
                             decodedBytes += pcmBytes.size
-                            
+
                             // Convert chunk to shorts
                             val chunkShorts = ShortArray(pcmBytes.size / 2)
                             java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
-                            
-                            // Prepend leftover from previous chunk
-                            val combinedShorts = if (leftoverShorts != null) {
-                                val combined = ShortArray(leftoverShorts!!.size + chunkShorts.size)
-                                System.arraycopy(leftoverShorts!!, 0, combined, 0, leftoverShorts!!.size)
-                                System.arraycopy(chunkShorts, 0, combined, leftoverShorts!!.size, chunkShorts.size)
-                                combined
-                            } else {
-                                chunkShorts
-                            }
-                            
-                            // Resample combined buffer
-                            val resampled = resampleChunkForPreCache(combinedShorts, sampleRate, channelCount, outSampleRate, outChannels)
-                            leftoverShorts = resampled.second
-                            
-                            // Write resampled data to file
+
+                            // Resample chunk (simple, no leftover)
+                            val resampled = resampleChunkForPreCache(chunkShorts, sampleRate, channelCount, outSampleRate, outChannels)
                             val outBytes = resampled.first
                             fos.write(outBytes)
                             resampledBytes += outBytes.size
@@ -1056,34 +1040,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     else -> {}
                 }
             }
-            
-            // Flush any remaining samples in leftover
-            if (leftoverShorts != null && leftoverShorts!!.size >= channelCount) {
-                // Process remaining samples - produce as many output samples as possible
-                val remainingShorts = leftoverShorts!!
-                val inFrames = remainingShorts.size / channelCount
-                val outFrames = (inFrames / ratio).toInt()
-                if (outFrames > 0) {
-                    val outShorts = ShortArray(outFrames * outChannels)
-                    var outIdx = 0; var inPos = 0.0
-                    while (outIdx < outShorts.size) {
-                        val srcFrame = inPos.toInt()
-                        val srcIdx = srcFrame * channelCount
-                        if (srcFrame + 1 >= inFrames) break
-                        val nextIdx = (srcFrame + 1) * channelCount
-                        val frac = inPos - srcFrame
-                        outShorts[outIdx] = ((remainingShorts[srcIdx] * (1.0 - frac) + remainingShorts[nextIdx] * frac).toInt()).toShort()
-                        outIdx++; inPos += ratio
-                    }
-                    if (outIdx > 0) {
-                        val finalBytes = ByteArray(outIdx * 2)
-                        java.nio.ByteBuffer.wrap(finalBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts, 0, outIdx)
-                        fos.write(finalBytes)
-                        resampledBytes += finalBytes.size
-                    }
-                }
-            }
-            
+
             writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes raw bytes, resampled to $resampledBytes bytes")
             writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2 * outChannels)}s")
 
@@ -1102,11 +1059,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * 流式重采样PCM chunk，返回(重采样字节, 剩余未消费的shorts)
-     * 剩余shorts需要拼接到下一个chunk的开头以实现无缝重采样
+     * 简单线性插值重采样函数（无leftover机制）
+     * 输入: 任意采样率/声道的PCM shorts
+     * 输出: 目标采样率/声道的PCM字节数组
+     *
+     * 不使用leftover跨chunk拼接，避免v2.0.0的leftover计算误差导致的"低沉缓慢"问题。
+     * chunk边界处的微小不连续对语音内容几乎不可感知。
      */
     private fun resampleChunkForPreCache(input: ShortArray, inSampleRate: Int, inChannels: Int,
                                          outSampleRate: Int, outChannels: Int): Pair<ByteArray, ShortArray?> {
+        // 采样率和声道都匹配时，直接转换为字节数组
         if (inSampleRate == outSampleRate && inChannels == outChannels) {
             val bytes = ByteArray(input.size * 2)
             java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(input)
@@ -1115,47 +1077,59 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val ratio = inSampleRate.toDouble() / outSampleRate
         val inputFrames = input.size / inChannels
-        
-        // We need at least 2 frames to interpolate. Keep at least 1 frame as leftover for interpolation with next chunk.
-        val usableFrames = inputFrames - 1
-        if (usableFrames <= 0) {
-            return Pair(ByteArray(0), input)
-        }
-        
-        val outFrames = (usableFrames / ratio).toInt()
-        if (outFrames <= 0) {
-            return Pair(ByteArray(0), input)
-        }
-        
-        val outShorts = ShortArray(outFrames * outChannels)
-        var outIdx = 0; var inPos = 0.0
-        while (outIdx < outShorts.size) {
-            val srcFrame = inPos.toInt()
-            if (srcFrame + 1 >= inputFrames) break  // Need next frame for interpolation
-            val srcIdx = srcFrame * inChannels
-            val nextIdx = (srcFrame + 1) * inChannels
-            val frac = inPos - srcFrame
-            // Simple linear interpolation (take first channel for stereo->mono)
-            val sample = (input[srcIdx] * (1.0 - frac) + input[nextIdx] * frac).toInt().toShort()
-            for (c in 0 until outChannels) {
-                outShorts[outIdx + c] = sample
+
+        // Step 1: 转换为单声道（取第一个声道）
+        val monoInput: ShortArray = if (inChannels > 1) {
+            val arr = ShortArray(inputFrames)
+            for (i in 0 until inputFrames) {
+                arr[i] = input[i * inChannels]
             }
-            outIdx += outChannels
-            inPos += ratio
+            arr
+        } else {
+            input
         }
-        
-        // Calculate leftover: how many input frames were NOT fully consumed
-        val consumedFrames = inPos.toInt()
-        val leftoverFrames = inputFrames - consumedFrames
-        val leftoverShorts = if (leftoverFrames > 0) {
-            val leftover = ShortArray(leftoverFrames * inChannels)
-            System.arraycopy(input, consumedFrames * inChannels, leftover, 0, leftover.size)
-            leftover
-        } else null
-        
-        val outBytes = ByteArray(outIdx * 2)
-        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts, 0, outIdx)
-        return Pair(outBytes, leftoverShorts)
+
+        // Step 2: 线性插值重采样到目标采样率
+        // 需要至少2个输入样本才能做插值
+        if (monoInput.size < 2) {
+            return Pair(ByteArray(0), null)
+        }
+
+        val outFrames = (inputFrames / ratio).toInt()
+        if (outFrames <= 0) {
+            return Pair(ByteArray(0), null)
+        }
+
+        val monoOut = ShortArray(outFrames)
+        for (i in 0 until outFrames) {
+            val srcPos = i * ratio
+            val srcIdx = srcPos.toInt()
+            val frac = srcPos - srcIdx
+            if (srcIdx + 1 >= monoInput.size) {
+                // 超出范围则使用最后一个样本
+                monoOut[i] = monoInput[monoInput.size - 1]
+            } else {
+                monoOut[i] = ((monoInput[srcIdx] * (1.0 - frac) +
+                        monoInput[srcIdx + 1] * frac).toInt()).toShort()
+            }
+        }
+
+        // Step 3: 如果输出是多声道，复制到所有声道
+        val finalShorts: ShortArray = if (outChannels > 1) {
+            val arr = ShortArray(outFrames * outChannels)
+            for (i in 0 until outFrames) {
+                for (c in 0 until outChannels) {
+                    arr[i * outChannels + c] = monoOut[i]
+                }
+            }
+            arr
+        } else {
+            monoOut
+        }
+
+        val outBytes = ByteArray(finalShorts.size * 2)
+        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(finalShorts)
+        return Pair(outBytes, null)  // 不使用leftover
     }
 
     private fun applySavedPosition() {
