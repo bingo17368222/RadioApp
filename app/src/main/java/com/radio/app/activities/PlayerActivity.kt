@@ -596,7 +596,22 @@ class PlayerActivity : AppCompatActivity() {
         }
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
-        binding.tvCurrentTime.text = "00:00 / 00:00"
+
+        // 预填充保存的播放位置，避免从00:00开始闪烁（切回app时看到的"抖动"）
+        if (!isFreshStart && currentEpisode != null) {
+            val episodeKey = "${currentEpisode!!.stationId}::${currentEpisode!!.title}"
+            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            if (savedPos > 0) {
+                binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                binding.seekBar.progress = savedPos.toInt()
+                binding.tvLiveIndicator.text = "恢复中..."
+                android.util.Log.d("PlayerActivity", "initViews: pre-filled saved position ${savedPos}ms to avoid UI flicker")
+            } else {
+                binding.tvCurrentTime.text = "00:00 / 00:00"
+            }
+        } else {
+            binding.tvCurrentTime.text = "00:00 / 00:00"
+        }
         binding.tvTotalTime.text = "00:00"
         binding.tvCacheProgress.text = "缓存: 0%"
         binding.progressBuffer.visibility = View.GONE

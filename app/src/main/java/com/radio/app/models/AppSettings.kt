@@ -202,6 +202,13 @@ class AppSettings private constructor() {
         } else {
             dislikedEpisodes.add(key)
             save(context)
+            // 同时保存到 all_episodes 持久化存储，确保 dislike 筛选能跨天找到该节目
+            if (!episode.audioUrl.isNullOrBlank()) {
+                try {
+                    val prefs = context.getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+                    prefs.edit().putString(episode.audioUrl, com.google.gson.Gson().toJson(episode)).apply()
+                } catch (e: Exception) { /* ignore */ }
+            }
             true
         }
     }

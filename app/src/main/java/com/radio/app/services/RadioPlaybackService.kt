@@ -883,27 +883,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch
                 }
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-                val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
-                    // Validate format matches v2.0.1 (16000Hz mono, version=2)
+                    // Validate format - must have .info file with version=3 (original rate, no resampling)
                     val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-                    if (infoFile.exists()) {
-                        val info = infoFile.readText()
-                        val srMatch = Regex("sampleRate=(\\d+)").find(info)
-                        val chMatch = Regex("channels=(\\d+)").find(info)
-                        val existingSr = srMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                        val existingCh = chMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                        if (existingSr == 16000 && existingCh == 1 && info.contains("version=2")) {
-                            writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
-                            return@launch
-                        }
-                        writePreCacheLog("startPcmPreDecode: PCM format outdated (sr=$existingSr, ch=$existingCh), regenerating")
-                        pcmFile.delete()
-                        infoFile.delete()
-                    } else {
-                        writePreCacheLog("startPcmPreDecode: PCM exists but no .info file, regenerating")
-                        pcmFile.delete()
+                    if (infoFile.exists() && infoFile.readText().contains("version=3")) {
+                        writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
+                        return@launch
                     }
+                    writePreCacheLog("startPcmPreDecode: PCM format outdated, regenerating")
+                    pcmFile.delete()
+                    infoFile.delete()
+                    File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav").delete()
+                } else if (pcmFile.exists()) {
+                    pcmFile.delete()
                 }
                 writePreCacheLog("startPcmPreDecode: decoding ${audioFile.length()} bytes from ${audioFile.name} to PCM...")
                 val startTime = System.currentTimeMillis()
@@ -977,31 +970,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 检查PCM是否已解码
         val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
         if (pcmCacheDir != null) {
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
-                // Check if existing PCM needs regeneration (format changed in v2.0.1)
+                // Check if existing PCM needs regeneration (format changed in v2.0.5: original rate, version=3)
                 val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-                if (infoFile.exists()) {
-                    val info = infoFile.readText()
-                    val srMatch = Regex("sampleRate=(\\d+)").find(info)
-                    val chMatch = Regex("channels=(\\d+)").find(info)
-                    val existingSr = srMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    val existingCh = chMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    if (existingSr != 16000 || existingCh != 1 || !info.contains("version=2")) {
-                        writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated (sr=$existingSr, ch=$existingCh, ver=old), regenerating")
-                        pcmFile.delete()
-                        infoFile.delete()
-                        // Fall through to generate new PCM
-                    } else {
-                        writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
-                        return
-                    }
-                } else {
-                    // No .info file, regenerate
-                    writePreCacheLog("startPcmPreDecodeIfNeeded: PCM exists but no .info file, regenerating")
-                    pcmFile.delete()
-                    // Fall through to generate new PCM
+                if (infoFile.exists() && infoFile.readText().contains("version=3")) {
+                    writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
+                    return
                 }
+                writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated, regenerating")
+                pcmFile.delete()
+                infoFile.delete()
+                File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav").delete()
             }
         }
         writePreCacheLog("startPcmPreDecodeIfNeeded: triggering PCM pre-decode from normal cache for ${episode.title}")
@@ -1039,9 +1019,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            val outSampleRate = 16000
-            val outChannels = 1
-            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, will resample to ${outSampleRate}Hz mono (simple, no leftover)")
+            // 保持原始采样率和声道数，避免重采样导致音质下降/速度异常
+            // Vosk如需16kHz可在Vosk端自行重采样
+            val outSampleRate = sampleRate
+            val outChannels = channelCount
+            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, keeping original (no resampling)")
 
             fos = FileOutputStream(pcmFile)
             val bufferInfo = MediaCodec.BufferInfo()
@@ -1050,7 +1032,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             var outputDone = false
             var decodedBytes = 0L
             var resampledBytes = 0L
-            val maxPcmBytes = 60_000_000L // 30min @ 16kHz mono 16bit = ~57MB
+            val maxPcmBytes = 300_000_000L // ~30min @ 48kHz stereo 16bit
             val decodeStartTime = System.currentTimeMillis()
             val maxDecodeTimeMs = 5 * 60 * 1000L
 
@@ -1114,7 +1096,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             // After decode loop, write sample rate info
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=2")
+            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=3")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
 
             // Also create a WAV file for reliable playback with MediaPlayer
