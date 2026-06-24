@@ -1033,6 +1033,11 @@ class PlayerActivity : AppCompatActivity() {
         val episodes = episodeList
         if (episodes.isEmpty()) return
 
+        // Ensure currentEpisodeIndex is correct
+        val actualIdx = episodes.indexOfFirst { it.id == currentEpisode?.id }
+        if (actualIdx >= 0) currentEpisodeIndex = actualIdx
+        android.util.Log.d("PlayerActivity", "playNextEpisode: currentIdx=$currentEpisodeIndex, listSize=${episodes.size}")
+
         var targetIdx = currentEpisodeIndex + 1
         var skipCount = 0
         while (targetIdx < episodes.size && skipCount < 20) {
@@ -1042,7 +1047,10 @@ class PlayerActivity : AppCompatActivity() {
                 currentEpisode = ep
                 currentEpisodeIndex = targetIdx
                 saveLastEpisode()
-                playbackService?.playEpisode(ep, false)
+                val episodeKey = "${ep.stationId}::${ep.title}"
+                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val startPos = if (savedPos > 0) savedPos else -1L
+                playbackService?.playEpisode(ep, false, startPos)
                 voiceSegments = generateSimulatedSegments()
                 if (voiceSegments.isNotEmpty()) updateSegmentsUI()
                 updateUI()
@@ -1068,6 +1076,11 @@ class PlayerActivity : AppCompatActivity() {
         val episodes = episodeList
         if (episodes.isEmpty()) return
 
+        // Ensure currentEpisodeIndex is correct
+        val actualIdx = episodes.indexOfFirst { it.id == currentEpisode?.id }
+        if (actualIdx >= 0) currentEpisodeIndex = actualIdx
+        android.util.Log.d("PlayerActivity", "playPrevEpisode: currentIdx=$currentEpisodeIndex, listSize=${episodes.size}")
+
         var targetIdx = currentEpisodeIndex - 1
         var skipCount = 0
         while (targetIdx >= 0 && skipCount < 20) {
@@ -1076,7 +1089,10 @@ class PlayerActivity : AppCompatActivity() {
                 currentEpisode = ep
                 currentEpisodeIndex = targetIdx
                 saveLastEpisode()
-                playbackService?.playEpisode(ep, false)
+                val episodeKey = "${ep.stationId}::${ep.title}"
+                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val startPos = if (savedPos > 0) savedPos else -1L
+                playbackService?.playEpisode(ep, false, startPos)
                 voiceSegments = generateSimulatedSegments()
                 if (voiceSegments.isNotEmpty()) updateSegmentsUI()
                 updateUI()

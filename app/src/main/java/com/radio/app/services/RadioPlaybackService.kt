@@ -816,7 +816,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch
                 }
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
                     return@launch
@@ -893,7 +893,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 检查PCM是否已解码
         val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
         if (pcmCacheDir != null) {
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
                 writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
                 return
@@ -994,6 +994,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             writePreCacheLog("decodeToPcmForPreCache: decoded $decodedBytes PCM bytes")
             writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2)}s")
+
+            // After decode loop, write sample rate info
+            val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels")
+            writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
             throw e
@@ -1516,14 +1521,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         ensurePlayerInitialized()
         try {
             player?.let {
-                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
-                    // 在 prepare 之前 seek，ExoPlayer 会在 seek 后的位置开始 prepare
-                    it.seekTo(startPositionMs)
-                    it.playWhenReady = true
+                    // Use setMediaItem with start position - ExoPlayer will prepare at this position
+                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl), startPositionMs)
                 } else {
-                    it.playWhenReady = true
+                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 }
+                it.playWhenReady = true
                 it.prepare()
             }
             requestAudioFocus(); updateNotification()
@@ -1595,16 +1599,69 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun notifyPrevEpisode() {
-        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-            putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "prev_episode")
+        // Handle directly in service
+        val preCacheList = loadPreCacheList()
+        val settings = AppSettings.getInstance(this)
+        val curId = currentEpisode?.id ?: return
+        var foundCurrent = false
+        var prevEpisode: Episode? = null
+        for (i in preCacheList.indices.reversed()) {
+            val ep = preCacheList[i]
+            if (ep.id == curId) {
+                foundCurrent = true
+                continue
+            }
+            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                prevEpisode = ep
+                break
+            }
         }
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        if (prevEpisode != null) {
+            // Check for saved position
+            val episodeKey = "${prevEpisode.stationId}::${prevEpisode.title}"
+            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val startPos = if (savedPos > 0) savedPos else -1L
+            playEpisode(prevEpisode, false, startPos)
+            callback?.onEpisodeChanged(prevEpisode)
+        } else {
+            // Notify Activity for cross-day handling
+            val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+                putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "prev_episode")
+            }
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        }
     }
     private fun notifyNextEpisode() {
-        val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-            putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")
+        // Handle directly in service
+        val preCacheList = loadPreCacheList()
+        val settings = AppSettings.getInstance(this)
+        val curId = currentEpisode?.id ?: return
+        var foundCurrent = false
+        var nextEpisode: Episode? = null
+        for (ep in preCacheList) {
+            if (!foundCurrent) {
+                if (ep.id == curId) foundCurrent = true
+                continue
+            }
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                nextEpisode = ep
+                break
+            }
         }
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        if (nextEpisode != null) {
+            // Check for saved position
+            val episodeKey = "${nextEpisode.stationId}::${nextEpisode.title}"
+            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val startPos = if (savedPos > 0) savedPos else -1L
+            playEpisode(nextEpisode, false, startPos)
+            callback?.onEpisodeChanged(nextEpisode)
+        } else {
+            // Notify Activity for cross-day handling
+            val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+                putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")
+            }
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        }
     }
 
     /**
@@ -1635,7 +1692,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 return
             }
             Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")
-            playEpisode(nextEpisode, false)
+            val episodeKey = "${nextEpisode.stationId}::${nextEpisode.title}"
+            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val startPos = if (savedPos > 0) savedPos else -1L
+            playEpisode(nextEpisode, false, startPos)
             // 通过回调通知 Activity 更新界面
             callback?.onEpisodeChanged(nextEpisode)
         } catch (e: Exception) {

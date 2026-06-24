@@ -37,6 +37,7 @@ class SettingsFragment : Fragment() {
     private var previousTheme: String? = null
     private var suppressListeners = true
     private var audioTrack: android.media.AudioTrack? = null
+    @Volatile private var pcmPlaybackActive = false
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -565,17 +566,25 @@ class SettingsFragment : Fragment() {
     }
 
     private fun playPcmFile(pcmFile: File) {
-        // Stop any current playback
-        audioTrack?.stop()
-        audioTrack?.release()
+        pcmPlaybackActive = false  // Stop any current playback first
+        try { audioTrack?.stop() } catch (_: Exception) {}
+        try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
 
         try {
             val pcmData = pcmFile.readBytes()
-            // PCM format: 16kHz, mono, 16-bit
-            val sampleRate = 16000
-            val expectedDurationSec = pcmData.size / (sampleRate * 2) // 16-bit mono
-            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size} bytes, expected duration=${expectedDurationSec}s")
+
+            // Read sample rate from .info file, default to 16000
+            val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+            var sampleRate = 16000
+            if (infoFile.exists()) {
+                val info = infoFile.readText()
+                val srMatch = Regex("sampleRate=(\\d+)").find(info)
+                if (srMatch != null) sampleRate = srMatch.groupValues[1].toInt()
+            }
+
+            val expectedDurationSec = pcmData.size / (sampleRate * 2)
+            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size} bytes, sampleRate=$sampleRate, expected duration=${expectedDurationSec}s")
 
             val bufferSize = android.media.AudioTrack.getMinBufferSize(
                 sampleRate,
@@ -601,6 +610,9 @@ class SettingsFragment : Fragment() {
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
 
+            // Before starting playback:
+            pcmPlaybackActive = true
+
             if (mode == android.media.AudioTrack.MODE_STATIC) {
                 audioTrack?.write(pcmData, 0, pcmData.size)
                 audioTrack?.play()
@@ -609,10 +621,15 @@ class SettingsFragment : Fragment() {
                 Thread {
                     var offset = 0
                     val chunkSize = bufferSize
-                    while (offset < pcmData.size && audioTrack != null) {
-                        val written = audioTrack?.write(pcmData, offset, minOf(chunkSize, pcmData.size - offset)) ?: 0
-                        if (written <= 0) break
-                        offset += written
+                    while (offset < pcmData.size && pcmPlaybackActive && audioTrack != null) {
+                        try {
+                            val track = audioTrack ?: break
+                            val written = track.write(pcmData, offset, minOf(chunkSize, pcmData.size - offset))
+                            if (written <= 0) break
+                            offset += written
+                        } catch (e: Exception) {
+                            break
+                        }
                     }
                 }.start()
             }
@@ -624,8 +641,9 @@ class SettingsFragment : Fragment() {
     }
 
     private fun stopPcmPlayback() {
-        audioTrack?.stop()
-        audioTrack?.release()
+        pcmPlaybackActive = false
+        try { audioTrack?.stop() } catch (_: Exception) {}
+        try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
         android.widget.Toast.makeText(requireContext(), "已停止播放", android.widget.Toast.LENGTH_SHORT).show()
     }
