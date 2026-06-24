@@ -38,7 +38,8 @@ class OfflineEngineActivity : AppCompatActivity() {
         val desc: String,
         val size: String,
         val downloadUrl: String?,
-        val modelDir: String
+        val modelDir: String,
+        val unavailable: Boolean = false
     )
 
     private val engines = arrayOf(
@@ -82,10 +83,11 @@ class OfflineEngineActivity : AppCompatActivity() {
         // ===== 阿里 MNN-LLM 离线引擎 =====
         EngineInfo(
             "阿里 MNN-LLM (设备端)",
-            "阿里巴巴 MNN 推理引擎\n大小: 约500MB | 推理速度: 快(Tensor加速)\n状态: 支持下载安装\n适用: 本地AI内容分析、干货/水分分类",
-            "约500MB",
-            "https://github.com/alibaba/MNN/releases/download/v1.1.0/MNN_Android_1.1.0.zip",
-            "mnn-llm"
+            "阿里巴巴 MNN 推理引擎\n状态: 暂不可用\nMNN-LLM 集成功能正在规划中，目前尚未提供可下载的安装包。\n适用: 本地AI内容分析、干货/水分分类",
+            "—",
+            null,
+            "mnn-llm",
+            unavailable = true
         ),
 
         // ===== Vosk 离线语音识别（APK内置 + 可下载） =====
@@ -156,7 +158,7 @@ class OfflineEngineActivity : AppCompatActivity() {
 
         val isBuiltin = engine.downloadUrl == null
         if (isBuiltin) {
-            btnAction.text = "已内置"
+            btnAction.text = if (engine.unavailable) "暂不可用" else "已内置"
             btnAction.isEnabled = false
             btnAction.alpha = 0.6f
         } else {

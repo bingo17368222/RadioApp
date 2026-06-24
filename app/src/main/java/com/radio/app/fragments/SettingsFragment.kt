@@ -633,8 +633,66 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed to parse precache_list", e)
             }
 
+            // 3) 读取 episode_list_cache（PlayerActivity 缓存的节目列表，org.json.JSONArray，key="episodes"）
+            //    可能包含与 episode_list/precache_list 不同日期的节目
+            try {
+                val episodeCachePrefs = requireContext().getSharedPreferences("episode_list_cache", android.content.Context.MODE_PRIVATE)
+                episodeCachePrefs.getString("episodes", null)?.let { json ->
+                    val arr = org.json.JSONArray(json)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        processEpisode(
+                            obj.optString("id", ""),
+                            obj.optString("station_id", ""),
+                            obj.optString("title", ""),
+                            obj.optString("audio_url", "")
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to parse episode_list_cache", e)
+            }
+
+            // 4) 读取 last_episode（最近播放的节目，可能来自任意日期）
+            try {
+                val lastEpPrefs = requireContext().getSharedPreferences("last_episode", android.content.Context.MODE_PRIVATE)
+                val lastAudioUrl = lastEpPrefs.getString("audio_url", null)
+                if (!lastAudioUrl.isNullOrBlank()) {
+                    processEpisode(
+                        lastEpPrefs.getString("episode_id", "") ?: "",
+                        lastEpPrefs.getString("station_id", "") ?: "",
+                        lastEpPrefs.getString("title", "") ?: "",
+                        lastAudioUrl
+                    )
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to parse last_episode", e)
+            }
+
+            // 5) 读取 playback_positions 的所有键（stationId::title），识别按标题不喜欢的节目（用于调试）
+            //    playback_positions 记录了所有播放过的节目（跨天），可用于发现不在任何列表中的不喜欢节目
+            try {
+                val posPrefs = requireContext().getSharedPreferences("playback_positions", android.content.Context.MODE_PRIVATE)
+                val allKeys = posPrefs.all.keys
+                var dislikedByKeyCount = 0
+                for (key in allKeys) {
+                    // 键格式为 "stationId::title"
+                    val parts = key.split("::", limit = 2)
+                    if (parts.size == 2) {
+                        val stationId = parts[0]
+                        val title = parts[1]
+                        if (settings.isDislikedByTitle(stationId, title)) {
+                            dislikedByKeyCount++
+                        }
+                    }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: playback_positions has ${allKeys.size} keys, $dislikedByKeyCount are disliked by title")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed to scan playback_positions", e)
+            }
+
             android.util.Log.d("SettingsFragment", "Dislike filter: found ${dislikedFileNames.size} disliked file names: $dislikedFileNames")
-            android.util.Log.d("SettingsFragment", "Cache files: ${files.map { it.name }}")
+            android.util.Log.d("SettingsFragment", "Cache files count: ${files.size}, names: ${files.map { it.name }}")
 
             // Select files that match disliked episodes
             for (i in files.indices) {

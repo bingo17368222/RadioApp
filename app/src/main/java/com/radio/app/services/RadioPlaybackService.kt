@@ -154,6 +154,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var positionRestoreRequested = false
     private var pendingStartPosition: Long = -1L
     private var isSeekingToPosition = false
+    private var lastPositionRestoreTime = 0L
     private var notificationStyle = "full"
     // SharedPreferences监听器，用于热切换通知栏样式
     private var prefChangeListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
@@ -852,7 +853,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch
                 }
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-                val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     writePreCacheLog("startPcmPreDecode: PCM cache already exists for $episodeTitle, skipping")
                     return@launch
@@ -929,7 +930,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 检查PCM是否已解码
         val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
         if (pcmCacheDir != null) {
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16000.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
                 writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
                 return
@@ -971,14 +972,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             fos = FileOutputStream(pcmFile)
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            val outSampleRate = 16000
-            val outChannels = 1
-            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, outSampleRate=$outSampleRate, ratio=${sampleRate.toDouble()/outSampleRate}")
+            val outSampleRate = sampleRate  // Keep original sample rate - no resampling
+            val outChannels = channelCount  // Keep original channels - no channel conversion
+            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount (no resampling)")
 
             var inputDone = false
             var outputDone = false
             var decodedBytes = 0L
-            val maxPcmBytes = 60_000_000L // 30min @ 16kHz mono 16bit
+            val maxPcmBytes = 300_000_000L // 30min @ 48kHz stereo 16bit (generous upper bound)
             val decodeStartTime = System.currentTimeMillis()
             val maxDecodeTimeMs = 5 * 60 * 1000L
 
@@ -1015,9 +1016,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             val pcmBytes = ByteArray(bufferInfo.size)
                             buffer.position(bufferInfo.offset)
                             buffer.get(pcmBytes)
-                            val resampled = resamplePcmForPreCache(pcmBytes, sampleRate, channelCount, outSampleRate, outChannels)
-                            fos.write(resampled)
-                            decodedBytes += resampled.size
+                            fos.write(pcmBytes)
+                            decodedBytes += pcmBytes.size
                         }
                         codec.releaseOutputBuffer(outIdx, false)
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -1033,7 +1033,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             // After decode loop, write sample rate info
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels")
+            infoFile.writeText("sampleRate=$sampleRate\nchannels=$channelCount")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
@@ -1086,42 +1086,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         if (savedPos > 0 && !isLive) {
             isSeekingToPosition = true
-            player?.playWhenReady = false
+            lastPositionRestoreTime = System.currentTimeMillis()
             player?.seekTo(savedPos)
-            Log.d(TAG, "Restored position: ${savedPos}ms")
-            // Poll for seek completion - check if player position is close to target
-            val targetPos = savedPos
-            positionSaveHandler?.postDelayed(object : Runnable {
-                override fun run() {
-                    val currentPos = player?.currentPosition ?: -1L
-                    if (isSeekingToPosition) {
-                        if (currentPos >= targetPos - 500 && currentPos <= targetPos + 5000) {
-                            // Seek completed - position is at or near target
-                            Log.d(TAG, "Seek completed: currentPos=$currentPos, targetPos=$targetPos, resuming playback")
-                            player?.playWhenReady = true
-                            positionSaveHandler?.postDelayed({ isSeekingToPosition = false }, 2000)
-                        } else {
-                            // Still seeking, keep polling
-                            positionSaveHandler?.postDelayed(this, 200)
-                        }
-                    }
-                }
-            }, 200)
-            // Fallback: force resume after 5 seconds
+            player?.playWhenReady = true
+            Log.d(TAG, "Restored position: ${savedPos}ms, will not save position for 30s")
+            // Clear isSeekingToPosition after 30 seconds (enough for streaming seek to complete)
             positionSaveHandler?.postDelayed({
-                if (isSeekingToPosition) {
-                    Log.w(TAG, "Seek timeout, forcing playback resume at pos=${player?.currentPosition}")
-                    player?.playWhenReady = true
-                    isSeekingToPosition = false
-                }
-            }, 5000)
+                isSeekingToPosition = false
+                Log.d(TAG, "Position restore grace period ended, position saving enabled")
+            }, 30000)
         }
     }
 
     private fun startPositionSaver() {
         positionSaveRunnable = Runnable {
-            if (savePlaybackPosition && !isLive && prepared && player?.isPlaying == true
-                && !isSeekingToPosition && pendingStartPosition < 0) {
+            if (savePlaybackPosition && !isLive && prepared && player?.isPlaying == true) {
                 saveCurrentPosition()
             }
             positionSaveHandler?.postDelayed(positionSaveRunnable!!, POSITION_SAVE_INTERVAL)
@@ -1130,7 +1109,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun saveCurrentPosition() {
-        if (isSeekingToPosition || pendingStartPosition >= 0) return  // Don't save during seek/restore
+        if (isSeekingToPosition || pendingStartPosition >= 0) return
+        if (System.currentTimeMillis() - lastPositionRestoreTime < 30000) return  // Don't save for 30s after restore
         val ep = currentEpisode ?: return
         val pos = player?.currentPosition ?: return
         if (pos <= 0) return
@@ -1658,6 +1638,47 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         for (seg in segments) { if (seg.start > currentPos) { seekTo(seg.start); return } }
     }
 
+    private fun fetchCrossDayEpisode(direction: Int): Episode? {
+        val curEp = currentEpisode ?: return null
+        val stationId = curEp.stationId
+        val broadcastAt = curEp.broadcastAt ?: return null
+
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+        dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+
+        try {
+            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+            cal.time = dateFormat.parse(broadcastAt.take(10)) ?: return null
+            cal.add(java.util.Calendar.DAY_OF_YEAR, direction)
+            val targetDate = dateFormat.format(cal.time)
+
+            Log.d(TAG, "fetchCrossDayEpisode: fetching $stationId on $targetDate (direction=$direction)")
+            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+            val episodes = apiService.fetchEpisodesByDateSync(stationId, targetDate) ?: return null
+
+            val settings = AppSettings.getInstance(this)
+            if (direction > 0) {
+                // Next day: find first non-disliked episode
+                for (ep in episodes) {
+                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                        return ep
+                    }
+                }
+            } else {
+                // Previous day: find last non-disliked episode
+                for (i in episodes.indices.reversed()) {
+                    val ep = episodes[i]
+                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                        return ep
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchCrossDayEpisode error", e)
+        }
+        return null
+    }
+
     private fun notifyPrevEpisode() {
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id ?: return
@@ -1684,10 +1705,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
             updateNotification()
         } else {
-            val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-                putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "prev_episode")
+            // Try cross-day fetch
+            val crossDayEp = fetchCrossDayEpisode(-1)
+            if (crossDayEp != null) {
+                val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
+                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val startPos = if (savedPos > 0) savedPos else -1L
+                playEpisode(crossDayEp, false, startPos)
+                callback?.onEpisodeChanged(crossDayEp)
+                val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+                    putExtra(EXTRA_IS_PLAYING, true)
+                    putExtra("episode_title", crossDayEp.title)
+                    putExtra("episode_id", crossDayEp.id)
+                }
+                LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                updateNotification()
+            } else {
+                Log.d(TAG, "notifyPrevEpisode: no more episodes available")
             }
-            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
         }
     }
     private fun notifyNextEpisode() {
@@ -1716,10 +1751,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
             updateNotification()
         } else {
-            val intent = Intent(BROADCAST_STATE_CHANGED).apply {
-                putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")
+            // Try cross-day fetch
+            val crossDayEp = fetchCrossDayEpisode(1)
+            if (crossDayEp != null) {
+                val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
+                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val startPos = if (savedPos > 0) savedPos else -1L
+                playEpisode(crossDayEp, false, startPos)
+                callback?.onEpisodeChanged(crossDayEp)
+                val intent = Intent(BROADCAST_STATE_CHANGED).apply {
+                    putExtra(EXTRA_IS_PLAYING, true)
+                    putExtra("episode_title", crossDayEp.title)
+                    putExtra("episode_id", crossDayEp.id)
+                }
+                LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                updateNotification()
+            } else {
+                Log.d(TAG, "notifyNextEpisode: no more episodes available")
             }
-            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
         }
     }
 
