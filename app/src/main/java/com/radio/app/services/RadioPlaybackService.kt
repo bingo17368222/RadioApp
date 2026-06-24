@@ -23,6 +23,8 @@ import android.view.KeyEvent
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.radio.app.R
 import com.radio.app.RadioApplication
 import com.radio.app.activities.PlayerActivity
@@ -317,14 +319,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     prepared = true
                                     isRetrying = false
                                     errorRetryCount = 0
-                                    // 位置恢复已在 prepare 前 seek 完成，无需在此处理
+                                    // Apply saved position via seek in STATE_READY (when player is prepared)
                                     if (positionRestoreRequested) {
                                         positionRestoreRequested = false
-                                        // 位置已通过 prepare 前 seek 恢复，清除 pendingStartPosition
-                                        pendingStartPosition = -1L
+                                        applySavedPosition()
+                                    }
+                                    // If seeking, resume playback; isSeekingToPosition cleared with delay
+                                    if (isSeekingToPosition && player?.playWhenReady == false) {
+                                        player?.playWhenReady = true
                                     }
                                     callback?.onStateChanged(true)
-                                    isSeekingToPosition = false
+                                    // Delay clearing isSeekingToPosition to allow seek to complete
+                                    positionSaveHandler?.postDelayed({
+                                        isSeekingToPosition = false
+                                    }, 3000)
                                     updateNotification()
                                     // 后台下载音频文件
                                     startBackgroundDownload()
@@ -700,6 +708,42 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    private fun loadEpisodeList(): List<Episode> {
+        val prefs = getSharedPreferences("episode_list", MODE_PRIVATE)
+        val json = prefs.getString("list", null) ?: return emptyList()
+        return try {
+            val gson = Gson()
+            val type = object : TypeToken<List<Episode>>() {}.type
+            gson.fromJson(json, type)
+        } catch (e: Exception) { emptyList() }
+    }
+
+    private fun findPrevInList(list: List<Episode>, curId: String, settings: AppSettings): Episode? {
+        var foundCurrent = false
+        for (i in list.indices.reversed()) {
+            val ep = list[i]
+            if (ep.id == curId) { foundCurrent = true; continue }
+            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                return ep
+            }
+        }
+        return null
+    }
+
+    private fun findNextInList(list: List<Episode>, curId: String, settings: AppSettings): Episode? {
+        var foundCurrent = false
+        for (ep in list) {
+            if (!foundCurrent) {
+                if (ep.id == curId) foundCurrent = true
+                continue
+            }
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                return ep
+            }
+        }
+        return null
     }
 
     fun setPreCacheEpisodeList(episodes: List<Episode>) {
@@ -1521,13 +1565,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         ensurePlayerInitialized()
         try {
             player?.let {
+                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
-                    // Use setMediaItem with start position - ExoPlayer will prepare at this position
-                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl), startPositionMs)
+                    it.playWhenReady = false  // Don't start playing until seek completes
                 } else {
-                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                    it.playWhenReady = true
                 }
-                it.playWhenReady = true
                 it.prepare()
             }
             requestAudioFocus(); updateNotification()
@@ -1599,32 +1642,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun notifyPrevEpisode() {
-        // Handle directly in service
-        val preCacheList = loadPreCacheList()
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id ?: return
-        var foundCurrent = false
-        var prevEpisode: Episode? = null
-        for (i in preCacheList.indices.reversed()) {
-            val ep = preCacheList[i]
-            if (ep.id == curId) {
-                foundCurrent = true
-                continue
-            }
-            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                prevEpisode = ep
-                break
-            }
+
+        // Try preCacheList first
+        var prevEpisode = findPrevInList(loadPreCacheList(), curId, settings)
+        // Fallback to saved episode list
+        if (prevEpisode == null) {
+            prevEpisode = findPrevInList(loadEpisodeList(), curId, settings)
         }
+
         if (prevEpisode != null) {
-            // Check for saved position
             val episodeKey = "${prevEpisode.stationId}::${prevEpisode.title}"
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(prevEpisode, false, startPos)
             callback?.onEpisodeChanged(prevEpisode)
         } else {
-            // Notify Activity for cross-day handling
             val intent = Intent(BROADCAST_STATE_CHANGED).apply {
                 putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "prev_episode")
             }
@@ -1632,31 +1666,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
     private fun notifyNextEpisode() {
-        // Handle directly in service
-        val preCacheList = loadPreCacheList()
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id ?: return
-        var foundCurrent = false
-        var nextEpisode: Episode? = null
-        for (ep in preCacheList) {
-            if (!foundCurrent) {
-                if (ep.id == curId) foundCurrent = true
-                continue
-            }
-            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                nextEpisode = ep
-                break
-            }
+
+        // Try preCacheList first
+        var nextEpisode = findNextInList(loadPreCacheList(), curId, settings)
+        // Fallback to saved episode list
+        if (nextEpisode == null) {
+            nextEpisode = findNextInList(loadEpisodeList(), curId, settings)
         }
+
         if (nextEpisode != null) {
-            // Check for saved position
             val episodeKey = "${nextEpisode.stationId}::${nextEpisode.title}"
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
             callback?.onEpisodeChanged(nextEpisode)
         } else {
-            // Notify Activity for cross-day handling
             val intent = Intent(BROADCAST_STATE_CHANGED).apply {
                 putExtra(EXTRA_IS_PLAYING, false); putExtra("action", "next_episode")
             }

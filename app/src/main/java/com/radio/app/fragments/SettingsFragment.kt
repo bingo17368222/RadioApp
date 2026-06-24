@@ -503,9 +503,16 @@ class SettingsFragment : Fragment() {
         val btnSelectAll = Button(requireContext()).apply { text = "全选"; textSize = 13f }
         val btnSelectNone = Button(requireContext()).apply { text = "全不选"; textSize = 13f }
         val btnInvert = Button(requireContext()).apply { text = "反选"; textSize = 13f }
+        val btnDislikeFilter = Button(requireContext()).apply {
+            text = "不喜欢"
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(0xFFFF9800.toInt())
+            textSize = 13f
+        }
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnDislikeFilter, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         contentView.addView(btnContainer)
 
@@ -560,13 +567,41 @@ class SettingsFragment : Fragment() {
         btnInvert.setOnClickListener {
             for (i in checked.indices) { checked[i] = !checked[i]; listView.setItemChecked(i, checked[i]) }
         }
+        btnDislikeFilter.setOnClickListener {
+            val settings = AppSettings.getInstance(requireContext())
+            // First deselect all
+            for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
+            // Select files from disliked episodes
+            for (i in files.indices) {
+                val fileName = files[i].name
+                for (dislikedEntry in settings.dislikedEpisodes) {
+                    // Check if the file name contains the disliked entry (ID or stationId::title key)
+                    if (fileName.contains(dislikedEntry) || dislikedEntry.contains(fileName)) {
+                        checked[i] = true
+                        listView.setItemChecked(i, true)
+                        break
+                    }
+                    // Also check MD5 hash of the disliked entry
+                    val entryHash = java.security.MessageDigest.getInstance("MD5")
+                        .digest(dislikedEntry.toByteArray())
+                        .joinToString("") { "%02x".format(it) }
+                    if (fileName.contains(entryHash) || entryHash.contains(fileName)) {
+                        checked[i] = true
+                        listView.setItemChecked(i, true)
+                        break
+                    }
+                }
+            }
+            val selectedCount = checked.count { it }
+            Toast.makeText(requireContext(), "已选中${selectedCount}个不喜欢节目的缓存", Toast.LENGTH_SHORT).show()
+        }
 
         dialog.show()
         dialog.window?.setLayout(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
     }
 
     private fun playPcmFile(pcmFile: File) {
-        pcmPlaybackActive = false  // Stop any current playback first
+        pcmPlaybackActive = false
         try { audioTrack?.stop() } catch (_: Exception) {}
         try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null
@@ -584,17 +619,14 @@ class SettingsFragment : Fragment() {
             }
 
             val expectedDurationSec = pcmData.size / (sampleRate * 2)
-            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size} bytes, sampleRate=$sampleRate, expected duration=${expectedDurationSec}s")
+            android.util.Log.d("SettingsFragment", "playPcmFile: ${pcmFile.name}, size=${pcmData.size} bytes, sampleRate=$sampleRate, expected=${expectedDurationSec}s")
 
-            val bufferSize = android.media.AudioTrack.getMinBufferSize(
-                sampleRate,
-                android.media.AudioFormat.CHANNEL_OUT_MONO,
-                android.media.AudioFormat.ENCODING_PCM_16BIT
+            val bufferSize = maxOf(
+                android.media.AudioTrack.getMinBufferSize(sampleRate, android.media.AudioFormat.CHANNEL_OUT_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT),
+                4096
             )
 
-            // For large files, use MODE_STREAM
-            val mode = if (pcmData.size > 1024 * 1024) android.media.AudioTrack.MODE_STREAM else android.media.AudioTrack.MODE_STATIC
-
+            // Always use MODE_STATIC for simplicity - the PCM files are ~30MB max
             audioTrack = android.media.AudioTrack(
                 android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
@@ -605,37 +637,18 @@ class SettingsFragment : Fragment() {
                     .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
                     .build(),
-                maxOf(bufferSize, minOf(pcmData.size, 1024 * 1024)),
-                mode,
+                maxOf(bufferSize, pcmData.size),
+                android.media.AudioTrack.MODE_STATIC,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
 
-            // Before starting playback:
             pcmPlaybackActive = true
+            audioTrack?.write(pcmData, 0, pcmData.size)
+            audioTrack?.play()
 
-            if (mode == android.media.AudioTrack.MODE_STATIC) {
-                audioTrack?.write(pcmData, 0, pcmData.size)
-                audioTrack?.play()
-            } else {
-                audioTrack?.play()
-                Thread {
-                    var offset = 0
-                    val chunkSize = bufferSize
-                    while (offset < pcmData.size && pcmPlaybackActive && audioTrack != null) {
-                        try {
-                            val track = audioTrack ?: break
-                            val written = track.write(pcmData, offset, minOf(chunkSize, pcmData.size - offset))
-                            if (written <= 0) break
-                            offset += written
-                        } catch (e: Exception) {
-                            break
-                        }
-                    }
-                }.start()
-            }
-
-            Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name} (${expectedDurationSec}秒, ${sampleRate}Hz)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
+            pcmPlaybackActive = false
             Toast.makeText(requireContext(), "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
