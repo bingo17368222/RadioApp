@@ -272,7 +272,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (json != null) {
                         val gson = com.google.gson.Gson()
                         val type = object : com.google.gson.reflect.TypeToken<List<com.radio.app.models.Episode>>() {}.type
-                        episodeList = gson.fromJson(json, type) ?: mutableListOf()
+                        episodeList = ArrayList(gson.fromJson<java.util.ArrayList<com.radio.app.models.Episode>>(json, type) ?: java.util.ArrayList())
                         android.util.Log.d("PlayerActivity", "Restored episode list from prefs: ${episodeList.size} episodes")
                     }
                 } catch (e: Exception) {
