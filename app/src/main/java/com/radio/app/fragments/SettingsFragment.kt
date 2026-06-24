@@ -603,6 +603,13 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    private fun stopPcmPlayback() {
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
+        android.widget.Toast.makeText(requireContext(), "已停止播放", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     private fun showPcmCacheDialog() {
         val allFiles = mutableListOf<File>()
         val pcmCacheDir = requireContext().getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
@@ -645,10 +652,12 @@ class SettingsFragment : Fragment() {
         val btnSelectNone = Button(requireContext()).apply { text = "全不选"; textSize = 13f }
         val btnInvert = Button(requireContext()).apply { text = "反选"; textSize = 13f }
         val btnPlay = Button(requireContext()).apply { text = "播放选中"; textSize = 13f }
+        val btnStop = Button(requireContext()).apply { text = "停止播放"; textSize = 13f }
         btnContainer.addView(btnSelectAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnSelectNone, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnInvert, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnContainer.addView(btnPlay, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        btnContainer.addView(btnStop, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         btnRow1.addView(btnClearAll, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         val titleText = "选择要删除的PCM缓存文件 (${files.size}个, 共${formatSize(totalSize)})"
@@ -696,11 +705,21 @@ class SettingsFragment : Fragment() {
         }
         btnPlay.setOnClickListener {
             val selectedFiles = files.filterIndexed { i, _ -> checked[i] }
-            if (selectedFiles.isNotEmpty()) {
-                playPcmFile(selectedFiles.first())
+            if (audioTrack != null && audioTrack?.playState == android.media.AudioTrack.PLAYSTATE_PLAYING) {
+                stopPcmPlayback()
+                btnPlay.text = "播放选中"
             } else {
-                Toast.makeText(requireContext(), "请先选择一个文件", Toast.LENGTH_SHORT).show()
+                if (selectedFiles.isNotEmpty()) {
+                    playPcmFile(selectedFiles.first())
+                    btnPlay.text = "停止播放"
+                } else {
+                    Toast.makeText(requireContext(), "请先选择一个文件", Toast.LENGTH_SHORT).show()
+                }
             }
+        }
+        btnStop.setOnClickListener {
+            stopPcmPlayback()
+            btnPlay.text = "播放选中"
         }
 
         val buttonLayout = LinearLayout(requireContext()).apply {

@@ -67,6 +67,8 @@ class PlayerActivity : AppCompatActivity() {
     private var currentPlaybackPositionMs: Long = 0
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
+    private var lastSubtitleHighlightIdx = -1
+    private var lastSegmentHighlightIdx = -1
     private val positionUpdateHandler = Handler(Looper.getMainLooper())
     private val positionUpdateRunnable = object : Runnable {
         override fun run() {
@@ -1347,24 +1349,30 @@ class PlayerActivity : AppCompatActivity() {
         if (_binding == null) return
         val pos = currentPlaybackPositionMs
 
-        // Update subtitle highlight
+        // Update subtitle highlight - only if index changed
         if (subtitleTranscripts.isNotEmpty()) {
             val subtitleIdx = findClosestTranscriptIndex(pos)
-            subtitleAdapter?.setCurrentHighlightIndex(subtitleIdx)
-            if (subtitleIdx >= 0) {
-                binding.recyclerSubtitles.post {
-                    (binding.recyclerSubtitles.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(subtitleIdx, 0)
+            if (subtitleIdx != lastSubtitleHighlightIdx) {
+                lastSubtitleHighlightIdx = subtitleIdx
+                subtitleAdapter?.setCurrentHighlightIndex(subtitleIdx)
+                if (subtitleIdx >= 0) {
+                    binding.recyclerSubtitles.post {
+                        (binding.recyclerSubtitles.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(subtitleIdx, 0)
+                    }
                 }
             }
         }
 
-        // Update segment highlight
+        // Update segment highlight - only if index changed
         if (voiceSegments.isNotEmpty()) {
             val segIdx = findClosestSegmentIndex(pos)
-            segmentAdapter?.setCurrentSegmentIndex(segIdx)
-            if (segIdx >= 0) {
-                binding.recyclerSegments.post {
-                    (binding.recyclerSegments.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(segIdx, 0)
+            if (segIdx != lastSegmentHighlightIdx) {
+                lastSegmentHighlightIdx = segIdx
+                segmentAdapter?.setCurrentSegmentIndex(segIdx)
+                if (segIdx >= 0) {
+                    binding.recyclerSegments.post {
+                        (binding.recyclerSegments.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(segIdx, 0)
+                    }
                 }
             }
         }
@@ -1406,6 +1414,8 @@ class PlayerActivity : AppCompatActivity() {
 
         fun setTranscripts(transcripts: List<Transcript>) {
             this.transcripts = transcripts
+            highlightedIndex = -1
+            lastSubtitleHighlightIdx = -1
             notifyDataSetChanged()
         }
 

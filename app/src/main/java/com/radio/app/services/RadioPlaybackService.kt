@@ -501,116 +501,115 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
         writePreCacheLog("Pre-cache check: autoCache=${settings.autoCache}, wifiOnly=${settings.wifiOnlyPreCache}, targetCount=${settings.preloadCacheCount}")
-        Log.d(TAG, "Pre-cache check: autoCache=${settings.autoCache}, wifiOnly=${settings.wifiOnlyPreCache}, targetCount=${settings.preloadCacheCount}")
         if (!settings.autoCache) {
-            writePreCacheLog("Pre-cache: disabled (autoCache=false)")
-            Log.d(TAG, "Pre-cache: disabled (autoCache=false)")
+            writePreCacheLog("Pre-cache: disabled")
             return
         }
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
-            val isWifi = NetworkUtils.isWifiConnected(this)
-            writePreCacheLog("Pre-cache: skipped (WiFi only, isWifi=$isWifi)")
-            Log.d(TAG, "Pre-cache: skipped (WiFi only, isWifi=$isWifi)")
+            writePreCacheLog("Pre-cache: skipped (WiFi only)")
             return
         }
-        // 检查已缓存的节目数量（使用统一的缓存目录）
+
+        val currentEp = currentEpisode ?: run {
+            writePreCacheLog("Pre-cache: no current episode, skipping")
+            return
+        }
+
         val episodesDir = File(cacheDir, "episodes")
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
-        val cachedCount = cachedFiles.size
-        val targetCount = settings.preloadCacheCount
-        writePreCacheLog("Pre-cache: current cached=$cachedCount, target=$targetCount, cachedFiles=${cachedFiles.map { it.name }}")
-        Log.d(TAG, "Pre-cache: current cached=$cachedCount, target=$targetCount, cachedFiles=${cachedFiles.map { it.name }}")
-        if (cachedCount >= targetCount) {
-            writePreCacheLog("Pre-cache: target reached, no more downloads needed")
-            Log.d(TAG, "Pre-cache: target reached, no more downloads needed")
-            return
-        }
-        // 从预缓存列表中获取待下载的节目
+        val cachedNames = cachedFiles.map { it.name }.toSet()
+
         var preCacheList = loadPreCacheList()
-        if (preCacheList.isEmpty()) {
-            writePreCacheLog("Pre-cache: no episodes in pre-cache list, attempting to fetch more days")
-            Log.d(TAG, "Pre-cache: no episodes in pre-cache list, attempting to fetch more days")
-            // 尝试获取跨天节目来补充列表
-            preCacheList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
-            if (preCacheList.isEmpty()) {
-                writePreCacheLog("Pre-cache: still no episodes available after fetching more days")
-                Log.d(TAG, "Pre-cache: still no episodes available after fetching more days")
-                return
-            }
-            // 保存更新后的列表
+        writePreCacheLog("Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
+
+        // Find current episode index in the list
+        var currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id }
+        if (currentIdx < 0) {
+            // Current episode not in list, try to find by URL
+            currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
+        }
+        if (currentIdx < 0) {
+            writePreCacheLog("Pre-cache: current episode not in list, adding to list")
+            preCacheList = listOf(currentEp) + preCacheList
+            currentIdx = 0
             savePreCacheList(preCacheList)
         }
-        writePreCacheLog("Pre-cache: pre-cache list has ${preCacheList.size} episodes: ${preCacheList.joinToString(", ") { it.title ?: "?" }}")
-        Log.d(TAG, "Pre-cache: pre-cache list has ${preCacheList.size} episodes: ${preCacheList.joinToString(", ") { it.title ?: "?" }}")
-        val cachedNames = cachedFiles.map { it.name }.toSet()
-        val needed = targetCount - cachedCount
-        var started = 0
-        // 跳过不喜欢、循环下载直到达到目标数量
-        for (ep in preCacheList) {
-            if (started >= needed) break
+
+        // Count future episodes that are already cached (after current index)
+        var futureCachedCount = 0
+        var nextToDownload: Episode? = null
+        for (i in (currentIdx + 1) until preCacheList.size) {
+            val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
+            val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
             if (fileName in cachedNames) {
-                writePreCacheLog("Pre-cache: already cached: ${ep.title} ($fileName)")
-                Log.d(TAG, "Pre-cache: already cached: ${ep.title} ($fileName)")
-                continue
+                futureCachedCount++
+                writePreCacheLog("Pre-cache: future episode #$i already cached: ${ep.title}")
+            } else if (!isDisliked && ep.audioUrl.isNotBlank() && nextToDownload == null) {
+                nextToDownload = ep
+                writePreCacheLog("Pre-cache: next to download: ${ep.title} (index=$i)")
             }
-            // 跳过不喜欢的节目
-            if (settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                writePreCacheLog("Pre-cache: skipping disliked episode ${ep.title}")
-                Log.d(TAG, "Pre-cache: skipping disliked episode ${ep.title}")
-                continue
-            }
-            // 跳过没有音频URL的节目
-            if (ep.audioUrl.isBlank()) {
-                writePreCacheLog("Pre-cache: skipping episode with empty audioUrl: ${ep.title}")
-                Log.d(TAG, "Pre-cache: skipping episode with empty audioUrl: ${ep.title}")
-                continue
-            }
-            writePreCacheLog("Pre-cache: downloading #${started + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
-            Log.d(TAG, "Pre-cache: downloading #${started + 1}/${needed}: ${ep.title} (${ep.audioUrl})")
-            downloadPreCacheEpisode(ep)
-            started++
-            // 每次只触发一个下载，downloadPreCacheEpisode完成后会回调triggerPreCache继续
+        }
+
+        val targetCount = settings.preloadCacheCount
+        writePreCacheLog("Pre-cache: futureCached=$futureCachedCount, target=$targetCount")
+
+        if (futureCachedCount >= targetCount) {
+            writePreCacheLog("Pre-cache: target reached ($futureCachedCount >= $targetCount)")
             return
         }
-        // 如果列表遍历完了但还没达到目标数量，尝试获取更多天的节目
-        if (started < needed) {
-            writePreCacheLog("Pre-cache: ran out of episodes in list (started=$started < needed=$needed), fetching more days")
-            Log.d(TAG, "Pre-cache: ran out of episodes in list (started=$started < needed=$needed), fetching more days")
+
+        // If no next episode to download in current list, fetch more days (forward only)
+        if (nextToDownload == null) {
+            writePreCacheLog("Pre-cache: no more future episodes in list, fetching more days (forward)")
             val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
             if (expandedList.size > preCacheList.size) {
                 savePreCacheList(expandedList)
-                // 递归调用继续预缓存
-                triggerPreCache()
-                return
+                preCacheList = expandedList
+                // Re-find current index and look for next to download
+                currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl }
+                for (i in (currentIdx + 1) until preCacheList.size) {
+                    val ep = preCacheList[i]
+                    val fileName = extractCacheFileName(ep.audioUrl)
+                    val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+                    if (fileName !in cachedNames && !isDisliked && ep.audioUrl.isNotBlank()) {
+                        nextToDownload = ep
+                        break
+                    }
+                }
             }
         }
-        if (started == 0) {
-            writePreCacheLog("Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
-            Log.d(TAG, "Pre-cache: no more episodes to cache (all cached or disliked), list size=${preCacheList.size}")
-        }
-        // After the cross-day fetch attempt, if still no episodes to cache:
-        if (started == 0 && preCacheList.all { ep ->
-            settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title) ||
-            extractCacheFileName(ep.audioUrl) in cachedNames
-        }) {
-            writePreCacheLog("Pre-cache: ALL episodes disliked or cached, prompting user")
-            Handler(Looper.getMainLooper()).post {
-                android.widget.Toast.makeText(this, "当前电台所有节目已被标记为不喜欢，无法预缓存。请在节目列表中取消不喜欢标记。", android.widget.Toast.LENGTH_LONG).show()
+
+        if (nextToDownload != null) {
+            writePreCacheLog("Pre-cache: downloading: ${nextToDownload!!.title}")
+            downloadPreCacheEpisode(nextToDownload!!)
+        } else {
+            writePreCacheLog("Pre-cache: no more future episodes available to download")
+            // Check if all future episodes are disliked
+            val allDisliked = ((currentIdx + 1) until preCacheList.size).all { i ->
+                val ep = preCacheList[i]
+                settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title) ||
+                extractCacheFileName(ep.audioUrl) in cachedNames
+            }
+            if (allDisliked && (currentIdx + 1) < preCacheList.size) {
+                writePreCacheLog("Pre-cache: all future episodes disliked or cached")
+                Handler(Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(this, "当前电台未来节目已被全部缓存或标记为不喜欢", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
 
     /**
      * 跨天获取更多节目用于预缓存
-     * 单次调用同时尝试两个方向：先向后（过往日期有VOD），再向前
+     * 仅向未来方向获取（当前播放节目向未来数10个）
      * 最多获取20天
      */
     private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
         val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
-        val stationId = prefs.getString("station_id", null)
-        val startDate = prefs.getString("current_date", null)
+        val stationId = prefs.getString("station_id", null) ?: currentEpisode?.stationId
+        val startDate = prefs.getString("current_date", null) ?: currentEpisode?.broadcastAt?.take(10)
         val daysFetched = prefs.getInt("days_fetched", 0)
 
         if (stationId.isNullOrBlank() || startDate.isNullOrBlank()) {
@@ -620,7 +619,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val maxDays = 20
         if (daysFetched >= maxDays) {
-            writePreCacheLog("fetchMoreDaysForPreCache: already fetched $daysFetched days, limit reached")
+            writePreCacheLog("fetchMoreDaysForPreCache: limit reached ($daysFetched days)")
             return existingList
         }
 
@@ -631,37 +630,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // Try BOTH directions: backward first (past dates have VOD), then forward
-        val directions = listOf(-(daysFetched + 1), daysFetched + 1)
+        // Only go forward (future dates)
+        val dayOffset = daysFetched + 1
+        try {
+            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+            cal.time = dateFormat.parse(startDate) ?: return existingList
+            cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
+            val targetDate = dateFormat.format(cal.time)
 
-        for (dayOffset in directions) {
-            if (daysFetched >= maxDays) break
-            try {
-                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-                cal.time = dateFormat.parse(startDate) ?: continue
-                cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
-                val targetDate = dateFormat.format(cal.time)
+            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
 
-                writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=$dayOffset)")
+            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+            val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
 
-                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-                val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
-
-                if (newEpisodes != null && newEpisodes.isNotEmpty()) {
-                    val validNewEpisodes = newEpisodes.filter { ep ->
-                        ep.audioUrl.isNotBlank() &&
-                        ep.audioUrl !in existingUrls &&
-                        extractCacheFileName(ep.audioUrl) !in cachedNames &&
-                        ep.audioUrl.startsWith("http")
-                    }
-                    writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
-                    resultList.addAll(validNewEpisodes)
-                } else {
-                    writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate")
+            if (newEpisodes != null && newEpisodes.isNotEmpty()) {
+                val validNewEpisodes = newEpisodes.filter { ep ->
+                    ep.audioUrl.isNotBlank() &&
+                    ep.audioUrl !in existingUrls &&
+                    extractCacheFileName(ep.audioUrl) !in cachedNames &&
+                    ep.audioUrl.startsWith("http")
                 }
-            } catch (e: Exception) {
-                writePreCacheLog("fetchMoreDaysForPreCache: error for offset=$dayOffset: ${e.message}")
+                writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
+                resultList.addAll(validNewEpisodes)
+            } else {
+                writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate")
             }
+        } catch (e: Exception) {
+            writePreCacheLog("fetchMoreDaysForPreCache: error: ${e.message}")
         }
 
         prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
@@ -948,6 +943,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             val outSampleRate = 16000
             val outChannels = 1
+            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, outSampleRate=$outSampleRate, ratio=${sampleRate.toDouble()/outSampleRate}")
 
             var inputDone = false
             var outputDone = false
@@ -1025,8 +1021,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val output = ShortArray(outLength.coerceAtLeast(1))
         var outIdx = 0; var inIdx = 0.0
         while (outIdx < outLength) {
-            val srcIdx = (inIdx * inChannels).toInt()
-            if (srcIdx < shorts.size) output[outIdx] = shorts[srcIdx]
+            val srcIdx = inIdx.toInt() * inChannels
+            val nextIdx = ((inIdx.toInt() + 1) * inChannels).coerceAtMost(shorts.size - 1)
+            val frac = inIdx - inIdx.toInt()
+            val interpolated = (shorts[srcIdx] * (1.0 - frac) + shorts[nextIdx] * frac).toInt().toShort()
+            output[outIdx] = interpolated
             outIdx++; inIdx += ratio
         }
         val result = ByteArray(output.size * 2)
@@ -1454,11 +1453,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     override fun onAudioFocusChange(focusChange: Int) {
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_GAIN -> play()
-            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pause()
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> player?.takeIf { it.isPlaying }?.volume = 0.3f
-            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK -> {
-                player?.volume = 1.0f; play()
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                player?.volume = 1.0f
+                play()
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                pause()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Pause for navigation announcements and other transient focus changes
+                pause()
             }
         }
     }

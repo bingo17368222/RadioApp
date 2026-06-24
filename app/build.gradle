@@ -11,8 +11,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 62
-        versionName "1.6.1"
+        versionCode 63
+        versionName "1.7.0"
     }
 
     signingConfigs {
@@ -46,10 +46,6 @@ android {
     buildFeatures {
         viewBinding true
     }
-
-    aaptOptions {
-        noCompress 'vosk-model-small-cn-0.22'
-    }
 }
 
 dependencies {
@@ -67,9 +63,6 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.10.1'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1'
-
-    // Vosk - 离线语音识别
-    implementation 'com.alphacephei:vosk-android:0.3.47'
 
     // ExoPlayer - 支持M3U8流媒体
     implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
