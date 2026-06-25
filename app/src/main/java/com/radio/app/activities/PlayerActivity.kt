@@ -755,6 +755,9 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun bindPlaybackService() {
         val intent = Intent(this, RadioPlaybackService::class.java)
+        // 必须先 startService 再 bindService，确保服务作为"启动服务"运行
+        // 仅 bindService 的服务在 Activity 解绑时会被系统杀死，导致后台播放被杀
+        startService(intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 

@@ -1638,6 +1638,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // 用户从最近任务划掉应用时，确保服务不被杀死
+        // 如果正在播放，重新启动前台通知
+        if (playbackStarted || player?.isPlaying == true) {
+            Log.d(TAG, "onTaskRemoved: playback is active, keeping service alive")
+            val notification = buildNotification()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        }
+    }
+
     private fun seekToPercent(pct: Float) {
         if (isLive || !prepared) return
         val dur = player?.duration ?: 0L
