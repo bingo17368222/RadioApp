@@ -469,7 +469,13 @@ class PlayerActivity : AppCompatActivity() {
                     if (_binding == null) return@runOnUiThread
                     binding.seekBarCache.max = dur.toInt()
                     binding.seekBarCache.progress = ((dur * cachePct) / 100).toInt()
-                    binding.tvCacheProgress.text = "缓存: $cachePct%"
+                    // Show playback progress percentage instead of buffer percentage
+                    val svcPos = playbackService?.getCurrentPosition() ?: 0L
+                    val svcDur = playbackService?.getDuration() ?: -1L
+                    if (svcDur > 0) {
+                        val pct = if (svcDur > 0) (svcPos * 100 / svcDur) else 0
+                        binding.tvCacheProgress.text = "进度: ${pct}%"
+                    }
                     binding.tvCacheProgress.visibility = View.VISIBLE
                     binding.seekBarCache.visibility = View.VISIBLE
                 }
@@ -535,8 +541,10 @@ class PlayerActivity : AppCompatActivity() {
         saveEpisodeListToPrefs()
         currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
 
-        // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过，且intent中有实际节目数据
-        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled && currentEpisode != null
+        // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过，
+        // 且intent中有实际节目数据，且intent action不为null（系统重建时为null）
+        val hasIntentAction = intent.action != null
+        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled && currentEpisode != null && hasIntentAction
         if (isFreshStart) {
             markFreshLaunchHandled(this, freshLaunchTs)
         }
@@ -999,6 +1007,18 @@ class PlayerActivity : AppCompatActivity() {
         if (currentEpisode != null) {
             binding.tvStationName.text = currentEpisode!!.title ?: "节目回放"
             binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
+            // Show broadcast date, duration
+            val infoParts = mutableListOf<String>()
+            if (!currentEpisode!!.broadcastAt.isNullOrBlank()) {
+                infoParts.add("日期: ${currentEpisode!!.broadcastAt.take(10)}")
+            }
+            val dur = playbackService?.getDuration() ?: currentEpisode!!.duration
+            if (dur > 0) {
+                val totalMin = dur / 60000
+                infoParts.add("时长: ${totalMin}分钟")
+            }
+            binding.tvEpisodeInfo.text = infoParts.joinToString("  |  ")
+            binding.tvEpisodeInfo.visibility = if (infoParts.isNotEmpty()) View.VISIBLE else View.GONE
         } else if (currentStation != null) {
             binding.tvStationName.text = currentStation!!.name
             binding.tvEpisodeNavHint.text = " [直播] "

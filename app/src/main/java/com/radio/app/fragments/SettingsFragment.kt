@@ -658,6 +658,34 @@ class SettingsFragment : Fragment() {
             }
             android.util.Log.d("SettingsFragment", "Dislike filter: files=${files.size}, disliked=${dislikedFileNames.size}")
 
+            // Final fallback: scan all_episodes for any disliked title, match by file name keywords
+            try {
+                for ((key, value) in allEpPrefs.all) {
+                    if (value !is String) continue
+                    try {
+                        val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                        val isDisliked = (ep.id != null && ep.id.isNotBlank() && settings.isDisliked(ep.id)) ||
+                                settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
+                        if (!isDisliked) continue
+                        // For each disliked episode, match cache files by extracting keywords from title
+                        val title = ep.title ?: ""
+                        val keywords = title.split(Regex("[\\s\\-·]")).filter { it.length >= 2 }
+                        if (keywords.isEmpty()) continue
+                        for (file in files) {
+                            if (file.name in dislikedFileNames) continue
+                            val fname = file.name.lowercase()
+                            if (keywords.any { fname.contains(it.lowercase()) } || 
+                                (ep.stationId != null && fname.contains(ep.stationId.lowercase()))) {
+                                dislikedFileNames.add(file.name)
+                            }
+                        }
+                    } catch (e: Exception) { /* skip */ }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: title keyword matching added ${dislikedFileNames.size} total disliked files")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed title keyword matching", e)
+            }
+
             // Select files that match disliked episodes
             for (i in files.indices) {
                 if (files[i].name in dislikedFileNames) {
@@ -706,7 +734,7 @@ class SettingsFragment : Fragment() {
             }
 
             // Fallback to AudioTrack if WAV not available
-            val pcmData = pcmFile.readBytes()
+            // Use streaming to avoid OOM on large PCM files
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             var sampleRate = 16000
             var channels = 1
@@ -719,14 +747,13 @@ class SettingsFragment : Fragment() {
             }
             val channelMask = if (channels >= 2) android.media.AudioFormat.CHANNEL_OUT_STEREO else android.media.AudioFormat.CHANNEL_OUT_MONO
             val bytesPerFrame = channels * 2
-            val expectedDurationSec = pcmData.size / (sampleRate * bytesPerFrame)
-            android.util.Log.d("SettingsFragment", "playPcmFile: fallback AudioTrack ${pcmFile.name}, size=${pcmData.size}, sampleRate=$sampleRate, channels=$channels, expected=${expectedDurationSec}s")
+            val expectedDurationSec = pcmFile.length() / (sampleRate * bytesPerFrame)
+            android.util.Log.d("SettingsFragment", "playPcmFile: streaming AudioTrack ${pcmFile.name}, size=${pcmFile.length()}, sampleRate=$sampleRate, channels=$channels, expected=${expectedDurationSec}s")
 
             val bufferSize = maxOf(
                 android.media.AudioTrack.getMinBufferSize(sampleRate, channelMask, android.media.AudioFormat.ENCODING_PCM_16BIT),
                 4096
             )
-            val useStream = pcmData.size > 10 * 1024 * 1024
 
             audioTrack = android.media.AudioTrack(
                 android.media.AudioAttributes.Builder()
@@ -738,29 +765,29 @@ class SettingsFragment : Fragment() {
                     .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(channelMask)
                     .build(),
-                if (useStream) bufferSize else maxOf(bufferSize, pcmData.size),
-                if (useStream) android.media.AudioTrack.MODE_STREAM else android.media.AudioTrack.MODE_STATIC,
+                bufferSize,
+                android.media.AudioTrack.MODE_STREAM,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
 
             pcmPlaybackActive = true
-            if (useStream) {
-                audioTrack?.play()
-                Thread {
-                    var offset = 0
-                    while (offset < pcmData.size && pcmPlaybackActive && audioTrack != null) {
+            audioTrack?.play()
+            Thread {
+                val buf = ByteArray(bufferSize)
+                val pcmIn = pcmFile.inputStream()
+                try {
+                    var read: Int
+                    while (pcmIn.read(buf).also { read = it } > 0 && pcmPlaybackActive && audioTrack != null) {
                         try {
                             val track = audioTrack ?: break
-                            val written = track.write(pcmData, offset, minOf(bufferSize, pcmData.size - offset))
+                            val written = track.write(buf, 0, read)
                             if (written <= 0) break
-                            offset += written
                         } catch (e: Exception) { break }
                     }
-                }.start()
-            } else {
-                audioTrack?.write(pcmData, 0, pcmData.size)
-                audioTrack?.play()
-            }
+                } finally {
+                    pcmIn.close()
+                }
+            }.start()
 
             Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name} (${expectedDurationSec}秒, ${sampleRate}Hz)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {

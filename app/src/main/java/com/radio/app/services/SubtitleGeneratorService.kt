@@ -437,37 +437,95 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun getAudioDataForProcessing(episodeId: String, audioUrl: String, ctx: TaskContext): ByteArray? {
-        // 1) Try 16kHz PCM cache first
+        // 1) Try 16kHz PCM cache first (should be small, ~60MB for 30min)
         val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
         val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
         if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
             ctx.log("Using 16kHz PCM cache: ${pcm16kFile.length()} bytes")
-            return pcm16kFile.readBytes()
+            // 16kHz PCM is ~60MB, safe to read entirely
+            if (pcm16kFile.length() < 100_000_000) {
+                return pcm16kFile.readBytes()
+            }
         }
-        // 2) Try original PCM cache
+        // 2) Try original PCM cache - stream resample to avoid OOM
         val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
         if (pcmFile.exists() && pcmFile.length() > 1024) {
-            ctx.log("Using original PCM cache, resampling to 16kHz")
-            val rawPcm = pcmFile.readBytes()
-            val rawShorts = ShortArray(rawPcm.size / 2)
-            java.nio.ByteBuffer.wrap(rawPcm).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(rawShorts)
+            ctx.log("Stream-resampling original PCM to 16kHz (file size=${pcmFile.length()})")
             // Read .info for sample rate
             val infoFile = File(pcmCacheDir, "${episodeId}_30min.info")
-            var sampleRate = 44100
-            var channels = 2
+            var inSampleRate = 44100
+            var inChannels = 2
             if (infoFile.exists()) {
                 val info = infoFile.readText()
                 val srMatch = Regex("sampleRate=(\\d+)").find(info)
-                if (srMatch != null) sampleRate = srMatch.groupValues[1].toInt()
+                if (srMatch != null) inSampleRate = srMatch.groupValues[1].toInt()
                 val chMatch = Regex("channels=(\\d+)").find(info)
-                if (chMatch != null) channels = chMatch.groupValues[1].toInt()
+                if (chMatch != null) inChannels = chMatch.groupValues[1].toInt()
             }
-            val resampled = resampleTo16kMono(rawShorts, sampleRate, channels)
-            return resampled
+            return streamResampleTo16kMono(pcmFile, inSampleRate, inChannels, ctx)
         }
         // 3) Download and process
         ctx.log("No PCM cache, downloading from $audioUrl")
         return downloadAndProcessAudio(audioUrl, ctx)
+    }
+
+    private fun streamResampleTo16kMono(pcmFile: File, inSampleRate: Int, inChannels: Int, ctx: TaskContext): ByteArray? {
+        try {
+            val ratio = inSampleRate.toDouble() / 16000.0
+            val totalInFrames = pcmFile.length() / (inChannels * 2)
+            val totalOutFrames = (totalInFrames / ratio).toInt()
+            val outSize = totalOutFrames * 2  // 16-bit mono
+            
+            // Limit output to ~80MB max (about 40min @ 16kHz)
+            if (outSize > 80_000_000) {
+                ctx.log("WARNING: Output would be ${outSize} bytes, limiting to 30 minutes")
+            }
+            
+            val byteBuf = ByteArray(65536)
+            val outBuf = java.io.ByteArrayOutputStream()
+            val pcmIn = pcmFile.inputStream()
+            try {
+                var read: Int
+                while (pcmIn.read(byteBuf).also { read = it } > 0 && !ctx.cancelled.get()) {
+                    if (read < inChannels * 2) continue
+                    val numFrames = read / (inChannels * 2)
+                    val shorts = ShortArray(numFrames * inChannels)
+                    java.nio.ByteBuffer.wrap(byteBuf, 0, read).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+                    
+                    // Convert to mono
+                    val monoIn = ShortArray(numFrames)
+                    for (i in 0 until numFrames) {
+                        var sum = 0
+                        for (c in 0 until inChannels) sum += shorts[i * inChannels + c].toInt()
+                        monoIn[i] = (sum / inChannels).toShort()
+                    }
+                    
+                    // Resample to 16kHz
+                    val outFrames = (numFrames / ratio).toInt()
+                    val monoOut = ShortArray(outFrames)
+                    for (i in 0 until outFrames) {
+                        val srcPos = i * ratio
+                        val srcIdx = srcPos.toInt()
+                        val frac = srcPos - srcIdx
+                        if (srcIdx + 1 >= monoIn.size) {
+                            monoOut[i] = monoIn[monoIn.size - 1]
+                        } else {
+                            monoOut[i] = ((monoIn[srcIdx] * (1.0 - frac) + monoIn[srcIdx + 1] * frac).toInt()).toShort()
+                        }
+                    }
+                    val outBytes = ByteArray(monoOut.size * 2)
+                    java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(monoOut)
+                    outBuf.write(outBytes)
+                }
+            } finally {
+                pcmIn.close()
+            }
+            ctx.log("Stream-resampled: ${outBuf.size()} bytes output")
+            return outBuf.toByteArray()
+        } catch (e: Exception) {
+            ctx.log("ERROR: stream resample failed: ${e.message}")
+            return null
+        }
     }
 
     private fun resampleTo16kMono(input: ShortArray, inSampleRate: Int, inChannels: Int): ByteArray {

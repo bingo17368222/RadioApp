@@ -1105,11 +1105,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val pcm16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.pcm")
                 if (sampleRate != 16000 || channelCount != 1) {
                     writePreCacheLog("decodeToPcmForPreCache: generating 16kHz mono version for Whisper/Vosk")
-                    val rawPcm = pcmFile.readBytes()
-                    val rawShorts = ShortArray(rawPcm.size / 2)
-                    java.nio.ByteBuffer.wrap(rawPcm).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(rawShorts)
-                    val resampled = resampleChunkForPreCache(rawShorts, sampleRate, channelCount, 16000, 1)
-                    pcm16kFile.writeBytes(resampled.first)
+                    // Stream resample to avoid OOM
+                    val inBuf = ShortArray(65536)
+                    val pcmInStream = pcmFile.inputStream()
+                    val pcmOutStream = pcm16kFile.outputStream()
+                    val byteBuf = ByteArray(131072)
+                    var remaining = pcmFile.length()
+                    try {
+                        while (remaining > 0) {
+                            val toRead = minOf(byteBuf.size, remaining.toInt())
+                            val read = pcmInStream.read(byteBuf, 0, toRead)
+                            if (read <= 0) break
+                            val shorts = ShortArray(read / 2)
+                            java.nio.ByteBuffer.wrap(byteBuf, 0, read).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+                            val resampled = resampleChunkForPreCache(shorts, sampleRate, channelCount, 16000, 1)
+                            pcmOutStream.write(resampled.first)
+                            remaining -= read
+                        }
+                    } finally {
+                        pcmInStream.close()
+                        pcmOutStream.close()
+                    }
                     val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
                     info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
                     val wav16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.wav")
@@ -1218,11 +1234,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 为PCM数据写入WAV头，生成可被MediaPlayer直接播放的WAV文件
      */
     private fun writeWavFile(pcmFile: File, wavFile: File, sampleRate: Int, channels: Int) {
-        val pcmData = pcmFile.readBytes()
+        val pcmSize = pcmFile.length()
+        if (pcmSize > Int.MAX_VALUE - 44) {
+            writePreCacheLog("writeWavFile: PCM too large (${pcmSize} bytes), skipping WAV")
+            return
+        }
+        val dataSize = pcmSize.toInt()
+        val totalSize = dataSize + 36
         val byteRate = sampleRate * channels * 2
         val blockAlign = channels * 2
-        val dataSize = pcmData.size
-        val totalSize = dataSize + 36
 
         val header = ByteArray(44)
         val bb = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -1230,19 +1250,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         bb.putInt(totalSize)
         bb.put("WAVE".toByteArray())
         bb.put("fmt ".toByteArray())
-        bb.putInt(16)           // Subchunk1Size (PCM)
-        bb.putShort(1)          // AudioFormat (PCM)
+        bb.putInt(16)
+        bb.putShort(1)
         bb.putShort(channels.toShort())
         bb.putInt(sampleRate)
         bb.putInt(byteRate)
         bb.putShort(blockAlign.toShort())
-        bb.putShort(16)         // BitsPerSample
+        bb.putShort(16)
         bb.put("data".toByteArray())
         bb.putInt(dataSize)
 
-        wavFile.outputStream().use { out ->
-            out.write(header)
-            out.write(pcmData)
+        // Stream PCM data to WAV file to avoid OOM
+        val buf = ByteArray(65536)
+        wavFile.outputStream().use { wavOut ->
+            wavOut.write(header)
+            pcmFile.inputStream().use { pcmIn ->
+                var read: Int
+                while (pcmIn.read(buf).also { read = it } > 0) {
+                    wavOut.write(buf, 0, read)
+                }
+            }
         }
     }
 
@@ -1742,10 +1769,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         currentStreamUrl = episode.audioUrl ?: ""
         currentPlayingUrl = currentStreamUrl
         playbackStarted = true
-        notificationTitle = episode.title ?: "节目回放"
-        notificationDate = episode.broadcastAt?.take(10) ?: ""
-        notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
-        notificationPlaying = true
+        notificationTitle = episode.title; notificationSubText = "[回放]"
+        notificationDate = episode.broadcastAt ?: ""; notificationPlaying = true
         updateNotification()
         saveLastEpisode(episode)
         ensurePlayerInitialized()
@@ -1820,9 +1845,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getDownloadDoneBytes(): Long = downloadDoneBytes
     fun isDownloading(): Boolean = downloadActive.get()
 
-    fun jumpToNextSegment() {
+    private fun getSegmentList(): List<VoiceSegment> {
         val segments = currentEpisode?.voiceSegments
-        if (segments != null && segments.isNotEmpty()) {
+        if (segments != null && segments.isNotEmpty()) return segments
+        // Generate simulated 15-minute segments
+        val dur = player?.duration ?: 0L
+        if (dur <= 0) return emptyList()
+        val segmentSize = 15 * 60 * 1000L  // 15 minutes
+        val result = mutableListOf<VoiceSegment>()
+        var start = 0L
+        while (start < dur) {
+            val end = minOf(start + segmentSize, dur)
+            result.add(VoiceSegment(start = start, end = end, hasVoice = true, isSimulated = true))
+            start = end
+        }
+        return result
+    }
+
+    fun jumpToNextSegment() {
+        val segments = getSegmentList()
+        if (segments.isNotEmpty()) {
             val currentPos = player?.currentPosition ?: 0L
             for (seg in segments) { if (seg.start > currentPos) { seekTo(seg.start); return } }
         }
@@ -2006,8 +2048,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
     fun jumpToPrevSegment() {
-        val segments = currentEpisode?.voiceSegments
-        if (segments != null && segments.isNotEmpty()) {
+        val segments = getSegmentList()
+        if (segments.isNotEmpty()) {
             val currentPos = player?.currentPosition ?: 0L
             var prev: VoiceSegment? = null
             for (i in segments.indices) {
