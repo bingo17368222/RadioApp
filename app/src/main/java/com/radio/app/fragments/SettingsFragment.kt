@@ -695,7 +695,7 @@ class SettingsFragment : Fragment() {
             logBuilder.append("[$ts] === DISLIKE FILTER REPORT ===\n")
             logBuilder.append("  Total cache files: ${files.size}\n")
             logBuilder.append("  Disliked episode IDs: ${settings.dislikedEpisodes}\n")
-            logBuilder.append("  Disliked titles: ${settings.dislikedTitles}\n")
+            logBuilder.append("  dislikedEpisodes count: ${settings.dislikedEpisodes.size}\n")
             logBuilder.append("  all_episodes entries: ${allEpPrefs.all.size}\n")
             logBuilder.append("  cache_episode_mapping entries: ${cacheMappingPrefs.all.size}\n")
             logBuilder.append("  precache_list entries: ${precacheListPrefs.all.size}\n")
