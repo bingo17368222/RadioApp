@@ -137,6 +137,19 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private val episodeChangedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == RadioPlaybackService.BROADCAST_EPISODE_CHANGED) {
+                val newTitle = intent.getStringExtra("episode_title") ?: return
+                val newId = intent.getStringExtra("episode_id") ?: return
+                writeNotificationLog("episodeChanged broadcast: title=$newTitle, id=$newId")
+                // Update notification title in UI
+                binding.tvStationName.text = newTitle
+                updateUI()
+            }
+        }
+    }
+
     private fun saveProcessingState() {
         getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
             putBoolean("subtitle_processing", subtitleProcessing)
@@ -193,6 +206,7 @@ class PlayerActivity : AppCompatActivity() {
                 "  playbackInProgress=${isPlaybackInProgress(this@PlayerActivity)}, lastStartedUrl=${getLastStartedUrl(this@PlayerActivity)}"
             android.util.Log.d("PlayerActivity", logMsg)
             writeJitterLog(logMsg)
+            writeJitterLog("onServiceConnected: sameEpisode=$sameEpisode, svcStarted=$svcStarted, isFreshStart=$isFreshStart, playbackInProgress=${isPlaybackInProgress(this@PlayerActivity)}")
 
             // 核心防抖：如果服务已经播放同一URL，只更新UI（防止抖动）
             if (sameEpisode) {
@@ -317,21 +331,18 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 将抖动调试日志写入外部存储，用户可访问
-     */
-    private fun writeJitterLog(msg: String) {
+    private fun writeLog(category: String, msg: String) {
         try {
-            val logDir = getExternalFilesDir("logs")
-            if (logDir != null && (!logDir.exists() || logDir.isFile)) {
-                logDir.mkdirs()
-            }
-            if (logDir == null) return
-            val logFile = java.io.File(logDir, "jitter_debug.log")
+            val logDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/$category")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "${category}.log")
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
             java.io.FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
         } catch (_: Exception) {}
     }
+    private fun writeJitterLog(msg: String) = writeLog("jitter", msg)
+    private fun writeDislikeLog(msg: String) = writeLog("dislike", msg)
+    private fun writeNotificationLog(msg: String) = writeLog("notification", msg)
 
     /**
      * 设置预缓存列表：传递当前节目之后的所有节目（跨天支持）
@@ -469,13 +480,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (_binding == null) return@runOnUiThread
                     binding.seekBarCache.max = dur.toInt()
                     binding.seekBarCache.progress = ((dur * cachePct) / 100).toInt()
-                    // Show playback progress percentage instead of buffer percentage
-                    val svcPos = playbackService?.getCurrentPosition() ?: 0L
-                    val svcDur = playbackService?.getDuration() ?: -1L
-                    if (svcDur > 0) {
-                        val pct = if (svcDur > 0) (svcPos * 100 / svcDur) else 0
-                        binding.tvCacheProgress.text = "进度: ${pct}%"
-                    }
+                    binding.tvCacheProgress.text = "缓存: ${cachePct}%"
                     binding.tvCacheProgress.visibility = View.VISIBLE
                     binding.seekBarCache.visibility = View.VISIBLE
                 }
@@ -550,7 +555,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
-        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, action=${intent.action}, episode=${currentEpisode?.title}, stackTrace=${Thread.currentThread().stackTrace.take(5).joinToString(" <- ")}")
+        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated, action=${intent.action}, episode=${currentEpisode?.title}, hasIntentAction=${intent.action != null}, currentEpisodeNotNull=${currentEpisode != null}")
 
         // 缓存节目列表用于连续播放
         if (episodeList.isNotEmpty()) {
@@ -581,6 +586,10 @@ class PlayerActivity : AppCompatActivity() {
         LocalBroadcastManager.getInstance(this).registerReceiver(
             episodeActionReceiver,
             IntentFilter(RadioPlaybackService.BROADCAST_STATE_CHANGED)
+        )
+        LocalBroadcastManager.getInstance(this).registerReceiver(
+            episodeChangedReceiver,
+            IntentFilter(RadioPlaybackService.BROADCAST_EPISODE_CHANGED)
         )
     }
 
@@ -1041,6 +1050,16 @@ class PlayerActivity : AppCompatActivity() {
             binding.tvLiveIndicator.text = if (playbackService?.isPlaying() == true) "播放中" else "已暂停"
             binding.tvLiveIndicator.visibility = View.VISIBLE
         }
+        // Show playback progress percentage in the middle (tv_ai_progress)
+        if (playbackService?.isPrepared() == true) {
+            val svcPos = playbackService?.getCurrentPosition() ?: 0L
+            val svcDur = playbackService?.getDuration() ?: -1L
+            if (svcDur > 0) {
+                val pct = (svcPos * 100 / svcDur).toInt()
+                binding.tvAiProgress.text = "${pct}%"
+                binding.tvAiProgress.visibility = View.VISIBLE
+            }
+        }
         // 更新缓存URL显示
         if (currentEpisode != null) {
             val cacheFileName = extractCacheFileName(currentEpisode!!.audioUrl ?: "")
@@ -1500,6 +1519,27 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        writeJitterLog("onNewIntent: action=${intent.action}, freshLaunchTs=${intent.getLongExtra("fresh_launch_ts", 0)}")
+        // When activity is launched with SINGLE_TOP (e.g. from notification),
+        // update currentEpisode from the new intent
+        val newEpisode = intent.getSerializableExtra("episode") as? Episode
+        if (newEpisode != null) {
+            currentEpisode = newEpisode
+            val idx = episodeList.indexOfFirst { it.id == newEpisode.id }
+            if (idx >= 0) currentEpisodeIndex = idx
+            writeJitterLog("onNewIntent: updated currentEpisode to ${newEpisode.title}")
+            // If service is bound, play the new episode
+            if (serviceBound && playbackService != null) {
+                playbackService?.playEpisode(newEpisode, false)
+            }
+        }
+        // Update the intent so that onCreate/getIntent can use the new intent
+        setIntent(intent)
+        updateUI()
+    }
+
     override fun onPause() {
         super.onPause()
         writeJitterLog("onPause")
@@ -1512,6 +1552,9 @@ class PlayerActivity : AppCompatActivity() {
         setPlaybackInProgress(this, null)
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
+        } catch (_: Exception) {}
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeChangedReceiver)
         } catch (_: Exception) {}
         cacheProgressRunnable?.let { cacheProgressHandler?.removeCallbacks(it) }
         // Feature B: stop position update

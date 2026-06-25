@@ -686,6 +686,58 @@ class SettingsFragment : Fragment() {
                 android.util.Log.e("SettingsFragment", "Failed title keyword matching", e)
             }
 
+            // === DETAILED LOGGING: Log every file and its dislike status ===
+            val logDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/dislike")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "dislike.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            val logBuilder = StringBuilder()
+            logBuilder.append("[$ts] === DISLIKE FILTER REPORT ===\n")
+            logBuilder.append("  Total cache files: ${files.size}\n")
+            logBuilder.append("  Disliked episode IDs: ${settings.dislikedEpisodes}\n")
+            logBuilder.append("  Disliked titles: ${settings.dislikedTitles}\n")
+            logBuilder.append("  all_episodes entries: ${allEpPrefs.all.size}\n")
+            logBuilder.append("  cache_episode_mapping entries: ${cacheMappingPrefs.all.size}\n")
+            logBuilder.append("  precache_list entries: ${precacheListPrefs.all.size}\n")
+            logBuilder.append("\n--- PER-FILE ANALYSIS ---\n")
+            for (file in files) {
+                val fileName = file.name
+                val isSelected = fileName in dislikedFileNames
+                logBuilder.append("  FILE: $fileName (${if (isSelected) "SELECTED" else "NOT SELECTED"})\n")
+                // Try to find the episode title
+                val epJson = cacheMappingPrefs.getString(fileName, null)
+                if (epJson != null) {
+                    try {
+                        val ep = com.google.gson.Gson().fromJson(epJson, com.radio.app.models.Episode::class.java)
+                        logBuilder.append("    Title (from cache_episode_mapping): ${ep?.title}\n")
+                        logBuilder.append("    StationId: ${ep?.stationId}, ID: ${ep?.id}\n")
+                        logBuilder.append("    isDisliked(id): ${settings.isDisliked(ep?.id ?: "")}\n")
+                        logBuilder.append("    isDislikedByTitle: ${settings.isDislikedByTitle(ep?.stationId ?: "", ep?.title ?: "")}\n")
+                    } catch (e: Exception) { logBuilder.append("    (parse error)\n") }
+                } else {
+                    logBuilder.append("    Title: NOT FOUND in cache_episode_mapping\n")
+                    // Try all_episodes
+                    var found = false
+                    for ((_, value) in allEpPrefs.all) {
+                        if (value !is String) continue
+                        try {
+                            val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
+                            if (ep.audioUrl?.contains(fileName.replace(Regex("(_30min|_16k)?\\.(mp4|pcm|wav|m4a|aac|mp3)$"), "")) == true) {
+                                logBuilder.append("    Title (from all_episodes): ${ep.title}\n")
+                                logBuilder.append("    isDisliked(id): ${settings.isDisliked(ep.id ?: "")}\n")
+                                logBuilder.append("    isDislikedByTitle: ${settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")}\n")
+                                found = true; break
+                            }
+                        } catch (e: Exception) { /* skip */ }
+                    }
+                    if (!found) logBuilder.append("    Title: NOT FOUND in any source\n")
+                }
+                logBuilder.append("    Reason: ${if (isSelected) "Title is disliked" else "Title is NOT disliked or not found"}\n")
+            }
+            logBuilder.append("--- END REPORT: ${dislikedFileNames.size}/${files.size} files selected ---\n")
+            java.io.FileWriter(logFile, true).use { it.append(logBuilder.toString()) }
+            android.util.Log.d("SettingsFragment", "Dislike report written to ${logFile.absolutePath}")
+
             // Select files that match disliked episodes
             for (i in files.indices) {
                 if (files[i].name in dislikedFileNames) {
@@ -922,11 +974,9 @@ class SettingsFragment : Fragment() {
             val selectedFiles = files.filterIndexed { i, _ -> checked[i] }
             if (audioTrack != null && audioTrack?.playState == android.media.AudioTrack.PLAYSTATE_PLAYING) {
                 stopPcmPlayback()
-                btnPlay.text = "播放选中"
             } else {
                 if (selectedFiles.isNotEmpty()) {
                     playPcmFile(selectedFiles.first())
-                    btnPlay.text = "停止播放"
                 } else {
                     Toast.makeText(requireContext(), "请先选择一个文件", Toast.LENGTH_SHORT).show()
                 }
@@ -934,7 +984,6 @@ class SettingsFragment : Fragment() {
         }
         btnStop.setOnClickListener {
             stopPcmPlayback()
-            btnPlay.text = "播放选中"
         }
 
         dialog.show()

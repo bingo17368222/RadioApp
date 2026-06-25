@@ -84,6 +84,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
         const val BROADCAST_CACHE_UPDATE = "com.radio.app.CACHE_UPDATE"
+        const val BROADCAST_EPISODE_CHANGED = "com.radio.app.EPISODE_CHANGED"
         const val EXTRA_BUFFER_PERCENT = "buffer_percent"
         const val EXTRA_IS_PLAYING = "is_playing"
         const val EXTRA_CACHE_PERCENT = "cache_percent"
@@ -119,6 +120,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     inner class LocalBinder : Binder() {
         fun getService(): RadioPlaybackService = this@RadioPlaybackService
+    }
+
+    private fun writeServiceLog(category: String, msg: String) {
+        try {
+            val logDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/$category")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "${category}.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            java.io.FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+        } catch (_: Exception) {}
     }
 
     private var player: ExoPlayer? = null
@@ -1382,6 +1393,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun updateNotification() {
+        writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, playing=${player?.isPlaying}, prepared=$prepared")
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
         val playing = player?.isPlaying ?: false
@@ -1772,6 +1784,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationTitle = episode.title; notificationSubText = "[回放]"
         notificationDate = episode.broadcastAt ?: ""; notificationPlaying = true
         updateNotification()
+        writeServiceLog("notification", "playEpisode: title=${episode.title}, notificationTitle=$notificationTitle, notificationSubText=$notificationSubText, notificationDate=$notificationDate, updateNotification called")
+        // Broadcast to notify UI that episode changed
+        try {
+            val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
+            broadcastIntent.putExtra("episode_title", episode.title)
+            broadcastIntent.putExtra("episode_id", episode.id)
+            broadcastIntent.setPackage(packageName)
+            LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
+        } catch (e: Exception) { Log.w(TAG, "Failed to broadcast episode change", e) }
         saveLastEpisode(episode)
         ensurePlayerInitialized()
         try {
@@ -2108,17 +2129,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun createContentIntent(): PendingIntent {
-        val intent = Intent(this, com.radio.app.activities.PlayerActivity::class.java).apply {
+        val intent = Intent(this, PlayerActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("fresh_launch_ts", System.currentTimeMillis())
             currentEpisode?.let { ep ->
                 putExtra("episode", ep)
+                putExtra("episode_id", ep.id)
+                putExtra("title", ep.title)
                 putExtra("audio_url", ep.audioUrl)
+                putExtra("station_name", ep.stationName)
                 putExtra("station_id", ep.stationId)
+                putExtra("duration", ep.duration)
+                putExtra("episode_index", -1)
             }
         }
-        return PendingIntent.getActivity(this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun applyNotificationIntents(remoteViews: RemoteViews) {
