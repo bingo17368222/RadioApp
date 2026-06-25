@@ -15,7 +15,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import android.os.PowerManager
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.support.v4.media.MediaMetadataCompat
@@ -159,9 +158,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // SharedPreferences监听器，用于热切换通知栏样式
     private var prefChangeListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
 
-    // WakeLock保持CPU运行
-    private var wakeLock: PowerManager.WakeLock? = null
-
     // 后台下载进度（供 UI 读取）
     @Volatile
     private var downloadProgressPct = 0
@@ -199,10 +195,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } else {
             startForeground(RadioApplication.NOTIFICATION_ID, buildNotification())
         }
-        // 获取WakeLock保持CPU运行
-        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
-        wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RadioApp::PlaybackWakeLock")
-        wakeLock?.acquire(24 * 60 * 60 * 1000L)
         
         // 注册SharedPreferences监听器，实现通知栏样式热切换
         val prefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
@@ -2157,7 +2149,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
                 .unregisterOnSharedPreferenceChangeListener(it)
         }
-        wakeLock?.let { if (it.isHeld) it.release() }
         progressRunnable?.let { progressHandler?.removeCallbacks(it) }
         notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }
         positionSaveRunnable?.let { positionSaveHandler?.removeCallbacks(it) }
