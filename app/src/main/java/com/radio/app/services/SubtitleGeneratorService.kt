@@ -136,7 +136,7 @@ class SubtitleGeneratorService : Service() {
      */
     private fun logToFile(msg: String) {
         try {
-            val logDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/subtitle")
+            val logDir = java.io.File(getExternalFilesDir(null), "RadioApp/logs/subtitle")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "service.log")
             val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())

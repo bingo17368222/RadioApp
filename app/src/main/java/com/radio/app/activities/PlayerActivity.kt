@@ -333,7 +333,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun writeLog(category: String, msg: String) {
         try {
-            val logDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/$category")
+            val logDir = java.io.File(getExternalFilesDir(null), "RadioApp/logs/$category")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "${category}.log")
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
