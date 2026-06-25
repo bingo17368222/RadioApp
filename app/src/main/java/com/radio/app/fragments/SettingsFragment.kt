@@ -572,47 +572,90 @@ class SettingsFragment : Fragment() {
             // First deselect all
             for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
 
-            // 不喜欢筛选：查询每个缓存文件对应的节目标题，检查是否被标记为不喜欢
+            // 不喜欢筛选：提取缓存文件名中的episodeId，从多个数据源查找节目标题
+            val settings = com.radio.app.models.AppSettings.getInstance(requireContext())
             val cacheMappingPrefs = requireContext().getSharedPreferences("cache_episode_mapping", android.content.Context.MODE_PRIVATE)
             val allEpPrefs = requireContext().getSharedPreferences("all_episodes", android.content.Context.MODE_PRIVATE)
+            val precacheListPrefs = requireContext().getSharedPreferences("precache_list", android.content.Context.MODE_PRIVATE)
+            val epListCachePrefs = requireContext().getSharedPreferences("episode_list_cache", android.content.Context.MODE_PRIVATE)
 
             val dislikedFileNames = mutableSetOf<String>()
             for (file in files) {
                 val fileName = file.name
-                // 1) 从 cache_episode_mapping 直接查找
-                val epJson = cacheMappingPrefs.getString(fileName, null)
-                if (epJson != null) {
-                    try {
-                        val ep = com.google.gson.Gson().fromJson(epJson, com.radio.app.models.Episode::class.java)
-                        if (ep != null) {
-                            val isDisliked = settings.isDisliked(ep.id ?: "") || settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
-                            if (isDisliked) {
+                // Extract episodeId: remove prefix like "henan-private-car-2024-06-03-2_" and suffix like "_30min.mp4" or ".pcm" or ".wav"
+                val episodeId = fileName
+                    .replace(Regex("(_30min|_16k)?\\.(mp4|pcm|wav|m4a|aac|mp3)$"), "")  // Remove suffix
+                    .replace(Regex("_\\d+min$"), "")  // Remove _30min etc.
+
+                // 1) cache_episode_mapping (direct mapping)
+                var found = false
+                for (key in listOf(fileName, "$episodeId.mp4", "$episodeId.m4a", "$episodeId.aac")) {
+                    val epJson = cacheMappingPrefs.getString(key, null)
+                    if (epJson != null) {
+                        try {
+                            val ep = com.google.gson.Gson().fromJson(epJson, com.radio.app.models.Episode::class.java)
+                            if (ep != null && (settings.isDisliked(ep.id ?: "") || settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: ""))) {
                                 dislikedFileNames.add(fileName)
-                                continue
+                                found = true
                             }
-                        }
-                    } catch (e: Exception) { /* skip */ }
+                        } catch (e: Exception) { /* skip */ }
+                        if (found) break
+                    }
                 }
-                // 2) 从 all_episodes 查找（按文件名匹配 audioUrl）
-                for ((key, value) in allEpPrefs.all) {
+                if (found) continue
+
+                // 2) all_episodes (by episodeId in audioUrl)
+                for ((_, value) in allEpPrefs.all) {
                     if (value !is String) continue
                     try {
                         val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java) ?: continue
                         if (ep.audioUrl.isNullOrBlank()) continue
-                        val urlFileName = try {
-                            java.net.URL(ep.audioUrl).path.substringAfterLast("/")
-                        } catch (e: Exception) {
-                            ep.audioUrl.substringAfterLast("/")
-                        }
-                        if (urlFileName == fileName || ep.audioUrl.contains(fileName)) {
-                            val isDisliked = settings.isDisliked(ep.id ?: "") || settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")
-                            if (isDisliked) {
+                        if (ep.audioUrl.contains(episodeId)) {
+                            if (settings.isDisliked(ep.id ?: "") || settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: "")) {
                                 dislikedFileNames.add(fileName)
+                                found = true
                                 break
                             }
                         }
                     } catch (e: Exception) { /* skip */ }
                 }
+                if (found) continue
+
+                // 3) precache_list (by episodeId)
+                for ((key, value) in precacheListPrefs.all) {
+                    if (value !is String) continue
+                    if (key.contains(episodeId)) {
+                        try {
+                            val ep = com.google.gson.Gson().fromJson(value, com.radio.app.models.Episode::class.java)
+                            if (ep != null && (settings.isDisliked(ep.id ?: "") || settings.isDislikedByTitle(ep.stationId ?: "", ep.title ?: ""))) {
+                                dislikedFileNames.add(fileName)
+                                found = true
+                                break
+                            }
+                        } catch (e: Exception) { /* skip */ }
+                    }
+                }
+                if (found) continue
+
+                // 4) episode_list_cache (by episodeId in JSON)
+                try {
+                    val cachedJson = epListCachePrefs.getString("episodes", null)
+                    if (cachedJson != null) {
+                        val arr = org.json.JSONArray(cachedJson)
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            if (obj.optString("audio_url", "").contains(episodeId) || obj.optString("id", "") == episodeId) {
+                                val title = obj.optString("title", "")
+                                val stationId = obj.optString("station_id", "")
+                                if (settings.isDisliked(obj.optString("id", "")) || settings.isDislikedByTitle(stationId, title)) {
+                                    dislikedFileNames.add(fileName)
+                                    found = true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) { /* skip */ }
             }
             android.util.Log.d("SettingsFragment", "Dislike filter: files=${files.size}, disliked=${dislikedFileNames.size}")
 

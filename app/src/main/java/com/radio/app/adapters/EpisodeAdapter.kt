@@ -51,8 +51,8 @@ class EpisodeAdapter(
         val segments = episode.voiceSegments?.size ?: 0
         holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 
-        // 不喜欢状态 - 按节目名称判断（每天该节目都不喜欢）
-        val isDisliked = settings.isDislikedByTitle(episode.stationId, episode.title)
+        // 不喜欢状态 - 按节目ID或名称判断（每天该节目都不喜欢）
+        val isDisliked = settings.isDisliked(episode.id) || settings.isDislikedByTitle(episode.stationId, episode.title)
         if (isDisliked) {
             holder.itemView.alpha = 0.5f
             holder.tvTitle.setTextColor(Color.parseColor("#999999"))

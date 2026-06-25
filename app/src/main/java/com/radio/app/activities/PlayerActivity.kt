@@ -491,14 +491,6 @@ class PlayerActivity : AppCompatActivity() {
         isActivityRecreated = savedInstanceState != null
 
         val lastHandled = getLastHandledTs(this)
-        // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过
-        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled
-        if (isFreshStart) {
-            markFreshLaunchHandled(this, freshLaunchTs)
-        }
-
-        android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
-        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, action=${intent.action}, episode=${currentEpisode?.title}, stackTrace=${Thread.currentThread().stackTrace.take(5).joinToString(" <- ")}")
 
         currentEpisode = intent.getSerializableExtra("episode") as? Episode
         if (currentEpisode == null) {
@@ -542,6 +534,15 @@ class PlayerActivity : AppCompatActivity() {
         episodeList = (intent.getSerializableExtra("episode_list") as? ArrayList<Episode>) ?: ArrayList()
         saveEpisodeListToPrefs()
         currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
+
+        // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过，且intent中有实际节目数据
+        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled && currentEpisode != null
+        if (isFreshStart) {
+            markFreshLaunchHandled(this, freshLaunchTs)
+        }
+
+        android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
+        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, action=${intent.action}, episode=${currentEpisode?.title}, stackTrace=${Thread.currentThread().stackTrace.take(5).joinToString(" <- ")}")
 
         // 缓存节目列表用于连续播放
         if (episodeList.isNotEmpty()) {
@@ -1006,13 +1007,16 @@ class PlayerActivity : AppCompatActivity() {
         playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
         // 同步seekbar位置
         if (playbackService?.isPrepared() == true) {
-            val pos = playbackService?.getCurrentPosition() ?: 0L
-            val dur = playbackService?.getDuration() ?: 0L
-            if (dur > 0) {
-                binding.seekBar.max = dur.toInt()
-                binding.seekBar.progress = pos.toInt()
-                binding.tvCurrentTime.text = "${formatTime(pos.toInt())} / ${formatTime(dur.toInt())}"
-                binding.tvTotalTime.text = formatTime(dur.toInt())
+            val svcPos = playbackService?.getCurrentPosition() ?: 0L
+            val svcDur = playbackService?.getDuration() ?: -1L
+            // Only update seekBar if we have valid position data (not 0 when playing)
+            val isPlaying = playbackService?.isPlaying() ?: false
+            if (svcPos > 0 || !isPlaying) {
+                if (svcPos > 0) {
+                    binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
+                    binding.seekBar.progress = svcPos.toInt()
+                    binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
+                }
             }
             binding.tvLiveIndicator.text = if (playbackService?.isPlaying() == true) "播放中" else "已暂停"
             binding.tvLiveIndicator.visibility = View.VISIBLE

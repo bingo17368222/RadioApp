@@ -1746,6 +1746,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationDate = episode.broadcastAt?.take(10) ?: ""
         notificationSubText = if (notificationDate.isNotEmpty()) "[回放] $notificationDate" else "[回放]"
         notificationPlaying = true
+        updateNotification()
         saveLastEpisode(episode)
         ensurePlayerInitialized()
         try {
@@ -1820,9 +1821,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun isDownloading(): Boolean = downloadActive.get()
 
     fun jumpToNextSegment() {
-        val segments = currentEpisode?.voiceSegments ?: return
-        val currentPos = player?.currentPosition ?: 0L
-        for (seg in segments) { if (seg.start > currentPos) { seekTo(seg.start); return } }
+        val segments = currentEpisode?.voiceSegments
+        if (segments != null && segments.isNotEmpty()) {
+            val currentPos = player?.currentPosition ?: 0L
+            for (seg in segments) { if (seg.start > currentPos) { seekTo(seg.start); return } }
+        }
+        // Fallback: skip forward 30 seconds
+        val pos = (player?.currentPosition ?: 0L) + 30000
+        val dur = player?.duration ?: 0L
+        if (dur > 0 && pos < dur) seekTo(pos)
     }
 
     private fun fetchCrossDayEpisode(direction: Int): Episode? {
@@ -1999,13 +2006,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
     fun jumpToPrevSegment() {
-        val segments = currentEpisode?.voiceSegments ?: return
-        val currentPos = player?.currentPosition ?: 0L
-        var prev: VoiceSegment? = null
-        for (i in segments.indices) {
-            if (segments[i].end >= currentPos) { if (i > 0) prev = segments[i - 1]; break }
+        val segments = currentEpisode?.voiceSegments
+        if (segments != null && segments.isNotEmpty()) {
+            val currentPos = player?.currentPosition ?: 0L
+            var prev: VoiceSegment? = null
+            for (i in segments.indices) {
+                if (segments[i].end >= currentPos) { if (i > 0) prev = segments[i - 1]; break }
+            }
+            prev?.let { seekTo(it.start); return } ?: segments.firstOrNull()?.let { seekTo(it.start); return }
         }
-        prev?.let { seekTo(it.start) } ?: segments.firstOrNull()?.let { seekTo(it.start) }
+        // Fallback: skip backward 30 seconds
+        val pos = (player?.currentPosition ?: 0L) - 30000
+        seekTo(maxOf(0L, pos))
     }
 
     fun markSegment(index: Int, isDry: Boolean) {

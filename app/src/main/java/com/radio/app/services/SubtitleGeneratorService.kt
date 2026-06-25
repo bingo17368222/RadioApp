@@ -359,9 +359,168 @@ class SubtitleGeneratorService : Service() {
     private fun generateWithVosk(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
-        ctx.log("ERROR: Vosk engine not available (library removed from APK)")
-        callback.onError("Vosk引擎未安装。请在设置中下载Vosk模型或使用在线字幕生成。")
-        return false
+        val modelPath = findVoskModel()
+        if (modelPath == null) {
+            ctx.log("ERROR: No Vosk model found")
+            callback.onError("未找到Vosk模型")
+            return false
+        }
+        try {
+            ctx.log("Initializing Vosk recognizer with model: $modelPath")
+            val recognizer = org.vosk.Recognizer(org.vosk.Model(modelPath), 16000.0f)
+            ctx.log("Vosk recognizer created successfully")
+
+            // Get audio data - prefer 16kHz PCM cache
+            val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
+            if (audioData == null) {
+                ctx.log("ERROR: Failed to get audio data")
+                callback.onError("获取音频数据失败")
+                recognizer.close()
+                return false
+            }
+
+            ctx.log("Processing ${audioData.size} bytes of audio data with Vosk")
+            val totalBytes = audioData.size
+            val chunkSize = 4096
+            var offset = 0
+            var lastProgress = 0
+
+            while (offset < audioData.size && !ctx.cancelled.get()) {
+                val end = minOf(offset + chunkSize, audioData.size)
+                val chunk = audioData.copyOfRange(offset, end)
+                if (recognizer.acceptWaveForm(chunk, chunk.size)) {
+                    val result = recognizer.result
+                    if (result.isNotBlank()) {
+                        try {
+                            val json = org.json.JSONObject(result)
+                            val text = json.optString("text", "")
+                            if (text.isNotBlank()) {
+                                callback.onPartialResult(text)
+                            }
+                        } catch (e: Exception) { /* skip */ }
+                    }
+                }
+                offset = end
+                val progress = (offset * 100 / totalBytes)
+                if (progress > lastProgress + 5) {
+                    lastProgress = progress
+                    callback.onProgress(progress)
+                }
+            }
+
+            // Get final result
+            val finalResult = recognizer.finalResult
+            if (finalResult.isNotBlank()) {
+                try {
+                    val json = org.json.JSONObject(finalResult)
+                    val text = json.optString("text", "")
+                    if (text.isNotBlank()) {
+                        callback.onPartialResult(text)
+                    }
+                } catch (e: Exception) { /* skip */ }
+            }
+
+            recognizer.close()
+            ctx.log("Vosk processing complete")
+            callback.onComplete()
+            return true
+        } catch (e: Exception) {
+            ctx.log("ERROR: Vosk exception: ${e.message}")
+            callback.onError("Vosk处理失败: ${e.message}")
+            return false
+        }
+    }
+
+    private fun getAudioDataForProcessing(episodeId: String, audioUrl: String, ctx: TaskContext): ByteArray? {
+        // 1) Try 16kHz PCM cache first
+        val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+        val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+        if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
+            ctx.log("Using 16kHz PCM cache: ${pcm16kFile.length()} bytes")
+            return pcm16kFile.readBytes()
+        }
+        // 2) Try original PCM cache
+        val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+        if (pcmFile.exists() && pcmFile.length() > 1024) {
+            ctx.log("Using original PCM cache, resampling to 16kHz")
+            val rawPcm = pcmFile.readBytes()
+            val rawShorts = ShortArray(rawPcm.size / 2)
+            java.nio.ByteBuffer.wrap(rawPcm).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(rawShorts)
+            // Read .info for sample rate
+            val infoFile = File(pcmCacheDir, "${episodeId}_30min.info")
+            var sampleRate = 44100
+            var channels = 2
+            if (infoFile.exists()) {
+                val info = infoFile.readText()
+                val srMatch = Regex("sampleRate=(\\d+)").find(info)
+                if (srMatch != null) sampleRate = srMatch.groupValues[1].toInt()
+                val chMatch = Regex("channels=(\\d+)").find(info)
+                if (chMatch != null) channels = chMatch.groupValues[1].toInt()
+            }
+            val resampled = resampleTo16kMono(rawShorts, sampleRate, channels)
+            return resampled
+        }
+        // 3) Download and process
+        ctx.log("No PCM cache, downloading from $audioUrl")
+        return downloadAndProcessAudio(audioUrl, ctx)
+    }
+
+    private fun resampleTo16kMono(input: ShortArray, inSampleRate: Int, inChannels: Int): ByteArray {
+        if (inSampleRate == 16000 && inChannels == 1) {
+            val out = ByteArray(input.size * 2)
+            java.nio.ByteBuffer.wrap(out).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(input)
+            return out
+        }
+        val ratio = inSampleRate.toDouble() / 16000.0
+        val inputFrames = input.size / inChannels
+        val outFrames = (inputFrames / ratio).toInt()
+        val monoInput: ShortArray = if (inChannels > 1) {
+            val arr = ShortArray(inputFrames)
+            for (i in 0 until inputFrames) {
+                var sum = 0
+                for (c in 0 until inChannels) sum += input[i * inChannels + c].toInt()
+                arr[i] = (sum / inChannels).toShort()
+            }
+            arr
+        } else { input }
+        val monoOut = ShortArray(outFrames)
+        for (i in 0 until outFrames) {
+            val srcPos = i * ratio
+            val srcIdx = srcPos.toInt()
+            val frac = srcPos - srcIdx
+            if (srcIdx + 1 >= monoInput.size) {
+                monoOut[i] = monoInput[monoInput.size - 1]
+            } else {
+                monoOut[i] = ((monoInput[srcIdx] * (1.0 - frac) + monoInput[srcIdx + 1] * frac).toInt()).toShort()
+            }
+        }
+        val out = ByteArray(monoOut.size * 2)
+        java.nio.ByteBuffer.wrap(out).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(monoOut)
+        return out
+    }
+
+    private fun downloadAndProcessAudio(audioUrl: String, ctx: TaskContext): ByteArray? {
+        // Simple download implementation
+        try {
+            val url = java.net.URL(audioUrl)
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 15000
+            conn.readTimeout = 30000
+            conn.connect()
+            if (conn.responseCode != 200) {
+                ctx.log("ERROR: Download failed with code ${conn.responseCode}")
+                return null
+            }
+            val inputStream = conn.inputStream
+            val data = inputStream.readBytes()
+            inputStream.close()
+            conn.disconnect()
+            ctx.log("Downloaded ${data.size} bytes, processing...")
+            return data  // Return raw data, Vosk will handle format
+        } catch (e: Exception) {
+            ctx.log("ERROR: Download failed: ${e.message}")
+            return null
+        }
     }
 
     private fun parseVoskPartial(jsonResult: String): String {
