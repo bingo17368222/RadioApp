@@ -385,6 +385,7 @@ class SubtitleGeneratorService : Service() {
             var offset = 0
             var lastProgress = 0
 
+            val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             while (offset < audioData.size && !ctx.cancelled.get()) {
                 val end = minOf(offset + chunkSize, audioData.size)
                 val chunk = audioData.copyOfRange(offset, end)
@@ -395,7 +396,9 @@ class SubtitleGeneratorService : Service() {
                             val json = org.json.JSONObject(result)
                             val text = json.optString("text", "")
                             if (text.isNotBlank()) {
-                                callback.onPartialResult(text)
+                                val transcript = com.radio.app.models.Transcript(text = text)
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
                             }
                         } catch (e: Exception) { /* skip */ }
                     }
@@ -404,7 +407,7 @@ class SubtitleGeneratorService : Service() {
                 val progress = (offset * 100 / totalBytes)
                 if (progress > lastProgress + 5) {
                     lastProgress = progress
-                    callback.onProgress(progress)
+                    callback.onProgressUpdate(progress, 100)
                 }
             }
 
@@ -415,14 +418,16 @@ class SubtitleGeneratorService : Service() {
                     val json = org.json.JSONObject(finalResult)
                     val text = json.optString("text", "")
                     if (text.isNotBlank()) {
-                        callback.onPartialResult(text)
+                        val transcript = com.radio.app.models.Transcript(text = text)
+                        allTranscripts.add(transcript)
+                        callback.onSubtitleGenerated(transcript)
                     }
                 } catch (e: Exception) { /* skip */ }
             }
 
             recognizer.close()
-            ctx.log("Vosk processing complete")
-            callback.onComplete()
+            ctx.log("Vosk processing complete, ${allTranscripts.size} transcripts")
+            callback.onComplete(allTranscripts)
             return true
         } catch (e: Exception) {
             ctx.log("ERROR: Vosk exception: ${e.message}")

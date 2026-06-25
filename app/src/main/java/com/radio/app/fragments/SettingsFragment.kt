@@ -568,7 +568,6 @@ class SettingsFragment : Fragment() {
             for (i in checked.indices) { checked[i] = !checked[i]; listView.setItemChecked(i, checked[i]) }
         }
         btnDislikeFilter.setOnClickListener {
-            val settings = AppSettings.getInstance(requireContext())
             // First deselect all
             for (i in checked.indices) { checked[i] = false; listView.setItemChecked(i, false) }
 
