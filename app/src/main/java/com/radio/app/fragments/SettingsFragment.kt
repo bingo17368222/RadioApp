@@ -688,7 +688,7 @@ class SettingsFragment : Fragment() {
 
             // === DETAILED LOGGING: Log every file and its dislike status ===
             try {
-                val logDir = java.io.File(requireContext().getExternalFilesDir(null), "RadioApp/logs/dislike")
+                val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(requireContext()), "dislike")
                 if (!logDir.exists()) logDir.mkdirs()
                 val logFile = java.io.File(logDir, "dislike.log")
                 val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())

@@ -4,13 +4,20 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.IBinder
+import android.provider.Settings
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.radio.app.R
 import com.radio.app.fragments.HomeFragment
@@ -47,6 +54,8 @@ class MainActivity : AppCompatActivity() {
         ThemeManager.applyTheme(this)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // 请求存储权限（日志写入需要）
+        requestStoragePermissionIfNeeded()
 
         // 自定义底部导航栏点击处理
         for (navId in navIds) {
@@ -137,6 +146,40 @@ class MainActivity : AppCompatActivity() {
             .replace(R.id.fragment_container, fragment)
             .commit()
         return true
+    }
+
+    private fun requestStoragePermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+: 需要 MANAGE_EXTERNAL_STORAGE
+            if (!Environment.isExternalStorageManager()) {
+                AlertDialog.Builder(this)
+                    .setTitle("存储权限")
+                    .setMessage("为方便访问日志文件，需要授予\"所有文件访问\"权限。\n\n日志位置: /sdcard/RadioApp/logs/\n\n点击确定后，请在设置中开启权限。")
+                    .setPositiveButton("去设置") { _, _ ->
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                            intent.data = Uri.parse("package:$packageName")
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            try {
+                                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    .setNegativeButton("稍后", null)
+                    .show()
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            // Android 6-10: 请求 WRITE_EXTERNAL_STORAGE
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                    100
+                )
+            }
+        }
     }
 
     override fun onDestroy() {
