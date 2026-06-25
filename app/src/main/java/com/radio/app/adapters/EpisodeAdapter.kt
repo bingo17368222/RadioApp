@@ -85,8 +85,7 @@ class EpisodeAdapter(
             holder.btnPlay.setImageResource(android.R.drawable.ic_media_play)
         }
 
-        holder.btnPlay.setOnClickListener { listener?.onEpisodeClick(episode) }
-        holder.tvTitle.setOnClickListener { listener?.onEpisodeClick(episode) }
+        holder.itemView.setOnClickListener { listener?.onEpisodeClick(episode) }
         holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
             true

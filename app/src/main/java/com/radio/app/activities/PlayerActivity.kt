@@ -187,11 +187,10 @@ class PlayerActivity : AppCompatActivity() {
             val sameEpisode = playbackService?.isSameEpisodePlaying(newUrl ?: "") ?: false
 
             val logMsg = "=== onServiceConnected DEBUG ===\n" +
-                "  newUrl=$newUrl\n" +
-                "  svcStarted=$svcStarted, svcPlaying=$svcPlaying, svcPrepared=$svcPrepared\n" +
-                "  svcUrl=$svcUrl\n" +
-                "  sameEpisode=$sameEpisode\n" +
-                "  episodeList.size=${episodeList.size}, currentIndex=$currentEpisodeIndex"
+                "  isFreshStart=$isFreshStart, svcStarted=$svcStarted, svcPlaying=$svcPlaying, svcPrepared=$svcPrepared\n" +
+                "  sameEpisode=$sameEpisode, newUrl=$newUrl, svcUrl=$svcUrl\n" +
+                "  episodeList.size=${episodeList.size}, currentIndex=$currentEpisodeIndex\n" +
+                "  playbackInProgress=${isPlaybackInProgress(this@PlayerActivity)}, lastStartedUrl=${getLastStartedUrl(this@PlayerActivity)}"
             android.util.Log.d("PlayerActivity", logMsg)
             writeJitterLog(logMsg)
 
@@ -499,7 +498,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         android.util.Log.d("PlayerActivity", "onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, isActivityRecreated=$isActivityRecreated")
-        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, action=${intent.action}")
+        writeJitterLog("onCreate: freshLaunchTs=$freshLaunchTs, lastHandled=$lastHandled, isFreshStart=$isFreshStart, action=${intent.action}, episode=${currentEpisode?.title}, stackTrace=${Thread.currentThread().stackTrace.take(5).joinToString(" <- ")}")
 
         currentEpisode = intent.getSerializableExtra("episode") as? Episode
         if (currentEpisode == null) {
@@ -1403,6 +1402,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        writeJitterLog("onResume: subtitleProcessing=$subtitleProcessing, segmentProcessing=$segmentProcessing, serviceBound=$serviceBound")
         // 恢复处理状态持久化
         restoreProcessingState()
         
@@ -1475,6 +1475,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        writeJitterLog("onPause")
         // Feature B: stop position update when activity is not visible
         positionUpdateHandler.removeCallbacks(positionUpdateRunnable)
     }

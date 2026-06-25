@@ -152,15 +152,12 @@ class SubtitleGeneratorService : Service() {
     /**
      * Cancel all running tasks and prevent new ones
      */
-    fun cancelAllTasks() {
-        logToFile("cancelAllTasks: cancelling ${activeTasks.size} active tasks")
-        globalCancelled.set(true)
-        activeTasks.values.forEach { it.cancelled.set(true) }
+    private fun cancelAllTasks() {
+        for (ctx in activeTasks.values) {
+            ctx.cancelled.set(true)
+        }
         activeTasks.clear()
-        releaseWakeLock()
-        try {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } catch (_: Exception) {}
+        logToFile("cancelAllTasks: all tasks cancelled")
     }
 
     /**
@@ -206,6 +203,11 @@ class SubtitleGeneratorService : Service() {
                 val voskModel = findVoskModel()
                 if (voskModel != null) {
                     ctx.log("Using Vosk model: $voskModel")
+                    // Check for pre-cached 16kHz PCM file
+                    val pcm16kCache = find16kHzPcmCache(episodeId)
+                    if (pcm16kCache != null) {
+                        ctx.log("Found 16kHz PCM cache for $episodeId: ${pcm16kCache.absolutePath}")
+                    }
                     val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
                     if (!success && !ctx.cancelled.get()) {
                         // generateWithVosk 已通过 callback 上报错误，此处仅记录日志，避免重复弹窗
@@ -299,6 +301,11 @@ class SubtitleGeneratorService : Service() {
                 val voskModel = findVoskModel()
                 if (voskModel != null) {
                     ctx.log("Using Vosk model for segments: $voskModel")
+                    // Check for pre-cached 16kHz PCM file
+                    val pcm16kCache = find16kHzPcmCache(episodeId)
+                    if (pcm16kCache != null) {
+                        ctx.log("Found 16kHz PCM cache for segments $episodeId: ${pcm16kCache.absolutePath}")
+                    }
                     val success = generateWithVosk(episodeId, audioUrl, subtitleCallback, ctx)
                     if (!success && !ctx.cancelled.get()) {
                         // generateWithVosk 已通过 callback 上报错误，此处仅记录日志，避免重复弹窗
@@ -426,7 +433,37 @@ class SubtitleGeneratorService : Service() {
             logToFile("findVoskModel: found built-in Vosk model at ${internalModelDir.absolutePath}")
             return internalModelDir.absolutePath
         }
+        // 3. Also check the OfflineEngineActivity download directory
+        val engineDir = File(filesDir, "engines")
+        if (engineDir.exists()) {
+            val voskDirs = engineDir.listFiles()?.filter { it.isDirectory && it.name.contains("vosk", ignoreCase = true) }
+            for (dir in voskDirs ?: emptyList()) {
+                if (isValidVoskModel(dir)) {
+                    logToFile("findVoskModel: found Vosk model in engines dir: ${dir.absolutePath}")
+                    return dir.absolutePath
+                }
+            }
+        }
         logToFile("findVoskModel: no Vosk model found. Checked ${modelsDir?.absolutePath} and ${internalModelDir.absolutePath}")
+        return null
+    }
+
+    /**
+     * 检查是否有预缓存的16kHz PCM文件（由RadioPlaybackService.decodeToPcmForPreCache生成）
+     * 返回PCM文件路径，如果不存在则返回null
+     */
+    private fun find16kHzPcmCache(episodeId: String): File? {
+        try {
+            val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
+            if (pcmCacheDir == null || !pcmCacheDir.exists()) return null
+            val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            if (pcmFile.exists() && pcmFile.length() > 1024) {
+                logToFile("find16kHzPcmCache: found 16kHz PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
+                return pcmFile
+            }
+        } catch (e: Exception) {
+            logToFile("find16kHzPcmCache: error: ${e.message}")
+        }
         return null
     }
 
@@ -705,15 +742,15 @@ class SubtitleGeneratorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "cancel_all") {
+            cancelAllTasks()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         globalCancelled.set(false)
         if (intent != null) {
             val action = intent.action
-            if (action == "cancel_all") {
-                logToFile("onStartCommand: cancel_all action received")
-                cancelAllTasks()
-                stopSelf()
-                return START_NOT_STICKY
-            }
 
             val episodeId = intent.getStringExtra("episode_id") ?: return START_NOT_STICKY
             val audioUrl = intent.getStringExtra("audio_url") ?: return START_NOT_STICKY

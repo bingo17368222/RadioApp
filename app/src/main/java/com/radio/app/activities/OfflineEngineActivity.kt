@@ -164,7 +164,11 @@ class OfflineEngineActivity : AppCompatActivity() {
         } else {
             val modelsDir = getExternalFilesDir("models")
             val modelDir = modelsDir?.let { File(it, engine.modelDir) }
-            val installed = modelDir?.exists() == true && getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE
+            val installed = modelDir?.exists() == true && getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && (when {
+                engine.modelDir.contains("vosk", ignoreCase = true) -> isValidVoskModelDir(modelDir)
+                engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
+                else -> true
+            })
             if (installed) {
                 btnAction.text = "已安装(点击删除)"
                 btnAction.setOnClickListener {
@@ -396,6 +400,17 @@ class OfflineEngineActivity : AppCompatActivity() {
             }
         }
         file.delete()
+    }
+
+    private fun isValidVoskModelDir(dir: File): Boolean {
+        val hasAmDir = File(dir, "am").exists() && File(File(dir, "am"), "final.mdl").exists()
+        val hasConf = File(dir, "conf").exists() && File(File(dir, "conf"), "model.conf").exists()
+        val hasGraph = File(dir, "graph").exists() || File(dir, "HCLG.fst").exists()
+        return (hasAmDir && hasConf) || (hasGraph && hasConf)
+    }
+
+    private fun isValidWhisperModelDir(dir: File): Boolean {
+        return dir.listFiles()?.any { it.name.endsWith(".bin") && it.name.startsWith("ggml") } == true
     }
 
     private fun getDirTotalSize(dir: File?): Long {

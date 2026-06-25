@@ -1107,6 +1107,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } catch (e: Exception) {
                 writePreCacheLog("decodeToPcmForPreCache: failed to write WAV: ${e.message}")
             }
+
+            // Also generate 16kHz mono version for Whisper/Vosk
+            try {
+                val pcm16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.pcm")
+                if (sampleRate != 16000 || channelCount != 1) {
+                    writePreCacheLog("decodeToPcmForPreCache: generating 16kHz mono version for Whisper/Vosk")
+                    val rawPcm = pcmFile.readBytes()
+                    val rawShorts = ShortArray(rawPcm.size / 2)
+                    java.nio.ByteBuffer.wrap(rawPcm).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(rawShorts)
+                    val resampled = resampleChunkForPreCache(rawShorts, sampleRate, channelCount, 16000, 1)
+                    pcm16kFile.writeBytes(resampled.first)
+                    val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
+                    info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
+                    val wav16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.wav")
+                    writeWavFile(pcm16kFile, wav16kFile, 16000, 1)
+                    writePreCacheLog("decodeToPcmForPreCache: 16kHz mono PCM size=${pcm16kFile.length()}, WAV size=${wav16kFile.length()}")
+                } else {
+                    // Already 16kHz mono, just copy
+                    pcmFile.copyTo(pcm16kFile, overwrite = true)
+                    val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
+                    info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
+                    val wav16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.wav")
+                    writeWavFile(pcm16kFile, wav16kFile, 16000, 1)
+                }
+            } catch (e: Exception) {
+                writePreCacheLog("decodeToPcmForPreCache: failed to generate 16kHz version: ${e.message}")
+            }
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
             throw e
@@ -1759,8 +1786,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getCurrentPlayingUrl(): String = currentPlayingUrl
     fun isPlaybackStarted(): Boolean = playbackStarted
     fun isSameEpisodePlaying(url: String): Boolean {
-        return playbackStarted && currentPlayingUrl.isNotBlank() && currentPlayingUrl == url &&
-                (player?.isPlaying == true || prepared)
+        return playbackStarted && currentPlayingUrl.isNotBlank() && currentPlayingUrl == url
     }
     fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
     fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
