@@ -1618,9 +1618,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             applySeekIntents(remoteViews)
         }
 
+        val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        val timeStr = notificationTimeRange
+        val contentText = buildString {
+            append(if (playing) "正在播放" else "已暂停")
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+            }
+            if (timeStr.isNotBlank()) {
+                append(" · $timeStr")
+            }
+        }
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
-            .setContentText(if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
+            .setContentText(contentText)
             .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
@@ -1680,6 +1691,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Content-based deduplication: skip if content hasn't changed
         val contentHash = Objects.hash(
             notificationTitle,
+            notificationDate,
+            notificationTimeRange,
             buildNotificationSubText(),
             playbackStarted && !userPaused,
             prepared,
@@ -1772,8 +1785,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 构建系统标准MediaStyle通知栏（五按钮，支持seekbar和拖动手势）
      */
     private fun buildMediaStyleNotification(playing: Boolean, deleteIntent: PendingIntent): Notification {
-        val fullSubText = buildNotificationSubText()
-        val contentText = if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText"
+        val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        val timeStr = notificationTimeRange
+        val contentText = buildString {
+            append(if (playing) "正在播放" else "已暂停")
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+            }
+            if (timeStr.isNotBlank()) {
+                append(" · $timeStr")
+            }
+        }
 
         // 创建展开视图（含进度条和50点seek）
         val expandedView = RemoteViews(packageName, R.layout.notification_media_expanded)
@@ -2340,8 +2362,35 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
 
-            writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - no episode found for $stationId on $targetDate")
-            Log.d(TAG, "fetchCrossDayEpisode: no episode found for $stationId on $targetDate")
+            // Final fallback: construct URL directly from pattern
+            writeServiceLog("notification", "fetchCrossDayEpisode: network and saved list both failed, trying URL construction")
+            val curUrl = currentPlayingUrl ?: currentEpisode?.audioUrl ?: ""
+            if (curUrl.isNotBlank()) {
+                // Extract date from URL: sijiache_20240604_0700_0900.mp4
+                val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(curUrl)
+                if (dateMatch != null) {
+                    val oldDateStr = dateMatch.groupValues[0] // "20240604"
+                    val newDateStr = targetDate.replace("-", "") // "20240605"
+                    val newUrl = curUrl.replace(oldDateStr, newDateStr)
+
+                    writeServiceLog("notification", "fetchCrossDayEpisode: constructed URL: $newUrl")
+
+                    // Construct episode with the new URL
+                    val stationId = currentEpisode?.stationId ?: curUrl.substringAfterLast("/").substringBefore("_")
+                    val newEpisode = Episode(
+                        id = "${stationId}-${newDateStr}-cross",
+                        title = if (nextDate) "下一日节目" else "上一日节目",
+                        stationId = stationId,
+                        audioUrl = newUrl,
+                        broadcastAt = targetDate,
+                        duration = 0
+                    )
+                    writeServiceLog("notification", "fetchCrossDayEpisode: RETURN constructed episode: ${newEpisode.title}, url=${newEpisode.audioUrl}")
+                    return newEpisode
+                }
+            }
+
+            writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - all methods failed (network, saved list, URL construction)")
         } catch (e: Exception) {
             writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - exception: ${e.message}")
             Log.e(TAG, "fetchCrossDayEpisode error", e)

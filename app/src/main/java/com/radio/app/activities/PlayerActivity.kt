@@ -213,6 +213,32 @@ class PlayerActivity : AppCompatActivity() {
             writeJitterLog(logMsg)
             writeJitterLog("onServiceConnected: sameEpisode=$sameEpisode, svcStarted=$svcStarted, isFreshStart=$isFreshStart, playbackInProgress=${isPlaybackInProgress(this@PlayerActivity)}")
 
+            // Issue 1 Fix: if the Activity's episode list is stale/empty, try to restore it
+            // BEFORE the JITTER-GUARD logic below, so the service's current episode can be
+            // matched by URL. The playback service does not expose its own episode list, so
+            // we restore from the persisted "episode_list" prefs and the launch intent.
+            if (episodeList.isEmpty()) {
+                try {
+                    val prefs = getSharedPreferences("episode_list", MODE_PRIVATE)
+                    val json = prefs.getString("list", null)
+                    if (json != null) {
+                        val gson = com.google.gson.Gson()
+                        val type = object : com.google.gson.reflect.TypeToken<List<com.radio.app.models.Episode>>() {}.type
+                        episodeList = ArrayList(gson.fromJson<java.util.ArrayList<com.radio.app.models.Episode>>(json, type) ?: java.util.ArrayList())
+                        android.util.Log.d("PlayerActivity", "Restored episode list from service prefs before jitter-guard: ${episodeList.size} episodes")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("PlayerActivity", "Failed to restore episode list before jitter-guard", e)
+                }
+                if (episodeList.isEmpty()) {
+                    val intentEpisodes = intent?.getSerializableExtra("episode_list") as? ArrayList<com.radio.app.models.Episode>
+                    if (!intentEpisodes.isNullOrEmpty()) {
+                        episodeList = intentEpisodes
+                        android.util.Log.d("PlayerActivity", "Restored episode list from intent before jitter-guard: ${episodeList.size} episodes")
+                    }
+                }
+            }
+
             // 核心防抖：如果服务已经播放同一URL，只更新UI（防止抖动）
             if (sameEpisode && svcStarted) {
                 setPlaybackInProgress(this@PlayerActivity, null)
@@ -239,11 +265,24 @@ class PlayerActivity : AppCompatActivity() {
                     // Issue 10 Fix 2: clear old subtitles when syncing to the service's episode
                     clearSubtitles()
                     currentEpisodeIndex = episodeList.indexOf(svcMatch).coerceAtLeast(0)
+                    // Issue 1 Fix: update the UI immediately so the stale episode is never
+                    // rendered before the rest of the sync work runs.
+                    updateUI()
                 } else {
                     // Can't find episode by URL, but service is playing - just update UI, don't restart
                     val syncMsg = "JITTER-GUARD: service playing unknown episode (svcUrl=$svcUrl), updating UI without restarting"
                     android.util.Log.d("PlayerActivity", syncMsg)
                     writeJitterLog(syncMsg)
+                    // Issue 1 Fix: try to extract the episode info directly from the service so
+                    // the UI reflects what is actually playing instead of the stale episode.
+                    val svcEpisode = playbackService?.getCurrentEpisode()
+                    if (svcEpisode != null) {
+                        currentEpisode = svcEpisode
+                        clearSubtitles()
+                        currentEpisodeIndex = episodeList.indexOfFirst { it.id == svcEpisode.id }.coerceAtLeast(0)
+                        updateUI()
+                        restoreBackgroundResults()
+                    }
                 }
                 saveLastEpisode()
                 setPlaybackInProgress(this@PlayerActivity, null)
@@ -894,9 +933,10 @@ class PlayerActivity : AppCompatActivity() {
                             subtitleList.add(transcript)
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                // Only show subtitle RecyclerView, hide overlay to avoid covering segments
+                                // Only show subtitle RecyclerView, hide overlay to avoid covering segments.
+                                // Issue 8: keep recyclerSegments visible; subtitles live in their own area
+                                // below the button and must not cover the segment list.
                                 binding.subtitleView.visibility = View.GONE
-                                binding.recyclerSegments.visibility = View.GONE
                                 // Feature A: update subtitle RecyclerView
                                 subtitleTranscripts = subtitleList.toList()
                                 subtitleAdapter?.setTranscripts(subtitleTranscripts)
@@ -941,6 +981,12 @@ class PlayerActivity : AppCompatActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             subtitleService = null
             subtitleServiceBound = false
+            // Issue 9 (partial): the subtitle service died while we may have been showing
+            // progress (cancelled via notification or killed by the system). Hide any
+            // progress UI immediately so it does not get stuck visible or race to 100%.
+            if (subtitleProcessing || segmentProcessing) {
+                cancelAiProcessing()
+            }
         }
     }
 
@@ -999,9 +1045,10 @@ class PlayerActivity : AppCompatActivity() {
                             subtitleList.add(transcript)
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                // Only show subtitle RecyclerView, hide overlay to avoid covering segments
+                                // Only show subtitle RecyclerView, hide overlay to avoid covering segments.
+                                // Issue 8: keep recyclerSegments visible; subtitles live in their own area
+                                // below the button and must not cover the segment list.
                                 binding.subtitleView.visibility = View.GONE
-                                binding.recyclerSegments.visibility = View.GONE
                                 // Feature A: update subtitle RecyclerView
                                 subtitleTranscripts = subtitleList.toList()
                                 subtitleAdapter?.setTranscripts(subtitleTranscripts)
@@ -1238,6 +1285,29 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvAiStatus.visibility = View.GONE
                 binding.btnAiSegment.isEnabled = true
             }
+        }
+        saveProcessingState()
+    }
+
+    /**
+     * Issue 9 (partial): Hide ALL AI/subtitle progress UI immediately when generation is
+     * cancelled (or when a stale processing state is detected on resume).
+     *
+     * finishAiProcessing(taskType) only clears a single task type, so a cancelled subtitle
+     * task could leave the segment progress bar visible (and vice-versa). This helper clears
+     * BOTH the subtitle and segment progress UI/flags so a cancelled task can never leave a
+     * dangling progress bar that flashes or races to 100%.
+     */
+    private fun cancelAiProcessing() {
+        subtitleProcessing = false
+        segmentProcessing = false
+        if (_binding != null) {
+            binding.progressSubtitle.visibility = View.GONE
+            binding.progressAi.visibility = View.GONE
+            binding.tvSubtitleStatus.visibility = View.GONE
+            binding.tvAiStatus.visibility = View.GONE
+            binding.btnGenerateSubtitle.isEnabled = true
+            binding.btnAiSegment.isEnabled = true
         }
         saveProcessingState()
     }
@@ -1519,6 +1589,19 @@ class PlayerActivity : AppCompatActivity() {
         // Feature B: start position update for highlighting
         positionUpdateHandler.post(positionUpdateRunnable)
         
+        // Issue 9 (partial): If a processing flag is still set but the subtitle service is
+        // NOT bound, the saved state is stale — the task was cancelled (e.g. via the
+        // notification "取消" action) or the Activity was recreated without the running task.
+        // Re-binding would either restart a cancelled task (spurious progress bar that races
+        // to 100%) or attach to a running task whose callbacks point to the old, destroyed
+        // Activity (stuck progress bar). Clear the stale state BEFORE showing any progress UI
+        // so the cancelled progress bar never appears. Partial DB results are loaded below.
+        if (!subtitleServiceBound && (subtitleProcessing || segmentProcessing)) {
+            android.util.Log.d("PlayerActivity", "onResume: subtitle service not bound but processing flag set (subtitle=$subtitleProcessing, segment=$segmentProcessing) — treating as cancelled, hiding progress UI")
+            writeJitterLog("onResume: stale processing state (subtitle=$subtitleProcessing, segment=$segmentProcessing), hiding progress UI on cancel")
+            cancelAiProcessing()
+        }
+
         // 根据处理状态恢复按钮和进度条
         if (_binding != null) {
             if (subtitleProcessing) {
@@ -1537,18 +1620,11 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         
-        // 恢复字幕生成和AI分段进度：如果服务仍在运行，重新绑定以获取进度更新
-        if (!subtitleServiceBound) {
-            val episode = currentEpisode
-            if (episode != null && episode.id.isNotBlank()) {
-                if (subtitleProcessing) {
-                    bindSubtitleService(episode, "subtitle")
-                }
-                if (segmentProcessing) {
-                    bindSubtitleService(episode, "segment")
-                }
-            }
-        }
+        // Issue 9 (partial): the previous block re-bound the subtitle service here to resume
+        // progress updates. That re-bind either restarted a cancelled task (spurious progress
+        // bar racing to 100%) or attached to a running task whose callbacks were lost, leaving
+        // a stuck progress bar. Stale processing state is now cleared above (cancelAiProcessing)
+        // before any progress UI is shown, so no re-bind is needed here.
 
         restoreBackgroundResults()
     }
@@ -1583,6 +1659,11 @@ class PlayerActivity : AppCompatActivity() {
             binding.tvSubtitleTitle.visibility = View.VISIBLE
             binding.recyclerSubtitles.visibility = View.VISIBLE
             // Keep segments visible too (do not touch recyclerSegments visibility).
+        } else {
+            // Issue 8: no subtitles for this episode — hide the subtitle RecyclerView and its
+            // title so the subtitle area below the button is empty, while segments stay visible.
+            binding.recyclerSubtitles.visibility = View.GONE
+            binding.tvSubtitleTitle.visibility = View.GONE
         }
     }
 

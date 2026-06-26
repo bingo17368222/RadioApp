@@ -189,6 +189,7 @@ class SubtitleGeneratorService : Service() {
         }
         activeTasks.clear()
         logToFile("cancelAllTasks: all tasks cancelled, globalCancelled=true")
+        cancelProgressNotification()
     }
 
     /**
@@ -220,6 +221,7 @@ class SubtitleGeneratorService : Service() {
                 }
             }
             override fun onProgressUpdate(progress: Int, total: Int) {
+                if (ctx.cancelled.get() || globalCancelled.get()) return
                 callback.onProgressUpdate(progress, total)
                 updateProgressNotification(progress, "字幕生成")
                 ctx.lastReportedProgress = progress
@@ -233,7 +235,9 @@ class SubtitleGeneratorService : Service() {
             }
             override fun onComplete(transcripts: List<Transcript>) {
                 callback.onComplete(transcripts)
-                updateProgressNotification(100, "字幕生成完成")
+                if (!ctx.cancelled.get() && !globalCancelled.get()) {
+                    updateProgressNotification(100, "字幕生成完成")
+                }
             }
         }
 
@@ -682,24 +686,15 @@ class SubtitleGeneratorService : Service() {
                         } catch (e: Exception) { /* skip */ }
                     }
                 } else {
-                    // Get partial result for more frequent output
+                    // Get partial result for logging only (not saved as transcript)
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(partial)
                             val partialText = json.optString("partial", "")
-                            if (partialText.length > 2 && partialText != lastPartialText) {
+                            if (partialText.isNotBlank() && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                val partialStartTime = offset * 1000L / 32000L
-                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
-                                val transcript = com.radio.app.models.Transcript(
-                                    text = partialText,
-                                    segmentStart = partialStartTime,
-                                    segmentEnd = partialEndTime
-                                )
-                                logToFile("generateWithVosk: partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
+                                logToFile("generateWithVosk: partial at ${offset}ms: '${partialText.take(50)}...'")
                             }
                         } catch (_: Exception) { /* skip */ }
                     }
@@ -767,11 +762,11 @@ class SubtitleGeneratorService : Service() {
     ): Boolean {
         logToFile("processVoskInChunks: START, pcmFile=${pcmFile.absolutePath}, size=${pcmFile.length()}")
         val totalSize = pcmFile.length()
-        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 5s chunks")
+        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 4096-byte chunks (128ms per chunk)")
         callback.onProgressUpdate(0, 100)
 
         val inputStream = java.io.FileInputStream(pcmFile)
-        val chunkSize = 5 * 16000 * 2 // 5 seconds of 16-bit mono PCM = 160,000 bytes
+        val chunkSize = 4096 // Small chunks for better Vosk accuracy (128ms per chunk)
         val buffer = ByteArray(chunkSize)
         var offset = 0L
         var lastProgress = 0
@@ -872,24 +867,15 @@ class SubtitleGeneratorService : Service() {
                         } catch (_: Exception) { /* skip malformed JSON */ }
                     }
                 } else {
-                    // Get partial result for more frequent output
+                    // Get partial result for logging only (not saved as transcript)
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(partial)
                             val partialText = json.optString("partial", "")
-                            if (partialText.length > 2 && partialText != lastPartialText) {
+                            if (partialText.isNotBlank() && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                val partialStartTime = offset * 1000L / 32000L
-                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
-                                val transcript = com.radio.app.models.Transcript(
-                                    text = partialText,
-                                    segmentStart = partialStartTime,
-                                    segmentEnd = partialEndTime
-                                )
-                                logToFile("processVoskInChunks: partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
+                                logToFile("processVoskInChunks: partial at ${offset}ms: '${partialText.take(50)}...'")
                             }
                         } catch (_: Exception) { /* skip */ }
                     }
@@ -1490,6 +1476,7 @@ class SubtitleGeneratorService : Service() {
     private fun generateWithWhisper(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
+        logToFile("generateWithWhisper: START, episodeId=$episodeId, audioUrl=$audioUrl")
         try {
             // 尝试通过反射调用whisper.cpp JNI
             // 当前版本whisper.cpp未集成，使用Android系统内置的SpeechRecognizer作为降级方案
@@ -1520,15 +1507,17 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
                 ctx.log("ERROR: Failed to get audio data for Whisper")
+                logToFile("generateWithWhisper: audio data is empty")
                 callback.onError("音频处理失败：无法获取音频数据。请检查网络连接后重试")
                 return false
             }
 
             ctx.log("Whisper engine: whisper.cpp JNI not integrated in this build")
-            logToFile("generateWithWhisper: whisper.cpp JNI not available, reporting error to user")
+            logToFile("generateWithWhisper: whisper.cpp JNI not available")
             callback.onError("Whisper引擎暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk。")
             return false
         } catch (e: Exception) {
+            logToFile("generateWithWhisper: EXCEPTION: ${e.message}")
             ctx.log("ERROR: Whisper exception: ${e.message}")
             if (e is OutOfMemoryError) {
                 callback.onError("内存不足：Whisper处理需要更多内存。请尝试：1)关闭其他应用 2)使用更小的Whisper模型（tiny版） 3)在设置→离线引擎管理→切换到Vosk引擎")
@@ -1546,6 +1535,7 @@ class SubtitleGeneratorService : Service() {
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
+        logToFile("processWhisperInChunks: START")
         logToFile("processWhisperInChunks: whisper.cpp JNI not available, reporting error")
         callback.onError("Whisper分块处理暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎。")
         return false
