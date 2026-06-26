@@ -769,7 +769,7 @@ class SubtitleGeneratorService : Service() {
         logToFile("processVoskInChunks: START, pcmFile=${pcmFile.absolutePath}, size=${pcmFile.length()}")
         val totalSize = pcmFile.length()
         // Issue 9: Limit to first 5 minutes for testing (5 * 60 * 16000 * 2 = 9,600,000 bytes)
-        val maxBytes = 5 * 60 * 16000 * 2
+        val maxBytes = 5L * 60 * 16000 * 2
         val processLimit = if (totalSize > maxBytes) maxBytes else totalSize
         logToFile("processVoskInChunks: totalSize=${totalSize / 1024}KB, processing limit=${processLimit / 1024}KB (5 min), willProcessAll=${totalSize <= maxBytes}")
         ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 4096-byte chunks (128ms per chunk)")
