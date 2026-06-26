@@ -2377,9 +2377,39 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // Construct episode with the new URL
                     val stationId = currentEpisode?.stationId ?: curUrl.substringAfterLast("/").substringBefore("_")
+
+                    // Issue 2: Extract a meaningful title from the URL pattern instead of
+                    // using a generic "下一日节目"/"上一日节目" placeholder.
+                    val fileName = newUrl.substringAfterLast("/").substringBefore(".")
+                    // e.g., "sijiache_20240605_0700_0900" -> "私驾车 06-05 07:00-09:00"
+                    val titleParts = fileName.split("_")
+                    val episodeList = loadEpisodeList()
+                    val constructedTitle = buildString {
+                        if (titleParts.isNotEmpty()) {
+                            // Use the station name part (first segment before date)
+                            val stationPart = titleParts[0]
+                            // Try to find matching episode in current episodeList for the station name
+                            val matchEpisode = episodeList.firstOrNull { it.audioUrl?.contains(stationPart) == true }
+                            if (matchEpisode != null) {
+                                append(matchEpisode.title)
+                            } else {
+                                append(stationPart)
+                            }
+                        }
+                        if (titleParts.size >= 2) {
+                            val dateStr = titleParts[1]
+                            if (dateStr.length >= 8) {
+                                append(" ${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}")
+                            }
+                        }
+                        if (titleParts.size >= 4) {
+                            append(" ${titleParts[2].substring(0, 2)}:${titleParts[2].substring(2, 4)}-${titleParts[3].substring(0, 2)}:${titleParts[3].substring(2, 4)}")
+                        }
+                    }
+
                     val newEpisode = Episode(
                         id = "${stationId}-${newDateStr}-cross",
-                        title = if (nextDate) "下一日节目" else "上一日节目",
+                        title = constructedTitle,
                         stationId = stationId,
                         audioUrl = newUrl,
                         broadcastAt = targetDate,
@@ -2529,7 +2559,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
             if (nextEpisode == null) {
-                Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list, falling back to broadcast")
+                Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list, trying cross-day")
+                // Issue 10: If we've reached the end of the episode list, try cross-day
+                // instead of wrapping back to the first episode of the current day.
+                writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
+                val crossDayEp = fetchCrossDayEpisode(nextDate = true)
+                if (crossDayEp != null) {
+                    writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
+                    playEpisode(crossDayEp, false)
+                    callback?.onEpisodeChanged(crossDayEp)
+                    return
+                }
+                writeServiceLog("notification", "autoPlayNext: no cross-day episode found, falling back to broadcast")
                 notifyNextEpisode()
                 return
             }
@@ -2606,19 +2647,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun createContentIntent(): PendingIntent {
+        // Issue 1: Don't include episode in intent - Activity will get it from service.
+        // Use only SINGLE_TOP to prevent Activity recreation (FLAG_ACTIVITY_CLEAR_TOP can cause finish+recreate).
         val intent = Intent(this, PlayerActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("fresh_launch_ts", System.currentTimeMillis())
-            currentEpisode?.let { ep ->
-                putExtra("episode", ep)
-                putExtra("episode_id", ep.id)
-                putExtra("title", ep.title)
-                putExtra("audio_url", ep.audioUrl)
-                putExtra("station_name", ep.stationName)
-                putExtra("station_id", ep.stationId)
-                putExtra("duration", ep.duration)
-                putExtra("episode_index", -1)
-            }
+            putExtra("from_notification", true)
         }
         return PendingIntent.getActivity(
             this, 0, intent,

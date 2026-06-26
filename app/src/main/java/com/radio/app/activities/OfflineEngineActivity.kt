@@ -46,6 +46,11 @@ class OfflineEngineActivity : AppCompatActivity() {
     @Volatile
     private var downloadCancelled = false
 
+    // Issue 12: Vosk 引擎卡片的 UI 引用，供模型安装完成后自动触发 libvosk.so 安装使用
+    private var voskEngineBtn: Button? = null
+    private var voskEngineProgressBar: ProgressBar? = null
+    private var voskEngineModelDir: File? = null
+
     private data class EngineInfo(
         val name: String,
         val desc: String,
@@ -160,6 +165,13 @@ class OfflineEngineActivity : AppCompatActivity() {
         tvTitle?.text = "离线引擎管理"
         btnBack?.setOnClickListener { finish() }
 
+        // Issue 13: 记录引擎列表
+        writeEngineLog("onCreate: ${engines.size} engines registered")
+        engines.forEachIndexed { idx, engine ->
+            Log.d(TAG, "onCreate: [$idx] '${engine.name}' (modelDir=${engine.modelDir}, hasUrl=${engine.downloadUrl != null})")
+            writeEngineLog("onCreate: [$idx] '${engine.name}' (modelDir=${engine.modelDir}, hasUrl=${engine.downloadUrl != null})")
+        }
+
         for (engine in engines) {
             setupEngineCard(engine)
         }
@@ -213,6 +225,7 @@ class OfflineEngineActivity : AppCompatActivity() {
      */
     private fun bindInstallAction(engine: EngineInfo, btn: Button, progressBar: ProgressBar?, modelDir: File?) {
         Log.d(TAG, "bindInstallAction: engine=${engine.name}, isInstalled=${isEngineInstalled(engine, modelDir)}")
+        writeEngineLog("bindInstallAction: engine='${engine.name}', isInstalled=${isEngineInstalled(engine, modelDir)}")
         btn.setOnClickListener {
             if (modelDir == null) {
                 Toast.makeText(this, "存储不可用，无法下载", Toast.LENGTH_SHORT).show()
@@ -258,6 +271,9 @@ class OfflineEngineActivity : AppCompatActivity() {
                 engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
                 else -> true
             })
+            // Issue 13: 记录安装检查结果
+            Log.d(TAG, "setupEngineCard: engine='${engine.name}', modelDir='${engine.modelDir}', installed=$installed")
+            writeEngineLog("setupEngineCard: engine='${engine.name}', modelDir='${engine.modelDir}', installed=$installed")
             if (installed) {
                 btnAction.text = "已安装(点击删除)"
                 btnAction.setOnClickListener {
@@ -284,6 +300,12 @@ class OfflineEngineActivity : AppCompatActivity() {
                     btnAction.text = "安装"
                 }
                 bindInstallAction(engine, btnAction, progressBar, modelDir)
+            }
+            // Issue 12: 保存 Vosk 引擎卡片的 UI 引用，供模型安装完成后自动触发 .so 安装使用
+            if (engine.modelDir == "vosk-engine") {
+                voskEngineBtn = btnAction
+                voskEngineProgressBar = progressBar
+                voskEngineModelDir = modelDir
             }
         }
 
@@ -416,6 +438,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                     }
 
                     Log.d(TAG, "downloadModel START: engine=${engine.name}, url=$currentUrl, mirror=$mirrorName")
+                    writeEngineLog("downloadModel START: engine='${engine.name}', modelDir='${engine.modelDir}', url=$currentUrl, mirror=$mirrorName, targetDir=${outFile.parent}")
 
                     if (urlIndex > 0) {
                         usedFallback = true
@@ -475,6 +498,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 }
                                 Log.d(TAG, "Download total size: $totalSize from $mirrorName for ${engine.name}")
                                 Log.d(TAG, "downloadModel: connected, contentLength=$totalSize")
+                                writeEngineLog("downloadModel: connected to $mirrorName for '${engine.name}', totalSize=$totalSize bytes")
 
                                 val input = conn.inputStream ?: throw Exception("连接失败 ($mirrorName)")
                                 raf = RandomAccessFile(tempFile, "rw")
@@ -518,6 +542,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                         if (progressStep != lastLoggedProgressStep) {
                                             lastLoggedProgressStep = progressStep
                                             Log.d(TAG, "downloadModel: progress=$progress%, downloaded=$downloaded, total=$totalSize")
+                                            writeEngineLog("downloadModel: '${engine.name}' progress=$progress%, downloaded=$downloaded, total=$totalSize, mirror=$mirrorName")
                                         }
                                         startTime = now
                                     }
@@ -566,6 +591,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 }
                                 tempFile.renameTo(outFile)
                                 Log.d(TAG, "downloadModel: download complete, file=${outFile.absolutePath}, size=${outFile.length()}")
+                                writeEngineLog("downloadModel: download complete for '${engine.name}', file=${outFile.absolutePath}, size=${outFile.length()} bytes")
 
                                 // If this is an AAR file, extract the .so
                                 if (outFile.name.endsWith(".aar")) {
@@ -590,6 +616,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                                 }
                                             }
                                             Log.d(TAG, "AAR extraction: extracted to ${soOutputFile.absolutePath}, size=${soOutputFile.length()}")
+                                            writeEngineLog("AAR extraction: extracted libvosk.so to ${soOutputFile.absolutePath}, size=${soOutputFile.length()} bytes")
                                             zipFile.close()
                                             // Delete the AAR to save space
                                             outFile.delete()
@@ -605,6 +632,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                                 progressBar?.visibility = View.GONE
                                             }
                                             Log.d(TAG, "Vosk engine (.so) installation complete: ${soOutputFile.absolutePath}, size=${soOutputFile.length()}")
+                                            writeEngineLog("Vosk engine (.so) installation complete: ${soOutputFile.absolutePath}, size=${soOutputFile.length()} bytes")
                                             return@withContext
                                         } else {
                                             zipFile.close()
@@ -650,6 +678,60 @@ class OfflineEngineActivity : AppCompatActivity() {
                                     }
                                 }
 
+                                // Issue 12: 模型安装完成后，自动检查并安装所需引擎 .so 文件
+                                when {
+                                    engine.modelDir.startsWith("vosk-model") -> {
+                                        val voskSoInstalled = isVoskEngineInstalled()
+                                        Log.d(TAG, "Issue12: vosk model '${engine.modelDir}' installed, libvosk.so installed=$voskSoInstalled")
+                                        writeEngineLog("Issue12: vosk model '${engine.modelDir}' installed, libvosk.so installed=$voskSoInstalled")
+                                        if (!voskSoInstalled) {
+                                            Log.d(TAG, "Auto-installing Vosk engine (libvosk.so) after model install")
+                                            writeEngineLog("Auto-installing Vosk engine (libvosk.so) after model '${engine.modelDir}' install")
+                                            val voskEngine = engines.firstOrNull { it.modelDir == "vosk-engine" }
+                                            if (voskEngine != null) {
+                                                val vBtn = voskEngineBtn
+                                                val vPb = voskEngineProgressBar
+                                                val vDir = voskEngineModelDir
+                                                if (vBtn != null && vPb != null && vDir != null) {
+                                                    lifecycleScope.launch {
+                                                        downloadCancelled = false
+                                                        vBtn.isEnabled = true
+                                                        vBtn.text = "取消下载"
+                                                        vPb.visibility = View.VISIBLE
+                                                        vPb.progress = 0
+                                                        vBtn.setOnClickListener {
+                                                            cancelActiveDownload()
+                                                            Toast.makeText(this@OfflineEngineActivity, "下载已取消", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                        writeEngineLog("Issue12: starting auto-download of vosk-engine (libvosk.so)")
+                                                        downloadModel(voskEngine, vBtn, vPb, vDir)
+                                                    }
+                                                } else {
+                                                    Log.w(TAG, "Vosk engine card UI refs not available, skipping auto-install")
+                                                    writeEngineLog("Issue12: vosk-engine card UI refs null, cannot auto-install")
+                                                }
+                                            } else {
+                                                Log.w(TAG, "vosk-engine entry not found in engines list")
+                                                writeEngineLog("Issue12: vosk-engine entry not found in engines list")
+                                            }
+                                        }
+                                    }
+                                    engine.modelDir.startsWith("whisper") -> {
+                                        val whisperSoInstalled = isWhisperEngineInstalled()
+                                        Log.d(TAG, "Issue12: whisper model '${engine.modelDir}' installed, libwhisper.so installed=$whisperSoInstalled")
+                                        writeEngineLog("Issue12: whisper model '${engine.modelDir}' installed, libwhisper.so installed=$whisperSoInstalled")
+                                        if (!whisperSoInstalled) {
+                                            Log.d(TAG, "Whisper engine .so not found - Whisper JNI not yet integrated")
+                                            writeEngineLog("Issue12: libwhisper.so not found - Whisper JNI not yet integrated")
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(this@OfflineEngineActivity,
+                                                    "Whisper模型已安装。注意：Whisper引擎原生库(libwhisper.so)尚未集成，请暂时使用Vosk引擎。",
+                                                    Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }
+                                }
+
                                 withContext(Dispatchers.Main) {
                                     btn.isEnabled = true
                                     btn.text = "已安装(点击删除)"
@@ -664,10 +746,12 @@ class OfflineEngineActivity : AppCompatActivity() {
                                     Toast.makeText(this@OfflineEngineActivity, "${engine.name} 安装完成 (via $usedMirrorName)", Toast.LENGTH_SHORT).show()
                                 }
                                 Log.d(TAG, "downloadModel: installation complete for ${engine.name}")
+                                writeEngineLog("downloadModel: installation complete for '${engine.name}' (modelDir='${engine.modelDir}')")
                             } catch (e: Exception) {
                                 if (downloadCancelled) return@withContext
                                 lastError = "${e.message}"
                                 Log.e(TAG, "Download failed from $mirrorName: ${e.message}", e)
+                                writeEngineLog("Download failed from $mirrorName for '${engine.name}': ${e.message}")
                                 // 关闭资源
                                 try { raf?.close() } catch (_: Exception) {}
                                 try { conn?.disconnect() } catch (_: Exception) {}
@@ -732,12 +816,16 @@ class OfflineEngineActivity : AppCompatActivity() {
                 if (downloadJob === coroutineContext[Job]) {
                     downloadJob = null
                 }
-                activeConnection = null
-                activeTempFile = null
-                activeBtn = null
-                activeProgressBar = null
-                activeEngine = null
-                activeModelDir = null
+                // Issue 12: 仅当 active 状态仍属于本次下载（该 engine）时才清除，避免清除
+                // 自动安装触发的 Vosk 引擎下载所设置的 active 状态。
+                if (activeEngine === engine) {
+                    activeConnection = null
+                    activeTempFile = null
+                    activeBtn = null
+                    activeProgressBar = null
+                    activeEngine = null
+                    activeModelDir = null
+                }
             }
         }
         downloadJob = job
@@ -875,13 +963,21 @@ class OfflineEngineActivity : AppCompatActivity() {
     }
 
     private fun isEngineInstalled(engine: EngineInfo, modelDir: File?): Boolean {
-        if (modelDir == null || !modelDir.exists()) return false
-        if (getDirTotalSize(modelDir) < MIN_INSTALL_SIZE) return false
-        return when {
+        if (modelDir == null || !modelDir.exists()) {
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (modelDir null or missing)")
+            return false
+        }
+        if (getDirTotalSize(modelDir) < MIN_INSTALL_SIZE) {
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (size < MIN_INSTALL_SIZE)")
+            return false
+        }
+        val result = when {
             engine.modelDir.contains("vosk", ignoreCase = true) -> isValidVoskModelDir(modelDir)
             engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
             else -> true
         }
+        writeEngineLog("isEngineInstalled: '${engine.name}' -> $result")
+        return result
     }
 
     private fun isValidVoskModelDir(dir: File): Boolean {
@@ -962,5 +1058,32 @@ class OfflineEngineActivity : AppCompatActivity() {
             size += if (f.isDirectory) getDirTotalSize(f) else f.length()
         }
         return size
+    }
+
+    // Issue 12: 检查 libvosk.so 是否已安装（在 models 或 engines 目录下）
+    private fun isVoskEngineInstalled(): Boolean {
+        val modelsDir = getExternalFilesDir("models")
+        val engineDir = File(filesDir, "engines")
+        return (modelsDir?.walkTopDown()?.any { it.name == "libvosk.so" } == true) ||
+               (engineDir.walkTopDown()?.any { it.name == "libvosk.so" } == true)
+    }
+
+    // Issue 12: 检查 libwhisper.so 是否已安装（在 models 或 engines 目录下）
+    private fun isWhisperEngineInstalled(): Boolean {
+        val modelsDir = getExternalFilesDir("models")
+        val engineDir = File(filesDir, "engines")
+        return (modelsDir?.walkTopDown()?.any { it.name == "libwhisper.so" } == true) ||
+               (engineDir.walkTopDown()?.any { it.name == "libwhisper.so" } == true)
+    }
+
+    // Issue 13: 写入引擎管理日志到文件，便于排查下载/安装问题
+    private fun writeEngineLog(message: String) {
+        try {
+            val logDir = File(getExternalFilesDir(null), "logs/engine")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = File(logDir, "engine.log")
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+            logFile.appendText("[$timestamp] $message\n")
+        } catch (_: Exception) {}
     }
 }

@@ -253,9 +253,11 @@ class SubtitleGeneratorService : Service() {
                 val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
                 val asrProvider = settings.safeAsrProvider()
                 ctx.log("ASR provider: $asrProvider")
+                logToFile("generateSubtitlesForEpisode: ASR engine selected = $asrProvider, episodeId=$episodeId")
 
                 when {
                     asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
+                        logToFile("generateSubtitlesForEpisode: entering Whisper branch")
                         val whisperModel = findWhisperModel()
                         if (whisperModel != null) {
                             ctx.log("Using Whisper model: $whisperModel")
@@ -273,6 +275,7 @@ class SubtitleGeneratorService : Service() {
                     }
                     else -> {
                         // Vosk or default
+                        logToFile("generateSubtitlesForEpisode: entering Vosk/default branch")
                         val voskModel = findVoskModel()
                         if (voskModel != null) {
                             ctx.log("Using Vosk model: $voskModel")
@@ -396,9 +399,11 @@ class SubtitleGeneratorService : Service() {
                 val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
                 val asrProvider = settings.safeAsrProvider()
                 ctx.log("Segment ASR provider: $asrProvider")
+                logToFile("generateSubtitlesForEpisode: ASR engine selected = $asrProvider, episodeId=$episodeId (segments)")
 
                 when {
                     asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
+                        logToFile("generateSubtitlesForEpisode: entering Whisper branch (segments)")
                         val whisperModel = findWhisperModel()
                         if (whisperModel != null) {
                             ctx.log("Using Whisper model for segments: $whisperModel")
@@ -415,6 +420,7 @@ class SubtitleGeneratorService : Service() {
                         }
                     }
                     else -> {
+                        logToFile("generateSubtitlesForEpisode: entering Vosk/default branch (segments)")
                         val voskModel = findVoskModel()
                         if (voskModel != null) {
                             ctx.log("Using Vosk model for segments: $voskModel")
@@ -762,6 +768,10 @@ class SubtitleGeneratorService : Service() {
     ): Boolean {
         logToFile("processVoskInChunks: START, pcmFile=${pcmFile.absolutePath}, size=${pcmFile.length()}")
         val totalSize = pcmFile.length()
+        // Issue 9: Limit to first 5 minutes for testing (5 * 60 * 16000 * 2 = 9,600,000 bytes)
+        val maxBytes = 5 * 60 * 16000 * 2
+        val processLimit = if (totalSize > maxBytes) maxBytes else totalSize
+        logToFile("processVoskInChunks: totalSize=${totalSize / 1024}KB, processing limit=${processLimit / 1024}KB (5 min), willProcessAll=${totalSize <= maxBytes}")
         ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 4096-byte chunks (128ms per chunk)")
         callback.onProgressUpdate(0, 100)
 
@@ -826,8 +836,19 @@ class SubtitleGeneratorService : Service() {
             val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
             val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
 
+            // Issue 7: Verify PCM format
+            logToFile("processVoskInChunks: PCM file size=${totalSize} bytes, expected duration=${totalSize / (16000 * 2)}s, sampleRate=16000, channels=1, bitsPerSample=16")
+            val firstChunk = ByteArray(32)
+            val firstBytesRead = inputStream.read(firstChunk)
+            logToFile("processVoskInChunks: first 32 bytes (hex): ${firstChunk.joinToString(" ") { String.format("%02x", it) }}")
+            // Reset stream to beginning
+            inputStream.channel.position(0)
+
+            // Issue 8: Track time from processing start to first transcript
+            val processingStartTime = System.currentTimeMillis()
+
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
-            while (!ctx.cancelled.get()) {
+            while (!ctx.cancelled.get() && offset < processLimit) {
                 val bytesRead = inputStream.read(buffer)
                 if (bytesRead <= 0) break
                 val chunk = if (bytesRead == chunkSize) buffer else buffer.copyOf(bytesRead)
@@ -862,6 +883,11 @@ class SubtitleGeneratorService : Service() {
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                 logToFile("processVoskInChunks: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                                 allTranscripts.add(transcript)
+                                // Issue 8: Log time to first transcript
+                                if (allTranscripts.size == 1) {
+                                    val firstResultTime = System.currentTimeMillis() - processingStartTime
+                                    logToFile("processVoskInChunks: FIRST transcript at ${firstResultTime}ms from processing start")
+                                }
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { /* skip malformed JSON */ }
@@ -889,6 +915,11 @@ class SubtitleGeneratorService : Service() {
                     lastProgress = progress
                     callback.onProgressUpdate(progress, 100)
                 }
+            }
+
+            // Issue 9: Log if processing was truncated at the 5-minute limit
+            if (offset < totalSize) {
+                logToFile("processVoskInChunks: processing truncated at 5 minutes, offset=$offset, totalSize=$totalSize")
             }
 
             // Get final result
@@ -960,6 +991,9 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun getAudioDataForProcessing(episodeId: String, audioUrl: String, ctx: TaskContext): ByteArray? {
+        // Issue 8: Log each step with timing
+        val startTime = System.currentTimeMillis()
+        logToFile("getAudioDataForProcessing: START, audioUrl=$audioUrl")
         // 1) Try 16kHz PCM cache first (should be small, ~60MB for 30min)
         val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
         val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
@@ -972,6 +1006,8 @@ class SubtitleGeneratorService : Service() {
                 if (data.isEmpty() || data.size < 1024) {
                     ctx.log("ERROR: 16kHz PCM cache data is empty or too small (${data.size} bytes), falling through")
                 } else {
+                    val cacheTime = System.currentTimeMillis() - startTime
+                    logToFile("getAudioDataForProcessing: 16kHz PCM cache hit, time=${cacheTime}ms, size=${data.size}")
                     return data
                 }
             } else {
@@ -1005,6 +1041,8 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("generateSubtitlesForEpisode: converting to PCM 16kHz mono")
             val resampledData = streamResampleTo16kMono(pcmFile, inSampleRate, inChannels, ctx)
+            val conversionTime = System.currentTimeMillis() - startTime
+            logToFile("getAudioDataForProcessing: PCM conversion completed, total time=${conversionTime}ms, pcmSize=${resampledData?.size ?: 0}")
             logToFile("generateSubtitlesForEpisode: PCM converted, size=${resampledData?.size ?: 0}")
             if (resampledData != null && resampledData.size >= 1024) {
                 return resampledData
@@ -1016,6 +1054,8 @@ class SubtitleGeneratorService : Service() {
         ctx.log("No PCM cache, downloading from $audioUrl")
         logToFile("generateSubtitlesForEpisode: downloading audio from $audioUrl")
         val downloadedData = downloadAndProcessAudio(audioUrl, ctx)
+        val downloadTime = System.currentTimeMillis() - startTime
+        logToFile("getAudioDataForProcessing: download completed in ${downloadTime}ms, size=${downloadedData?.size ?: 0}")
         logToFile("generateSubtitlesForEpisode: audio downloaded, size=${downloadedData?.size ?: 0}")
         if (downloadedData != null && downloadedData.size >= 1024) {
             return downloadedData
@@ -1479,8 +1519,29 @@ class SubtitleGeneratorService : Service() {
         logToFile("generateWithWhisper: START, episodeId=$episodeId, audioUrl=$audioUrl")
         try {
             // 尝试通过反射调用whisper.cpp JNI
-            // 当前版本whisper.cpp未集成，使用Android系统内置的SpeechRecognizer作为降级方案
             ctx.log("Whisper engine: attempting to use on-device recognition...")
+
+            // Issue 5: Check whisper native library first (no point processing audio if JNI unavailable)
+            logToFile("generateWithWhisper: checking whisper native library")
+            val nativeLibResult = loadWhisperNativeLibrary()
+            logToFile("generateWithWhisper: loadWhisperNativeLibrary result=$nativeLibResult")
+            if (!nativeLibResult) {
+                logToFile("generateWithWhisper: whisper.cpp JNI not available - libwhisper.so not found. Whisper model files are downloaded but the native library (.so) is not installed. Please install the Whisper engine from Settings > Offline Engine Management.")
+                ctx.log("ERROR: Whisper native library (libwhisper.so) not available")
+                callback.onError("Whisper引擎暂不可用：whisper.cpp原生库（libwhisper.so）未安装。模型文件已下载但缺少原生库。请在设置→离线引擎管理→安装Whisper引擎")
+                return false
+            }
+
+            // Issue 5: Check model file
+            val whisperModel = findWhisperModel()
+            val modelFile = if (whisperModel != null) java.io.File(whisperModel) else null
+            logToFile("generateWithWhisper: checking model file at ${modelFile?.absolutePath}, exists=${modelFile?.exists()}")
+            if (whisperModel == null || modelFile == null || !modelFile.exists()) {
+                logToFile("generateWithWhisper: whisper model file not found")
+                ctx.log("ERROR: Whisper model file not found")
+                callback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）")
+                return false
+            }
 
             // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
@@ -1488,10 +1549,8 @@ class SubtitleGeneratorService : Service() {
             if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Whisper processing")
-                val whisperModel = findWhisperModel()
-                if (whisperModel != null) {
-                    return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
-                }
+                logToFile("generateWithWhisper: using chunked processing for large 16kHz PCM cache (${sizeMB}MB)")
+                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
             }
 
             // 获取音频数据
@@ -1501,20 +1560,19 @@ class SubtitleGeneratorService : Service() {
                 val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     ctx.log("Original PCM cache exists, attempting chunked Whisper processing")
-                    val whisperModel = findWhisperModel()
-                    if (whisperModel != null) {
-                        return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
-                    }
+                    logToFile("generateWithWhisper: using chunked processing for original PCM cache")
+                    return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
                 }
                 ctx.log("ERROR: Failed to get audio data for Whisper")
-                logToFile("generateWithWhisper: audio data is empty")
+                logToFile("generateWithWhisper: audio data is empty, no PCM cache available for chunked processing")
                 callback.onError("音频处理失败：无法获取音频数据。请检查网络连接后重试")
                 return false
             }
 
-            ctx.log("Whisper engine: whisper.cpp JNI not integrated in this build")
-            logToFile("generateWithWhisper: whisper.cpp JNI not available")
-            callback.onError("Whisper引擎暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk。")
+            // Native library loaded, but full JNI bridge not yet implemented in this build
+            ctx.log("Whisper engine: libwhisper.so loaded, but full whisper.cpp JNI integration not yet implemented")
+            logToFile("generateWithWhisper: libwhisper.so loaded but JNI bridge not implemented in this build, audioData.size=${audioData.size}")
+            callback.onError("Whisper引擎暂不可用：whisper.cpp原生库已加载，但JNI桥接尚未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk。")
             return false
         } catch (e: Exception) {
             logToFile("generateWithWhisper: EXCEPTION: ${e.message}")

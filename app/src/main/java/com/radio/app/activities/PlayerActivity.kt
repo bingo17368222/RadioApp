@@ -16,6 +16,7 @@ import android.widget.SeekBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.radio.app.R
 import com.radio.app.databinding.ActivityPlayerBinding
 import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
@@ -817,6 +818,8 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnSkipForward.setOnClickListener { playbackService?.skipForward() }
         binding.btnSkipBackward.setOnClickListener { playbackService?.skipBackward() }
         binding.btnClose.setOnClickListener { finish() }
+        // Issue 6 & 11: 点击节目导航提示（如 "1/10"）弹出当前节目列表，可高亮当前播放项并点击切换
+        binding.tvEpisodeNavHint.setOnClickListener { showEpisodeListDialog() }
 
         binding.btnGenerateSubtitle.setOnClickListener {
             val episode = currentEpisode ?: return@setOnClickListener
@@ -1209,6 +1212,134 @@ class PlayerActivity : AppCompatActivity() {
         updateUI()
         setupPreCacheList()
         android.util.Log.d("PlayerActivity", "playEpisodeAtIndex: switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
+    }
+
+    // Issue 6 & 11: 弹出当前节目列表对话框。高亮正在播放的节目（Issue 6），点击任意节目通过
+    // playEpisodeAtIndex 切换播放并关闭对话框（Issue 11，修复点击切换失效的回归）。
+    private fun showEpisodeListDialog() {
+        if (episodeList.isEmpty()) {
+            Toast.makeText(this, "没有可显示的节目列表", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
+        // 确保当前索引与正在播放的节目一致
+        val actualIdx = episodeList.indexOfFirst { it.id == currentId }
+        if (actualIdx >= 0) currentEpisodeIndex = actualIdx
+
+        val recyclerView = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@PlayerActivity)
+            setHasFixedSize(true)
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            // 限制最大高度，长列表时内部滚动，避免对话框超出屏幕
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.7).toInt()
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
+        }
+        val listAdapter = EpisodeListAdapter(episodeList, currentId)
+        listAdapter.onItemClicked = { position ->
+            if (position in episodeList.indices) {
+                playEpisodeAtIndex(position)
+            }
+        }
+        recyclerView.adapter = listAdapter
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("节目列表 (${episodeList.size})")
+            .setView(recyclerView)
+            .setNegativeButton("关闭", null)
+            .create()
+        listAdapter.onDismiss = { dialog.dismiss() }
+
+        // 滚动到当前播放项，便于用户定位
+        if (currentEpisodeIndex in episodeList.indices) {
+            recyclerView.post {
+                (recyclerView.layoutManager as? LinearLayoutManager)
+                    ?.scrollToPositionWithOffset(currentEpisodeIndex, 0)
+            }
+        }
+        dialog.show()
+    }
+
+    // 解析主题属性对应的颜色（兼容直接颜色值与颜色资源引用）
+    private fun resolveThemeColor(context: Context, attrId: Int): Int {
+        val tv = android.util.TypedValue()
+        if (!context.theme.resolveAttribute(attrId, tv, true)) return Color.BLACK
+        return if (tv.type >= android.util.TypedValue.TYPE_FIRST_COLOR_INT &&
+            tv.type <= android.util.TypedValue.TYPE_LAST_COLOR_INT) {
+            tv.data
+        } else if (tv.resourceId != 0) {
+            ContextCompat.getColor(context, tv.resourceId)
+        } else {
+            Color.BLACK
+        }
+    }
+
+    // Issue 6: 节目列表适配器，高亮当前正在播放的节目（背景色 + "正在播放" 标签 + 加粗标题）
+    inner class EpisodeListAdapter(
+        private val episodes: List<Episode>,
+        private val currentlyPlayingId: String?
+    ) : RecyclerView.Adapter<EpisodeListAdapter.ViewHolder>() {
+        var onItemClicked: ((Int) -> Unit)? = null
+        var onDismiss: (() -> Unit)? = null
+
+        private val dateIn = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+        private val dateOut = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_episode, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val episode = episodes[position]
+            val isPlaying = episode.id == currentlyPlayingId
+
+            holder.tvTitle.text = if (isPlaying) "▶ ${episode.title}" else episode.title
+            holder.tvTime.text = try {
+                dateIn.parse(episode.broadcastAt)?.let { dateOut.format(it) } ?: episode.broadcastAt
+            } catch (_: Exception) {
+                episode.broadcastAt
+            }
+            val durationMin = episode.duration / 60
+            val segments = episode.voiceSegments?.size ?: 0
+            holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
+
+            // 解析主题色用于高亮/还原（适配深色/浅色主题）
+            val ctx = holder.itemView.context
+            val accentColor = resolveThemeColor(ctx, android.R.attr.colorPrimary)
+            val titleColor = resolveThemeColor(ctx, com.radio.app.R.attr.appTextPrimary)
+
+            if (isPlaying) {
+                // Issue 6: 高亮当前播放节目
+                val tint = Color.argb(40, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
+                holder.itemView.setBackgroundColor(tint)
+                holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
+                holder.tvTitle.setTextColor(accentColor)
+                holder.tvPlayingIndicator.text = "正在播放"
+                holder.tvPlayingIndicator.setTextColor(accentColor)
+                holder.tvPlayingIndicator.visibility = View.VISIBLE
+            } else {
+                holder.itemView.setBackgroundColor(Color.TRANSPARENT)
+                holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
+                holder.tvTitle.setTextColor(titleColor)
+                holder.tvPlayingIndicator.visibility = View.GONE
+            }
+
+            holder.itemView.setOnClickListener {
+                onItemClicked?.invoke(position)
+                onDismiss?.invoke()
+            }
+        }
+
+        override fun getItemCount(): Int = episodes.size
+
+        inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvTime: TextView = view.findViewById(R.id.tv_time)
+            val tvTitle: TextView = view.findViewById(R.id.tv_title)
+            val tvDescription: TextView = view.findViewById(R.id.tv_description)
+            // 复用缓存指示位作为 "正在播放" 标签展示位
+            val tvPlayingIndicator: TextView = view.findViewById(R.id.tv_cached_indicator)
+        }
     }
 
     private fun updatePlayPauseButton(isPlaying: Boolean) {
@@ -1683,49 +1814,72 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        writeJitterLog("onNewIntent: action=${intent.action}, freshLaunchTs=${intent.getLongExtra("fresh_launch_ts", 0)}")
-        // When activity is launched with SINGLE_TOP (e.g. from notification),
-        // update currentEpisode from the new intent
-        val newEpisode = intent.getSerializableExtra("episode") as? Episode
-        if (newEpisode != null) {
-            currentEpisode = newEpisode
-            // Issue 10 Fix 2: clear old subtitles when switching to a new episode via intent
-            clearSubtitles()
-            // Update episode list from intent
-            val intentEpisodes = intent.getSerializableExtra("episode_list") as? ArrayList<com.radio.app.models.Episode>
-            if (!intentEpisodes.isNullOrEmpty()) {
-                episodeList = intentEpisodes
-                android.util.Log.d("PlayerActivity", "onNewIntent: updated episodeList from intent, size=${episodeList.size}")
-            }
-            val intentIndex = intent.getIntExtra("episode_index", -1)
-            if (intentIndex >= 0 && intentIndex < episodeList.size) {
-                currentEpisodeIndex = intentIndex
-            } else {
-                val idx = episodeList.indexOfFirst { it.id == newEpisode.id }
-                if (idx >= 0) currentEpisodeIndex = idx
-            }
-            writeJitterLog("onNewIntent: updated currentEpisode to ${newEpisode.title}")
-            // Check if same episode is already playing
-            if (serviceBound && playbackService != null) {
-                val sameEpisode = playbackService?.isSameEpisodePlaying(newEpisode.audioUrl ?: "") ?: false
-                if (sameEpisode) {
-                    writeJitterLog("onNewIntent: same episode already playing, skip restart")
-                    // Issue 10 Fix 2: subtitles were cleared above; since this is the SAME
-                    // episode (not a switch), reload this episode's own subtitles/segments
-                    // so they are not lost.
-                    restoreBackgroundResults()
-                } else {
-                    val savedPos = getSavedPositionForEpisode(this, newEpisode.id)
-                    playbackService?.playEpisode(newEpisode, false, savedPos)
-                    writeJitterLog("onNewIntent: starting playback for ${newEpisode.title}")
-                }
-            } else {
-                // Service not bound yet - episode will be played when service connects
-                writeJitterLog("onNewIntent: service not bound, will play when connected: ${newEpisode.title}")
-            }
-        }
+        writeJitterLog("onNewIntent: action=${intent.action}, fromNotification=${intent.getBooleanExtra("from_notification", false)}, hasEpisode=${intent.hasExtra("episode")}")
         // Update the intent so that onCreate/getIntent can use the new intent
         setIntent(intent)
+
+        val newEpisode = intent.getSerializableExtra("episode") as? Episode
+        if (newEpisode == null) {
+            // Issue 1: 通知点击带来的 intent 不含 episode（v2.0.30 起 createContentIntent 不再附带
+            // episode）。此时只需与服务的当前播放状态同步，不要重启播放，避免通知更新引发的抖动循环。
+            writeJitterLog("onNewIntent: no episode in intent, syncing to service state")
+            if (serviceBound && playbackService != null) {
+                val svcEpisode = playbackService?.getCurrentEpisode()
+                if (svcEpisode != null && svcEpisode.id != currentEpisode?.id) {
+                    currentEpisode = svcEpisode
+                    clearSubtitles()
+                    val newIdx = episodeList.indexOfFirst { it.id == svcEpisode.id }
+                    if (newIdx >= 0) currentEpisodeIndex = newIdx
+                    updateUI()
+                    restoreBackgroundResults()
+                    writeJitterLog("onNewIntent: synced to service episode: ${svcEpisode.title}")
+                } else {
+                    writeJitterLog("onNewIntent: service playing same episode or no episode, just update UI")
+                    updateUI()
+                }
+            } else {
+                writeJitterLog("onNewIntent: service not bound, just update UI")
+                updateUI()
+            }
+            return
+        }
+
+        // Episode provided in intent (from program list click, etc.)
+        currentEpisode = newEpisode
+        // Issue 10 Fix 2: clear old subtitles when switching to a new episode via intent
+        clearSubtitles()
+        // Update episode list from intent
+        val intentEpisodes = intent.getSerializableExtra("episode_list") as? ArrayList<com.radio.app.models.Episode>
+        if (!intentEpisodes.isNullOrEmpty()) {
+            episodeList = intentEpisodes
+            android.util.Log.d("PlayerActivity", "onNewIntent: updated episodeList from intent, size=${episodeList.size}")
+        }
+        val intentIndex = intent.getIntExtra("episode_index", -1)
+        if (intentIndex >= 0 && intentIndex < episodeList.size) {
+            currentEpisodeIndex = intentIndex
+        } else {
+            val idx = episodeList.indexOfFirst { it.id == newEpisode.id }
+            if (idx >= 0) currentEpisodeIndex = idx
+        }
+        writeJitterLog("onNewIntent: updated currentEpisode to ${newEpisode.title}")
+        // Check if same episode is already playing
+        if (serviceBound && playbackService != null) {
+            val sameEpisode = playbackService?.isSameEpisodePlaying(newEpisode.audioUrl) ?: false
+            if (sameEpisode) {
+                writeJitterLog("onNewIntent: same episode already playing, skip restart")
+                // Issue 10 Fix 2: subtitles were cleared above; since this is the SAME
+                // episode (not a switch), reload this episode's own subtitles/segments
+                // so they are not lost.
+                restoreBackgroundResults()
+            } else {
+                val savedPos = getSavedPositionForEpisode(this, newEpisode.id)
+                playbackService?.playEpisode(newEpisode, false, savedPos)
+                writeJitterLog("onNewIntent: starting playback for ${newEpisode.title}")
+            }
+        } else {
+            // Service not bound yet - episode will be played when service connects
+            writeJitterLog("onNewIntent: service not bound, will play when connected: ${newEpisode.title}")
+        }
         updateUI()
     }
 
