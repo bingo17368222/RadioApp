@@ -33,9 +33,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Install Gradle from mirror
+      - name: Install Gradle and remove local proxy
         run: |
-          # Download Gradle using curl (Java's HttpsURLConnection has connection issues)
+          # Remove local proxy settings that don't work on CI
+          sed -i '/systemProp\.http\.proxy/d; /systemProp\.https\.proxy/d' gradle.properties
+          echo "=== gradle.properties ==="
+          cat gradle.properties
+
+          # Download Gradle using curl (Java's HttpsURLConnection has connection issues on CI)
           GRADLE_VERSION=7.5
           curl -fSL -o /tmp/gradle.zip "https://mirrors.cloud.tencent.com/gradle/gradle-${GRADLE_VERSION}-bin.zip"
           unzip -q /tmp/gradle.zip -d /tmp/
