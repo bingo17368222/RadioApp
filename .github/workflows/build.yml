@@ -23,6 +23,42 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Download Gradle from mirror (fallback)
+        run: |
+          # Try to pre-download Gradle from mirror to avoid connection issues
+          GRADLE_VERSION=7.5
+          GRADLE_ZIP=gradle-${GRADLE_VERSION}-bin.zip
+          GRADLE_DIST_DIR=~/.gradle/wrapper/dists/gradle-${GRADLE_VERSION}-bin
+          mkdir -p "$GRADLE_DIST_DIR"
+          # Try Tencent mirror first, then official
+          for URL in \
+            "https://mirrors.cloud.tencent.com/gradle/${GRADLE_ZIP}" \
+            "https://services.gradle.org/distributions/${GRADLE_ZIP}"; do
+            echo "Trying: $URL"
+            if curl -fSL -o /tmp/${GRADLE_ZIP} "$URL" 2>&1; then
+              echo "Downloaded from: $URL"
+              # Compute hash dir (gradle wrapper uses a hash of the URL)
+              HASH=$(echo -n "$URL" | md5sum | cut -d' ' -f1)
+              TARGET_DIR="${GRADLE_DIST_DIR}/${HASH}"
+              mkdir -p "$TARGET_DIR"
+              cp /tmp/${GRADLE_ZIP} "$TARGET_DIR/${GRADLE_ZIP}"
+              cd "$TARGET_DIR"
+              unzip -q ${GRADLE_ZIP}
+              echo "Gradle installed to $TARGET_DIR"
+              break
+            fi
+          done
+
       - name: Build Debug APK
         run: |
           set -o pipefail
