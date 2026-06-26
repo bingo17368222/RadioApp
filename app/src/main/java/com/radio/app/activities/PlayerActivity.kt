@@ -66,6 +66,10 @@ class PlayerActivity : AppCompatActivity() {
 
     // Feature B: Real-time position tracking
     private var currentPlaybackPositionMs: Long = 0
+    // Issue 1 Fix 4: true while waiting for the playback service to report a valid position.
+    // While true, positionUpdateRunnable skips UI updates so the cached position restored in
+    // onResume/onCreate is not overridden before the service is ready.
+    private var awaitingServicePosition = true
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
     private var lastSubtitleHighlightIdx = -1
@@ -73,7 +77,15 @@ class PlayerActivity : AppCompatActivity() {
     private val positionUpdateHandler = Handler(Looper.getMainLooper())
     private val positionUpdateRunnable = object : Runnable {
         override fun run() {
-            updateCurrentPositionHighlight()
+            // Issue 1 Fix 4: skip highlight updates until the service reports a valid position,
+            // so the cached position restored in onResume/onCreate is not overridden prematurely.
+            // The runnable keeps polling (rescheduling) so updates resume automatically once the
+            // service connects (awaitingServicePosition == false). Returning early *without*
+            // rescheduling would stop the recurring task and break subtitle/segment auto-scroll
+            // after the service connects.
+            if (!awaitingServicePosition) {
+                updateCurrentPositionHighlight()
+            }
             positionUpdateHandler.postDelayed(this, 500)
         }
     }
@@ -197,6 +209,11 @@ class PlayerActivity : AppCompatActivity() {
             playbackService = binder.getService()
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
+            // Issue 1 Fix 4: Service connected — it is now the source of truth for playback
+            // position, so stop awaiting and let positionUpdateRunnable resume updates. Placed
+            // here (before the JITTER-GUARD) so all sync paths, including the early-return
+            // branches, release the guard.
+            awaitingServicePosition = false
 
             // Issue 1: If currentEpisode is null (recreated from notification without episode data), get from service
             if (currentEpisode == null) {
@@ -637,6 +654,17 @@ class PlayerActivity : AppCompatActivity() {
                 currentEpisode = null
                 // Don't return - continue with initialization, service will provide episode
                 initViews()
+                // Issue 1 Fix 3: Restore cached position immediately to prevent seekbar showing 0
+                val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
+                val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
+                if (cachedPos > 0 && cachedDur > 0) {
+                    try {
+                        binding.seekBar.max = cachedDur.toInt()
+                        binding.seekBar.progress = cachedPos.toInt()
+                        binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${formatTime(cachedDur.toInt())}"
+                        writeJitterLog("onCreate: immediately restored cached position=$cachedPos, duration=$cachedDur")
+                    } catch (_: Exception) {}
+                }
                 setupListeners()
                 restoreProcessingState()
                 bindPlaybackService()
@@ -898,7 +926,10 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnNextSegment.setOnClickListener { playbackService?.jumpToNextSegment() }
         binding.btnSkipForward.setOnClickListener { playbackService?.skipForward() }
         binding.btnSkipBackward.setOnClickListener { playbackService?.skipBackward() }
-        binding.btnClose.setOnClickListener { finish() }
+        // Issue 1 Fix 1: moveTaskToBack instead of finish() — destroying the Activity on
+        // close caused it to be recreated from scratch on return, which made the seekbar
+        // show 0 before the service reconnected (progress rewind + flicker).
+        binding.btnClose.setOnClickListener { moveTaskToBack(true) }
         // Issue 6 & 11: 点击节目导航提示（如 "1/10"）弹出当前节目列表，可高亮当前播放项并点击切换
         binding.tvEpisodeNavHint.setOnClickListener { showEpisodeListDialog() }
 
@@ -1808,12 +1839,20 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private var backPressedTime = 0L
+
     override fun onBackPressed() {
-        // Issue 1: Don't finish() - move task to back instead.
-        // This prevents Activity destruction when user presses back/gesture,
-        // which was causing jitter (progress rewind + flickering) on return.
-        writeJitterLog("onBackPressed: moveTaskToBack instead of finish()")
-        moveTaskToBack(true)
+        // Issue 1 & 7: Double-tap to exit. First tap goes to background (prevents jitter),
+        // second tap within 2 seconds actually exits to MainActivity.
+        if (System.currentTimeMillis() - backPressedTime < 2000) {
+            writeJitterLog("onBackPressed: double-tap, finishing to exit")
+            super.onBackPressed()  // Actually finish and go back to MainActivity
+        } else {
+            backPressedTime = System.currentTimeMillis()
+            writeJitterLog("onBackPressed: first tap, moveTaskToBack (double-tap to exit)")
+            android.widget.Toast.makeText(this, "再按一次返回退出播放", android.widget.Toast.LENGTH_SHORT).show()
+            moveTaskToBack(true)
+        }
     }
 
     override fun finish() {
@@ -1877,6 +1916,9 @@ class PlayerActivity : AppCompatActivity() {
             binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${if (cachedDur > 0) formatTime(cachedDur.toInt()) else "--:--"}"
             writeJitterLog("onResume: restored cached position=$cachedPos, duration=$cachedDur")
         }
+        // Issue 1 Fix 4: await a valid position from the service before letting the
+        // position-update runnable touch the UI, so the restored cached position holds.
+        awaitingServicePosition = true
 
         restoreBackgroundResults()
     }

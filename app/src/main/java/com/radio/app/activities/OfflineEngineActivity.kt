@@ -66,14 +66,13 @@ class OfflineEngineActivity : AppCompatActivity() {
     )
 
     private val engines = arrayOf(
-        // ===== Whisper 原生引擎 (libwhisper.so，暂未提供下载) =====
+        // ===== Whisper 原生引擎 (4个.so文件，现已提供下载) =====
         EngineInfo(
             "Whisper 引擎文件",
-            "Whisper原生库(libwhisper.so)\n状态: 暂未提供\n说明: Whisper引擎原生库需要交叉编译，目前尚未提供下载。请使用Vosk引擎进行离线字幕生成。",
-            "暂未提供",
-            "",  // empty downloadUrl means not downloadable
-            "whisper-engine",
-            unavailable = true
+            "Whisper原生库(4个.so文件)\n包含: libggml-base-whisper.so, libggml-cpu-whisper.so, libggml-whisper.so, libwhisper.so\n大小: 约5MB | 必需组件\n状态: 支持下载\n说明: 下载后自动解压安装，运行时按依赖顺序加载4个.so文件",
+            "约5MB",
+            "https://github.com/bingo17368222/RadioApp/releases/download/v2.0.34/whisper-engine.zip",
+            "whisper-engine"
         ),
 
         // ===== Whisper 语音识别模型（hf-mirror.com 国内镜像源） =====
@@ -741,12 +740,37 @@ class OfflineEngineActivity : AppCompatActivity() {
                                     }
                                     engine.modelDir.startsWith("whisper") -> {
                                         val whisperSoInstalled = isWhisperEngineInstalled()
+                                        Log.d(TAG, "Issue5: whisper model '${engine.modelDir}' installed, whisper engine .so installed=$whisperSoInstalled")
+                                        writeEngineLog("Issue5: whisper model '${engine.modelDir}' installed, whisper engine .so installed=$whisperSoInstalled")
                                         if (!whisperSoInstalled) {
-                                            writeEngineLog("Whisper engine .so not available for download - showing notice")
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(this@OfflineEngineActivity,
-                                                    "Whisper模型已安装。注意：Whisper引擎原生库(libwhisper.so)暂未提供下载，请暂时使用Vosk引擎。",
-                                                    Toast.LENGTH_LONG).show()
+                                            Log.d(TAG, "Auto-installing Whisper engine (.so files) after model install")
+                                            writeEngineLog("Auto-installing Whisper engine (.so files) after model '${engine.modelDir}' install")
+                                            val whisperEngine = engines.firstOrNull { it.modelDir == "whisper-engine" }
+                                            if (whisperEngine != null) {
+                                                val wBtn = whisperEngineBtn
+                                                val wPb = whisperEngineProgressBar
+                                                val wDir = whisperEngineModelDir
+                                                if (wBtn != null && wPb != null && wDir != null) {
+                                                    lifecycleScope.launch {
+                                                        downloadCancelled = false
+                                                        wBtn.isEnabled = true
+                                                        wBtn.text = "取消下载"
+                                                        wPb.visibility = View.VISIBLE
+                                                        wPb.progress = 0
+                                                        wBtn.setOnClickListener {
+                                                            cancelActiveDownload()
+                                                            Toast.makeText(this@OfflineEngineActivity, "下载已取消", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                        writeEngineLog("Issue5: starting auto-download of whisper-engine (.so files)")
+                                                        downloadModel(whisperEngine, wBtn, wPb, wDir)
+                                                    }
+                                                } else {
+                                                    Log.w(TAG, "Whisper engine card UI refs not available, skipping auto-install")
+                                                    writeEngineLog("Issue5: whisper-engine card UI refs null, cannot auto-install")
+                                                }
+                                            } else {
+                                                Log.w(TAG, "whisper-engine entry not found in engines list")
+                                                writeEngineLog("Issue5: whisper-engine entry not found in engines list")
                                             }
                                         }
                                     }
@@ -1054,10 +1078,13 @@ class OfflineEngineActivity : AppCompatActivity() {
         Log.d(TAG, "isValidWhisperModelDir: checking ${dir.absolutePath}, exists=${dir.exists()}, files=${dir.listFiles()?.map { it.name }}")
         val result = run {
             if (!dir.isDirectory) return@run false
-            // For whisper-engine directory, check if libwhisper.so exists (anywhere in the dir,
-            // to be robust against different zip internal layouts)
+            // For whisper-engine directory, check that all 4 required .so files exist (anywhere in
+            // the dir, to be robust against different zip internal layouts)
             if (dir.name == "whisper-engine") {
-                return@run dir.walkTopDown().any { it.isFile && it.name == "libwhisper.so" }
+                val requiredFiles = listOf("libwhisper.so", "libggml-base-whisper.so", "libggml-cpu-whisper.so", "libggml-whisper.so")
+                return@run requiredFiles.all { requiredFile ->
+                    dir.walkTopDown().any { it.isFile && it.name == requiredFile }
+                }
             }
             // Check for ggml*.bin files in this dir or subdirs
             fun findBinFile(d: File, depth: Int = 0): Boolean {
@@ -1096,12 +1123,18 @@ class OfflineEngineActivity : AppCompatActivity() {
                (engineDir.walkTopDown()?.any { it.name == "libvosk.so" } == true)
     }
 
-    // Issue 12: 检查 libwhisper.so 是否已安装（在 models 或 engines 目录下）
+    // Issue 12: 检查 Whisper 引擎4个.so文件是否已安装（在 models 或 engines 目录下）
     private fun isWhisperEngineInstalled(): Boolean {
         val modelsDir = getExternalFilesDir("models")
         val engineDir = File(filesDir, "engines")
-        return (modelsDir?.walkTopDown()?.any { it.name == "libwhisper.so" } == true) ||
-               (engineDir.walkTopDown()?.any { it.name == "libwhisper.so" } == true)
+        val requiredFiles = listOf("libwhisper.so", "libggml-base-whisper.so", "libggml-cpu-whisper.so", "libggml-whisper.so")
+        fun hasAllSoFiles(root: File?): Boolean {
+            if (root == null || !root.exists()) return false
+            return requiredFiles.all { required ->
+                root.walkTopDown().any { it.isFile && it.name == required }
+            }
+        }
+        return hasAllSoFiles(modelsDir) || hasAllSoFiles(engineDir)
     }
 
     // Issue 13: 写入引擎管理日志到文件，便于排查下载/安装问题

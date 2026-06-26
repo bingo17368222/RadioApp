@@ -892,21 +892,27 @@ class SubtitleGeneratorService : Service() {
                 val bytesRead = if (bytesToRead == chunkSize) chunkSize else chunk.size
 
                 val acceptResult = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
+                if (acceptResult) acceptTrueCount++ else acceptFalseCount++
+                chunkCount++
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
-                if (acceptResult) {
-                    acceptTrueCount++
-                    // Issue 9: only log to Vosk log when acceptWaveForm returns true (reduce spam)
-                    writeVoskLog("chunk $chunkCount: acceptWaveForm=true, offset=$offset, bytesRead=$bytesRead")
-                } else {
-                    acceptFalseCount++
-                }
-                if (acceptResult) {
+
+                // Issue 9: Force getResult() every 50 chunks (~12.5s) even if acceptWaveForm returns false.
+                // Radio audio is continuous speech with few silence boundaries, so acceptWaveForm rarely
+                // returns true. Forcing getResult() periodically ensures Vosk outputs recognized text.
+                val forceResult = (chunkCount % 50 == 0)
+
+                if (acceptResult || forceResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
+                    if (acceptResult) {
+                        writeVoskLog("processVoskInChunks: acceptWaveForm=true at chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, result='${result.take(200)}'")
+                    } else {
+                        writeVoskLog("processVoskInChunks: forceResult at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
+                    }
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
                     if (result.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(result)
-                            val text = json.optString("text", "")
+                            val text = json.optString("text", "").trim()
                             if (text.isBlank()) {
                                 logToFile("processVoskInChunks: chunk $chunkCount produced empty text")
                             }
@@ -937,23 +943,31 @@ class SubtitleGeneratorService : Service() {
                             }
                         } catch (_: Exception) { /* skip malformed JSON */ }
                     }
-                } else {
-                    // Get partial result for logging only (not saved as transcript)
+                }
+
+                // Issue 9: Call getPartialResult() every 10 chunks for intermediate results.
+                // Partial results show what Vosk is currently hearing (useful for diagnosing sparseness).
+                if (chunkCount % 10 == 0) {
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(partial)
-                            val partialText = json.optString("partial", "")
+                            val partialText = json.optString("partial", "").trim()
                             if (partialText.isNotBlank() && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                logToFile("processVoskInChunks: partial at ${offset}ms: '${partialText.take(50)}...'")
+                                logToFile("processVoskInChunks: partial at ${offset}ms (chunk $chunkCount): '${partialText.take(50)}...'")
+                                writeVoskLog("processVoskInChunks: partial at chunk $chunkCount, offset=$offset: '${partialText.take(100)}'")
                             }
                         } catch (_: Exception) { /* skip */ }
                     }
                 }
 
+                // Issue 9: Log progress every 200 chunks (~50s)
+                if (chunkCount % 200 == 0) {
+                    writeVoskLog("processVoskInChunks: progress - chunk=$chunkCount, offset=$offset, transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
+                }
+
                 offset += bytesRead
-                chunkCount++
                 logToFile("processVoskInChunks: processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
                 val progress = (offset * 100 / totalSize).toInt()
                 if (progress > lastProgress + 5) {
@@ -1523,26 +1537,52 @@ class SubtitleGeneratorService : Service() {
                 // 未加载，继续尝试动态加载
             }
 
-            // Issue 5/9: Copy .so to codeCacheDir before loading (like Vosk does) to avoid external storage restrictions
+            // Issue 5: Load all 4 Whisper .so files in dependency order.
+            // Whisper.net runtime package contains:
+            //   libggml-base-whisper.so -> libggml-cpu-whisper.so -> libggml-whisper.so -> libwhisper.so
+            // They must be loaded in this order or System.load will fail with UnsatisfiedLinkError.
             val searchDirs = mutableListOf<File>()
             getExternalFilesDir("models")?.let { if (it.exists()) searchDirs.add(it) }
             val engineDir = File(filesDir, "engines")
             if (engineDir.exists()) searchDirs.add(engineDir)
 
+            val soFiles = listOf("libggml-base-whisper.so", "libggml-cpu-whisper.so", "libggml-whisper.so", "libwhisper.so")
+
             for (searchDir in searchDirs) {
-                searchDir.walkTopDown().filter { it.isFile && it.name == "libwhisper.so" }.forEach { soFile ->
-                    try {
-                        // Copy to internal storage first (external storage may have loading restrictions)
-                        val targetFile = File(codeCacheDir, "libwhisper.so")
-                        if (targetFile.exists()) targetFile.delete()
-                        soFile.copyTo(targetFile, overwrite = true)
-                        System.load(targetFile.absolutePath)
-                        logToFile("loadWhisperNativeLibrary: loaded libwhisper.so from ${soFile.absolutePath} (via ${targetFile.absolutePath})")
+                val foundFiles = mutableMapOf<String, File>()
+                searchDir.walkTopDown().filter { it.isFile && it.name in soFiles }.forEach {
+                    foundFiles[it.name] = it
+                }
+
+                // Only attempt loading if libwhisper.so (the top-level lib) is present
+                if (foundFiles.containsKey("libwhisper.so")) {
+                    // Load all 4 .so files in dependency order
+                    var allLoaded = true
+                    for (soName in soFiles) {
+                        val soFile = foundFiles[soName] ?: continue
+                        try {
+                            // Copy to internal storage first (external storage may have loading restrictions)
+                            val targetFile = File(codeCacheDir, soName)
+                            if (targetFile.exists()) targetFile.delete()
+                            soFile.copyTo(targetFile, overwrite = true)
+                            System.load(targetFile.absolutePath)
+                            logToFile("loadWhisperNativeLibrary: loaded $soName from ${soFile.absolutePath} (via ${targetFile.absolutePath})")
+                        } catch (e: UnsatisfiedLinkError) {
+                            // If it's already loaded, that's OK
+                            if (e.message?.contains("already loaded") == true) {
+                                logToFile("loadWhisperNativeLibrary: $soName already loaded, skipping")
+                            } else {
+                                logToFile("loadWhisperNativeLibrary: failed to load $soName: ${e.message}")
+                                allLoaded = false
+                            }
+                        } catch (e: Exception) {
+                            logToFile("loadWhisperNativeLibrary: error loading $soName: ${e.message}")
+                            allLoaded = false
+                        }
+                    }
+                    if (allLoaded) {
+                        logToFile("loadWhisperNativeLibrary: all Whisper .so files loaded successfully")
                         return true
-                    } catch (e: UnsatisfiedLinkError) {
-                        logToFile("loadWhisperNativeLibrary: failed to load ${soFile.absolutePath}: ${e.message}")
-                    } catch (e: Exception) {
-                        logToFile("loadWhisperNativeLibrary: error copying/loading ${soFile.absolutePath}: ${e.message}")
                     }
                 }
             }

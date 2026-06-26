@@ -1255,15 +1255,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=3")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
 
-            // Also create a WAV file for reliable playback with MediaPlayer
-            try {
-                val wavFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav")
-                writeWavFile(pcmFile, wavFile, outSampleRate, outChannels)
-                writePreCacheLog("decodeToPcmForPreCache: wrote WAV file: $wavFile")
-            } catch (e: Exception) {
-                writePreCacheLog("decodeToPcmForPreCache: failed to write WAV: ${e.message}")
-            }
-
+            // Issue 10: WAV file generation removed - PCM is consumed directly by Vosk/Whisper
             // Also generate 16kHz mono version for Whisper/Vosk
             try {
                 val pcm16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.pcm")
@@ -1292,16 +1284,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                     val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
                     info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
-                    val wav16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.wav")
-                    writeWavFile(pcm16kFile, wav16kFile, 16000, 1)
-                    writePreCacheLog("decodeToPcmForPreCache: 16kHz mono PCM size=${pcm16kFile.length()}, WAV size=${wav16kFile.length()}")
+                    writePreCacheLog("decodeToPcmForPreCache: 16kHz mono PCM size=${pcm16kFile.length()}")
                 } else {
                     // Already 16kHz mono, just copy
                     pcmFile.copyTo(pcm16kFile, overwrite = true)
                     val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
                     info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
-                    val wav16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.wav")
-                    writeWavFile(pcm16kFile, wav16kFile, 16000, 1)
                 }
             } catch (e: Exception) {
                 writePreCacheLog("decodeToPcmForPreCache: failed to generate 16kHz version: ${e.message}")
@@ -1392,49 +1380,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val outBytes = ByteArray(finalShorts.size * 2)
         java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(finalShorts)
         return Pair(outBytes, null)  // 不使用leftover
-    }
-
-    /**
-     * 为PCM数据写入WAV头，生成可被MediaPlayer直接播放的WAV文件
-     */
-    private fun writeWavFile(pcmFile: File, wavFile: File, sampleRate: Int, channels: Int) {
-        val pcmSize = pcmFile.length()
-        if (pcmSize > Int.MAX_VALUE - 44) {
-            writePreCacheLog("writeWavFile: PCM too large (${pcmSize} bytes), skipping WAV")
-            return
-        }
-        val dataSize = pcmSize.toInt()
-        val totalSize = dataSize + 36
-        val byteRate = sampleRate * channels * 2
-        val blockAlign = channels * 2
-
-        val header = ByteArray(44)
-        val bb = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        bb.put("RIFF".toByteArray())
-        bb.putInt(totalSize)
-        bb.put("WAVE".toByteArray())
-        bb.put("fmt ".toByteArray())
-        bb.putInt(16)
-        bb.putShort(1)
-        bb.putShort(channels.toShort())
-        bb.putInt(sampleRate)
-        bb.putInt(byteRate)
-        bb.putShort(blockAlign.toShort())
-        bb.putShort(16)
-        bb.put("data".toByteArray())
-        bb.putInt(dataSize)
-
-        // Stream PCM data to WAV file to avoid OOM
-        val buf = ByteArray(65536)
-        wavFile.outputStream().use { wavOut ->
-            wavOut.write(header)
-            pcmFile.inputStream().use { pcmIn ->
-                var read: Int
-                while (pcmIn.read(buf).also { read = it } > 0) {
-                    wavOut.write(buf, 0, read)
-                }
-            }
-        }
     }
 
     private fun applySavedPosition() {
@@ -2409,38 +2354,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (dateMatch != null) {
                     val newDateStr = targetDate.replace("-", "") // "20240605"
 
-                    // Issue 2/7: Use first/last time slot from episode list for cross-day switching
+                    // Issue 2: Cross-day just gets the next day's first/last episode - NO time slot filtering
                     val episodeList = loadEpisodeList()
-                    // Issue 2: Skip midnight episodes (00:00-06:00) when finding first/last time slot
-                    // Morning episodes start at 07:00 or later
                     val targetTimeSlot = if (nextDate) {
-                        // Going forward: use first MORNING episode's time slot (07:00+)
-                        val firstMorningEp = episodeList.firstOrNull { ep ->
-                            val parts = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
-                            if (parts.size >= 3) {
-                                val startHour = parts[2].take(2).toIntOrNull() ?: 0
-                                startHour >= 7  // Skip midnight episodes (00:00-06:00)
-                            } else false
-                        }
-                        firstMorningEp?.audioUrl?.let { url ->
+                        // Going forward: use first episode's time slot (whatever it is)
+                        val firstEp = episodeList.firstOrNull()
+                        firstEp?.audioUrl?.let { url ->
                             val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                             if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
                         } ?: "0700_0900"
                     } else {
-                        // Going backward: use last EVENING episode's time slot (before midnight)
-                        val lastEveningEp = episodeList.lastOrNull { ep ->
-                            val parts = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
-                            if (parts.size >= 3) {
-                                val startHour = parts[2].take(2).toIntOrNull() ?: 0
-                                startHour < 24  // All episodes are valid for "last" (including midnight if it's the only one)
-                            } else false
-                        }
-                        lastEveningEp?.audioUrl?.let { url ->
+                        // Going backward: use last episode's time slot (whatever it is)
+                        val lastEp = episodeList.lastOrNull()
+                        lastEp?.audioUrl?.let { url ->
                             val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                             if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "1700_1900"
                         } ?: "1700_1900"
                     }
-                    writeServiceLog("notification", "fetchCrossDayEpisode: targetTimeSlot=$targetTimeSlot (nextDate=$nextDate, episodeList.size=${episodeList.size})")
+                    writeServiceLog("notification", "fetchCrossDayEpisode: targetTimeSlot=$targetTimeSlot (nextDate=$nextDate)")
 
                     // Construct new URL with target time slot
                     val stationPart = curUrl.substringAfterLast("/").substringBefore("_")
