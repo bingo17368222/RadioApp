@@ -669,7 +669,7 @@ class SubtitleGeneratorService : Service() {
                                     startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                                     endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
                                 }
-                                val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                                val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                 logToFile("generateWithVosk: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
@@ -717,7 +717,7 @@ class SubtitleGeneratorService : Service() {
                             startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                             endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
                         }
-                        val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                        val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                         logToFile("generateWithVosk: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                         allTranscripts.add(transcript)
                         callback.onSubtitleGenerated(transcript)
@@ -835,7 +835,7 @@ class SubtitleGeneratorService : Service() {
                                     startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                                     endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
                                 }
-                                val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                                val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                 logToFile("processVoskInChunks: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
@@ -885,7 +885,7 @@ class SubtitleGeneratorService : Service() {
                             startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                             endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
                         }
-                        val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                        val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                         logToFile("processVoskInChunks: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                         allTranscripts.add(transcript)
                         callback.onSubtitleGenerated(transcript)
