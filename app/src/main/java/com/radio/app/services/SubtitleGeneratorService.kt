@@ -648,7 +648,7 @@ class SubtitleGeneratorService : Service() {
 
             ctx.log("Processing ${audioData.size} bytes of audio data with Vosk")
             val totalBytes = audioData.size
-            val chunkSize = 4096
+            val chunkSize = 8192
             var offset = 0
             var lastProgress = 0
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
@@ -772,15 +772,17 @@ class SubtitleGeneratorService : Service() {
         val maxBytes = 5L * 60 * 16000 * 2
         val processLimit = if (totalSize > maxBytes) maxBytes else totalSize
         logToFile("processVoskInChunks: totalSize=${totalSize / 1024}KB, processing limit=${processLimit / 1024}KB (5 min), willProcessAll=${totalSize <= maxBytes}")
-        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 4096-byte chunks (128ms per chunk)")
+        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 8192-byte chunks (256ms per chunk)")
         callback.onProgressUpdate(0, 100)
 
         val inputStream = java.io.FileInputStream(pcmFile)
-        val chunkSize = 4096 // Small chunks for better Vosk accuracy (128ms per chunk)
+        val chunkSize = 8192 // 256ms per chunk - better balance for Vosk speech detection
         val buffer = ByteArray(chunkSize)
         var offset = 0L
         var lastProgress = 0
         var chunkCount = 0
+        var acceptTrueCount = 0
+        var acceptFalseCount = 0
         var lastPartialText = ""
 
         var recognizer: Any? = null
@@ -806,6 +808,8 @@ class SubtitleGeneratorService : Service() {
             logToFile("processVoskInChunks: model dir exists=${File(modelPath).exists()}, contents=${File(modelPath).list()?.toList()}")
             try {
                 model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
+                val modelDir = java.io.File(modelPath)
+                logToFile("processVoskInChunks: Vosk model path=$modelPath, exists=${modelDir.exists()}, size=${if (modelDir.exists()) modelDir.walkTopDown().map { it.length() }.sum() / 1024 / 1024 else 0}MB")
                 logToFile("processVoskInChunks: Model created successfully")
                 recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
                     .newInstance(model, 16000.0f as java.lang.Float)
@@ -855,6 +859,7 @@ class SubtitleGeneratorService : Service() {
 
                 val acceptResult = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
+                if (acceptResult) acceptTrueCount++ else acceptFalseCount++
                 if (acceptResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
@@ -921,6 +926,8 @@ class SubtitleGeneratorService : Service() {
             if (offset < totalSize) {
                 logToFile("processVoskInChunks: processing truncated at 5 minutes, offset=$offset, totalSize=$totalSize")
             }
+
+            logToFile("processVoskInChunks: loop complete, totalChunks=$chunkCount, acceptTrueCount=$acceptTrueCount, acceptFalseCount=$acceptFalseCount, transcripts=${allTranscripts.size}")
 
             // Get final result
             val finalResult = getFinalResultMethod.invoke(recognizer) as? String ?: ""

@@ -1631,6 +1631,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 append(" · $timeStr")
             }
         }
+        // Issue 4: Set date/time on RemoteViews (contentText is hidden when custom layout is used)
+        remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(contentText)
@@ -1770,9 +1772,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (playing) R.drawable.notif_pause else R.drawable.notif_play)
             rv.setTextViewText(R.id.play_pause_text, if (playing) "暂停" else "播放")
             rv.setTextViewText(R.id.notification_title, notificationTitle)
-            val fullSubText = buildNotificationSubText()
-            rv.setTextViewText(R.id.notification_subtitle,
-                if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
+            // Issue 4: Set date/time on RemoteViews (contentText is hidden when custom layout is used)
+            val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+            val timeStr = notificationTimeRange
+            val contentText = buildString {
+                append(if (playing) "正在播放" else "已暂停")
+                if (dateStr.isNotBlank()) append(" · $dateStr")
+                if (timeStr.isNotBlank()) append(" · $timeStr")
+            }
+            rv.setTextViewText(R.id.notification_subtitle, contentText)
             val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setCustomContentView(rv)
@@ -1899,6 +1907,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             applySeekIntents(remoteViews)
         }
         applyThemeToNotification(remoteViews)
+        // Issue 4: Set title and date/time on RemoteViews (contentText is hidden when custom layout is used)
+        remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
+        val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        val timeStr = notificationTimeRange
+        val playing = playbackStarted && !userPaused
+        val contentText = buildString {
+            append(if (playing) "正在播放" else "已暂停")
+            if (dateStr.isNotBlank()) append(" · $dateStr")
+            if (timeStr.isNotBlank()) append(" · $timeStr")
+        }
+        remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
         return NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setCustomContentView(remoteViews)
@@ -2371,59 +2390,62 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Extract date from URL: sijiache_20240604_0700_0900.mp4
                 val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(curUrl)
                 if (dateMatch != null) {
-                    val oldDateStr = dateMatch.groupValues[0] // "20240604"
                     val newDateStr = targetDate.replace("-", "") // "20240605"
-                    val newUrl = curUrl.replace(oldDateStr, newDateStr)
+
+                    // Issue 2/7: Use first/last time slot from episode list for cross-day switching
+                    val episodeList = loadEpisodeList()
+                    val targetTimeSlot = if (nextDate) {
+                        // Going forward: use FIRST episode's time slot (morning)
+                        val firstEp = episodeList.firstOrNull()
+                        firstEp?.audioUrl?.let { url ->
+                            val parts = url.substringAfterLast("/").substringBefore(".").split("_")
+                            if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
+                        } ?: "0700_0900"
+                    } else {
+                        // Going backward: use LAST episode's time slot (evening)
+                        val lastEp = episodeList.lastOrNull()
+                        lastEp?.audioUrl?.let { url ->
+                            val parts = url.substringAfterLast("/").substringBefore(".").split("_")
+                            if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "1700_1900"
+                        } ?: "1700_1900"
+                    }
+
+                    writeServiceLog("notification", "fetchCrossDayEpisode: using targetTimeSlot=$targetTimeSlot (nextDate=$nextDate)")
+
+                    // Construct new URL with target time slot
+                    val stationPart = curUrl.substringAfterLast("/").substringBefore("_")
+                    val pathPrefix = curUrl.substringBeforeLast("/").substringBeforeLast("/")
+                    val newUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$targetTimeSlot.mp4"
 
                     writeServiceLog("notification", "fetchCrossDayEpisode: constructed URL: $newUrl")
 
-                    // Construct episode with the new URL
-                    val stationId = currentEpisode?.stationId ?: curUrl.substringAfterLast("/").substringBefore("_")
-
-                    // Issue 2: Extract a meaningful title from the URL pattern instead of
-                    // using a generic "下一日节目"/"上一日节目" placeholder.
-                    val fileName = newUrl.substringAfterLast("/").substringBefore(".")
-                    // e.g., "sijiache_20240605_0700_0900" -> "私驾车 06-05 07:00-09:00"
-                    val titleParts = fileName.split("_")
-                    // Extract time slot from URL: sijiache_20240605_1700_1900 -> "1700" and "1900"
-                    val timeParts = fileName.split("_")
-                    val startTimeStr = if (timeParts.size >= 3) timeParts[2] else ""
-                    val endTimeStr = if (timeParts.size >= 4) timeParts[3] else ""
-
-                    // Find matching episode by time slot (not just station name)
-                    val episodeList = loadEpisodeList()
+                    // Find matching title from episode list by time slot
+                    val targetStart = targetTimeSlot.substringBefore("_")
+                    val targetEnd = targetTimeSlot.substringAfter("_")
                     val matchEpisode = episodeList.firstOrNull { ep ->
                         val epUrl = ep.audioUrl ?: ""
-                        // Match by time slot: both URL must have the same start/end time
-                        (startTimeStr.isNotBlank() && epUrl.contains("_${startTimeStr}_") &&
-                         endTimeStr.isNotBlank() && epUrl.contains("_${endTimeStr}"))
+                        epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.")
                     }
 
+                    val dateDisplay = if (newDateStr.length >= 8) "${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}" else ""
                     val constructedTitle = if (matchEpisode != null) {
-                        // Use the matched episode's title, but with the new date
-                        val dateStr = if (titleParts.size >= 2 && titleParts[1].length >= 8) {
-                            "${titleParts[1].substring(4, 6)}-${titleParts[1].substring(6, 8)}"
-                        } else ""
-                        if (dateStr.isNotBlank()) "${matchEpisode.title} $dateStr" else matchEpisode.title ?: fileName
+                        if (dateDisplay.isNotBlank()) "${matchEpisode.title} $dateDisplay" else matchEpisode.title ?: stationPart
                     } else {
-                        // Fallback: construct from URL parts
                         buildString {
-                            if (titleParts.isNotEmpty()) append(titleParts[0])
-                            if (titleParts.size >= 2 && titleParts[1].length >= 8) {
-                                append(" ${titleParts[1].substring(4, 6)}-${titleParts[1].substring(6, 8)}")
-                            }
-                            if (startTimeStr.length >= 4 && endTimeStr.length >= 4) {
-                                append(" ${startTimeStr.substring(0, 2)}:${startTimeStr.substring(2, 4)}-${endTimeStr.substring(0, 2)}:${endTimeStr.substring(2, 4)}")
+                            append(stationPart)
+                            if (dateDisplay.isNotBlank()) append(" $dateDisplay")
+                            if (targetStart.length >= 4 && targetEnd.length >= 4) {
+                                append(" ${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)}")
                             }
                         }
                     }
 
                     val newEpisode = Episode(
-                        id = "${stationId}-${newDateStr}-cross",
+                        id = "${stationPart}-$newDateStr-cross",
                         title = constructedTitle,
-                        stationId = stationId,
+                        stationId = currentEpisode?.stationId ?: stationPart,
                         audioUrl = newUrl,
-                        broadcastAt = targetDate,
+                        broadcastAt = "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}",
                         duration = 0
                     )
                     writeServiceLog("notification", "fetchCrossDayEpisode: RETURN constructed episode: ${newEpisode.title}, url=${newEpisode.audioUrl}")
@@ -2571,68 +2593,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (nextEpisode == null) {
                 Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list, trying cross-day")
-                // Issue 10: If we've reached the end of the episode list, try cross-day
-                // instead of wrapping back to the first episode of the current day.
                 writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
-                // Issue 7: For auto-play cross-day, go to the FIRST episode of the next day (morning), not the same time slot
-                val curUrl = currentPlayingUrl ?: currentEpisode?.audioUrl ?: ""
-                val nextDateStr = if (curUrl.isNotBlank()) {
-                    // Extract current date and increment
-                    val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(curUrl)
-                    if (dateMatch != null) {
-                        val oldDate = dateMatch.groupValues[0]
-                        // Parse and increment date
-                        try {
-                            val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.getDefault())
-                            val date = sdf.parse(oldDate)
-                            val cal = java.util.Calendar.getInstance()
-                            cal.time = date
-                            cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
-                            sdf.format(cal.time)
-                        } catch (_: Exception) { null }
-                    } else null
-                } else null
-
-                if (nextDateStr != null && curUrl.isNotBlank()) {
-                    // Extract station name from URL
-                    val stationPart = curUrl.substringAfterLast("/").substringBefore("_")
-                    // Construct first episode URL (07:00-09:00 is typically the first time slot)
-                    // Try to find the first episode's time slot from the episode list
-                    val episodeList = loadEpisodeList()
-                    val firstEpisode = episodeList.firstOrNull()
-                    val firstTimeSlot = firstEpisode?.audioUrl?.let { url ->
-                        val parts = url.substringAfterLast("/").substringBefore(".").split("_")
-                        if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
-                    } ?: "0700_0900"
-
-                    // Extract the path prefix from current URL
-                    val pathPrefix = curUrl.substringBeforeLast("/").substringBeforeLast("/")
-                    val newUrl = "$pathPrefix/jmd_$nextDateStr/${stationPart}_${nextDateStr}_$firstTimeSlot.mp4"
-
-                    writeServiceLog("notification", "autoPlayNext: constructed first episode URL for next day: $newUrl")
-
-                    // Find matching title from episode list
-                    val matchEpisode = episodeList.firstOrNull { ep ->
-                        val parts = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
-                        parts.size >= 4 && parts[2] == firstTimeSlot.substringBefore("_") && parts[3] == firstTimeSlot.substringAfter("_")
-                    }
-                    val newTitle = if (matchEpisode != null) "${matchEpisode.title} ${nextDateStr.substring(4, 6)}-${nextDateStr.substring(6, 8)}" else stationPart
-
-                    val crossDayEp = Episode(
-                        id = "${stationPart}-$nextDateStr-first",
-                        title = newTitle,
-                        stationId = currentEpisode?.stationId ?: stationPart,
-                        audioUrl = newUrl,
-                        broadcastAt = "${nextDateStr.substring(0, 4)}-${nextDateStr.substring(4, 6)}-${nextDateStr.substring(6, 8)}",
-                        duration = 0
-                    )
-                    writeServiceLog("notification", "autoPlayNext: cross-day first episode: ${crossDayEp.title}, url=${crossDayEp.audioUrl}")
-                    playEpisode(crossDayEp, false)
-                    callback?.onEpisodeChanged(crossDayEp)
-                    return
-                }
-
-                // Fallback to fetchCrossDayEpisode if URL construction fails
                 val crossDayEp = fetchCrossDayEpisode(nextDate = true)
                 if (crossDayEp != null) {
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
@@ -2640,8 +2601,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     callback?.onEpisodeChanged(crossDayEp)
                     return
                 }
-                writeServiceLog("notification", "autoPlayNext: no cross-day episode found, falling back to broadcast")
-                notifyNextEpisode()
+                writeServiceLog("notification", "autoPlayNext: no cross-day episode found, stopping")
                 return
             }
             Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")

@@ -197,7 +197,25 @@ class PlayerActivity : AppCompatActivity() {
             playbackService = binder.getService()
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
-            
+
+            // Issue 1: If currentEpisode is null (recreated from notification without episode data), get from service
+            if (currentEpisode == null) {
+                val svcEpisode = playbackService?.getCurrentEpisode()
+                if (svcEpisode != null) {
+                    currentEpisode = svcEpisode
+                    val svcList = loadEpisodeListFromPrefs()
+                    if (svcList.isNotEmpty()) {
+                        episodeList = svcList
+                        currentEpisodeIndex = episodeList.indexOfFirst { it.id == svcEpisode.id }.coerceAtLeast(0)
+                    }
+                    clearSubtitles()
+                    updateUI()
+                    restoreBackgroundResults()
+                    writeJitterLog("onServiceConnected: restored episode from service: ${svcEpisode.title}")
+                    return
+                }
+            }
+
             val newUrl = currentEpisode?.audioUrl
             val svcStarted = playbackService?.isPlaybackStarted() ?: false
             val svcPlaying = playbackService?.isPlaying() ?: false
@@ -602,8 +620,23 @@ class PlayerActivity : AppCompatActivity() {
         if (currentEpisode == null) {
             val audioUrl = intent.getStringExtra("audio_url") ?: intent.getStringExtra("stream_url")
             if (audioUrl.isNullOrBlank()) {
-                Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show()
-                finish()
+                // Issue 1: Don't finish() - this happens when Activity is recreated from notification.
+                // Wait for service to connect, then get episode from service.
+                writeJitterLog("onCreate: no episode/audioUrl in intent (from_notification=${intent.getBooleanExtra("from_notification", false)}), will sync from service")
+                currentEpisode = null
+                // Don't return - continue with initialization, service will provide episode
+                initViews()
+                setupListeners()
+                restoreProcessingState()
+                bindPlaybackService()
+                LocalBroadcastManager.getInstance(this).registerReceiver(
+                    episodeActionReceiver,
+                    IntentFilter(RadioPlaybackService.BROADCAST_STATE_CHANGED)
+                )
+                LocalBroadcastManager.getInstance(this).registerReceiver(
+                    episodeChangedReceiver,
+                    IntentFilter(RadioPlaybackService.BROADCAST_EPISODE_CHANGED)
+                )
                 return
             }
             val isLive = intent.getBooleanExtra("is_live", false)
@@ -668,8 +701,20 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         if (currentEpisode?.audioUrl.isNullOrBlank()) {
-            Toast.makeText(this, "播放地址无效，无法播放", Toast.LENGTH_SHORT).show()
-            finish()
+            // Issue 1: Don't finish() - wait for service to provide episode
+            writeJitterLog("onCreate: currentEpisode has no audioUrl, will sync from service")
+            initViews()
+            setupListeners()
+            restoreProcessingState()
+            bindPlaybackService()
+            LocalBroadcastManager.getInstance(this).registerReceiver(
+                episodeActionReceiver,
+                IntentFilter(RadioPlaybackService.BROADCAST_STATE_CHANGED)
+            )
+            LocalBroadcastManager.getInstance(this).registerReceiver(
+                episodeChangedReceiver,
+                IntentFilter(RadioPlaybackService.BROADCAST_EPISODE_CHANGED)
+            )
             return
         }
 
@@ -755,7 +800,7 @@ class PlayerActivity : AppCompatActivity() {
         val isLiveNav = currentEpisode?.isLive ?: false
         if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
             binding.layoutEpisodeNav.visibility = View.VISIBLE
-            binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
+            binding.tvEpisodeNavHint.text = " ▼ ${currentEpisodeIndex + 1}/${episodeList.size} "
             binding.btnPrevEpisode.setOnClickListener {
                 playPrevEpisode()
             }
@@ -789,6 +834,31 @@ class PlayerActivity : AppCompatActivity() {
         } catch (e: Exception) {
             android.util.Log.e("PlayerActivity", "Failed to save episode list", e)
         }
+    }
+
+    // Issue 1: restore the cached episode list (written in onCreate) so that an Activity
+    // recreated from the notification (which carries no episode data) can still rebuild its
+    // episode list and locate the currently-playing episode returned by the service.
+    private fun loadEpisodeListFromPrefs(): ArrayList<Episode> {
+        val json = getSharedPreferences("episode_list_cache", MODE_PRIVATE).getString("episodes", "") ?: ""
+        if (json.isBlank()) return ArrayList()
+        return try {
+            val arr = org.json.JSONArray(json)
+            ArrayList<Episode>().apply {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(Episode().apply {
+                        id = obj.getString("id")
+                        title = obj.getString("title")
+                        audioUrl = obj.getString("audio_url")
+                        stationId = obj.optString("station_id", "")
+                        stationName = obj.optString("station_name", "")
+                        duration = obj.optLong("duration", 0)
+                        broadcastAt = obj.optString("broadcast_at", "")
+                    })
+                }
+            }
+        } catch (_: Exception) { ArrayList() }
     }
 
     private fun saveEpisodesToPersistentStore(episodes: List<Episode>) {
@@ -1121,7 +1191,7 @@ class PlayerActivity : AppCompatActivity() {
         // 更新标题
         if (currentEpisode != null) {
             binding.tvStationName.text = currentEpisode!!.title ?: "节目回放"
-            binding.tvEpisodeNavHint.text = " ${currentEpisodeIndex + 1}/${episodeList.size} "
+            binding.tvEpisodeNavHint.text = " ▼ ${currentEpisodeIndex + 1}/${episodeList.size} "
             // Show broadcast date, duration
             val infoParts = mutableListOf<String>()
             if (!currentEpisode!!.broadcastAt.isNullOrBlank()) {
@@ -1709,6 +1779,11 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             binding.recyclerSegments.visibility = View.VISIBLE
         }
+    }
+
+    override fun finish() {
+        writeJitterLog("finish() called! stacktrace:\n${android.util.Log.getStackTraceString(Exception())}")
+        super.finish()
     }
 
     override fun onResume() {

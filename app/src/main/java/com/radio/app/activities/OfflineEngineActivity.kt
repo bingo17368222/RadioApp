@@ -66,13 +66,14 @@ class OfflineEngineActivity : AppCompatActivity() {
     )
 
     private val engines = arrayOf(
-        // ===== Whisper 原生引擎 (libwhisper.so，从 GitHub releases 下载) =====
+        // ===== Whisper 原生引擎 (libwhisper.so，暂未提供下载) =====
         EngineInfo(
             "Whisper 引擎文件",
-            "Whisper原生库(libwhisper.so)\n大小: 约30MB | 必需组件\n状态: Whisper字幕生成必需\n说明: 下载后自动解压安装libwhisper.so，安装后可使用Whisper语音识别",
-            "约30MB",
-            "https://github.com/bingo17368222/RadioApp/releases/download/v1.0/whisper-engine.zip",
-            "whisper-engine"
+            "Whisper原生库(libwhisper.so)\n状态: 暂未提供\n说明: Whisper引擎原生库需要交叉编译，目前尚未提供下载。请使用Vosk引擎进行离线字幕生成。",
+            "暂未提供",
+            "",  // empty downloadUrl means not downloadable
+            "whisper-engine",
+            unavailable = true
         ),
 
         // ===== Whisper 语音识别模型（hf-mirror.com 国内镜像源） =====
@@ -272,7 +273,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         tvSize.text = engine.size
         progressBar?.visibility = View.GONE
 
-        val isBuiltin = engine.downloadUrl == null
+        val isBuiltin = engine.downloadUrl == null || engine.downloadUrl.isEmpty()
         if (isBuiltin) {
             btnAction.text = if (engine.unavailable) "暂不可用" else "已内置"
             btnAction.isEnabled = false
@@ -739,52 +740,14 @@ class OfflineEngineActivity : AppCompatActivity() {
                                         }
                                     }
                                     engine.modelDir.startsWith("whisper") -> {
-                                        // Issue 9: Auto-install Whisper engine .so after model install
                                         val whisperSoInstalled = isWhisperEngineInstalled()
-                                        Log.d(TAG, "Issue9: whisper model '${engine.modelDir}' installed, libwhisper.so installed=$whisperSoInstalled")
-                                        writeEngineLog("Issue9: whisper model '${engine.modelDir}' installed, libwhisper.so installed=$whisperSoInstalled")
                                         if (!whisperSoInstalled) {
-                                            Log.d(TAG, "Auto-installing Whisper engine (libwhisper.so) after model install")
-                                            writeEngineLog("Auto-installing Whisper engine (libwhisper.so) after model install")
-                                            val whisperEngine = engines.firstOrNull { it.modelDir == "whisper-engine" }
-                                            if (whisperEngine != null) {
-                                                val wBtn = whisperEngineBtn
-                                                val wPb = whisperEngineProgressBar
-                                                val wDir = whisperEngineModelDir
-                                                if (wBtn != null && wPb != null && wDir != null) {
-                                                    lifecycleScope.launch {
-                                                        downloadCancelled = false
-                                                        wBtn.isEnabled = true
-                                                        wBtn.text = "取消下载"
-                                                        wPb.visibility = View.VISIBLE
-                                                        wPb.progress = 0
-                                                        wBtn.setOnClickListener {
-                                                            cancelActiveDownload()
-                                                            Toast.makeText(this@OfflineEngineActivity, "下载已取消", Toast.LENGTH_SHORT).show()
-                                                        }
-                                                        writeEngineLog("Issue9: starting auto-download of whisper-engine (libwhisper.so)")
-                                                        downloadModel(whisperEngine, wBtn, wPb, wDir)
-                                                    }
-                                                } else {
-                                                    Log.w(TAG, "Whisper engine card UI refs not available, skipping auto-install")
-                                                    writeEngineLog("Issue9: whisper-engine card UI refs null, cannot auto-install")
-                                                    withContext(Dispatchers.Main) {
-                                                        Toast.makeText(this@OfflineEngineActivity,
-                                                            "Whisper模型已安装，但引擎文件下载UI未就绪。请手动安装Whisper引擎。",
-                                                            Toast.LENGTH_LONG).show()
-                                                    }
-                                                }
-                                            } else {
-                                                Log.w(TAG, "whisper-engine entry not found in engines list")
-                                                writeEngineLog("Whisper engine entry not found in engines list")
-                                                withContext(Dispatchers.Main) {
-                                                    Toast.makeText(this@OfflineEngineActivity,
-                                                        "Whisper模型已安装，但引擎文件下载条目未找到。请手动安装引擎。",
-                                                        Toast.LENGTH_LONG).show()
-                                                }
+                                            writeEngineLog("Whisper engine .so not available for download - showing notice")
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(this@OfflineEngineActivity,
+                                                    "Whisper模型已安装。注意：Whisper引擎原生库(libwhisper.so)暂未提供下载，请暂时使用Vosk引擎。",
+                                                    Toast.LENGTH_LONG).show()
                                             }
-                                        } else {
-                                            writeEngineLog("Whisper engine already installed, skipping auto-install")
                                         }
                                     }
                                 }

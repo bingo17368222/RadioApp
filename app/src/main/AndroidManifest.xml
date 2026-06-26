@@ -35,7 +35,7 @@
         <activity
             android:name=".activities.PlayerActivity"
             android:exported="false"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:alwaysRetainTaskState="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|fontScale|locale|layoutDirection|smallestScreenSize|density" />
 
