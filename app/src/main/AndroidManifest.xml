@@ -34,7 +34,9 @@
 
         <activity
             android:name=".activities.PlayerActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
         <activity
             android:name=".activities.KeywordSettingsActivity"

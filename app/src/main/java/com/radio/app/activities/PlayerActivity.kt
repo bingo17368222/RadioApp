@@ -1675,6 +1675,14 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun findClosestTranscriptIndex(positionMs: Long): Int {
+        // First, find transcript that contains the position
+        for (i in subtitleTranscripts.indices) {
+            val t = subtitleTranscripts[i]
+            if (t.startTime <= positionMs && (t.endTime > positionMs || t.endTime == 0L)) {
+                return i
+            }
+        }
+        // Fallback: find closest start time
         var closestIdx = -1
         var closestDiff = Long.MAX_VALUE
         for (i in subtitleTranscripts.indices) {
@@ -1689,6 +1697,14 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun findClosestSegmentIndex(positionMs: Long): Int {
+        // First, find segment that contains the position
+        for (i in voiceSegments.indices) {
+            val s = voiceSegments[i]
+            if (s.start <= positionMs && (s.end > positionMs || s.end == 0L)) {
+                return i
+            }
+        }
+        // Fallback: find closest start time
         var closestIdx = -1
         var closestDiff = Long.MAX_VALUE
         for (i in voiceSegments.indices) {

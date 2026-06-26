@@ -534,7 +534,9 @@ class SubtitleGeneratorService : Service() {
     private fun generateWithVosk(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
+        logToFile("generateWithVosk: START, episodeId=$episodeId, audioUrl=$audioUrl")
         val modelPath = findVoskModel()
+        logToFile("generateWithVosk: voskModel=$modelPath")
         if (modelPath == null) {
             ctx.log("ERROR: No Vosk model found")
             callback.onError("Vosk模型未下载：缺少语音识别模型。请在设置→离线引擎管理→下载Vosk模型（约1.4GB）")
@@ -542,13 +544,17 @@ class SubtitleGeneratorService : Service() {
         }
         try {
             // 动态加载 libvosk.so（不再打包进 APK）
-            if (!loadVoskNativeLibrary()) {
+            val nativeLoaded = loadVoskNativeLibrary()
+            logToFile("generateWithVosk: nativeLibraryLoaded=$nativeLoaded")
+            if (!nativeLoaded) {
                 ctx.log("ERROR: Failed to load Vosk native library (libvosk.so)")
                 callback.onError("Vosk引擎未安装：缺少libvosk.so原生库。请在设置→离线引擎管理→下载Vosk引擎（约50MB）")
                 return false
             }
             // 通过反射加载 Vosk 类（不再打包进 APK）
-            if (!ensureVoskClasses()) {
+            val classesLoaded = ensureVoskClasses()
+            logToFile("generateWithVosk: classesLoaded=$classesLoaded, voskModelClass=${voskModelClass != null}, voskRecognizerClass=${voskRecognizerClass != null}")
+            if (!classesLoaded) {
                 ctx.log("ERROR: Vosk classes not available (vosk JAR not in classpath)")
                 callback.onError("Vosk引擎未安装：缺少Java库文件。请在设置→离线引擎管理→下载Vosk引擎")
                 return false
@@ -557,6 +563,7 @@ class SubtitleGeneratorService : Service() {
             // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            logToFile("generateWithVosk: PCM file=${pcm16kFile.absolutePath}, size=${pcm16kFile.length()}, willChunk=${pcm16kFile.length() > 50_000_000}")
             if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Vosk processing")
@@ -665,8 +672,13 @@ class SubtitleGeneratorService : Service() {
             callback.onComplete(allTranscripts)
             return true
         } catch (e: Exception) {
-            ctx.log("ERROR: Vosk exception: ${e.message}")
-            callback.onError("Vosk处理失败: ${e.message}")
+            logToFile("generateWithVosk: EXCEPTION: ${e.javaClass.name}: ${e.message}")
+            e.stackTrace.take(5).forEach { logToFile("generateWithVosk: at $it") }
+            callback.onError("Vosk生成失败: ${e.message}")
+            return false
+        } catch (e: UnsatisfiedLinkError) {
+            logToFile("generateWithVosk: UnsatisfiedLinkError: ${e.message}")
+            callback.onError("Vosk原生库加载失败: ${e.message}")
             return false
         }
     }
@@ -677,6 +689,7 @@ class SubtitleGeneratorService : Service() {
     private fun processVoskInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
+        logToFile("processVoskInChunks: START, pcmFile=${pcmFile.absolutePath}, size=${pcmFile.length()}")
         val totalSize = pcmFile.length()
         ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 30s chunks")
         callback.onProgressUpdate(0, 100)
@@ -686,26 +699,45 @@ class SubtitleGeneratorService : Service() {
         val buffer = ByteArray(chunkSize)
         var offset = 0L
         var lastProgress = 0
+        var chunkCount = 0
 
         var recognizer: Any? = null
         var model: Any? = null
         try {
             // Initialize Vosk recognizer
-            if (!loadVoskNativeLibrary()) {
+            val nativeLoaded = loadVoskNativeLibrary()
+            logToFile("processVoskInChunks: nativeLibraryLoaded=$nativeLoaded")
+            if (!nativeLoaded) {
                 ctx.log("ERROR: Failed to load Vosk native library in chunked mode")
                 callback.onError("Vosk引擎未安装：缺少libvosk.so原生库。请在设置→离线引擎管理→下载Vosk引擎（约50MB）")
                 return false
             }
-            if (!ensureVoskClasses()) {
+            val classesLoaded = ensureVoskClasses()
+            logToFile("processVoskInChunks: classesLoaded, voskModelClass=${voskModelClass != null}, voskRecognizerClass=${voskRecognizerClass != null}")
+            if (!classesLoaded) {
                 ctx.log("ERROR: Vosk classes not available in chunked mode")
                 callback.onError("Vosk引擎未安装：缺少Java库文件。请在设置→离线引擎管理→下载Vosk引擎")
                 return false
             }
 
-            ctx.log("Initializing Vosk recognizer for chunked processing with model: $modelPath")
-            model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
-            recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
-                .newInstance(model, 16000.0f as java.lang.Float)
+            logToFile("processVoskInChunks: creating Vosk Model with path=$modelPath")
+            logToFile("processVoskInChunks: model dir exists=${File(modelPath).exists()}, contents=${File(modelPath).list()?.toList()}")
+            try {
+                model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
+                logToFile("processVoskInChunks: Model created successfully")
+                recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
+                    .newInstance(model, 16000.0f as java.lang.Float)
+                logToFile("processVoskInChunks: Recognizer created successfully")
+            } catch (e: Exception) {
+                logToFile("processVoskInChunks: FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
+                e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
+                callback.onError("Vosk模型初始化失败: ${e.message}")
+                return false
+            } catch (e: UnsatisfiedLinkError) {
+                logToFile("processVoskInChunks: UnsatisfiedLinkError creating Model: ${e.message}")
+                callback.onError("Vosk原生方法调用失败: ${e.message}")
+                return false
+            }
             ctx.log("Vosk recognizer created for chunked processing")
 
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
@@ -734,6 +766,8 @@ class SubtitleGeneratorService : Service() {
                 }
 
                 offset += bytesRead
+                chunkCount++
+                logToFile("processVoskInChunks: processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
                 val progress = (offset * 100 / totalSize).toInt()
                 if (progress > lastProgress + 5) {
                     lastProgress = progress
@@ -755,6 +789,7 @@ class SubtitleGeneratorService : Service() {
                 } catch (_: Exception) { /* skip */ }
             }
 
+            logToFile("processVoskInChunks: COMPLETE, totalTranscripts=${allTranscripts.size}, totalBytes=$offset")
             ctx.log("Chunked Vosk processing complete: ${allTranscripts.size} transcripts from ${offset} bytes")
             callback.onComplete(allTranscripts)
             return true
@@ -1296,7 +1331,7 @@ class SubtitleGeneratorService : Service() {
 
     /**
      * 使用Whisper模型生成字幕（当前版本需要whisper.cpp JNI集成）
-     * 如果whisper.cpp库不可用，返回false并报告错误
+     * 如果whisper.cpp库不可用，回退到Vosk引擎
      */
     private fun generateWithWhisper(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
@@ -1337,10 +1372,18 @@ class SubtitleGeneratorService : Service() {
 
             ctx.log("Whisper engine: got ${audioData.size} bytes audio data")
             ctx.log("Whisper engine: whisper.cpp JNI not integrated in this build")
+            logToFile("generateWithWhisper: whisper.cpp JNI not available, falling back to Vosk")
 
-            // whisper.cpp JNI 不可用：报告清晰的 Whisper 专用错误，不回退到 Vosk
-            callback.onError("Whisper引擎暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk")
-            return false
+            // Fall back to Vosk
+            val voskModel = findVoskModel()
+            if (voskModel != null) {
+                logToFile("generateWithWhisper: Vosk fallback model found: $voskModel")
+                return generateWithVosk(episodeId, audioUrl, callback, ctx)
+            } else {
+                logToFile("generateWithWhisper: no Vosk model available for fallback either")
+                callback.onError("Whisper引擎暂不可用（whisper.cpp未集成），且未找到Vosk模型。请下载Vosk模型或在设置中切换ASR引擎为Vosk。")
+                return false
+            }
         } catch (e: Exception) {
             ctx.log("ERROR: Whisper exception: ${e.message}")
             if (e is OutOfMemoryError) {
@@ -1354,15 +1397,23 @@ class SubtitleGeneratorService : Service() {
 
     /**
      * 分块处理大PCM文件（16kHz mono），供Whisper引擎使用
-     * 当前版本whisper.cpp未集成，直接报告错误，不回退到Vosk
+     * 当前版本whisper.cpp未集成，回退到Vosk分块处理（processVoskInChunks）
      */
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
-        ctx.log("processWhisperInChunks: whisper.cpp JNI not integrated")
-        // whisper.cpp JNI 不可用：不回退到 Vosk，直接报告错误
-        callback.onError("Whisper分块处理暂不可用：whisper.cpp原生库未集成")
-        return false
+        ctx.log("processWhisperInChunks: whisper.cpp JNI not integrated, falling back to Vosk chunked processing")
+        logToFile("processWhisperInChunks: whisper.cpp JNI not available, falling back to processVoskInChunks")
+        // whisper.cpp JNI 不可用：回退到 Vosk 分块处理
+        val voskModel = findVoskModel()
+        if (voskModel != null) {
+            logToFile("processWhisperInChunks: Vosk fallback model found: $voskModel")
+            return processVoskInChunks(pcmFile, voskModel, callback, ctx)
+        } else {
+            logToFile("processWhisperInChunks: no Vosk model available for fallback")
+            callback.onError("Whisper分块处理暂不可用（whisper.cpp未集成），且未找到Vosk模型。请下载Vosk模型或在设置中切换ASR引擎为Vosk。")
+            return false
+        }
     }
 
     /**

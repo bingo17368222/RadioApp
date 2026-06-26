@@ -59,6 +59,7 @@ import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Objects
 import java.util.concurrent.atomic.AtomicBoolean
 
 class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener {
@@ -207,6 +208,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val precacheCompletedFileNames = mutableListOf<String>()
     // 预缓存完成通知是否已展示：确保每轮预缓存只弹一次汇总通知
     private var precacheNotificationShown = false
+    // 通知内容去重哈希：内容未变化时跳过 manager.notify()，避免 ExoPlayer 缓冲态频繁刷新导致的通知闪烁
+    private var lastNotificationContentHash: Int = 0
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
@@ -578,7 +581,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // 标记预缓存开始，通知栏进度轮询将跳过更新
         precacheCompletedCount = 0
-        precacheNotificationShown = false
         isPrecaching = true
         writeServiceLog("notification", "triggerPreCache: starting pre-cache loop, isPrecaching=true")
 
@@ -1547,7 +1549,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun updateNotification(): Notification {
-        writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, playing=${player?.isPlaying}, userPaused=$userPaused, prepared=$prepared")
+        writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, timeRange=$notificationTimeRange, playing=${player?.isPlaying}, userPaused=$userPaused, prepared=$prepared, contentHash=$lastNotificationContentHash")
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
         // Use userPaused instead of player?.isPlaying to avoid notification flicker during buffering.
@@ -1664,9 +1666,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun doNotifyNotification() {
         val notification = updateNotification()
+
+        // Content-based deduplication: skip if content hasn't changed
+        val contentHash = Objects.hash(
+            notificationTitle,
+            buildNotificationSubText(),
+            playbackStarted && !userPaused,
+            prepared,
+            if (!isLive && prepared) player?.currentPosition?.div(2000) else 0L  // 2-second granularity
+        )
+        if (contentHash == lastNotificationContentHash) {
+            return  // Skip identical notification update
+        }
+        lastNotificationContentHash = contentHash
+
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         try {
-            writeServiceLog("notification", "doNotifyNotification: manager.notify(NOTIFICATION_ID=$NOTIFICATION_ID) playback update")
+            writeServiceLog("notification", "doNotifyNotification: manager.notify(NOTIFICATION_ID=$NOTIFICATION_ID) contentHash=$contentHash")
             manager.notify(NOTIFICATION_ID, notification)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update notification", e)
@@ -2060,6 +2076,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Parse broadcastAt for date and time range
         notificationDate = ""
         notificationTimeRange = ""
+        lastNotificationContentHash = 0  // Force notification update on episode change
+        precacheNotificationShown = false  // Reset for new episode
         if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
             notificationDate = episode.broadcastAt.substring(0, 10) // "2024-06-04"
             val timePart = episode.broadcastAt.substring(11, 16) // "07:00"
@@ -2210,7 +2228,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (dur > 0 && pos < dur) seekTo(pos)
     }
 
-    private fun fetchCrossDayEpisode(direction: Int): Episode? {
+    private fun fetchCrossDayEpisode(nextDate: Boolean): Episode? {
         val curEp = currentEpisode
         val curUrl = currentPlayingUrl
 
@@ -2238,10 +2256,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
             cal.time = dateFormat.parse(currentDate) ?: return null
-            cal.add(java.util.Calendar.DAY_OF_YEAR, direction)
+            cal.add(java.util.Calendar.DAY_OF_YEAR, if (nextDate) 1 else -1)
             val targetDate = dateFormat.format(cal.time)
 
-            Log.d(TAG, "fetchCrossDayEpisode: fetching $stationId on $targetDate (direction=$direction)")
+            Log.d(TAG, "fetchCrossDayEpisode: fetching $stationId on $targetDate (nextDate=$nextDate)")
 
             // Try network fetch first
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
@@ -2249,7 +2267,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             if (episodes != null && episodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
-                val result = if (direction > 0) {
+                val result = if (nextDate) {
                     episodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
                 } else {
                     episodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
@@ -2268,7 +2286,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val targetEpisodes = savedList.filter { it.broadcastAt?.startsWith(targetDate) == true && it.stationId == stationId }
             if (targetEpisodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
-                val result = if (direction > 0) {
+                val result = if (nextDate) {
                     targetEpisodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
                 } else {
                     targetEpisodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
@@ -2317,11 +2335,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
         } else {
-            // Try cross-day fetch
-            writeServiceLog("notification", "notifyPrevEpisode: episodeList exhausted, trying fetchCrossDayEpisode")
-            val crossDayEp = fetchCrossDayEpisode(-1)
-            writeServiceLog("notification", "notifyPrevEpisode: fetchCrossDayEpisode returned: ${crossDayEp?.title ?: "null"}")
+            // Try cross-day fetch before giving up
+            writeServiceLog("notification", "notifyPrevEpisode: no more episodes in current list, trying cross-day fetch (previous day)")
+            val crossDayEp = fetchCrossDayEpisode(nextDate = false)
             if (crossDayEp != null) {
+                writeServiceLog("notification", "notifyPrevEpisode: cross-day episode found: ${crossDayEp.title}")
                 val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
                 val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
                 val startPos = if (savedPos > 0) savedPos else -1L
@@ -2333,10 +2351,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     putExtra("episode_id", crossDayEp.id)
                 }
                 LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-            } else {
-                writeServiceLog("notification", "notifyPrevEpisode: no more episodes available")
-                showEpisodeSwitchFailedNotification("已经是第一个节目了")
+                return
             }
+            writeServiceLog("notification", "notifyPrevEpisode: no more episodes available (cross-day also failed)")
+            showEpisodeSwitchFailedNotification("已经是第一个节目了")
         }
     }
     private fun notifyNextEpisode() {
@@ -2370,11 +2388,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
         } else {
-            // Try cross-day fetch
-            writeServiceLog("notification", "notifyNextEpisode: episodeList exhausted, trying fetchCrossDayEpisode")
-            val crossDayEp = fetchCrossDayEpisode(1)
-            writeServiceLog("notification", "notifyNextEpisode: fetchCrossDayEpisode returned: ${crossDayEp?.title ?: "null"}")
+            // Try cross-day fetch before giving up
+            writeServiceLog("notification", "notifyNextEpisode: no more episodes in current list, trying cross-day fetch")
+            val crossDayEp = fetchCrossDayEpisode(nextDate = true)
             if (crossDayEp != null) {
+                writeServiceLog("notification", "notifyNextEpisode: cross-day episode found: ${crossDayEp.title}")
                 val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
                 val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
                 val startPos = if (savedPos > 0) savedPos else -1L
@@ -2386,10 +2404,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     putExtra("episode_id", crossDayEp.id)
                 }
                 LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-            } else {
-                writeServiceLog("notification", "notifyNextEpisode: no more episodes available")
-                showEpisodeSwitchFailedNotification("已经是最后一个节目了")
+                return
             }
+            writeServiceLog("notification", "notifyNextEpisode: no more episodes available (cross-day also failed)")
+            showEpisodeSwitchFailedNotification("已经是最后一个节目了")
         }
     }
 
