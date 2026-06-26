@@ -180,6 +180,20 @@ class SubtitleGeneratorService : Service() {
     }
 
     /**
+     * Issue 9: Dedicated Vosk log file for diagnosing Vosk output sparseness.
+     * Written to <external>/logs/vosk/vosk.log
+     */
+    private fun writeVoskLog(message: String) {
+        try {
+            val logDir = java.io.File(getExternalFilesDir(null), "logs/vosk")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "vosk.log")
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+            logFile.appendText("[$timestamp] $message\n")
+        } catch (_: Exception) {}
+    }
+
+    /**
      * Cancel all running tasks and prevent new ones
      */
     private fun cancelAllTasks() {
@@ -775,7 +789,8 @@ class SubtitleGeneratorService : Service() {
         ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 8192-byte chunks (256ms per chunk)")
         callback.onProgressUpdate(0, 100)
 
-        val inputStream = java.io.FileInputStream(pcmFile)
+        val fileInputStream = java.io.FileInputStream(pcmFile)
+        val inputStream = java.io.DataInputStream(fileInputStream)
         val chunkSize = 8192 // 256ms per chunk - better balance for Vosk speech detection
         val buffer = ByteArray(chunkSize)
         var offset = 0L
@@ -784,6 +799,8 @@ class SubtitleGeneratorService : Service() {
         var acceptTrueCount = 0
         var acceptFalseCount = 0
         var lastPartialText = ""
+        // Issue 9: Dedicated Vosk log - log start parameters
+        writeVoskLog("processVoskInChunks START: modelPath=$modelPath, chunkSize=$chunkSize, totalSize=$totalSize, processLimit=$processLimit")
 
         var recognizer: Any? = null
         var model: Any? = null
@@ -811,9 +828,11 @@ class SubtitleGeneratorService : Service() {
                 val modelDir = java.io.File(modelPath)
                 logToFile("processVoskInChunks: Vosk model path=$modelPath, exists=${modelDir.exists()}, size=${if (modelDir.exists()) modelDir.walkTopDown().map { it.length() }.sum() / 1024 / 1024 else 0}MB")
                 logToFile("processVoskInChunks: Model created successfully")
+                writeVoskLog("Vosk Model created: path=$modelPath, size=${if (modelDir.exists()) modelDir.walkTopDown().map { it.length() }.sum() / 1024 / 1024 else 0}MB")
                 recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
                     .newInstance(model, 16000.0f as java.lang.Float)
                 logToFile("processVoskInChunks: Recognizer created successfully")
+                writeVoskLog("Vosk Recognizer created: sampleRate=16000.0, setWords=true")
                 // Enable word-level output for timestamps
                 try {
                     val setWordsMethod = voskRecognizerClass!!.getMethod("setWords", Boolean::class.javaPrimitiveType)
@@ -846,20 +865,41 @@ class SubtitleGeneratorService : Service() {
             val firstBytesRead = inputStream.read(firstChunk)
             logToFile("processVoskInChunks: first 32 bytes (hex): ${firstChunk.joinToString(" ") { String.format("%02x", it) }}")
             // Reset stream to beginning
-            inputStream.channel.position(0)
+            fileInputStream.channel.position(0)
 
             // Issue 8: Track time from processing start to first transcript
             val processingStartTime = System.currentTimeMillis()
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             while (!ctx.cancelled.get() && offset < processLimit) {
-                val bytesRead = inputStream.read(buffer)
-                if (bytesRead <= 0) break
-                val chunk = if (bytesRead == chunkSize) buffer else buffer.copyOf(bytesRead)
+                // Issue 9: Use readFully to ensure full chunk is read (FileInputStream.read may return fewer bytes)
+                val bytesToRead = minOf(chunkSize.toLong(), processLimit - offset).toInt()
+                if (bytesToRead <= 0) break
+                val chunk: ByteArray
+                if (bytesToRead == chunkSize) {
+                    try {
+                        inputStream.readFully(buffer, 0, bytesToRead)
+                        chunk = buffer
+                    } catch (_: java.io.EOFException) {
+                        break
+                    }
+                } else {
+                    // Last partial chunk
+                    val partialRead = inputStream.read(buffer, 0, bytesToRead)
+                    if (partialRead <= 0) break
+                    chunk = buffer.copyOf(partialRead)
+                }
+                val bytesRead = if (bytesToRead == chunkSize) chunkSize else chunk.size
 
                 val acceptResult = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
-                if (acceptResult) acceptTrueCount++ else acceptFalseCount++
+                if (acceptResult) {
+                    acceptTrueCount++
+                    // Issue 9: only log to Vosk log when acceptWaveForm returns true (reduce spam)
+                    writeVoskLog("chunk $chunkCount: acceptWaveForm=true, offset=$offset, bytesRead=$bytesRead")
+                } else {
+                    acceptFalseCount++
+                }
                 if (acceptResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
@@ -928,6 +968,7 @@ class SubtitleGeneratorService : Service() {
             }
 
             logToFile("processVoskInChunks: loop complete, totalChunks=$chunkCount, acceptTrueCount=$acceptTrueCount, acceptFalseCount=$acceptFalseCount, transcripts=${allTranscripts.size}")
+            writeVoskLog("processVoskInChunks loop complete: totalChunks=$chunkCount, acceptTrueCount=$acceptTrueCount, acceptFalseCount=$acceptFalseCount, totalTranscripts=${allTranscripts.size}")
 
             // Get final result
             val finalResult = getFinalResultMethod.invoke(recognizer) as? String ?: ""

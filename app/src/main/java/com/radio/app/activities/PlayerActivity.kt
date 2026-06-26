@@ -452,6 +452,17 @@ class PlayerActivity : AppCompatActivity() {
     private fun writeDislikeLog(msg: String) = writeLog("dislike", msg)
     private fun writeNotificationLog(msg: String) = writeLog("notification", msg)
 
+    // Issue 6 & 8: dedicated log file for episode list operations (highlight + click-to-switch)
+    private fun writeEpisodeLog(message: String) {
+        try {
+            val logDir = java.io.File(getExternalFilesDir(null), "logs/episode")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "episode.log")
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+            logFile.appendText("[$timestamp] $message\n")
+        } catch (_: Exception) {}
+    }
+
     /**
      * 设置预缓存列表：传递当前节目之后的所有节目（跨天支持）
      * 服务端会根据 preloadCacheCount 限制实际下载数量
@@ -1253,6 +1264,8 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun playEpisodeAtIndex(index: Int) {
         if (index < 0 || index >= episodeList.size) return
+        writeJitterLog("playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
+        writeEpisodeLog("playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
         var targetIdx = index
         var targetEpisode = episodeList[targetIdx]
         val settings = AppSettings.getInstance(this)
@@ -1276,6 +1289,8 @@ class PlayerActivity : AppCompatActivity() {
         // Issue 10 Fix 2: clear old subtitles when switching episodes
         clearSubtitles()
         saveLastEpisode()
+        writeJitterLog("playEpisodeAtIndex: calling playEpisode with ${targetEpisode.title}")
+        writeEpisodeLog("playEpisodeAtIndex: calling playEpisode with ${targetEpisode.title}")
         playbackService?.playEpisode(targetEpisode, false)
         voiceSegments = generateSimulatedSegments()
         if (voiceSegments.isNotEmpty()) updateSegmentsUI()
@@ -1291,6 +1306,8 @@ class PlayerActivity : AppCompatActivity() {
             Toast.makeText(this, "没有可显示的节目列表", Toast.LENGTH_SHORT).show()
             return
         }
+        writeJitterLog("showEpisodeListDialog: START, episodeList.size=${episodeList.size}, currentEpisodeIndex=$currentEpisodeIndex, currentEpisodeId=${currentEpisode?.id}")
+        writeEpisodeLog("showEpisodeListDialog: START, episodeList.size=${episodeList.size}, currentEpisodeIndex=$currentEpisodeIndex, currentEpisodeId=${currentEpisode?.id}")
         val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
         // 确保当前索引与正在播放的节目一致
         val actualIdx = episodeList.indexOfFirst { it.id == currentId }
@@ -1306,8 +1323,15 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
         }
         val listAdapter = EpisodeListAdapter(episodeList, currentId)
+        writeJitterLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}")
+        writeEpisodeLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}, listAdapter.currentlyPlayingId=$currentId")
         listAdapter.onItemClicked = { position ->
             if (position in episodeList.indices) {
+                val episode = episodeList[position]
+                writeJitterLog("showEpisodeListDialog: episode clicked at position=$position, episode=${episode.title}, id=${episode.id}")
+                writeEpisodeLog("showEpisodeListDialog: episode clicked at position=$position, episode=${episode.title}, id=${episode.id}")
+                writeJitterLog("showEpisodeListDialog: calling playEpisodeAtIndex($position)")
+                writeEpisodeLog("showEpisodeListDialog: calling playEpisodeAtIndex($position)")
                 playEpisodeAtIndex(position)
             }
         }
@@ -1363,6 +1387,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val episode = episodes[position]
             val isPlaying = episode.id == currentlyPlayingId
+            writeEpisodeLog("onBindViewHolder: position=$position, title=${episode.title}, id=${episode.id}, isCurrentlyPlaying=$isPlaying, currentlyPlayingId=$currentlyPlayingId")
 
             holder.tvTitle.text = if (isPlaying) "▶ ${episode.title}" else episode.title
             holder.tvTime.text = try {
@@ -1388,11 +1413,13 @@ class PlayerActivity : AppCompatActivity() {
                 holder.tvPlayingIndicator.text = "正在播放"
                 holder.tvPlayingIndicator.setTextColor(accentColor)
                 holder.tvPlayingIndicator.visibility = View.VISIBLE
+                writeEpisodeLog("onBindViewHolder: HIGHLIGHT set for position=$position title=${episode.title}, bgColor=$tint, textColor=$accentColor, indicator=VISIBLE")
             } else {
                 holder.itemView.setBackgroundColor(Color.TRANSPARENT)
                 holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
                 holder.tvTitle.setTextColor(titleColor)
                 holder.tvPlayingIndicator.visibility = View.GONE
+                writeEpisodeLog("onBindViewHolder: normal style for position=$position title=${episode.title}, bgColor=TRANSPARENT, textColor=$titleColor, indicator=GONE")
             }
 
             holder.itemView.setOnClickListener {
@@ -1779,6 +1806,14 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             binding.recyclerSegments.visibility = View.VISIBLE
         }
+    }
+
+    override fun onBackPressed() {
+        // Issue 1: Don't finish() - move task to back instead.
+        // This prevents Activity destruction when user presses back/gesture,
+        // which was causing jitter (progress rewind + flickering) on return.
+        writeJitterLog("onBackPressed: moveTaskToBack instead of finish()")
+        moveTaskToBack(true)
     }
 
     override fun finish() {

@@ -143,6 +143,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (_: Exception) {}
     }
 
+    // Issue 3 & 4: Dedicated notification detail logging for diagnosing notification date/update issues
+    private fun writeNotifDetailLog(message: String) {
+        try {
+            val logDir = java.io.File(getExternalFilesDir(null), "logs/notif_detail")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "notif_detail.log")
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+            logFile.appendText("[$timestamp] $message\n")
+        } catch (_: Exception) {}
+    }
+
     private var player: ExoPlayer? = null
     private val binder = LocalBinder()
     private var currentEpisode: Episode? = null
@@ -1632,7 +1643,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         // Issue 4: Set date/time on RemoteViews (contentText is hidden when custom layout is used)
+        writeNotifDetailLog("updateNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle'")
         remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
+        writeNotifDetailLog("updateNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText')")
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(contentText)
@@ -1710,7 +1723,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         try {
             writeServiceLog("notification", "doNotifyNotification: manager.notify(NOTIFICATION_ID=$NOTIFICATION_ID) contentHash=$contentHash")
+            writeNotifDetailLog("doNotifyNotification: BEFORE manager.notify - notificationId=$NOTIFICATION_ID, contentHash=$contentHash, notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange'")
             manager.notify(NOTIFICATION_ID, notification)
+            writeNotifDetailLog("doNotifyNotification: AFTER manager.notify - success")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update notification", e)
         }
@@ -1781,6 +1796,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (timeStr.isNotBlank()) append(" · $timeStr")
             }
             rv.setTextViewText(R.id.notification_subtitle, contentText)
+            writeNotifDetailLog("updateNotificationProgressOnly: rv.setTextViewText(notification_subtitle, '$contentText'), notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange'")
             val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setCustomContentView(rv)
@@ -2165,6 +2181,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         writeServiceLog("notification", "playEpisode: URL fallback date/time - date='$notificationDate', timeRange='$notificationTimeRange', url='${episode.audioUrl}'")
         writeServiceLog("notification", "playEpisode: final date/time - date='$notificationDate', timeRange='$notificationTimeRange'")
+        writeNotifDetailLog("playEpisode: SET notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', episode=${episode.title}")
         val notification = updateNotification()
         // 立即推送前台通知，确保通知栏立即更新，不被进度轮询覆盖
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -2394,23 +2411,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // Issue 2/7: Use first/last time slot from episode list for cross-day switching
                     val episodeList = loadEpisodeList()
+                    // Issue 2: Skip midnight episodes (00:00-06:00) when finding first/last time slot
+                    // Morning episodes start at 07:00 or later
                     val targetTimeSlot = if (nextDate) {
-                        // Going forward: use FIRST episode's time slot (morning)
-                        val firstEp = episodeList.firstOrNull()
-                        firstEp?.audioUrl?.let { url ->
+                        // Going forward: use first MORNING episode's time slot (07:00+)
+                        val firstMorningEp = episodeList.firstOrNull { ep ->
+                            val parts = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
+                            if (parts.size >= 3) {
+                                val startHour = parts[2].take(2).toIntOrNull() ?: 0
+                                startHour >= 7  // Skip midnight episodes (00:00-06:00)
+                            } else false
+                        }
+                        firstMorningEp?.audioUrl?.let { url ->
                             val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                             if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
                         } ?: "0700_0900"
                     } else {
-                        // Going backward: use LAST episode's time slot (evening)
-                        val lastEp = episodeList.lastOrNull()
-                        lastEp?.audioUrl?.let { url ->
+                        // Going backward: use last EVENING episode's time slot (before midnight)
+                        val lastEveningEp = episodeList.lastOrNull { ep ->
+                            val parts = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
+                            if (parts.size >= 3) {
+                                val startHour = parts[2].take(2).toIntOrNull() ?: 0
+                                startHour < 24  // All episodes are valid for "last" (including midnight if it's the only one)
+                            } else false
+                        }
+                        lastEveningEp?.audioUrl?.let { url ->
                             val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                             if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "1700_1900"
                         } ?: "1700_1900"
                     }
-
-                    writeServiceLog("notification", "fetchCrossDayEpisode: using targetTimeSlot=$targetTimeSlot (nextDate=$nextDate)")
+                    writeServiceLog("notification", "fetchCrossDayEpisode: targetTimeSlot=$targetTimeSlot (nextDate=$nextDate, episodeList.size=${episodeList.size})")
 
                     // Construct new URL with target time slot
                     val stationPart = curUrl.substringAfterLast("/").substringBefore("_")
@@ -2574,6 +2604,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 然后通过回调通知 Activity 更新 UI
      */
     private fun autoPlayNextEpisode() {
+        writeNotifDetailLog("autoPlayNextEpisode: START, currentEpisode=${currentEpisode?.title}, episodeList.size=${loadEpisodeList().size}")
         if (currentEpisode == null) return
         try {
             val preCacheList = loadPreCacheList()
@@ -2593,17 +2624,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (nextEpisode == null) {
                 Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list, trying cross-day")
+                writeNotifDetailLog("autoPlayNextEpisode: nextEpisode is null after pre-cache scan, trying cross-day (curId=$curId, preCacheList.size=${preCacheList.size})")
                 writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
                 val crossDayEp = fetchCrossDayEpisode(nextDate = true)
                 if (crossDayEp != null) {
+                    writeNotifDetailLog("autoPlayNextEpisode: cross-day episode found, switching - title=${crossDayEp.title}, id=${crossDayEp.id}")
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
                     playEpisode(crossDayEp, false)
                     callback?.onEpisodeChanged(crossDayEp)
                     return
                 }
+                writeNotifDetailLog("autoPlayNextEpisode: no cross-day episode found, stopping playback")
                 writeServiceLog("notification", "autoPlayNext: no cross-day episode found, stopping")
                 return
             }
+            writeNotifDetailLog("autoPlayNextEpisode: found next episode in pre-cache list, switching - title=${nextEpisode.title}, id=${nextEpisode.id}")
             Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")
             val episodeKey = "${nextEpisode.stationId}::${nextEpisode.title}"
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
