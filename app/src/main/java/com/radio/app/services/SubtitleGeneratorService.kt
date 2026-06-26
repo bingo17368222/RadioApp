@@ -207,7 +207,17 @@ class SubtitleGeneratorService : Service() {
         // 包装回调，同时更新通知
         val wrappedCallback = object : SubtitleCallback {
             override fun onSubtitleGenerated(transcript: Transcript) {
+                // Ensure episodeId is set for DB persistence
+                if (transcript.episodeId.isNullOrBlank()) transcript.episodeId = episodeId
                 callback.onSubtitleGenerated(transcript)
+                // Incrementally save to database
+                try {
+                    val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@SubtitleGeneratorService)
+                    dbHelper.saveTranscript(transcript)
+                    logToFile("onSubtitleGenerated: saved transcript to DB, episodeId=$episodeId, text='${transcript.text?.take(30) ?: ""}...'")
+                } catch (e: Exception) {
+                    logToFile("onSubtitleGenerated: failed to save to DB: ${e.message}")
+                }
             }
             override fun onProgressUpdate(progress: Int, total: Int) {
                 callback.onProgressUpdate(progress, total)
@@ -586,6 +596,15 @@ class SubtitleGeneratorService : Service() {
             }
             ctx.log("Vosk recognizer created successfully")
 
+            // Enable word-level output for timestamps
+            try {
+                val setWordsMethod = voskRecognizerClass!!.getMethod("setWords", Boolean::class.javaPrimitiveType)
+                setWordsMethod.invoke(recognizer, true)
+                logToFile("generateWithVosk: setWords(true) called")
+            } catch (e: Exception) {
+                logToFile("generateWithVosk: setWords failed: ${e.message}")
+            }
+
             // Get audio data - prefer 16kHz PCM cache
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
             if (audioData == null) {
@@ -624,9 +643,11 @@ class SubtitleGeneratorService : Service() {
             var lastProgress = 0
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
             val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
+            val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
             val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
+            var lastPartialText = ""
             while (offset < audioData.size && !ctx.cancelled.get()) {
                 val end = minOf(offset + chunkSize, audioData.size)
                 val chunk = audioData.copyOfRange(offset, end)
@@ -638,11 +659,37 @@ class SubtitleGeneratorService : Service() {
                             val json = org.json.JSONObject(result as String)
                             val text = json.optString("text", "")
                             if (text.isNotBlank()) {
-                                val transcript = com.radio.app.models.Transcript(text = text)
+                                // Parse timestamps from Vosk result
+                                var startTime = 0L
+                                var endTime = 0L
+                                val resultArr = json.optJSONArray("result")
+                                if (resultArr != null && resultArr.length() > 0) {
+                                    val firstWord = resultArr.getJSONObject(0)
+                                    val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
+                                    startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                                    endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                                }
+                                val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                                logToFile("generateWithVosk: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (e: Exception) { /* skip */ }
+                    }
+                } else {
+                    // Get partial result for more frequent output
+                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    if (partial.isNotBlank()) {
+                        try {
+                            val json = org.json.JSONObject(partial)
+                            val partialText = json.optString("partial", "")
+                            if (partialText.isNotBlank() && partialText != lastPartialText) {
+                                lastPartialText = partialText
+                                // Calculate approximate timestamp from byte offset
+                                val approxTimeMs = offset * 1000L / (16000 * 2)
+                                logToFile("generateWithVosk: partial at ${approxTimeMs}ms: '${partialText.take(50)}...'")
+                            }
+                        } catch (_: Exception) { /* skip */ }
                     }
                 }
                 offset = end
@@ -660,7 +707,18 @@ class SubtitleGeneratorService : Service() {
                     val json = org.json.JSONObject(finalResult as String)
                     val text = json.optString("text", "")
                     if (text.isNotBlank()) {
-                        val transcript = com.radio.app.models.Transcript(text = text)
+                        // Parse timestamps from Vosk result
+                        var startTime = 0L
+                        var endTime = 0L
+                        val resultArr = json.optJSONArray("result")
+                        if (resultArr != null && resultArr.length() > 0) {
+                            val firstWord = resultArr.getJSONObject(0)
+                            val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
+                            startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                            endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                        }
+                        val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                        logToFile("generateWithVosk: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                         allTranscripts.add(transcript)
                         callback.onSubtitleGenerated(transcript)
                     }
@@ -700,6 +758,7 @@ class SubtitleGeneratorService : Service() {
         var offset = 0L
         var lastProgress = 0
         var chunkCount = 0
+        var lastPartialText = ""
 
         var recognizer: Any? = null
         var model: Any? = null
@@ -728,6 +787,14 @@ class SubtitleGeneratorService : Service() {
                 recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
                     .newInstance(model, 16000.0f as java.lang.Float)
                 logToFile("processVoskInChunks: Recognizer created successfully")
+                // Enable word-level output for timestamps
+                try {
+                    val setWordsMethod = voskRecognizerClass!!.getMethod("setWords", Boolean::class.javaPrimitiveType)
+                    setWordsMethod.invoke(recognizer, true)
+                    logToFile("processVoskInChunks: setWords(true) called")
+                } catch (e: Exception) {
+                    logToFile("processVoskInChunks: setWords failed: ${e.message}")
+                }
                 logToFile("processVoskInChunks: Recognizer methods: ${voskRecognizerClass!!.declaredMethods.map { "${it.name}(${it.parameterTypes.map { p -> p.simpleName }})" }}")
             } catch (e: Exception) {
                 logToFile("processVoskInChunks: FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
@@ -743,6 +810,7 @@ class SubtitleGeneratorService : Service() {
 
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
             val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
+            val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
             val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
@@ -758,11 +826,36 @@ class SubtitleGeneratorService : Service() {
                             val json = org.json.JSONObject(result)
                             val text = json.optString("text", "")
                             if (text.isNotBlank()) {
-                                val transcript = com.radio.app.models.Transcript(text = text)
+                                var startTime = 0L
+                                var endTime = 0L
+                                val resultArr = json.optJSONArray("result")
+                                if (resultArr != null && resultArr.length() > 0) {
+                                    val firstWord = resultArr.getJSONObject(0)
+                                    val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
+                                    startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                                    endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                                }
+                                val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                                logToFile("processVoskInChunks: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { /* skip malformed JSON */ }
+                    }
+                } else {
+                    // Get partial result for more frequent output
+                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    if (partial.isNotBlank()) {
+                        try {
+                            val json = org.json.JSONObject(partial)
+                            val partialText = json.optString("partial", "")
+                            if (partialText.isNotBlank() && partialText != lastPartialText) {
+                                lastPartialText = partialText
+                                // Calculate approximate timestamp from byte offset
+                                val approxTimeMs = offset * 1000L / (16000 * 2)
+                                logToFile("processVoskInChunks: partial at ${approxTimeMs}ms: '${partialText.take(50)}...'")
+                            }
+                        } catch (_: Exception) { /* skip */ }
                     }
                 }
 
@@ -783,7 +876,17 @@ class SubtitleGeneratorService : Service() {
                     val json = org.json.JSONObject(finalResult)
                     val text = json.optString("text", "")
                     if (text.isNotBlank()) {
-                        val transcript = com.radio.app.models.Transcript(text = text)
+                        var startTime = 0L
+                        var endTime = 0L
+                        val resultArr = json.optJSONArray("result")
+                        if (resultArr != null && resultArr.length() > 0) {
+                            val firstWord = resultArr.getJSONObject(0)
+                            val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
+                            startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                            endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                        }
+                        val transcript = com.radio.app.models.Transcript(text = text, startTime = startTime, endTime = endTime)
+                        logToFile("processVoskInChunks: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
                         allTranscripts.add(transcript)
                         callback.onSubtitleGenerated(transcript)
                     }

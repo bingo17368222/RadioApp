@@ -208,6 +208,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val precacheCompletedFileNames = mutableListOf<String>()
     // 预缓存完成通知是否已展示：确保每轮预缓存只弹一次汇总通知
     private var precacheNotificationShown = false
+    // 预缓存时间节流：记录上次预缓存检查的时间戳，无节目可下载时 30 秒内不重复触发，避免无限循环
+    private var lastPreCacheCheckTime: Long = 0
     // 通知内容去重哈希：内容未变化时跳过 manager.notify()，避免 ExoPlayer 缓冲态频繁刷新导致的通知闪烁
     private var lastNotificationContentHash: Int = 0
 
@@ -557,6 +559,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun triggerPreCache() {
+        val now = System.currentTimeMillis()
+        if (now - lastPreCacheCheckTime < 30_000) {
+            // Throttle: don't re-check within 30 seconds
+            return
+        }
+        lastPreCacheCheckTime = now
         val settings = AppSettings.getInstance(this)
         writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=${settings.preloadCacheCount}, currentCount=$precacheCompletedCount")
         if (!settings.autoCache) {
@@ -2081,6 +2089,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationTimeRange = ""
         lastNotificationContentHash = 0  // Force notification update on episode change
         precacheNotificationShown = false  // Reset for new episode
+        lastPreCacheCheckTime = 0  // Allow immediate pre-cache check for new episode
         if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
             notificationDate = episode.broadcastAt.substring(0, 10) // "2024-06-04"
             val timePart = episode.broadcastAt.substring(11, 16) // "07:00"
@@ -2097,7 +2106,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         // Fallback: parse date/time from URL (e.g., sijiache_20240604_0700_0900.mp4)
-        if (notificationDate.isBlank()) {
+        if (notificationDate.isBlank() || notificationDate.length >= 10) {
             val url = episode.audioUrl ?: ""
             val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(url)
             if (dateMatch != null) {
@@ -2111,7 +2120,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 notificationTimeRange = "${timeMatch.groupValues[1]}:${timeMatch.groupValues[2]}-${timeMatch.groupValues[3]}:${timeMatch.groupValues[4]}"
             }
         }
-        writeServiceLog("notification", "playEpisode: date/time set - date='$notificationDate', timeRange='$notificationTimeRange', broadcastAt='${episode.broadcastAt}'")
+        writeServiceLog("notification", "playEpisode: URL fallback date/time - date='$notificationDate', timeRange='$notificationTimeRange', url='${episode.audioUrl}'")
+        writeServiceLog("notification", "playEpisode: final date/time - date='$notificationDate', timeRange='$notificationTimeRange'")
         val notification = updateNotification()
         // 立即推送前台通知，确保通知栏立即更新，不被进度轮询覆盖
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -2144,6 +2154,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             updateMediaSessionState()
             startAutoSkipCheck()
         } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
+        // Force immediate notification update
+        lastNotificationContentHash = 0
+        notifyNotification()
     }
 
     fun play() { userPaused = false; player?.play() }

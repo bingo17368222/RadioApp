@@ -795,12 +795,11 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         binding.btnSubtitleToggle.setOnClickListener {
-            if (binding.subtitleView.visibility == View.VISIBLE) {
-                binding.subtitleView.visibility = View.GONE
-                binding.recyclerSegments.visibility = View.VISIBLE
+            // Toggle subtitle RecyclerView visibility instead of overlay
+            if (binding.recyclerSubtitles.visibility == View.VISIBLE) {
+                binding.recyclerSubtitles.visibility = View.GONE
             } else {
-                binding.recyclerSegments.visibility = View.GONE
-                binding.subtitleView.visibility = View.VISIBLE
+                binding.recyclerSubtitles.visibility = View.VISIBLE
             }
         }
 
@@ -888,8 +887,8 @@ class PlayerActivity : AppCompatActivity() {
                             subtitleList.add(transcript)
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                binding.subtitleView.setSubtitles(subtitleList)
-                                binding.subtitleView.visibility = View.VISIBLE
+                                // Only show subtitle RecyclerView, hide overlay to avoid covering segments
+                                binding.subtitleView.visibility = View.GONE
                                 binding.recyclerSegments.visibility = View.GONE
                                 // Feature A: update subtitle RecyclerView
                                 subtitleTranscripts = subtitleList.toList()
@@ -912,6 +911,7 @@ class PlayerActivity : AppCompatActivity() {
                                 // Feature A: update subtitle RecyclerView with final list
                                 subtitleTranscripts = transcripts
                                 subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                                binding.subtitleView.visibility = View.GONE  // Hide overlay, use RecyclerView only
                                 binding.tvSubtitleTitle.visibility = View.VISIBLE
                                 binding.recyclerSubtitles.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
@@ -992,8 +992,8 @@ class PlayerActivity : AppCompatActivity() {
                             subtitleList.add(transcript)
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
-                                binding.subtitleView.setSubtitles(subtitleList)
-                                binding.subtitleView.visibility = View.VISIBLE
+                                // Only show subtitle RecyclerView, hide overlay to avoid covering segments
+                                binding.subtitleView.visibility = View.GONE
                                 binding.recyclerSegments.visibility = View.GONE
                                 // Feature A: update subtitle RecyclerView
                                 subtitleTranscripts = subtitleList.toList()
@@ -1016,6 +1016,7 @@ class PlayerActivity : AppCompatActivity() {
                                 // Feature A: update subtitle RecyclerView with final list
                                 subtitleTranscripts = transcripts
                                 subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                                binding.subtitleView.visibility = View.GONE  // Hide overlay, use RecyclerView only
                                 binding.tvSubtitleTitle.visibility = View.VISIBLE
                                 binding.recyclerSubtitles.visibility = View.VISIBLE
                                 Toast.makeText(this@PlayerActivity, "字幕生成完成，共${transcripts.size}条", Toast.LENGTH_SHORT).show()
@@ -1555,9 +1556,9 @@ class PlayerActivity : AppCompatActivity() {
 
         // 检查字幕结果
         val dbTranscripts = dbHelper.getTranscripts(episode.id)
+        android.util.Log.d("PlayerActivity", "restoreSubtitles: episode=${episode.id}, found=${dbTranscripts.size} transcripts")
         if (dbTranscripts.isNotEmpty()) {
-            binding.subtitleView.setSubtitles(dbTranscripts)
-            binding.subtitleView.visibility = View.VISIBLE
+            binding.subtitleView.visibility = View.GONE  // Hide overlay
             binding.recyclerSegments.visibility = View.GONE
             // Feature A: restore subtitle RecyclerView
             subtitleTranscripts = dbTranscripts
