@@ -236,6 +236,8 @@ class PlayerActivity : AppCompatActivity() {
                     android.util.Log.d("PlayerActivity", syncMsg)
                     writeJitterLog(syncMsg)
                     currentEpisode = svcMatch
+                    // Issue 10 Fix 2: clear old subtitles when syncing to the service's episode
+                    clearSubtitles()
                     currentEpisodeIndex = episodeList.indexOf(svcMatch).coerceAtLeast(0)
                 } else {
                     // Can't find episode by URL, but service is playing - just update UI, don't restart
@@ -494,6 +496,8 @@ class PlayerActivity : AppCompatActivity() {
                 android.util.Log.d("PlayerActivity", "onEpisodeChanged: ${episode.title}")
                 writeJitterLog("onEpisodeChanged: ${episode.title} (id=${episode.id})")
                 currentEpisode = episode
+                // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
+                clearSubtitles()
                 val newIdx = episodeList.indexOfFirst { it.id == episode.id }
                 if (newIdx >= 0) currentEpisodeIndex = newIdx
                 saveLastEpisode()
@@ -548,6 +552,9 @@ class PlayerActivity : AppCompatActivity() {
         // 通过对比lastHandledTs来判断是否已经处理过这个启动
         freshLaunchTs = intent.getLongExtra("fresh_launch_ts", 0)
         isActivityRecreated = savedInstanceState != null
+        // Issue 1 (partial) Fix 5: log WHY the Activity is being (re)created to help diagnose
+        // system-killed recreation jitter. savedInstanceState != null => system killed & restored.
+        writeJitterLog("onCreate: savedInstanceState=${savedInstanceState != null}, isActivityRecreated=$isActivityRecreated, reason=${if (savedInstanceState != null) "system_killed" else "fresh_launch"}")
 
         val lastHandled = getLastHandledTs(this)
 
@@ -1146,6 +1153,8 @@ class PlayerActivity : AppCompatActivity() {
         }
         currentEpisodeIndex = targetIdx
         currentEpisode = targetEpisode
+        // Issue 10 Fix 2: clear old subtitles when switching episodes
+        clearSubtitles()
         saveLastEpisode()
         playbackService?.playEpisode(targetEpisode, false)
         voiceSegments = generateSimulatedSegments()
@@ -1260,6 +1269,8 @@ class PlayerActivity : AppCompatActivity() {
             if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
                 // Found a non-disliked episode
                 currentEpisode = ep
+                // Issue 10 Fix 2: clear old subtitles when switching to next episode
+                clearSubtitles()
                 currentEpisodeIndex = targetIdx
                 saveLastEpisode()
                 val episodeKey = "${ep.stationId}::${ep.title}"
@@ -1302,6 +1313,8 @@ class PlayerActivity : AppCompatActivity() {
             val ep = episodes[targetIdx]
             if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
                 currentEpisode = ep
+                // Issue 10 Fix 2: clear old subtitles when switching to prev episode
+                clearSubtitles()
                 currentEpisodeIndex = targetIdx
                 saveLastEpisode()
                 val episodeKey = "${ep.stationId}::${ep.title}"
@@ -1403,6 +1416,8 @@ class PlayerActivity : AppCompatActivity() {
                     currentEpisodeIndex = targetIndex
                     val targetEpisode = nonDisliked[targetIndex]
                     currentEpisode = targetEpisode
+                    // Issue 10 Fix 2: clear old subtitles when crossing to another day's episode
+                    clearSubtitles()
                     saveLastEpisode()
                     val episodeKey = "${targetEpisode.stationId}::${targetEpisode.title}"
                     val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
@@ -1559,12 +1574,29 @@ class PlayerActivity : AppCompatActivity() {
         android.util.Log.d("PlayerActivity", "restoreSubtitles: episode=${episode.id}, found=${dbTranscripts.size} transcripts")
         if (dbTranscripts.isNotEmpty()) {
             binding.subtitleView.visibility = View.GONE  // Hide overlay
-            binding.recyclerSegments.visibility = View.GONE
+            // Issue 10 Fix 1/4: Do NOT hide recyclerSegments here. Both segments and
+            // subtitles should remain visible at the same time. Hiding segments when
+            // subtitles exist previously caused segments to be permanently hidden.
             // Feature A: restore subtitle RecyclerView
             subtitleTranscripts = dbTranscripts
             subtitleAdapter?.setTranscripts(subtitleTranscripts)
             binding.tvSubtitleTitle.visibility = View.VISIBLE
             binding.recyclerSubtitles.visibility = View.VISIBLE
+            // Keep segments visible too (do not touch recyclerSegments visibility).
+        }
+    }
+
+    // Issue 10 Fix 2: Clear old subtitles when switching episodes so each episode
+    // only shows its own subtitles. Call this after every currentEpisode assignment
+    // that changes the episode to prevent stale subtitles from the previous episode.
+    private fun clearSubtitles() {
+        subtitleTranscripts = emptyList()
+        lastSubtitleHighlightIdx = -1
+        subtitleAdapter?.setTranscripts(emptyList())
+        if (_binding != null) {
+            binding.subtitleView.visibility = View.GONE
+            binding.tvSubtitleTitle.visibility = View.GONE
+            binding.recyclerSubtitles.visibility = View.GONE
         }
     }
 
@@ -1576,6 +1608,8 @@ class PlayerActivity : AppCompatActivity() {
         val newEpisode = intent.getSerializableExtra("episode") as? Episode
         if (newEpisode != null) {
             currentEpisode = newEpisode
+            // Issue 10 Fix 2: clear old subtitles when switching to a new episode via intent
+            clearSubtitles()
             // Update episode list from intent
             val intentEpisodes = intent.getSerializableExtra("episode_list") as? ArrayList<com.radio.app.models.Episode>
             if (!intentEpisodes.isNullOrEmpty()) {
@@ -1595,6 +1629,10 @@ class PlayerActivity : AppCompatActivity() {
                 val sameEpisode = playbackService?.isSameEpisodePlaying(newEpisode.audioUrl ?: "") ?: false
                 if (sameEpisode) {
                     writeJitterLog("onNewIntent: same episode already playing, skip restart")
+                    // Issue 10 Fix 2: subtitles were cleared above; since this is the SAME
+                    // episode (not a switch), reload this episode's own subtitles/segments
+                    // so they are not lost.
+                    restoreBackgroundResults()
                 } else {
                     val savedPos = getSavedPositionForEpisode(this, newEpisode.id)
                     playbackService?.playEpisode(newEpisode, false, savedPos)
@@ -1619,6 +1657,9 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Issue 1 (partial) Fix 5: isFinishing=false means the system killed the Activity
+        // (memory pressure / config change); isFinishing=true means the app/user finished it.
+        writeJitterLog("onDestroy: isFinishing=$isFinishing")
         setPlaybackInProgress(this, null)
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
@@ -1726,7 +1767,9 @@ class PlayerActivity : AppCompatActivity() {
         private var highlightedIndex: Int = -1
 
         fun setTranscripts(transcripts: List<Transcript>) {
-            this.transcripts = transcripts
+            // Issue 10 Fix 3: replace the list (do not append) and keep a defensive
+            // copy so external mutations cannot affect the adapter's data set.
+            this.transcripts = transcripts.toList()
             highlightedIndex = -1
             lastSubtitleHighlightIdx = -1
             notifyDataSetChanged()

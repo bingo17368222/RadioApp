@@ -668,6 +668,11 @@ class SubtitleGeneratorService : Service() {
                                     val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
                                     startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                                     endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                                } else {
+                                    // Fallback: use accumulated byte offset for approximate timestamps
+                                    // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
+                                    startTime = offset * 1000L / 32000L
+                                    endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                 logToFile("generateWithVosk: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
@@ -683,11 +688,18 @@ class SubtitleGeneratorService : Service() {
                         try {
                             val json = org.json.JSONObject(partial)
                             val partialText = json.optString("partial", "")
-                            if (partialText.isNotBlank() && partialText != lastPartialText) {
+                            if (partialText.length > 2 && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                // Calculate approximate timestamp from byte offset
-                                val approxTimeMs = offset * 1000L / (16000 * 2)
-                                logToFile("generateWithVosk: partial at ${approxTimeMs}ms: '${partialText.take(50)}...'")
+                                val partialStartTime = offset * 1000L / 32000L
+                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(
+                                    text = partialText,
+                                    segmentStart = partialStartTime,
+                                    segmentEnd = partialEndTime
+                                )
+                                logToFile("generateWithVosk: partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { /* skip */ }
                     }
@@ -716,6 +728,12 @@ class SubtitleGeneratorService : Service() {
                             val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
                             startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                             endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                        } else {
+                            // Fallback: use accumulated byte offset for approximate timestamps
+                            // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
+                            // chunk is out of scope after the loop, use chunkSize for end estimate
+                            startTime = offset * 1000L / 32000L
+                            endTime = (offset + chunkSize) * 1000L / 32000L
                         }
                         val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                         logToFile("generateWithVosk: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
@@ -742,18 +760,18 @@ class SubtitleGeneratorService : Service() {
     }
 
     /**
-     * 分块处理大PCM文件（16kHz mono），每30秒一个chunk，避免OOM
+     * 分块处理大PCM文件（16kHz mono），每5秒一个chunk，避免OOM
      */
     private fun processVoskInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
         logToFile("processVoskInChunks: START, pcmFile=${pcmFile.absolutePath}, size=${pcmFile.length()}")
         val totalSize = pcmFile.length()
-        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 30s chunks")
+        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 5s chunks")
         callback.onProgressUpdate(0, 100)
 
         val inputStream = java.io.FileInputStream(pcmFile)
-        val chunkSize = 30 * 16000 * 2 // 30 seconds of 16-bit mono PCM = 960,000 bytes
+        val chunkSize = 5 * 16000 * 2 // 5 seconds of 16-bit mono PCM = 160,000 bytes
         val buffer = ByteArray(chunkSize)
         var offset = 0L
         var lastProgress = 0
@@ -819,12 +837,18 @@ class SubtitleGeneratorService : Service() {
                 if (bytesRead <= 0) break
                 val chunk = if (bytesRead == chunkSize) buffer else buffer.copyOf(bytesRead)
 
-                if (acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean == true) {
+                val acceptResult = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
+                logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
+                if (acceptResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
+                    logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
                     if (result.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(result)
                             val text = json.optString("text", "")
+                            if (text.isBlank()) {
+                                logToFile("processVoskInChunks: chunk $chunkCount produced empty text")
+                            }
                             if (text.isNotBlank()) {
                                 var startTime = 0L
                                 var endTime = 0L
@@ -834,6 +858,11 @@ class SubtitleGeneratorService : Service() {
                                     val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
                                     startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                                     endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                                } else {
+                                    // Fallback: use accumulated byte offset for approximate timestamps
+                                    // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
+                                    startTime = offset * 1000L / 32000L
+                                    endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                 logToFile("processVoskInChunks: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
@@ -849,11 +878,18 @@ class SubtitleGeneratorService : Service() {
                         try {
                             val json = org.json.JSONObject(partial)
                             val partialText = json.optString("partial", "")
-                            if (partialText.isNotBlank() && partialText != lastPartialText) {
+                            if (partialText.length > 2 && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                // Calculate approximate timestamp from byte offset
-                                val approxTimeMs = offset * 1000L / (16000 * 2)
-                                logToFile("processVoskInChunks: partial at ${approxTimeMs}ms: '${partialText.take(50)}...'")
+                                val partialStartTime = offset * 1000L / 32000L
+                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(
+                                    text = partialText,
+                                    segmentStart = partialStartTime,
+                                    segmentEnd = partialEndTime
+                                )
+                                logToFile("processVoskInChunks: partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { /* skip */ }
                     }
@@ -884,6 +920,12 @@ class SubtitleGeneratorService : Service() {
                             val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
                             startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                             endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                        } else {
+                            // Fallback: use accumulated byte offset for approximate timestamps
+                            // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
+                            // chunk is out of scope after the loop, use chunkSize for end estimate
+                            startTime = offset * 1000L / 32000L
+                            endTime = (offset + chunkSize) * 1000L / 32000L
                         }
                         val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                         logToFile("processVoskInChunks: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
@@ -937,6 +979,7 @@ class SubtitleGeneratorService : Service() {
         val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
         if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
             ctx.log("Using 16kHz PCM cache: ${pcm16kFile.length()} bytes")
+            logToFile("generateSubtitlesForEpisode: PCM converted, size=${pcm16kFile.length()}")
             // 16kHz PCM is ~60MB, safe to read entirely
             if (pcm16kFile.length() < 50_000_000) {
                 val data = pcm16kFile.readBytes()
@@ -974,7 +1017,9 @@ class SubtitleGeneratorService : Service() {
                 val chMatch = Regex("channels=(\\d+)").find(info)
                 if (chMatch != null) inChannels = chMatch.groupValues[1].toInt()
             }
+            logToFile("generateSubtitlesForEpisode: converting to PCM 16kHz mono")
             val resampledData = streamResampleTo16kMono(pcmFile, inSampleRate, inChannels, ctx)
+            logToFile("generateSubtitlesForEpisode: PCM converted, size=${resampledData?.size ?: 0}")
             if (resampledData != null && resampledData.size >= 1024) {
                 return resampledData
             }
@@ -983,7 +1028,9 @@ class SubtitleGeneratorService : Service() {
         }
         // 3) Download and process
         ctx.log("No PCM cache, downloading from $audioUrl")
+        logToFile("generateSubtitlesForEpisode: downloading audio from $audioUrl")
         val downloadedData = downloadAndProcessAudio(audioUrl, ctx)
+        logToFile("generateSubtitlesForEpisode: audio downloaded, size=${downloadedData?.size ?: 0}")
         if (downloadedData != null && downloadedData.size >= 1024) {
             return downloadedData
         }
