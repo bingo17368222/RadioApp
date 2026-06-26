@@ -406,9 +406,10 @@ class SettingsFragment : Fragment() {
     }
 
     private val AUDIO_EXTENSIONS = setOf(
-        ".mp3", ".mp4", ".m4a", ".aac", ".wav", ".ogg", ".flac", ".wma",
+        ".mp3", ".mp4", ".m4a", ".aac", ".ogg", ".flac", ".wma",
         ".m3u8", ".ts", ".m3u", ".opus", ".amr", ".mid", ".midi"
     )
+    // .wav and .pcm files are excluded from cache clear - they are managed in PCM cache dialog
 
     private fun calculateCacheSize(): Long {
         var size = 0L
@@ -578,6 +579,40 @@ class SettingsFragment : Fragment() {
             val precacheListPrefs = requireContext().getSharedPreferences("precache_list", android.content.Context.MODE_PRIVATE)
             val epListCachePrefs = requireContext().getSharedPreferences("episode_list_cache", android.content.Context.MODE_PRIVATE)
 
+            // Build TIME SLOT -> episode mapping from episode_list_cache
+            // Key insight: different dates have the same time slots with the same shows
+            // episode_list_cache stores a JSONArray under key "episodes" with snake_case fields
+            val timeSlotToEpisode = mutableMapOf<String, Pair<String, String>>() // "sijiache:07" -> (title, stationId)
+            val episodeListPrefs = requireContext().getSharedPreferences("episode_list_cache", android.content.Context.MODE_PRIVATE)
+            try {
+                val episodesJson = episodeListPrefs.getString("episodes", null)
+                if (episodesJson != null) {
+                    val arr = org.json.JSONArray(episodesJson)
+                    for (i in 0 until arr.length()) {
+                        try {
+                            val obj = arr.getJSONObject(i)
+                            val title = obj.optString("title", "")
+                            val stationId = obj.optString("station_id", "")
+                            val broadcastAt = obj.optString("broadcast_at", "")
+                            val audioUrl = obj.optString("audio_url", "")
+                            if (title.isNotBlank() && stationId.isNotBlank()) {
+                                // Extract hour from broadcastAt (e.g., "2024-06-03T17:00:00" -> "17")
+                                if (broadcastAt.length >= 13) {
+                                    val hour = broadcastAt.substring(11, 13)
+                                    // Extract station prefix from audioUrl filename
+                                    val urlFileName = audioUrl.substringAfterLast("/").substringBefore("_")
+                                    if (urlFileName.isNotBlank()) {
+                                        val timeSlotKey = "${urlFileName}:${hour}" // "sijiache:17"
+                                        timeSlotToEpisode[timeSlotKey] = Pair(title, stationId)
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) { /* skip */ }
+                    }
+                }
+            } catch (e: Exception) { /* skip */ }
+            android.util.Log.d("SettingsFragment", "Dislike filter: built timeSlotToEpisode map with ${timeSlotToEpisode.size} entries, keys=${timeSlotToEpisode.keys.take(10)}")
+
             val dislikedFileNames = mutableSetOf<String>()
             for (file in files) {
                 val fileName = file.name
@@ -599,6 +634,44 @@ class SettingsFragment : Fragment() {
                             }
                         } catch (e: Exception) { /* skip */ }
                         if (found) break
+                    }
+                }
+                if (found) continue
+
+                // 1.5) Time-slot matching from episode_list_cache (works across different dates)
+                // Extract hour and station prefix from filename like sijiache_20260601_0700_0900.mp4
+                val hourMatch = Regex("_(\\d{2})\\d{2}_").find(fileName)
+                val stationPrefix = fileName.substringBefore("_")
+
+                if (hourMatch != null && stationPrefix.isNotBlank()) {
+                    val hourStr = hourMatch.groupValues[1] // "07"
+                    val timeSlotKey = "${stationPrefix}:${hourStr}" // "sijiache:07"
+                    val ep = timeSlotToEpisode[timeSlotKey]
+                    if (ep != null) {
+                        val (title, stationId) = ep
+                        if (settings.isDislikedByTitle(stationId, title)) {
+                            dislikedFileNames.add(fileName)
+                            found = true
+                        }
+                    }
+                }
+                // Fallback: try matching by time RANGE (e.g., 0700_0900 covers hours 07,08,09)
+                if (!found && hourMatch != null && stationPrefix.isNotBlank()) {
+                    // Extract start and end hours from filename like _0700_0900
+                    val timeRangeMatch = Regex("_(\\d{2})\\d{2}_(\\d{2})\\d{2}").find(fileName)
+                    if (timeRangeMatch != null) {
+                        val startHour = timeRangeMatch.groupValues[1].toIntOrNull() ?: -1
+                        val endHour = timeRangeMatch.groupValues[2].toIntOrNull() ?: -1
+                        // Check each hour in the range
+                        for (h in startHour until endHour) {
+                            val key = "${stationPrefix}:${String.format("%02d", h)}"
+                            val ep = timeSlotToEpisode[key]
+                            if (ep != null && settings.isDislikedByTitle(ep.second, ep.first)) {
+                                dislikedFileNames.add(fileName)
+                                found = true
+                                break
+                            }
+                        }
                     }
                 }
                 if (found) continue
@@ -656,6 +729,76 @@ class SettingsFragment : Fragment() {
                     }
                 } catch (e: Exception) { /* skip */ }
             }
+
+            // 5) episode_list_cache: scan ALL episodes (not just matching by episodeId)
+            //    Match by filename time range extracted from filename (e.g., sijiache_20260601_0700_0900.mp4)
+            try {
+                val cachedJson = epListCachePrefs.getString("episodes", null)
+                if (cachedJson != null) {
+                    val arr = org.json.JSONArray(cachedJson)
+                    for (file in files) {
+                        if (file.name in dislikedFileNames) continue
+                        val fileName = file.name
+                        // Extract time range from filename: sijiache_20260601_0700_0900.mp4 -> 2026-06-01 07:00-09:00
+                        val timeRangeMatch = Regex("(\\d{8})_(\\d{4})_(\\d{4})").find(fileName)
+                        val stationPrefix = Regex("^([a-zA-Z\\-]+)_").find(fileName)?.groupValues?.get(1) ?: ""
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val title = obj.optString("title", "")
+                            val stationId = obj.optString("station_id", "")
+                            val broadcastAt = obj.optString("broadcast_at", "")
+                            val audioUrl = obj.optString("audio_url", "")
+                            val epId = obj.optString("id", "")
+                            // Check if this episode is disliked
+                            val isDisliked = settings.isDisliked(epId) || settings.isDislikedByTitle(stationId, title)
+                            if (!isDisliked) continue
+                            // Match by time range: if filename has date_time_time, check against broadcast_at
+                            if (timeRangeMatch != null) {
+                                val dateStr = timeRangeMatch.groupValues[1]  // 20260601
+                                val startTime = timeRangeMatch.groupValues[2]  // 0700
+                                val formattedDate = "${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}"
+                                if (broadcastAt.contains(formattedDate) && broadcastAt.contains(startTime.substring(0, 2))) {
+                                    dislikedFileNames.add(fileName)
+                                    break
+                                }
+                            }
+                            // Match by station prefix in filename
+                            if (stationPrefix.isNotBlank() && stationId.isNotBlank() &&
+                                (stationId.lowercase().contains(stationPrefix.lowercase()) || stationPrefix.lowercase().contains(stationId.lowercase()))) {
+                                // Also check if the title keywords match the filename
+                                val keywords = title.split(Regex("[\\s\\-·]")).filter { it.length >= 2 }
+                                if (keywords.any { fileName.lowercase().contains(it.lowercase()) }) {
+                                    dislikedFileNames.add(fileName)
+                                    break
+                                }
+                            }
+                            // Match by audioUrl containing episode-like identifier
+                            if (audioUrl.isNotBlank()) {
+                                val urlFileName = audioUrl.substringAfterLast("/").substringBefore("?")
+                                val urlBase = urlFileName.replace(Regex("\\.(mp4|m4a|aac|mp3|ts|m3u8)$"), "")
+                                if (urlBase.isNotBlank() && fileName.contains(urlBase)) {
+                                    dislikedFileNames.add(fileName)
+                                    break
+                                }
+                            }
+                            // Broad match: try matching title keywords in filename
+                            val keywords = title.split(Regex("[\\s\\-·]")).filter { it.length >= 2 }
+                            if (keywords.isNotEmpty() && keywords.any { fileName.lowercase().contains(it.lowercase()) }) {
+                                // Also verify stationId matches filename prefix
+                                if (stationPrefix.isBlank() || stationId.isBlank() ||
+                                    stationId.lowercase().contains(stationPrefix.lowercase()) || stationPrefix.lowercase().contains(stationId.lowercase())) {
+                                    dislikedFileNames.add(fileName)
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+                android.util.Log.d("SettingsFragment", "Dislike filter: episode_list_cache full scan added, now ${dislikedFileNames.size} total disliked files")
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsFragment", "Failed episode_list_cache full scan", e)
+            }
+
             android.util.Log.d("SettingsFragment", "Dislike filter: files=${files.size}, disliked=${dislikedFileNames.size}")
 
             // Final fallback: scan all_episodes for any disliked title, match by file name keywords
@@ -691,6 +834,10 @@ class SettingsFragment : Fragment() {
                 val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(requireContext()), "dislike")
                 if (!logDir.exists()) logDir.mkdirs()
                 val logFile = java.io.File(logDir, "dislike.log")
+                // Add version header on first write
+                if (!logFile.exists()) {
+                    logFile.appendText("=== RadioApp v2.0.18 ===\n")
+                }
                 val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
                 val logBuilder = StringBuilder()
                 logBuilder.append("[$ts] === DISLIKE FILTER REPORT ===\n")

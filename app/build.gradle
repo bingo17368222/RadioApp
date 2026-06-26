@@ -6,13 +6,14 @@ plugins {
 android {
     namespace 'com.radio.app'
     compileSdk 33
+    buildToolsVersion "33.0.0"
 
     defaultConfig {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 84
-        versionName "2.0.13"
+        versionCode 95
+        versionName "2.0.24"
     }
 
     signingConfigs {
@@ -46,6 +47,10 @@ android {
     buildFeatures {
         viewBinding true
     }
+
+    packagingOptions {
+        exclude 'lib/*/libvosk.so'
+    }
 }
 
 dependencies {
@@ -67,6 +72,6 @@ dependencies {
     // ExoPlayer - 支持M3U8流媒体
     implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
 
-    // Vosk - 离线语音识别
+    // Vosk - 离线语音识别 (Java classes bundled, .so excluded - user downloads separately)
     implementation 'com.alphacephei:vosk-android:0.3.47'
 }

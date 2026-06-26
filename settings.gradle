@@ -1,20 +1,18 @@
 pluginManagement {
     repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
+        gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
-        google()
-        mavenCentral()
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
     }
 }
 rootProject.name = "RadioApp"

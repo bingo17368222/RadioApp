@@ -67,7 +67,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         private const val TAG = "RadioPlaybackService"
         private const val MAX_ERROR_RETRY = 3
         private const val NOTIFICATION_ID = 1
-        private const val POSITION_SAVE_INTERVAL = 15000L
+        private const val POSITION_SAVE_INTERVAL = 5000L
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -127,8 +127,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), category)
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "${category}.log")
+            // Add version header on first write
+            if (!logFile.exists()) {
+                logFile.appendText("=== RadioApp v2.0.18 ===\n")
+            }
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
             java.io.FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            // Limit file size to 500KB
+            if (logFile.length() > 500_000) {
+                val lines = logFile.readLines()
+                val keep = lines.takeLast(500)
+                logFile.writeText(keep.joinToString("\n") + "\n")
+            }
         } catch (_: Exception) {}
     }
 
@@ -150,6 +160,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var progressRunnable: Runnable? = null
     private var notificationHandler: Handler? = null
     private var notificationRunnable: Runnable? = null
+    private var lastNotifiedPosition = -1L
     private var positionSaveHandler: Handler? = null
     private var positionSaveRunnable: Runnable? = null
     private var skipSeconds = 15
@@ -157,15 +168,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var isRetrying = false
     private var savePlaybackPosition = true
     private var notificationPlaying = false
+    private var userPaused = false // Track whether USER paused (vs buffering pause)
     private var notificationTitle = "Radio App"
     private var notificationSubText = ""
     private var notificationDate = ""
+    private var notificationTimeRange = ""
     private var downloadingJob: kotlinx.coroutines.Job? = null
     private var positionRestoreRequested = false
     private var pendingStartPosition: Long = -1L
     private var isSeekingToPosition = false
     private var lastPositionRestoreTime = 0L
     private var notificationStyle = "full"
+    private var lastNotificationTime = 0L
+    private var pendingNotificationRunnable: Runnable? = null
     // SharedPreferences监听器，用于热切换通知栏样式
     private var prefChangeListener: android.content.SharedPreferences.OnSharedPreferenceChangeListener? = null
 
@@ -177,6 +192,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     @Volatile
     private var downloadDoneBytes = 0L
     private val downloadActive = AtomicBoolean(false)
+
+    // 防抖标记：playback 正在初始化中，避免 Activity 重复启动播放
+    @Volatile
+    var playbackInitializing = false
+
+    // 预缓存标记：预缓存下载期间跳过通知栏更新，避免频繁刷新通知
+    @Volatile
+    private var isPrecaching = false
+    // 预缓存完成计数：记录本轮预缓存下载完成的数量，在结束时统一通知用户
+    @Volatile
+    private var precacheCompletedCount = 0
+    // 预缓存完成的文件名列表：用于在通知中展示具体下载了哪些文件
+    private val precacheCompletedFileNames = mutableListOf<String>()
+    // 预缓存完成通知是否已展示：确保每轮预缓存只弹一次汇总通知
+    private var precacheNotificationShown = false
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
@@ -216,13 +246,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     reloadNotificationStyle()
                     Log.d(TAG, "Hot-switch notification style to: $notificationStyle")
                     val handler = Handler(Looper.getMainLooper())
-                    handler.post { updateNotification() }
+                    handler.post { notifyNotification() }
                 }
                 "skip_seconds" -> {
                     skipSeconds = prefs.getInt("skip_seconds", 15)
                     Log.d(TAG, "Hot-switch skipSeconds to: $skipSeconds, rebuilding notification")
                     val handler = Handler(Looper.getMainLooper())
-                    handler.post { updateNotification() }
+                    handler.post { notifyNotification() }
                 }
             }
         }
@@ -318,16 +348,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 .apply {
                     addListener(object : Player.Listener {
                         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                            super.onPositionDiscontinuity(oldPosition, newPosition, reason)
                             if (reason == Player.DISCONTINUITY_REASON_SEEK && isSeekingToPosition) {
                                 val actualPos = player?.currentPosition ?: -1L
                                 Log.d(TAG, "SEEK completed: actual position=$actualPos ms, starting playback now")
                                 player?.playWhenReady = true
+                                isSeekingToPosition = false
+                                notifyNotification()
+                                startPositionSaver()
                             }
                         }
                         override fun onPlaybackStateChanged(state: Int) {
                             when (state) {
                                 Player.STATE_READY -> {
                                     prepared = true
+                                    playbackInitializing = false
                                     isRetrying = false
                                     errorRetryCount = 0
                                     Log.d(TAG, "STATE_READY: isSeekingToPosition=$isSeekingToPosition, positionRestoreRequested=$positionRestoreRequested, pendingStartPosition=$pendingStartPosition")
@@ -336,7 +371,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         applySavedPosition()
                                     }
                                     callback?.onStateChanged(true)
-                                    updateNotification()
                                     // 后台下载音频文件
                                     startBackgroundDownload()
                                     // 尝试触发PCM预解码（当前节目已缓存时）
@@ -378,7 +412,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             if (isSeekingToPosition) return
                             callback?.onStateChanged(isPlaying)
                             notificationPlaying = isPlaying
-                            updateNotification()
                             updateMediaSessionState()
                         }
                     })
@@ -401,7 +434,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             downloadDoneBytes = targetFile.length()
             downloadTotalBytes = targetFile.length()
             sendCacheUpdateBroadcast(targetFile.length(), targetFile.absolutePath)
-            triggerPreCache()
+            if (!isPrecaching) {
+                Handler(Looper.getMainLooper()).post { triggerPreCache() }
+            }
             startPcmPreDecodeIfNeeded()
             return
         }
@@ -469,7 +504,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     Log.e(TAG, "Download: failed to save cache_episode_mapping: ${e.message}")
                 }
                 // 预缓存下一节目
-                triggerPreCache()
+                if (!isPrecaching) {
+                    Handler(Looper.getMainLooper()).post { triggerPreCache() }
+                }
                 // 尝试触发当前节目的PCM预解码
                 startPcmPreDecodeIfNeeded()
             } catch (e: Exception) {
@@ -518,20 +555,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun triggerPreCache() {
         val settings = AppSettings.getInstance(this)
-        writePreCacheLog("Pre-cache check: autoCache=${settings.autoCache}, wifiOnly=${settings.wifiOnlyPreCache}, targetCount=${settings.preloadCacheCount}")
+        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=${settings.preloadCacheCount}, currentCount=$precacheCompletedCount")
         if (!settings.autoCache) {
-            writePreCacheLog("Pre-cache: disabled")
+            Log.d(TAG, "Pre-cache: disabled")
             return
         }
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
-            writePreCacheLog("Pre-cache: skipped (WiFi only)")
+            Log.d(TAG, "Pre-cache: skipped (WiFi only)")
             return
         }
 
         val currentEp = currentEpisode ?: run {
-            writePreCacheLog("Pre-cache: no current episode, skipping")
+            Log.d(TAG, "Pre-cache: no current episode, skipping")
             return
         }
+
+        // Re-entrancy guard: prevent infinite recursion / concurrent pre-cache chains
+        if (isPrecaching) {
+            Log.d(TAG, "Pre-cache: already running, skipping duplicate trigger")
+            return
+        }
+
+        // 标记预缓存开始，通知栏进度轮询将跳过更新
+        precacheCompletedCount = 0
+        precacheNotificationShown = false
+        isPrecaching = true
+        writeServiceLog("notification", "triggerPreCache: starting pre-cache loop, isPrecaching=true")
 
         val episodesDir = File(cacheDir, "episodes")
         if (!episodesDir.exists()) episodesDir.mkdirs()
@@ -539,7 +588,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
         var preCacheList = loadPreCacheList()
-        writePreCacheLog("Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
+        Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
 
         // Find current episode index in the list
         var currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id }
@@ -548,7 +597,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
         }
         if (currentIdx < 0) {
-            writePreCacheLog("Pre-cache: current episode not in list, adding to list")
+            Log.d(TAG, "Pre-cache: current episode not in list, adding to list")
             preCacheList = listOf(currentEp) + preCacheList
             currentIdx = 0
             savePreCacheList(preCacheList)
@@ -563,24 +612,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
             if (fileName in cachedNames) {
                 futureCachedCount++
-                writePreCacheLog("Pre-cache: future episode #$i already cached: ${ep.title}")
             } else if (!isDisliked && ep.audioUrl.isNotBlank() && nextToDownload == null) {
                 nextToDownload = ep
-                writePreCacheLog("Pre-cache: next to download: ${ep.title} (index=$i)")
+                Log.d(TAG, "Pre-cache: next to download: ${ep.title} (index=$i)")
             }
         }
 
         val targetCount = settings.preloadCacheCount
-        writePreCacheLog("Pre-cache: futureCached=$futureCachedCount, target=$targetCount")
+        writeServiceLog("notification", "triggerPreCache: START isPrecaching=$isPrecaching targetCount=$targetCount")
+        Log.d(TAG, "Pre-cache: futureCached=$futureCachedCount, target=$targetCount")
 
         if (futureCachedCount >= targetCount) {
-            writePreCacheLog("Pre-cache: target reached ($futureCachedCount >= $targetCount)")
+            Log.d(TAG, "Pre-cache: target reached ($futureCachedCount >= $targetCount)")
+            isPrecaching = false
+            showPrecacheCompleteNotification()
             return
         }
 
         // If no next episode to download in current list, fetch more days (forward only)
         if (nextToDownload == null) {
-            writePreCacheLog("Pre-cache: no more future episodes in list, fetching more days (forward)")
+            Log.d(TAG, "Pre-cache: no more future episodes in list, fetching more days (forward)")
             val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
             if (expandedList.size > preCacheList.size) {
                 savePreCacheList(expandedList)
@@ -600,10 +651,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         if (nextToDownload != null) {
-            writePreCacheLog("Pre-cache: downloading: ${nextToDownload!!.title}")
+            Log.d(TAG, "Pre-cache: downloading: ${nextToDownload!!.title}")
             downloadPreCacheEpisode(nextToDownload!!)
+            // isPrecaching stays true during the async download;
+            // downloadPreCacheEpisode will set isPrecaching=false and post triggerPreCache()
+            // on the main looper when done (success/failure/skip), which continues the chain
         } else {
-            writePreCacheLog("Pre-cache: no more future episodes available to download")
+            Log.d(TAG, "Pre-cache: no more future episodes available to download")
+            writeServiceLog("notification", "triggerPreCache: END, no more episodes to download")
+            isPrecaching = false
+            showPrecacheCompleteNotification()
             // Check if all future episodes are disliked
             val allDisliked = ((currentIdx + 1) until preCacheList.size).all { i ->
                 val ep = preCacheList[i]
@@ -611,12 +668,64 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 extractCacheFileName(ep.audioUrl) in cachedNames
             }
             if (allDisliked && (currentIdx + 1) < preCacheList.size) {
-                writePreCacheLog("Pre-cache: all future episodes disliked or cached")
+                Log.d(TAG, "Pre-cache: all future episodes disliked or cached")
                 Handler(Looper.getMainLooper()).post {
                     android.widget.Toast.makeText(this, "当前电台未来节目已被全部缓存或标记为不喜欢", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }
+    }
+
+    /**
+     * 预缓存完成后显示一次汇总通知（仅当有下载时）
+     */
+    private fun showPrecacheCompleteNotification() {
+        if (precacheNotificationShown) {
+            writeServiceLog("notification", "showPrecacheCompleteNotification: already shown for this session, skipping. count=$precacheCompletedCount, files=${synchronized(precacheCompletedFileNames) { precacheCompletedFileNames.toList() }}")
+            return
+        }
+        if (precacheCompletedCount <= 0) {
+            isPrecaching = false
+            writeServiceLog("notification", "showPrecacheCompleteNotification: no new files pre-cached (count=0), isPrecaching=false")
+            return
+        }
+        val count = precacheCompletedCount
+        val fileNames = synchronized(precacheCompletedFileNames) {
+            precacheCompletedFileNames.toList()
+        }
+        precacheCompletedCount = 0
+        synchronized(precacheCompletedFileNames) {
+            precacheCompletedFileNames.clear()
+        }
+        isPrecaching = false
+
+        val msg = "预缓存完成：${count}个文件"
+        writeServiceLog("notification", "showPrecacheCompleteNotification: count=$count, files=$fileNames, isPrecaching was=$isPrecaching, msg=$msg")
+
+        val namesText = if (fileNames.isNotEmpty()) {
+            fileNames.joinToString("、")
+        } else {
+            ""
+        }
+        val contentText = if (namesText.isNotBlank()) {
+            "预缓存完成：${count}个文件（${namesText}）"
+        } else {
+            "预缓存完成：${count}个文件"
+        }
+        val notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("预缓存完成")
+            .setContentText(msg)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$msg\n${fileNames.take(5).joinToString("、")}${if (fileNames.size > 5) "..." else ""}"))
+            .build()
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        precacheNotificationShown = true
+        writeServiceLog("notification", "showPrecacheCompleteNotification: SHOWING notification, count=$count, content='$contentText', files=$fileNames, notificationId=1001")
+        writeServiceLog("notification", "showPrecacheCompleteNotification: about to show notification with ID=1001, title='预缓存完成', text='$msg', files=$fileNames")
+        writeServiceLog("notification", "showPrecacheCompleteNotification: manager.notify(1001) precache complete, count=$count")
+        manager.notify(1001, notification)
     }
 
     /**
@@ -736,6 +845,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) { emptyList() }
     }
 
+    private fun saveEpisodeList(episodes: List<Episode>) {
+        val prefs = getSharedPreferences("episode_list", MODE_PRIVATE)
+        val gson = Gson()
+        prefs.edit().putString("list", gson.toJson(episodes)).apply()
+    }
+
     private fun findPrevInList(list: List<Episode>, curId: String, settings: AppSettings): Episode? {
         var foundCurrent = false
         for (i in list.indices.reversed()) {
@@ -803,18 +918,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun downloadPreCacheEpisode(episode: Episode) {
-        val url = episode.audioUrl ?: return
-        if (url.isBlank() || !url.startsWith("http")) return
+        val url = episode.audioUrl
+        if (url == null || url.isBlank() || !url.startsWith("http")) {
+            Log.w(TAG, "Pre-cache: invalid URL for ${episode.title}, skipping: $url")
+            isPrecaching = false
+            Handler(Looper.getMainLooper()).post { triggerPreCache() }
+            return
+        }
         val fileName = extractCacheFileName(url)
         val episodesDir = File(cacheDir, "episodes")
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         if (targetFile.exists() && targetFile.length() > 1024) {
-            writePreCacheLog("downloadPreCacheEpisode: already exists: ${episode.title} ($fileName)")
-            triggerPreCache() // 已存在，继续下一个
+            Log.d(TAG, "Pre-cache: already exists: ${episode.title} ($fileName)")
+            // Already cached, release guard and schedule next pre-cache check
+            isPrecaching = false
+            Handler(Looper.getMainLooper()).post { triggerPreCache() }
             return
         }
-        writePreCacheLog("downloadPreCacheEpisode: starting download: ${episode.title} from $url")
         Log.d(TAG, "Pre-cache: downloading ${episode.title} from $url")
         serviceScope.launch {
             try {
@@ -826,9 +947,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 connection.setRequestProperty("Referer", "https://www.hndt.com/")
                 connection.connect()
                 if (connection.responseCode != 200) {
-                    writePreCacheLog("downloadPreCacheEpisode: HTTP ${connection.responseCode} for ${episode.title}")
                     Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
-                    triggerPreCache() // 继续下一个
+                    // Download failed, release guard and schedule next pre-cache check
+                    isPrecaching = false
+                    Handler(Looper.getMainLooper()).post { triggerPreCache() }
                     return@launch
                 }
                 val input = connection.inputStream
@@ -840,8 +962,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 output.close()
                 input.close()
-                writePreCacheLog("downloadPreCacheEpisode: downloaded ${targetFile.length()} bytes to ${targetFile.name} for ${episode.title}")
                 Log.d(TAG, "Pre-cache: downloaded ${targetFile.length()} bytes to ${targetFile.name}")
+                // 预缓存下载成功，递增计数，记录文件名
+                precacheCompletedCount++
+                synchronized(precacheCompletedFileNames) {
+                    precacheCompletedFileNames.add(fileName)
+                }
+                writeServiceLog("notification", "downloadPreCacheEpisode: SUCCESS, file=$fileName, count=$precacheCompletedCount")
                 // Save cache file -> episode mapping for dislike filtering
                 try {
                     val cacheMappingPrefs = getSharedPreferences("cache_episode_mapping", MODE_PRIVATE)
@@ -856,14 +983,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
                 // 同时检查当前播放节目的PCM预解码
                 startPcmPreDecodeIfNeeded()
-                // 继续预缓存下一个
-                triggerPreCache()
+                // Download complete, release guard and schedule next pre-cache check
+                isPrecaching = false
+                Handler(Looper.getMainLooper()).post { triggerPreCache() }
             } catch (e: Exception) {
-                writePreCacheLog("downloadPreCacheEpisode: error downloading ${episode.title}: ${e.message}")
                 Log.e(TAG, "Pre-cache download error: ${e.message}")
                 // 删除不完整的文件
                 if (targetFile.exists()) targetFile.delete()
-                triggerPreCache() // 继续下一个
+                // Download error, release guard and schedule next pre-cache check
+                isPrecaching = false
+                Handler(Looper.getMainLooper()).post { triggerPreCache() }
             }
         }
     }
@@ -1327,7 +1456,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (pos <= 0) return
         val episodeKey = "${ep.stationId}::${ep.title}"
         getSharedPreferences("playback_positions", MODE_PRIVATE)
-            .edit().putLong(episodeKey, pos).apply()
+            .edit().putLong(episodeKey, pos)
+            .putLong(ep.id ?: "", pos).apply()
     }
 
     private fun clearSavedPosition() {
@@ -1384,19 +1514,48 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun startNotificationProgressUpdater() {
         notificationRunnable = Runnable {
-            if (!isLive && prepared && player != null) {
-                updateNotification()
+            if (!isLive && prepared && player != null && !isPrecaching) {
+                // 阈值判断与 lastNotifiedPosition 维护已下沉到 updateNotificationProgressOnly()，
+                // 这里直接调用即可，避免在此处提前更新 lastNotifiedPosition 导致内部 2 秒阈值失效。
+                updateNotificationProgressOnly()
             }
-            notificationHandler?.postDelayed(notificationRunnable!!, 1000)
+            // 进度条不需要每 2 秒更新，改为每 5 秒一次，降低通知刷新频率
+            notificationHandler?.postDelayed(notificationRunnable!!, 5000)
         }
         notificationRunnable?.let { notificationHandler?.post(it) }
     }
 
-    private fun updateNotification() {
-        writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, playing=${player?.isPlaying}, prepared=$prepared")
+    /**
+     * 构建通知栏副文本：将 notificationSubText 与日期/时间段信息拼接。
+     * 日期格式化为 "2024-06-04T07:00:00" -> "06-04"，统一供 updateNotification()、
+     * updateNotificationProgressOnly()、buildMediaStyleNotification() 使用，避免重复代码。
+     */
+    private fun buildNotificationSubText(): String {
+        val dateTimeInfo = buildString {
+            if (notificationDate.isNotBlank()) {
+                // Format date: "2024-06-04T07:00:00" -> "06-04"
+                if (notificationDate.length >= 10) {
+                    append(notificationDate.substring(5, 10))
+                }
+            }
+            if (notificationTimeRange.isNotBlank()) {
+                if (isNotEmpty()) append(" ")
+                append(notificationTimeRange)
+            }
+        }
+        return if (dateTimeInfo.isNotBlank()) "$notificationSubText  $dateTimeInfo" else notificationSubText
+    }
+
+    private fun updateNotification(): Notification {
+        writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, playing=${player?.isPlaying}, userPaused=$userPaused, prepared=$prepared")
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
-        val playing = player?.isPlaying ?: false
+        // Use userPaused instead of player?.isPlaying to avoid notification flicker during buffering.
+        // When ExoPlayer buffers/re-buffers, isPlaying briefly becomes false even though the user didn't pause.
+        val playing = playbackStarted && !userPaused
+
+        // Build informative subtitle with date and time
+        val fullSubText = buildNotificationSubText()
 
         val deleteIntent = PendingIntent.getService(this, 99,
             Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_STOP },
@@ -1404,8 +1563,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // 紧凑模式：使用系统标准MediaStyle通知栏，支持seekbar和拖动手势
         if (notificationStyle == "compact") {
-            buildMediaStyleNotification(playing, deleteIntent)
-            return
+            return buildMediaStyleNotification(playing, deleteIntent)
         }
 
         // 其他模式：使用自定义RemoteViews布局
@@ -1425,11 +1583,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
         remoteViews.setTextViewText(R.id.notification_subtitle,
-            if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
+            if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
 
         if (!isLive && prepared) {
             remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
-            val p = player ?: return
+            val p = player ?: return buildNotification()
             val pos = p.currentPosition
             val dur = p.duration
             if (dur > 0) {
@@ -1451,7 +1609,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
-            .setContentText(if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText")
+            .setContentText(if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
             .setOngoing(true)
@@ -1469,15 +1627,127 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val notification: Notification = builder.build()
         notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
 
+        return notification
+    }
+
+    /**
+     * 通知栏更新：调用 manager.notify() 推送通知
+     * 从 updateNotification() 分离出来，避免在 startForeground 前被进度轮询覆盖
+     */
+    private fun notifyNotification() {
+        val now = System.currentTimeMillis()
+        val elapsed = now - lastNotificationTime
+
+        // If handler is not available, just update directly（handler 为 null 时直接更新，避免防抖失效）
+        if (notificationHandler == null) {
+            lastNotificationTime = now
+            doNotifyNotification()
+            return
+        }
+
+        // Cancel any pending delayed notification
+        pendingNotificationRunnable?.let { notificationHandler!!.removeCallbacks(it) }
+
+        if (elapsed < 500) {
+            // Debounce: schedule a delayed update
+            pendingNotificationRunnable = Runnable {
+                lastNotificationTime = System.currentTimeMillis()
+                doNotifyNotification()
+            }
+            notificationHandler!!.postDelayed(pendingNotificationRunnable!!, 500 - elapsed)
+            return
+        }
+
+        lastNotificationTime = now
+        doNotifyNotification()
+    }
+
+    private fun doNotifyNotification() {
+        val notification = updateNotification()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
+        try {
+            writeServiceLog("notification", "doNotifyNotification: manager.notify(NOTIFICATION_ID=$NOTIFICATION_ID) playback update")
+            manager.notify(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update notification", e)
+        }
+    }
+
+    /**
+     * 切换节目失败时展示一次性反馈通知（3秒后自动取消）
+     */
+    private fun showEpisodeSwitchFailedNotification(reason: String) {
+        try {
+            val notification = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("切换节目")
+                .setContentText(reason)
+                .setAutoCancel(true)
+                .setOngoing(false)
+                .build()
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            manager.notify(1002, notification)
+            // Auto-cancel after 3 seconds
+            Handler(Looper.getMainLooper()).postDelayed({
+                manager.cancel(1002)
+            }, 3000)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show switch failed notification", e)
+        }
+    }
+
+    /**
+     * 仅更新通知栏进度条和时间，不重建整个通知，避免每秒调用 updateNotification() 的开销。
+     * 仅对 minimal 样式生效，其他样式跳过以避免闪烁。
+     *
+     * 重要修复：此函数此前直接调用 manager.notify()，绕过了 notifyNotification() 的防抖，
+     * 导致通知每 200ms 刷新一次。现在：
+     * 1. 仅在播放位置变化超过 2 秒时才更新；
+     * 2. 仅 minimal 样式进行进度条独立更新，compact/full 样式完全跳过（避免重建通知闪烁）。
+     */
+    private fun updateNotificationProgressOnly() {
+        val p = player ?: return
+        val pos = p.currentPosition
+        val dur = p.duration
+        if (dur <= 0) return
+
+        // 仅在播放位置变化超过 2 秒时才更新，避免高频调用 manager.notify() 造成通知刷屏
+        if (kotlin.math.abs(pos - lastNotifiedPosition) < 2000) return
+        lastNotifiedPosition = pos
+
+        // 仅 minimal 样式进行进度条独立更新；其他样式跳过以避免重建通知带来的闪烁
+        if (notificationStyle != "minimal") return
+
+        try {
+            val rv = RemoteViews(packageName, R.layout.notification_minimal)
+            rv.setProgressBar(R.id.notification_progress, 1000, ((pos * 1000) / dur).toInt().coerceIn(0, 1000), false)
+            rv.setTextViewText(R.id.notification_time_text, "${formatTimeNotif(pos.toInt() / 1000)}/${formatTimeNotif(dur.toInt() / 1000)}")
+            applyNotificationIntents(rv)
+            applyThemeToNotification(rv)
+            val playing = playbackStarted && !userPaused
+            rv.setImageViewResource(R.id.play_pause_icon,
+                if (playing) R.drawable.notif_pause else R.drawable.notif_play)
+            rv.setTextViewText(R.id.play_pause_text, if (playing) "暂停" else "播放")
+            rv.setTextViewText(R.id.notification_title, notificationTitle)
+            val fullSubText = buildNotificationSubText()
+            rv.setTextViewText(R.id.notification_subtitle,
+                if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
+            val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setCustomContentView(rv)
+                .setOngoing(true)
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            writeServiceLog("notification", "updateNotificationProgressOnly: manager.notify (minimal), pos=$pos")
+            manager.notify(NOTIFICATION_ID, builder.build())
+        } catch (_: Exception) {}
     }
 
     /**
      * 构建系统标准MediaStyle通知栏（五按钮，支持seekbar和拖动手势）
      */
-    private fun buildMediaStyleNotification(playing: Boolean, deleteIntent: PendingIntent) {
-        val contentText = if (playing) "正在播放 $notificationSubText" else "已暂停 $notificationSubText"
+    private fun buildMediaStyleNotification(playing: Boolean, deleteIntent: PendingIntent): Notification {
+        val fullSubText = buildNotificationSubText()
+        val contentText = if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText"
 
         // 创建展开视图（含进度条和50点seek）
         val expandedView = RemoteViews(packageName, R.layout.notification_media_expanded)
@@ -1533,8 +1803,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val notification: Notification = builder.build()
         notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
 
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
+        return notification
     }
 
     private fun createNotificationAction(action: String, iconRes: Int, title: String, requestCode: Int): NotificationCompat.Action {
@@ -1671,6 +1940,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
+        // 保存当前播放位置，防止服务被意外杀死后位置丢失
+        saveCurrentPosition()
         // 用户从最近任务划掉应用时，确保服务不被杀死
         // 如果正在播放，重新启动前台通知
         if (playbackStarted || player?.isPlaying == true) {
@@ -1689,13 +1960,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val dur = player?.duration ?: 0L
         if (dur <= 0) return
         player?.seekTo((dur * pct).toLong())
-        updateNotification()
+        notifyNotification()
     }
 
     private fun seekToSec(sec: Int) {
         if (isLive || !prepared) return
         player?.seekTo((sec * 1000L).coerceAtLeast(0))
-        updateNotification()
+        notifyNotification()
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -1748,6 +2019,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         prepared = false; currentStreamUrl = station.streamUrl ?: ""
         currentPlayingUrl = currentStreamUrl
         playbackStarted = true
+        userPaused = false // Starting new playback, not user-paused
         errorRetryCount = 0; isRetrying = false; stopAutoSkipCheck()
         positionRestoreRequested = false
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
@@ -1758,8 +2030,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 it.prepare(); it.playWhenReady = true
             }
             notificationTitle = station.name; notificationSubText = "[直播]"
-            notificationDate = ""; notificationPlaying = true
-            requestAudioFocus(); updateNotification()
+            notificationDate = ""; notificationTimeRange = ""; notificationPlaying = true
+            requestAudioFocus(); notifyNotification()
             updateMediaSessionState()
         } catch (e: Exception) { Log.e(TAG, "playStation failed", e) }
     }
@@ -1768,6 +2040,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         Log.d(TAG, "playEpisode called: ${episode.title}, playbackStarted before: $playbackStarted, prepared=$prepared, url=${episode.audioUrl}, startPositionMs=$startPositionMs")
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
+        userPaused = false // Starting new playback, not user-paused
         stopAutoSkipCheck()
         if (startPositionMs >= 0) {
             // 位置恢复通过 prepare 前 seek 完成
@@ -1781,9 +2054,50 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         currentStreamUrl = episode.audioUrl ?: ""
         currentPlayingUrl = currentStreamUrl
         playbackStarted = true
+        playbackInitializing = true
         notificationTitle = episode.title; notificationSubText = "[回放]"
-        notificationDate = episode.broadcastAt ?: ""; notificationPlaying = true
-        updateNotification()
+        notificationPlaying = true
+        // Parse broadcastAt for date and time range
+        notificationDate = ""
+        notificationTimeRange = ""
+        if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
+            notificationDate = episode.broadcastAt.substring(0, 10) // "2024-06-04"
+            val timePart = episode.broadcastAt.substring(11, 16) // "07:00"
+            val durationMin = episode.duration / 60
+            if (durationMin > 0) {
+                val startHour = timePart.substring(0, 2).toIntOrNull() ?: 0
+                val startMin = timePart.substring(3, 5).toIntOrNull() ?: 0
+                val totalMin = startHour * 60 + startMin + durationMin
+                val endHour = (totalMin / 60) % 24
+                val endMin = totalMin % 60
+                notificationTimeRange = "${timePart}-${String.format("%02d:%02d", endHour, endMin)}"
+            } else {
+                notificationTimeRange = timePart
+            }
+        }
+        // Fallback: parse date/time from URL (e.g., sijiache_20240604_0700_0900.mp4)
+        if (notificationDate.isBlank()) {
+            val url = episode.audioUrl ?: ""
+            val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(url)
+            if (dateMatch != null) {
+                notificationDate = "${dateMatch.groupValues[1]}-${dateMatch.groupValues[2]}-${dateMatch.groupValues[3]}"
+            }
+        }
+        if (notificationTimeRange.isBlank()) {
+            val url = episode.audioUrl ?: ""
+            val timeMatch = Regex("_(\\d{2})(\\d{2})_(\\d{2})(\\d{2})").find(url)
+            if (timeMatch != null) {
+                notificationTimeRange = "${timeMatch.groupValues[1]}:${timeMatch.groupValues[2]}-${timeMatch.groupValues[3]}:${timeMatch.groupValues[4]}"
+            }
+        }
+        writeServiceLog("notification", "playEpisode: date/time set - date='$notificationDate', timeRange='$notificationTimeRange', broadcastAt='${episode.broadcastAt}'")
+        val notification = updateNotification()
+        // 立即推送前台通知，确保通知栏立即更新，不被进度轮询覆盖
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         writeServiceLog("notification", "playEpisode: title=${episode.title}, notificationTitle=$notificationTitle, notificationSubText=$notificationSubText, notificationDate=$notificationDate, updateNotification called")
         // Broadcast to notify UI that episode changed
         try {
@@ -1805,14 +2119,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 it.prepare()
             }
-            requestAudioFocus(); updateNotification()
+            requestAudioFocus()
             updateMediaSessionState()
             startAutoSkipCheck()
         } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
     }
 
-    fun play() { player?.play() }
-    fun pause() { player?.pause() }
+    fun play() { userPaused = false; player?.play() }
+    fun pause() { userPaused = true; player?.pause() }
     fun stop() {
         stopAutoSkipCheck(); saveCurrentPosition()
         downloadingJob?.cancel()
@@ -1839,6 +2153,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getCurrentStreamUrl(): String = currentStreamUrl
     fun getCurrentPlayingUrl(): String = currentPlayingUrl
     fun isPlaybackStarted(): Boolean = playbackStarted
+    fun isPlaybackInitializing(): Boolean = playbackInitializing
     fun isSameEpisodePlaying(url: String): Boolean {
         return playbackStarted && currentPlayingUrl.isNotBlank() && currentPlayingUrl == url
     }
@@ -1896,40 +2211,75 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun fetchCrossDayEpisode(direction: Int): Episode? {
-        val curEp = currentEpisode ?: return null
-        val stationId = curEp.stationId
-        val broadcastAt = curEp.broadcastAt ?: return null
+        val curEp = currentEpisode
+        val curUrl = currentPlayingUrl
+
+        // Extract station and date from URL or episode
+        val stationId: String
+        val currentDate: String
+        if (curEp != null) {
+            stationId = curEp.stationId
+            currentDate = curEp.broadcastAt?.take(10) ?: return null
+        } else if (curUrl.isNotBlank()) {
+            // Extract from URL: e.g., sijiache_20240604_0700_0900.mp4
+            val urlParts = curUrl.substringAfterLast("/").split("_")
+            if (urlParts.size < 2) return null
+            stationId = urlParts[0] // "sijiache"
+            val datePart = urlParts.getOrNull(1) ?: return null
+            if (datePart.length < 8) return null
+            currentDate = "${datePart.substring(0, 4)}-${datePart.substring(4, 6)}-${datePart.substring(6, 8)}"
+        } else {
+            return null
+        }
 
         val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
 
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            cal.time = dateFormat.parse(broadcastAt.take(10)) ?: return null
+            cal.time = dateFormat.parse(currentDate) ?: return null
             cal.add(java.util.Calendar.DAY_OF_YEAR, direction)
             val targetDate = dateFormat.format(cal.time)
 
             Log.d(TAG, "fetchCrossDayEpisode: fetching $stationId on $targetDate (direction=$direction)")
-            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-            val episodes = apiService.fetchEpisodesByDateSync(stationId, targetDate) ?: return null
 
-            val settings = AppSettings.getInstance(this)
-            if (direction > 0) {
-                // Next day: find first non-disliked episode
-                for (ep in episodes) {
-                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                        return ep
-                    }
+            // Try network fetch first
+            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+            val episodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+
+            if (episodes != null && episodes.isNotEmpty()) {
+                val settings = AppSettings.getInstance(this)
+                val result = if (direction > 0) {
+                    episodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                } else {
+                    episodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
                 }
-            } else {
-                // Previous day: find last non-disliked episode
-                for (i in episodes.indices.reversed()) {
-                    val ep = episodes[i]
-                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                        return ep
-                    }
+                if (result != null) {
+                    Log.d(TAG, "fetchCrossDayEpisode: found ${result.title} from network")
+                    // Save to episode list for future use
+                    saveEpisodeList(episodes)
+                    return result
                 }
             }
+
+            // Fallback: try saved episode list
+            Log.d(TAG, "fetchCrossDayEpisode: network fetch failed, trying saved list")
+            val savedList = loadEpisodeList()
+            val targetEpisodes = savedList.filter { it.broadcastAt?.startsWith(targetDate) == true && it.stationId == stationId }
+            if (targetEpisodes.isNotEmpty()) {
+                val settings = AppSettings.getInstance(this)
+                val result = if (direction > 0) {
+                    targetEpisodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                } else {
+                    targetEpisodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                }
+                if (result != null) {
+                    Log.d(TAG, "fetchCrossDayEpisode: found ${result.title} from saved list")
+                    return result
+                }
+            }
+
+            Log.d(TAG, "fetchCrossDayEpisode: no episode found for $stationId on $targetDate")
         } catch (e: Exception) {
             Log.e(TAG, "fetchCrossDayEpisode error", e)
         }
@@ -1937,8 +2287,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun notifyPrevEpisode() {
+        writeServiceLog("notification", "notifyPrevEpisode: called, currentEpisode=${currentEpisode?.title ?: "null"}")
         val settings = AppSettings.getInstance(this)
-        val curId = currentEpisode?.id ?: return
+        val curId = currentEpisode?.id
+        if (curId == null) {
+            writeServiceLog("notification", "notifyPrevEpisode: currentEpisode is null, cannot switch")
+            showEpisodeSwitchFailedNotification("无法切换到上一个节目：当前无播放节目")
+            return
+        }
 
         // Try preCacheList first
         var prevEpisode = findPrevInList(loadPreCacheList(), curId, settings)
@@ -1960,10 +2316,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 putExtra("episode_id", prevEpisode.id)
             }
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-            updateNotification()
         } else {
             // Try cross-day fetch
+            writeServiceLog("notification", "notifyPrevEpisode: episodeList exhausted, trying fetchCrossDayEpisode")
             val crossDayEp = fetchCrossDayEpisode(-1)
+            writeServiceLog("notification", "notifyPrevEpisode: fetchCrossDayEpisode returned: ${crossDayEp?.title ?: "null"}")
             if (crossDayEp != null) {
                 val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
                 val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
@@ -1976,15 +2333,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     putExtra("episode_id", crossDayEp.id)
                 }
                 LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-                updateNotification()
             } else {
-                Log.d(TAG, "notifyPrevEpisode: no more episodes available")
+                writeServiceLog("notification", "notifyPrevEpisode: no more episodes available")
+                showEpisodeSwitchFailedNotification("已经是第一个节目了")
             }
         }
     }
     private fun notifyNextEpisode() {
+        writeServiceLog("notification", "notifyNextEpisode: called, currentEpisode=${currentEpisode?.title ?: "null"}")
         val settings = AppSettings.getInstance(this)
-        val curId = currentEpisode?.id ?: return
+        val curId = currentEpisode?.id
+        if (curId == null) {
+            writeServiceLog("notification", "notifyNextEpisode: currentEpisode is null, cannot switch")
+            showEpisodeSwitchFailedNotification("无法切换到下一个节目：当前无播放节目")
+            return
+        }
 
         // Try preCacheList first
         var nextEpisode = findNextInList(loadPreCacheList(), curId, settings)
@@ -2006,10 +2369,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 putExtra("episode_id", nextEpisode.id)
             }
             LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-            updateNotification()
         } else {
             // Try cross-day fetch
+            writeServiceLog("notification", "notifyNextEpisode: episodeList exhausted, trying fetchCrossDayEpisode")
             val crossDayEp = fetchCrossDayEpisode(1)
+            writeServiceLog("notification", "notifyNextEpisode: fetchCrossDayEpisode returned: ${crossDayEp?.title ?: "null"}")
             if (crossDayEp != null) {
                 val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
                 val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
@@ -2022,9 +2386,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     putExtra("episode_id", crossDayEp.id)
                 }
                 LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-                updateNotification()
             } else {
-                Log.d(TAG, "notifyNextEpisode: no more episodes available")
+                writeServiceLog("notification", "notifyNextEpisode: no more episodes available")
+                showEpisodeSwitchFailedNotification("已经是最后一个节目了")
             }
         }
     }
@@ -2150,7 +2514,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun applyNotificationIntents(remoteViews: RemoteViews) {
-        val playing = player?.isPlaying ?: false
+        val playing = playbackStarted && !userPaused
         try { remoteViews.setOnClickPendingIntent(R.id.btn_rewind,
             PendingIntent.getService(this, 1, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_REWIND },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}

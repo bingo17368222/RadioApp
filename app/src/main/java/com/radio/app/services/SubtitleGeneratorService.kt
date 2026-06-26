@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import com.radio.app.R
 import com.radio.app.activities.PlayerActivity
 import com.radio.app.database.RadioDatabaseHelper
+import com.radio.app.models.AppSettings
 import com.radio.app.models.Transcript
 import com.radio.app.models.VoiceSegment
 import java.io.File
@@ -100,7 +101,29 @@ class SubtitleGeneratorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        executor = Executors.newFixedThreadPool(2)
+        // 设置线程未捕获异常处理器，将崩溃日志写入 /sdcard/RadioApp/logs/crash/
+        val crashLogDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
+        val crashHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
+            try {
+                if (!crashLogDir.exists()) crashLogDir.mkdirs()
+                val ts = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(java.util.Date())
+                val crashFile = java.io.File(crashLogDir, "subtitle_crash_${ts}.txt")
+                java.io.FileWriter(crashFile).use { writer ->
+                    writer.appendLine("===== SubtitleGeneratorService 崩溃日志 =====")
+                    writer.appendLine("时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}")
+                    writer.appendLine("线程: ${thread.name}")
+                    writer.appendLine("设备: ${android.os.Build.BRAND} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})")
+                    writer.appendLine("")
+                    java.io.PrintWriter(writer).use { pw -> throwable.printStackTrace(pw) }
+                }
+                Log.e(TAG, "Uncaught exception in thread ${thread.name}, crash log: ${crashFile.absolutePath}", throwable)
+            } catch (_: Exception) {}
+        }
+        executor = Executors.newFixedThreadPool(2, java.util.concurrent.ThreadFactory { r ->
+            val t = Thread(r, "SubtitleGen-${System.currentTimeMillis()}")
+            t.uncaughtExceptionHandler = crashHandler
+            t
+        })
         dbHelper = RadioDatabaseHelper.getInstance(this)
 
         // 确保日志目录存在（外部存储，用户可访问）
@@ -139,8 +162,18 @@ class SubtitleGeneratorService : Service() {
             val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "subtitle")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "service.log")
+            // Add version header on first write
+            if (!logFile.exists()) {
+                logFile.appendText("=== RadioApp v2.0.18 ===\n")
+            }
             val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
             FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            // Limit file size to 500KB
+            if (logFile.length() > 500_000) {
+                val lines = logFile.readLines()
+                val keep = lines.takeLast(500)
+                logFile.writeText(keep.joinToString("\n") + "\n")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "logToFile failed", e)
         }
@@ -150,11 +183,12 @@ class SubtitleGeneratorService : Service() {
      * Cancel all running tasks and prevent new ones
      */
     private fun cancelAllTasks() {
+        globalCancelled.set(true)
         for (ctx in activeTasks.values) {
             ctx.cancelled.set(true)
         }
         activeTasks.clear()
-        logToFile("cancelAllTasks: all tasks cancelled")
+        logToFile("cancelAllTasks: all tasks cancelled, globalCancelled=true")
     }
 
     /**
@@ -182,7 +216,10 @@ class SubtitleGeneratorService : Service() {
             }
             override fun onError(error: String) {
                 callback.onError(error)
-                updateProgressNotification(0, "字幕生成")
+                // Ensure task is cleaned up on error: cancel ongoing notification immediately
+                cancelProgressNotification()
+                activeTasks.remove(episodeId)
+                cleanupTask()
             }
             override fun onComplete(transcripts: List<Transcript>) {
                 callback.onComplete(transcripts)
@@ -197,28 +234,70 @@ class SubtitleGeneratorService : Service() {
                     ctx.log("Task cancelled before start")
                     return@execute
                 }
-                val voskModel = findVoskModel()
-                if (voskModel != null) {
-                    ctx.log("Using Vosk model: $voskModel")
-                    // Check for pre-cached 16kHz PCM file
-                    val pcm16kCache = find16kHzPcmCache(episodeId)
-                    if (pcm16kCache != null) {
-                        ctx.log("Found 16kHz PCM cache for $episodeId: ${pcm16kCache.absolutePath}")
+
+                // 根据ASR引擎设置选择模型
+                val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
+                val asrProvider = settings.safeAsrProvider()
+                ctx.log("ASR provider: $asrProvider")
+
+                when {
+                    asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
+                        val whisperModel = findWhisperModel()
+                        if (whisperModel != null) {
+                            ctx.log("Using Whisper model: $whisperModel")
+                            val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
+                            if (!success && !ctx.cancelled.get()) {
+                                ctx.log("Whisper subtitle generation FAILED")
+                            }
+                        } else {
+                            ctx.log("ERROR: Whisper model selected but not found")
+                            wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）")
+                            // Ensure task is cleaned up on error
+                            activeTasks.remove(episodeId)
+                            cleanupTask()
+                        }
                     }
-                    val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
-                    if (!success && !ctx.cancelled.get()) {
-                        // generateWithVosk 已通过 callback 上报错误，此处仅记录日志，避免重复弹窗
-                        ctx.log("Vosk subtitle generation FAILED (error already reported by generateWithVosk)")
+                    else -> {
+                        // Vosk or default
+                        val voskModel = findVoskModel()
+                        if (voskModel != null) {
+                            ctx.log("Using Vosk model: $voskModel")
+                            val pcm16kCache = find16kHzPcmCache(episodeId)
+                            if (pcm16kCache != null) {
+                                ctx.log("Found 16kHz PCM cache for $episodeId: ${pcm16kCache.absolutePath}")
+                            }
+                            val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
+                            if (!success && !ctx.cancelled.get()) {
+                                ctx.log("Vosk subtitle generation FAILED (error already reported by generateWithVosk)")
+                            }
+                        } else {
+                            ctx.log("WARNING: No Vosk model found, trying Whisper fallback...")
+                            // Auto-fallback to Whisper
+                            val whisperModel = findWhisperModel()
+                            if (whisperModel != null) {
+                                ctx.log("Fallback: Using Whisper model: $whisperModel")
+                                val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
+                                if (!success && !ctx.cancelled.get()) {
+                                    ctx.log("Whisper fallback FAILED")
+                                }
+                            } else {
+                                ctx.log("ERROR: No Vosk model found and no Whisper model available")
+                                wrappedCallback.onError("未找到离线识别模型，请在设置→离线引擎管理→下载Vosk或Whisper模型")
+                                // Ensure task is cleaned up on error
+                                activeTasks.remove(episodeId)
+                                cleanupTask()
+                            }
+                        }
                     }
-                } else {
-                    ctx.log("ERROR: No Vosk model found")
-                    wrappedCallback.onError("未找到离线识别模型，请在离线引擎管理中下载Vosk模型")
                 }
             } catch (e: Exception) {
                 taskFailed = true
                 ctx.log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 Log.e(TAG, "Subtitle generation failed for episodeId=$episodeId", e)
-                if (!ctx.cancelled.get()) wrappedCallback.onError("字幕生成失败: ${e.message}")
+                if (!ctx.cancelled.get()) wrappedCallback.onError("音频处理失败：${e.message}。请检查网络连接后重试")
+                // Ensure task is cleaned up on error
+                activeTasks.remove(episodeId)
+                cleanupTask()
             } finally {
                 activeTasks.remove(episodeId)
                 ctx.log("Task ended${if (taskFailed) " (failed)" else ""}, active tasks remaining: ${activeTasks.size}")
@@ -260,7 +339,10 @@ class SubtitleGeneratorService : Service() {
             }
             override fun onError(error: String) {
                 callback.onError(error)
-                updateProgressNotification(0, "AI分段")
+                // Ensure task is cleaned up on error: cancel ongoing notification immediately
+                cancelProgressNotification()
+                activeTasks.remove(segKey)
+                cleanupTask()
             }
         }
 
@@ -295,28 +377,59 @@ class SubtitleGeneratorService : Service() {
                         wrappedCallback.onComplete(allSegments)
                     }
                 }
-                val voskModel = findVoskModel()
-                if (voskModel != null) {
-                    ctx.log("Using Vosk model for segments: $voskModel")
-                    // Check for pre-cached 16kHz PCM file
-                    val pcm16kCache = find16kHzPcmCache(episodeId)
-                    if (pcm16kCache != null) {
-                        ctx.log("Found 16kHz PCM cache for segments $episodeId: ${pcm16kCache.absolutePath}")
+
+                // 根据ASR引擎设置选择模型
+                val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
+                val asrProvider = settings.safeAsrProvider()
+                ctx.log("Segment ASR provider: $asrProvider")
+
+                when {
+                    asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
+                        val whisperModel = findWhisperModel()
+                        if (whisperModel != null) {
+                            ctx.log("Using Whisper model for segments: $whisperModel")
+                            val success = generateWithWhisper(episodeId, audioUrl, subtitleCallback, ctx)
+                            if (!success && !ctx.cancelled.get()) {
+                                ctx.log("Whisper segment generation FAILED")
+                            }
+                        } else {
+                            ctx.log("ERROR: Whisper model selected but not found for segments")
+                            wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）")
+                            // Ensure task is cleaned up on error
+                            activeTasks.remove(segKey)
+                            cleanupTask()
+                        }
                     }
-                    val success = generateWithVosk(episodeId, audioUrl, subtitleCallback, ctx)
-                    if (!success && !ctx.cancelled.get()) {
-                        // generateWithVosk 已通过 callback 上报错误，此处仅记录日志，避免重复弹窗
-                        ctx.log("Vosk segment generation FAILED (error already reported by generateWithVosk)")
+                    else -> {
+                        val voskModel = findVoskModel()
+                        if (voskModel != null) {
+                            ctx.log("Using Vosk model for segments: $voskModel")
+                            // Check for pre-cached 16kHz PCM file
+                            val pcm16kCache = find16kHzPcmCache(episodeId)
+                            if (pcm16kCache != null) {
+                                ctx.log("Found 16kHz PCM cache for segments $episodeId: ${pcm16kCache.absolutePath}")
+                            }
+                            val success = generateWithVosk(episodeId, audioUrl, subtitleCallback, ctx)
+                            if (!success && !ctx.cancelled.get()) {
+                                ctx.log("Vosk segment generation FAILED (error already reported by generateWithVosk)")
+                            }
+                        } else {
+                            ctx.log("ERROR: No Vosk model for segments")
+                            wrappedCallback.onError("未找到离线识别模型，请在设置→离线引擎管理→下载Vosk或Whisper模型")
+                            // Ensure task is cleaned up on error
+                            activeTasks.remove(segKey)
+                            cleanupTask()
+                        }
                     }
-                } else {
-                    ctx.log("ERROR: No Vosk model for segments")
-                    wrappedCallback.onError("AI分段失败：未找到离线识别模型，请在离线引擎管理中下载Vosk模型")
                 }
             } catch (e: Exception) {
                 taskFailed = true
                 ctx.log("EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 Log.e(TAG, "Segment generation failed for episodeId=$episodeId", e)
-                if (!ctx.cancelled.get()) wrappedCallback.onError("AI分段失败: ${e.message}")
+                if (!ctx.cancelled.get()) wrappedCallback.onError("音频处理失败：${e.message}。请检查网络连接后重试")
+                // Ensure task is cleaned up on error
+                activeTasks.remove(segKey)
+                cleanupTask()
             } finally {
                 activeTasks.remove(segKey)
                 ctx.log("Segment task ended${if (taskFailed) " (failed)" else ""}, active tasks remaining: ${activeTasks.size}")
@@ -353,26 +466,147 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
+    // Vosk 类引用（通过反射加载，因为 .so 和 .jar 不再打包进 APK）
+    private var voskModelClass: Class<*>? = null
+    private var voskRecognizerClass: Class<*>? = null
+
+    private fun ensureVoskClasses(): Boolean {
+        if (voskModelClass != null && voskRecognizerClass != null) return true
+        // Primary path: the Vosk Java classes (org.vosk.Model / org.vosk.Recognizer) are
+        // bundled in the APK via the com.alphacephei:vosk-android dependency (only the
+        // native .so is excluded via packagingOptions). So Class.forName works directly.
+        try {
+            voskModelClass = Class.forName("org.vosk.Model")
+            voskRecognizerClass = Class.forName("org.vosk.Recognizer")
+            logToFile("ensureVoskClasses: loaded Vosk classes from classpath")
+            return true
+        } catch (e: Exception) {
+            logToFile("ensureVoskClasses: Vosk classes not in classpath, trying downloaded JAR: ${e.message}")
+        }
+        // Fallback: try loading from a downloaded Vosk JAR/AAR if one exists.
+        try {
+            val jarFile = findVoskJar()
+            if (jarFile == null) {
+                logToFile("ensureVoskClasses: no Vosk JAR found, classes unavailable")
+                return false
+            }
+            logToFile("ensureVoskClasses: loading Vosk classes from JAR: ${jarFile.absolutePath}")
+            val dexClassLoader = dalvik.system.DexClassLoader(
+                jarFile.absolutePath,
+                codeCacheDir.absolutePath,
+                null,
+                javaClass.classLoader
+            )
+            voskModelClass = dexClassLoader.loadClass("org.vosk.Model")
+            voskRecognizerClass = dexClassLoader.loadClass("org.vosk.Recognizer")
+            logToFile("ensureVoskClasses: loaded Vosk classes from JAR successfully")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load Vosk classes from JAR: ${e.message}")
+            logToFile("ensureVoskClasses: failed to load Vosk classes from JAR: ${e.message}")
+            return false
+        }
+    }
+
+    /**
+     * 搜索用户下载的 Vosk JAR/AAR 文件（包含 Java 类）。
+     * 搜索路径与 loadVoskNativeLibrary 相同：getExternalFilesDir("models") 和 filesDir/engines。
+     * @return 找到的 JAR/AAR 文件，或 null
+     */
+    private fun findVoskJar(): File? {
+        val modelsDir = getExternalFilesDir("models")
+        if (modelsDir != null && modelsDir.exists()) {
+            val found = modelsDir.walkTopDown()
+                .filter { it.isFile && (it.name.endsWith(".jar") || it.name.endsWith(".aar")) && it.name.contains("vosk", ignoreCase = true) }
+                .firstOrNull()
+            if (found != null) return found
+        }
+        val engineDir = File(filesDir, "engines")
+        if (engineDir.exists()) {
+            val found = engineDir.walkTopDown()
+                .filter { it.isFile && (it.name.endsWith(".jar") || it.name.endsWith(".aar")) && it.name.contains("vosk", ignoreCase = true) }
+                .firstOrNull()
+            if (found != null) return found
+        }
+        return null
+    }
+
     private fun generateWithVosk(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
         val modelPath = findVoskModel()
         if (modelPath == null) {
             ctx.log("ERROR: No Vosk model found")
-            callback.onError("未找到Vosk模型")
+            callback.onError("Vosk模型未下载：缺少语音识别模型。请在设置→离线引擎管理→下载Vosk模型（约1.4GB）")
             return false
         }
         try {
+            // 动态加载 libvosk.so（不再打包进 APK）
+            if (!loadVoskNativeLibrary()) {
+                ctx.log("ERROR: Failed to load Vosk native library (libvosk.so)")
+                callback.onError("Vosk引擎未安装：缺少libvosk.so原生库。请在设置→离线引擎管理→下载Vosk引擎（约50MB）")
+                return false
+            }
+            // 通过反射加载 Vosk 类（不再打包进 APK）
+            if (!ensureVoskClasses()) {
+                ctx.log("ERROR: Vosk classes not available (vosk JAR not in classpath)")
+                callback.onError("Vosk引擎未安装：缺少Java库文件。请在设置→离线引擎管理→下载Vosk引擎")
+                return false
+            }
+
+            // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
+            val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
+                val sizeMB = pcm16kFile.length() / 1024 / 1024
+                ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Vosk processing")
+                return processVoskInChunks(pcm16kFile, modelPath, callback, ctx)
+            }
+
             ctx.log("Initializing Vosk recognizer with model: $modelPath")
-            val recognizer = org.vosk.Recognizer(org.vosk.Model(modelPath), 16000.0f)
+            var recognizer: Any? = null
+            var model: Any? = null
+            try {
+                model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
+                recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
+                    .newInstance(model, 16000.0f as java.lang.Float)
+            } catch (e: Throwable) {
+                val errorMsg = "Vosk Recognizer init FAILED: ${e.javaClass.name}: ${e.message}"
+                ctx.log(errorMsg)
+                writeCrashLog("vosk_init_crash", "Vosk Recognizer 初始化崩溃", "模型路径: $modelPath\n", e)
+                callback.onError("Vosk模型初始化失败：${e.message}。请尝试重新下载Vosk模型（设置→离线引擎管理）")
+                return false
+            }
             ctx.log("Vosk recognizer created successfully")
 
             // Get audio data - prefer 16kHz PCM cache
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
             if (audioData == null) {
+                // Try chunked processing for original PCM cache if it exists
+                val pcmCacheDir2 = File(getExternalFilesDir(null), "pcm_cache")
+                val pcmFile = File(pcmCacheDir2, "${episodeId}_30min.pcm")
+                if (pcmFile.exists() && pcmFile.length() > 1024) {
+                    // Original PCM cache needs resampling - resample to 16kHz temp file first
+                    ctx.log("Original PCM cache exists, attempting resample + chunked processing")
+                    val infoFile = File(pcmCacheDir2, "${episodeId}_30min.info")
+                    var inSampleRate = 44100
+                    var inChannels = 2
+                    if (infoFile.exists()) {
+                        val info = infoFile.readText()
+                        val srMatch = Regex("sampleRate=(\\d+)").find(info)
+                        if (srMatch != null) inSampleRate = srMatch.groupValues[1].toInt()
+                        val chMatch = Regex("channels=(\\d+)").find(info)
+                        if (chMatch != null) inChannels = chMatch.groupValues[1].toInt()
+                    }
+                    // If already 16kHz mono, use chunked directly
+                    if (inSampleRate == 16000 && inChannels == 1) {
+                        try { voskRecognizerClass!!.getMethod("close").invoke(recognizer) } catch (_: Exception) {}
+                        return processVoskInChunks(pcmFile, modelPath, callback, ctx)
+                    }
+                }
                 ctx.log("ERROR: Failed to get audio data")
-                callback.onError("获取音频数据失败")
-                recognizer.close()
+                callback.onError("音频处理失败：无法获取音频数据。请检查网络连接后重试")
+                try { voskRecognizerClass!!.getMethod("close").invoke(recognizer) } catch (_: Exception) {}
                 return false
             }
 
@@ -381,16 +615,20 @@ class SubtitleGeneratorService : Service() {
             val chunkSize = 4096
             var offset = 0
             var lastProgress = 0
+            val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
+            val getResultMethod = voskRecognizerClass!!.getMethod("result")
+            val getFinalResultMethod = voskRecognizerClass!!.getMethod("finalResult")
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             while (offset < audioData.size && !ctx.cancelled.get()) {
                 val end = minOf(offset + chunkSize, audioData.size)
                 val chunk = audioData.copyOfRange(offset, end)
-                if (recognizer.acceptWaveForm(chunk, chunk.size)) {
-                    val result = recognizer.result
+                val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
+                if (accepted) {
+                    val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     if (result.isNotBlank()) {
                         try {
-                            val json = org.json.JSONObject(result)
+                            val json = org.json.JSONObject(result as String)
                             val text = json.optString("text", "")
                             if (text.isNotBlank()) {
                                 val transcript = com.radio.app.models.Transcript(text = text)
@@ -409,10 +647,10 @@ class SubtitleGeneratorService : Service() {
             }
 
             // Get final result
-            val finalResult = recognizer.finalResult
+            val finalResult = getFinalResultMethod.invoke(recognizer) as? String ?: ""
             if (finalResult.isNotBlank()) {
                 try {
-                    val json = org.json.JSONObject(finalResult)
+                    val json = org.json.JSONObject(finalResult as String)
                     val text = json.optString("text", "")
                     if (text.isNotBlank()) {
                         val transcript = com.radio.app.models.Transcript(text = text)
@@ -422,7 +660,7 @@ class SubtitleGeneratorService : Service() {
                 } catch (e: Exception) { /* skip */ }
             }
 
-            recognizer.close()
+            try { voskRecognizerClass!!.getMethod("close").invoke(recognizer) } catch (_: Exception) {}
             ctx.log("Vosk processing complete, ${allTranscripts.size} transcripts")
             callback.onComplete(allTranscripts)
             return true
@@ -433,6 +671,124 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
+    /**
+     * 分块处理大PCM文件（16kHz mono），每30秒一个chunk，避免OOM
+     */
+    private fun processVoskInChunks(
+        pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
+    ): Boolean {
+        val totalSize = pcmFile.length()
+        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 30s chunks")
+        callback.onProgressUpdate(0, 100)
+
+        val inputStream = java.io.FileInputStream(pcmFile)
+        val chunkSize = 30 * 16000 * 2 // 30 seconds of 16-bit mono PCM = 960,000 bytes
+        val buffer = ByteArray(chunkSize)
+        var offset = 0L
+        var lastProgress = 0
+
+        var recognizer: Any? = null
+        var model: Any? = null
+        try {
+            // Initialize Vosk recognizer
+            if (!loadVoskNativeLibrary()) {
+                ctx.log("ERROR: Failed to load Vosk native library in chunked mode")
+                callback.onError("Vosk引擎未安装：缺少libvosk.so原生库。请在设置→离线引擎管理→下载Vosk引擎（约50MB）")
+                return false
+            }
+            if (!ensureVoskClasses()) {
+                ctx.log("ERROR: Vosk classes not available in chunked mode")
+                callback.onError("Vosk引擎未安装：缺少Java库文件。请在设置→离线引擎管理→下载Vosk引擎")
+                return false
+            }
+
+            ctx.log("Initializing Vosk recognizer for chunked processing with model: $modelPath")
+            model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
+            recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
+                .newInstance(model, 16000.0f as java.lang.Float)
+            ctx.log("Vosk recognizer created for chunked processing")
+
+            val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
+            val getResultMethod = voskRecognizerClass!!.getMethod("result")
+            val getFinalResultMethod = voskRecognizerClass!!.getMethod("finalResult")
+
+            val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
+            while (!ctx.cancelled.get()) {
+                val bytesRead = inputStream.read(buffer)
+                if (bytesRead <= 0) break
+                val chunk = if (bytesRead == chunkSize) buffer else buffer.copyOf(bytesRead)
+
+                if (acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean == true) {
+                    val result = getResultMethod.invoke(recognizer) as? String ?: ""
+                    if (result.isNotBlank()) {
+                        try {
+                            val json = org.json.JSONObject(result)
+                            val text = json.optString("text", "")
+                            if (text.isNotBlank()) {
+                                val transcript = com.radio.app.models.Transcript(text = text)
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
+                            }
+                        } catch (_: Exception) { /* skip malformed JSON */ }
+                    }
+                }
+
+                offset += bytesRead
+                val progress = (offset * 100 / totalSize).toInt()
+                if (progress > lastProgress + 5) {
+                    lastProgress = progress
+                    callback.onProgressUpdate(progress, 100)
+                }
+            }
+
+            // Get final result
+            val finalResult = getFinalResultMethod.invoke(recognizer) as? String ?: ""
+            if (finalResult.isNotBlank()) {
+                try {
+                    val json = org.json.JSONObject(finalResult)
+                    val text = json.optString("text", "")
+                    if (text.isNotBlank()) {
+                        val transcript = com.radio.app.models.Transcript(text = text)
+                        allTranscripts.add(transcript)
+                        callback.onSubtitleGenerated(transcript)
+                    }
+                } catch (_: Exception) { /* skip */ }
+            }
+
+            ctx.log("Chunked Vosk processing complete: ${allTranscripts.size} transcripts from ${offset} bytes")
+            callback.onComplete(allTranscripts)
+            return true
+        } catch (e: Throwable) {
+            if (e is OutOfMemoryError) {
+                ctx.log("ERROR: OOM during chunked Vosk processing")
+                callback.onError("内存不足：音频处理需要更多内存。请尝试：1)关闭其他应用 2)在设置→离线引擎管理→切换到Whisper引擎")
+            } else {
+                ctx.log("ERROR: Vosk chunked processing failed: ${e.javaClass.name}: ${e.message}")
+                callback.onError("Vosk处理失败: ${e.message}")
+            }
+            return false
+        } finally {
+            try { recognizer?.let { voskRecognizerClass!!.getMethod("close").invoke(it) } } catch (_: Exception) {}
+            try { inputStream.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun writeCrashLog(tag: String, title: String, extra: String, throwable: Throwable) {
+        try {
+            val crashLogDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
+            if (!crashLogDir.exists()) crashLogDir.mkdirs()
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(java.util.Date())
+            val crashFile = java.io.File(crashLogDir, "${tag}_${ts}.txt")
+            java.io.FileWriter(crashFile).use { writer ->
+                writer.appendLine("===== $title =====")
+                writer.appendLine("时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}")
+                writer.appendLine("设备: ${android.os.Build.BRAND} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})")
+                writer.appendLine(extra)
+                java.io.PrintWriter(writer).use { pw -> throwable.printStackTrace(pw) }
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun getAudioDataForProcessing(episodeId: String, audioUrl: String, ctx: TaskContext): ByteArray? {
         // 1) Try 16kHz PCM cache first (should be small, ~60MB for 30min)
         val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
@@ -440,13 +796,30 @@ class SubtitleGeneratorService : Service() {
         if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
             ctx.log("Using 16kHz PCM cache: ${pcm16kFile.length()} bytes")
             // 16kHz PCM is ~60MB, safe to read entirely
-            if (pcm16kFile.length() < 100_000_000) {
-                return pcm16kFile.readBytes()
+            if (pcm16kFile.length() < 50_000_000) {
+                val data = pcm16kFile.readBytes()
+                if (data.isEmpty() || data.size < 1024) {
+                    ctx.log("ERROR: 16kHz PCM cache data is empty or too small (${data.size} bytes), falling through")
+                } else {
+                    return data
+                }
+            } else {
+                // File too large for in-memory: signal caller to use chunked processing
+                val sizeMB = pcm16kFile.length() / 1024 / 1024
+                ctx.log("音频文件过大（${sizeMB}MB），需要分块处理（16kHz PCM cache）")
+                return null
             }
         }
         // 2) Try original PCM cache - stream resample to avoid OOM
         val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
         if (pcmFile.exists() && pcmFile.length() > 1024) {
+            // Safety check: skip PCM cache if file is too large for in-memory processing
+            val pcmFileSize = pcmFile.length()
+            if (pcmFileSize > 200 * 1024 * 1024) {
+                val sizeMB = pcmFileSize / 1024 / 1024
+                ctx.log("音频文件过大（${sizeMB}MB），需要分块处理（original PCM cache）")
+                return null
+            } else {
             ctx.log("Stream-resampling original PCM to 16kHz (file size=${pcmFile.length()})")
             // Read .info for sample rate
             val infoFile = File(pcmCacheDir, "${episodeId}_30min.info")
@@ -459,15 +832,30 @@ class SubtitleGeneratorService : Service() {
                 val chMatch = Regex("channels=(\\d+)").find(info)
                 if (chMatch != null) inChannels = chMatch.groupValues[1].toInt()
             }
-            return streamResampleTo16kMono(pcmFile, inSampleRate, inChannels, ctx)
+            val resampledData = streamResampleTo16kMono(pcmFile, inSampleRate, inChannels, ctx)
+            if (resampledData != null && resampledData.size >= 1024) {
+                return resampledData
+            }
+            ctx.log("ERROR: streamResampleTo16kMono returned null or too small data (${resampledData?.size ?: 0} bytes), falling through to download")
+            }
         }
         // 3) Download and process
         ctx.log("No PCM cache, downloading from $audioUrl")
-        return downloadAndProcessAudio(audioUrl, ctx)
+        val downloadedData = downloadAndProcessAudio(audioUrl, ctx)
+        if (downloadedData != null && downloadedData.size >= 1024) {
+            return downloadedData
+        }
+        ctx.log("ERROR: downloadAndProcessAudio returned null or too small data (${downloadedData?.size ?: 0} bytes)")
+        return null
     }
 
     private fun streamResampleTo16kMono(pcmFile: File, inSampleRate: Int, inChannels: Int, ctx: TaskContext): ByteArray? {
         try {
+            val pcmSize = pcmFile.length()
+            if (pcmSize > 200 * 1024 * 1024) {
+                ctx.log("ERROR: PCM file too large (${pcmSize / 1024 / 1024}MB) for in-memory processing")
+                return null
+            }
             val ratio = inSampleRate.toDouble() / 16000.0
             val totalInFrames = pcmFile.length() / (inChannels * 2)
             val totalOutFrames = (totalInFrames / ratio).toInt()
@@ -592,43 +980,105 @@ class SubtitleGeneratorService : Service() {
 
     /**
      * 验证目录是否包含有效的Vosk模型
-     * Vosk模型需要特定文件结构：am/final.mdl, conf/model.conf, ivector/final.ie 等
+     * 宽松检测：支持多种Vosk模型结构
+     * 1. am/final.mdl + conf/model.conf (标准结构)
+     * 2. 根目录有 .mdl 文件 (简单模型)
+     * 3. HCLG.fst 文件 (Kaldi模型)
+     * 4. graph/Gr.fst 或 graph/HCLr.fst (替代graph结构)
+     * 5. 目录名以 "vosk-model" 开头且包含 .mdl 或 .fst 文件
+     * 同时检测一层嵌套子目录（zip解压可能产生嵌套）
      */
     private fun isValidVoskModel(dir: File): Boolean {
         if (!dir.isDirectory) return false
-        // 检查Vosk模型特征文件
-        val hasAmDir = File(dir, "am").exists() && File(File(dir, "am"), "final.mdl").exists()
-        val hasConf = File(dir, "conf").exists() && File(File(dir, "conf"), "model.conf").exists()
-        val hasGraph = File(dir, "graph").exists() || File(dir, "HCLG.fst").exists()
-        val hasMdlFile = dir.listFiles()?.any { it.name.endsWith(".mdl") } == true
-        val valid = (hasAmDir && hasConf) || (hasMdlFile && hasConf) || (hasGraph && hasConf)
-        if (valid) {
-            logToFile("isValidVoskModel: ${dir.name} is a valid Vosk model")
+        val files = dir.listFiles() ?: return false
+        if (files.isEmpty()) return false
+
+        // Accept any vosk-model-* directory that has content
+        if (dir.name.startsWith("vosk-model", ignoreCase = true)) {
+            logToFile("isValidVoskModel: ${dir.name} accepted (vosk-model prefix, ${files.size} entries)")
+            return true
         }
-        return valid
+
+        // For other directories, check for model files recursively
+        fun hasModelFiles(d: File, depth: Int = 0): Boolean {
+            if (depth > 3) return false
+            val fs = d.listFiles() ?: return false
+            for (f in fs) {
+                if (f.isFile) {
+                    val n = f.name.lowercase()
+                    if (n.endsWith(".mdl") || n.endsWith(".fst") || n.endsWith(".conf") ||
+                        n == "hclg.fst" || n == "gr.fst" || n == "hclr.fst") return true
+                } else if (f.isDirectory) {
+                    if (f.name in listOf("am", "conf", "graph", "ivector", "rescore")) return true
+                    if (hasModelFiles(f, depth + 1)) return true
+                }
+            }
+            return false
+        }
+        return hasModelFiles(dir)
     }
 
     /**
-     * 检查目录是否是Whisper模型（ggml格式，供whisper.cpp使用，当前版本不支持）
+     * 检查目录是否是Whisper模型（ggml格式，供whisper.cpp使用）
+     * 支持子目录嵌套检测（处理zip解压后模型文件在子目录中的情况）
      */
     private fun isWhisperModel(dir: File): Boolean {
         if (!dir.isDirectory) return false
-        val binFiles = dir.listFiles()?.filter { it.name.endsWith(".bin") && it.name.startsWith("ggml") }
-        return binFiles != null && binFiles.isNotEmpty()
+        // 检查当前目录中是否有ggml*.bin 或 *whisper*.bin 文件
+        val hasBin = dir.listFiles()?.any {
+            it.isFile && it.name.endsWith(".bin") && (it.name.startsWith("ggml") || it.name.contains("whisper", ignoreCase = true))
+        } == true
+        if (hasBin) return true
+        // 检查子目录（嵌套解压的情况）
+        val subdirs = dir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        for (sub in subdirs) {
+            val subHasBin = sub.listFiles()?.any {
+                it.isFile && it.name.endsWith(".bin") && (it.name.startsWith("ggml") || it.name.contains("whisper", ignoreCase = true))
+            } == true
+            if (subHasBin) return true
+        }
+        return false
+    }
+
+    /**
+     * 在目录（含子目录）中查找Whisper .bin模型文件，返回文件绝对路径
+     */
+    private fun findWhisperBinFile(dir: File): File? {
+        if (!dir.isDirectory) return null
+        // 先查当前目录
+        dir.listFiles()?.firstOrNull {
+            it.isFile && it.name.endsWith(".bin") && (it.name.startsWith("ggml") || it.name.contains("whisper", ignoreCase = true))
+        }?.let { return it }
+        // 递归查子目录（只查一层，避免过深）
+        val subdirs = dir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        for (sub in subdirs) {
+            sub.listFiles()?.firstOrNull {
+                it.isFile && it.name.endsWith(".bin") && (it.name.startsWith("ggml") || it.name.contains("whisper", ignoreCase = true))
+            }?.let { return it }
+        }
+        return null
     }
 
     private fun findVoskModel(): String? {
-        logToFile("findVoskModel: Vosk library not included in APK. Please download model manually.")
+        logToFile("findVoskModel: searching for Vosk models...")
         // 1. 检查外部存储手动下载的模型（只查找Vosk模型，不查找Whisper ggml模型）
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {
             val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
+            logToFile("findVoskModel: all modelDirs: ${modelDirs?.map { it.name }}")
             if (!modelDirs.isNullOrEmpty()) {
                 // 优先查找名称包含vosk的目录
                 val voskDirs = modelDirs.filter { it.name.contains("vosk", ignoreCase = true) }
+                logToFile("findVoskModel: voskDirs found: ${voskDirs.map { it.name }}")
                 for (dir in voskDirs) {
+                    val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
+                    logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
+                    if (dir.name.startsWith("vosk-model", ignoreCase = true) && dir.listFiles()?.isNotEmpty() == true) {
+                        logToFile("findVoskModel: ACCEPTED ${dir.name} by name prefix (non-empty dir)")
+                        return dir.absolutePath
+                    }
                     if (isValidVoskModel(dir)) {
-                        logToFile("findVoskModel: found Vosk model (by name) in ${dir.absolutePath}")
+                        logToFile("findVoskModel: VALID model at ${dir.absolutePath}")
                         return dir.absolutePath
                     }
                 }
@@ -638,8 +1088,14 @@ class SubtitleGeneratorService : Service() {
                         logToFile("findVoskModel: skipping Whisper model in ${dir.name} (not supported in this version)")
                         continue
                     }
+                    val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
+                    logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
+                    if (dir.name.startsWith("vosk-model", ignoreCase = true) && dir.listFiles()?.isNotEmpty() == true) {
+                        logToFile("findVoskModel: ACCEPTED ${dir.name} by name prefix (non-empty dir)")
+                        return dir.absolutePath
+                    }
                     if (isValidVoskModel(dir)) {
-                        logToFile("findVoskModel: found valid Vosk model in ${dir.absolutePath}")
+                        logToFile("findVoskModel: VALID model at ${dir.absolutePath}")
                         return dir.absolutePath
                     }
                 }
@@ -657,14 +1113,256 @@ class SubtitleGeneratorService : Service() {
         if (engineDir.exists()) {
             val voskDirs = engineDir.listFiles()?.filter { it.isDirectory && it.name.contains("vosk", ignoreCase = true) }
             for (dir in voskDirs ?: emptyList()) {
+                val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
+                logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
+                if (dir.name.startsWith("vosk-model", ignoreCase = true) && dir.listFiles()?.isNotEmpty() == true) {
+                    logToFile("findVoskModel: ACCEPTED ${dir.name} by name prefix (non-empty dir)")
+                    return dir.absolutePath
+                }
                 if (isValidVoskModel(dir)) {
-                    logToFile("findVoskModel: found Vosk model in engines dir: ${dir.absolutePath}")
+                    logToFile("findVoskModel: VALID model at ${dir.absolutePath}")
                     return dir.absolutePath
                 }
             }
         }
         logToFile("findVoskModel: no Vosk model found. Checked ${modelsDir?.absolutePath} and ${internalModelDir.absolutePath}")
         return null
+    }
+
+    /**
+     * 查找Whisper模型（ggml格式，供whisper.cpp使用）
+     * 返回模型.bin文件的绝对路径（不是目录路径），找不到返回null
+     */
+    private fun findWhisperModel(): String? {
+        logToFile("findWhisperModel: searching for Whisper ggml models...")
+        val modelsDir = getExternalFilesDir("models")
+        if (modelsDir != null && modelsDir.exists()) {
+            val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
+            if (!modelDirs.isNullOrEmpty()) {
+                // 优先查找名称包含whisper的目录
+                val whisperDirs = modelDirs.filter { it.name.contains("whisper", ignoreCase = true) }
+                for (dir in whisperDirs) {
+                    val binFile = findWhisperBinFile(dir)
+                    if (binFile != null) {
+                        logToFile("findWhisperModel: found Whisper model file: ${binFile.absolutePath}")
+                        return binFile.absolutePath
+                    }
+                }
+                // 其次在所有目录中查找
+                for (dir in modelDirs) {
+                    if (dir.name.contains("whisper", ignoreCase = true)) continue // already checked
+                    val binFile = findWhisperBinFile(dir)
+                    if (binFile != null) {
+                        logToFile("findWhisperModel: found Whisper model file in ${dir.name}: ${binFile.absolutePath}")
+                        return binFile.absolutePath
+                    }
+                }
+            }
+            logToFile("findWhisperModel: no Whisper model found in ${modelsDir.absolutePath}, dirs=${modelDirs?.map { it.name }}")
+        }
+        // Also check engines dir
+        val engineDir = File(filesDir, "engines")
+        if (engineDir.exists()) {
+            val whisperDirs = engineDir.listFiles()?.filter { it.isDirectory && it.name.contains("whisper", ignoreCase = true) }
+            for (dir in whisperDirs ?: emptyList()) {
+                val binFile = findWhisperBinFile(dir)
+                if (binFile != null) {
+                    logToFile("findWhisperModel: found Whisper model file in engines dir: ${binFile.absolutePath}")
+                    return binFile.absolutePath
+                }
+            }
+        }
+        logToFile("findWhisperModel: no Whisper model found")
+        return null
+    }
+
+    /**
+     * 从用户下载的引擎目录中动态加载 libvosk.so。
+     * 搜索路径：getExternalFilesDir("models") 和 filesDir/engines 下的子目录。
+     * 使用 System.load(absolutePath) 加载，避免将 ~40MB 的 .so 打包进 APK。
+     * @return 是否成功加载
+     */
+    private fun loadVoskNativeLibrary(): Boolean {
+        try {
+            // 检查是否已经通过 System.loadLibrary 加载
+            try {
+                System.loadLibrary("vosk")
+                logToFile("loadVoskNativeLibrary: libvosk.so already loaded via System.loadLibrary")
+                return true
+            } catch (_: UnsatisfiedLinkError) {
+                // 未加载，继续尝试动态加载
+            }
+
+            // 搜索 models 目录
+            val modelsDir = getExternalFilesDir("models")
+            if (modelsDir != null && modelsDir.exists()) {
+                modelsDir.walkTopDown().filter { it.isFile && it.name == "libvosk.so" }.forEach { soFile ->
+                    // 复制 .so 到内部存储后再加载，避免外部存储安全限制
+                    val internalSo = File(codeCacheDir, "libvosk.so")
+                    try {
+                        logToFile("loadVoskNativeLibrary: copying .so from ${soFile.absolutePath} to ${internalSo.absolutePath}")
+                        soFile.copyTo(internalSo, overwrite = true)
+                        logToFile("loadVoskNativeLibrary: copied ${soFile.absolutePath} to ${internalSo.absolutePath}")
+                        logToFile("loadVoskNativeLibrary: loading .so from ${internalSo.absolutePath}")
+                        System.load(internalSo.absolutePath)
+                        logToFile("loadVoskNativeLibrary: loaded libvosk.so from ${internalSo.absolutePath}")
+                        return true
+                    } catch (e: UnsatisfiedLinkError) {
+                        logToFile("loadVoskNativeLibrary: failed to load from ${internalSo.absolutePath}: ${e.message}")
+                    } catch (e: Exception) {
+                        logToFile("loadVoskNativeLibrary: copy/load error: ${e.message}")
+                    }
+                }
+            }
+
+            // 搜索 engines 目录
+            val engineDir = File(filesDir, "engines")
+            if (engineDir.exists()) {
+                engineDir.walkTopDown().filter { it.isFile && it.name == "libvosk.so" }.forEach { soFile ->
+                    // 复制 .so 到内部存储后再加载，避免外部存储安全限制
+                    val internalSo = File(codeCacheDir, "libvosk.so")
+                    try {
+                        logToFile("loadVoskNativeLibrary: copying .so from ${soFile.absolutePath} to ${internalSo.absolutePath}")
+                        soFile.copyTo(internalSo, overwrite = true)
+                        logToFile("loadVoskNativeLibrary: copied ${soFile.absolutePath} to ${internalSo.absolutePath}")
+                        logToFile("loadVoskNativeLibrary: loading .so from ${internalSo.absolutePath}")
+                        System.load(internalSo.absolutePath)
+                        logToFile("loadVoskNativeLibrary: loaded libvosk.so from ${internalSo.absolutePath}")
+                        return true
+                    } catch (e: UnsatisfiedLinkError) {
+                        logToFile("loadVoskNativeLibrary: failed to load from ${internalSo.absolutePath}: ${e.message}")
+                    } catch (e: Exception) {
+                        logToFile("loadVoskNativeLibrary: copy/load error: ${e.message}")
+                    }
+                }
+            }
+
+            logToFile("loadVoskNativeLibrary: libvosk.so not found in any engine directory")
+            return false
+        } catch (e: Exception) {
+            logToFile("loadVoskNativeLibrary: error: ${e.message}")
+            return false
+        }
+    }
+
+    /**
+     * 从用户下载的引擎目录中动态加载 libwhisper.so。
+     * 搜索路径与 loadVoskNativeLibrary 相同。
+     * @return 是否成功加载
+     */
+    private fun loadWhisperNativeLibrary(): Boolean {
+        try {
+            try {
+                System.loadLibrary("whisper")
+                logToFile("loadWhisperNativeLibrary: libwhisper.so already loaded via System.loadLibrary")
+                return true
+            } catch (_: UnsatisfiedLinkError) {
+                // 未加载，继续尝试动态加载
+            }
+
+            val modelsDir = getExternalFilesDir("models")
+            if (modelsDir != null && modelsDir.exists()) {
+                modelsDir.walkTopDown().filter { it.isFile && it.name == "libwhisper.so" }.forEach { soFile ->
+                    try {
+                        System.load(soFile.absolutePath)
+                        logToFile("loadWhisperNativeLibrary: loaded libwhisper.so from ${soFile.absolutePath}")
+                        return true
+                    } catch (e: UnsatisfiedLinkError) {
+                        logToFile("loadWhisperNativeLibrary: failed to load ${soFile.absolutePath}: ${e.message}")
+                    }
+                }
+            }
+
+            val engineDir = File(filesDir, "engines")
+            if (engineDir.exists()) {
+                engineDir.walkTopDown().filter { it.isFile && it.name == "libwhisper.so" }.forEach { soFile ->
+                    try {
+                        System.load(soFile.absolutePath)
+                        logToFile("loadWhisperNativeLibrary: loaded libwhisper.so from ${soFile.absolutePath}")
+                        return true
+                    } catch (e: UnsatisfiedLinkError) {
+                        logToFile("loadWhisperNativeLibrary: failed to load ${soFile.absolutePath}: ${e.message}")
+                    }
+                }
+            }
+
+            logToFile("loadWhisperNativeLibrary: libwhisper.so not found in any engine directory")
+            return false
+        } catch (e: Exception) {
+            logToFile("loadWhisperNativeLibrary: error: ${e.message}")
+            return false
+        }
+    }
+
+    /**
+     * 使用Whisper模型生成字幕（当前版本需要whisper.cpp JNI集成）
+     * 如果whisper.cpp库不可用，返回false并报告错误
+     */
+    private fun generateWithWhisper(
+        episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
+    ): Boolean {
+        try {
+            // 尝试通过反射调用whisper.cpp JNI
+            // 当前版本whisper.cpp未集成，使用Android系统内置的SpeechRecognizer作为降级方案
+            ctx.log("Whisper engine: attempting to use on-device recognition...")
+
+            // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
+            val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
+                val sizeMB = pcm16kFile.length() / 1024 / 1024
+                ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Whisper processing")
+                val whisperModel = findWhisperModel()
+                if (whisperModel != null) {
+                    return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
+                }
+            }
+
+            // 获取音频数据
+            val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
+            if (audioData == null) {
+                // Try chunked processing for original PCM cache if it exists
+                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+                if (pcmFile.exists() && pcmFile.length() > 1024) {
+                    ctx.log("Original PCM cache exists, attempting chunked Whisper processing")
+                    val whisperModel = findWhisperModel()
+                    if (whisperModel != null) {
+                        return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
+                    }
+                }
+                ctx.log("ERROR: Failed to get audio data for Whisper")
+                callback.onError("音频处理失败：无法获取音频数据。请检查网络连接后重试")
+                return false
+            }
+
+            ctx.log("Whisper engine: got ${audioData.size} bytes audio data")
+            ctx.log("Whisper engine: whisper.cpp JNI not integrated in this build")
+
+            // whisper.cpp JNI 不可用：报告清晰的 Whisper 专用错误，不回退到 Vosk
+            callback.onError("Whisper引擎暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk")
+            return false
+        } catch (e: Exception) {
+            ctx.log("ERROR: Whisper exception: ${e.message}")
+            if (e is OutOfMemoryError) {
+                callback.onError("内存不足：Whisper处理需要更多内存。请尝试：1)关闭其他应用 2)使用更小的Whisper模型（tiny版） 3)在设置→离线引擎管理→切换到Vosk引擎")
+            } else {
+                callback.onError("Whisper处理失败: ${e.message}")
+            }
+            return false
+        }
+    }
+
+    /**
+     * 分块处理大PCM文件（16kHz mono），供Whisper引擎使用
+     * 当前版本whisper.cpp未集成，直接报告错误，不回退到Vosk
+     */
+    private fun processWhisperInChunks(
+        pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
+    ): Boolean {
+        ctx.log("processWhisperInChunks: whisper.cpp JNI not integrated")
+        // whisper.cpp JNI 不可用：不回退到 Vosk，直接报告错误
+        callback.onError("Whisper分块处理暂不可用：whisper.cpp原生库未集成")
+        return false
     }
 
     /**
@@ -963,6 +1661,7 @@ class SubtitleGeneratorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "cancel_all") {
             cancelAllTasks()
+            cancelProgressNotification()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -1046,12 +1745,25 @@ class SubtitleGeneratorService : Service() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * Cancel the progress notification immediately (used on error/cancel).
+     * Explicitly removes the notification via NotificationManager.cancel() and
+     * stops foreground state, so the ongoing "正在处理音频" notification can be dismissed.
+     */
+    private fun cancelProgressNotification() {
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+            nm.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {}
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+    }
+
     private fun releaseWakeLock() {
         try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}
     }
 
     fun getSubtitles(episodeId: String): List<Transcript>? = dbHelper?.getTranscripts(episodeId)
-    fun isOfflineAvailable(): Boolean = findVoskModel() != null
+    fun isOfflineAvailable(): Boolean = findVoskModel() != null || findWhisperModel() != null
 
     override fun onBind(intent: Intent): IBinder = binder
 

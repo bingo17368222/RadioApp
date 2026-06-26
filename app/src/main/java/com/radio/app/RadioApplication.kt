@@ -15,6 +15,7 @@ class RadioApplication : Application() {
         const val CHANNEL_ID = "radio_playback_channel"
         const val NOTIFICATION_ID = 1
         @Volatile private var logDirCache: File? = null
+        @Volatile private var crashLogDirCache: File? = null
 
         fun getLogDir(context: android.content.Context): File {
             logDirCache?.let { return it }
@@ -32,6 +33,26 @@ class RadioApplication : Application() {
                 val fallback = File(context.getExternalFilesDir(null), "RadioApp/logs")
                 if (!fallback.exists()) fallback.mkdirs()
                 logDirCache = fallback
+                return fallback
+            }
+        }
+
+        fun getCrashLogDir(): File {
+            crashLogDirCache?.let { return it }
+            // 使用 /sdcard/RadioApp/logs/crash/（用户易于访问崩溃日志）
+            val crashDir = File(Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
+            try {
+                if (!crashDir.exists()) crashDir.mkdirs()
+                val testFile = File(crashDir, ".write_test")
+                testFile.writeText("test")
+                testFile.delete()
+                crashLogDirCache = crashDir
+                return crashDir
+            } catch (_: Exception) {
+                // 权限不足，回退到应用私有目录
+                val fallback = File(Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
+                if (!fallback.exists()) fallback.mkdirs()
+                crashLogDirCache = fallback
                 return fallback
             }
         }

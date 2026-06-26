@@ -116,6 +116,11 @@ class PlayerActivity : AppCompatActivity() {
         fun getLastStartedUrl(ctx: android.content.Context): String? {
             return ctx.getSharedPreferences(PREF_NAME, android.content.Context.MODE_PRIVATE).getString(KEY_LAST_STARTED_URL, null)
         }
+
+        fun getSavedPositionForEpisode(ctx: android.content.Context, episodeId: String): Long {
+            return ctx.getSharedPreferences("playback_positions", android.content.Context.MODE_PRIVATE)
+                .getLong(episodeId, -1L)
+        }
     }
 
     // 广播接收器：处理连续播放、下一集等事件
@@ -209,8 +214,8 @@ class PlayerActivity : AppCompatActivity() {
             writeJitterLog("onServiceConnected: sameEpisode=$sameEpisode, svcStarted=$svcStarted, isFreshStart=$isFreshStart, playbackInProgress=${isPlaybackInProgress(this@PlayerActivity)}")
 
             // 核心防抖：如果服务已经播放同一URL，只更新UI（防止抖动）
-            if (sameEpisode) {
-                setPlaybackInProgress(this@PlayerActivity, null)  // Clear restart flag on success
+            if (sameEpisode && svcStarted) {
+                setPlaybackInProgress(this@PlayerActivity, null)
                 val msg = "JITTER-GUARD: same episode playing, only update UI"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
@@ -220,62 +225,79 @@ class PlayerActivity : AppCompatActivity() {
                 setupPreCacheList()
                 return@onServiceConnected
             }
-            
-            // 关键修复：服务正在播放不同节目
-            // 如果用户主动点击节目（isFreshStart），播放用户选择的节目
-            // 如果只是系统重建Activity，同步到服务当前节目（防止抖动）
-            if (svcStarted) {
-                if (isFreshStart) {
-                    // CRITICAL: Don't start if we already started the same URL
-                    if (getLastStartedUrl(this@PlayerActivity) == newUrl && isPlaybackInProgress(this@PlayerActivity)) {
-                        val skipMsg = "Fresh start: already starting same URL, skipping: $newUrl"
-                        android.util.Log.d("PlayerActivity", skipMsg)
-                        writeJitterLog(skipMsg)
-                        return@onServiceConnected
-                    }
-                    val msg = "Fresh start, playing user's selection: $newUrl"
-                    android.util.Log.d("PlayerActivity", msg)
-                    writeJitterLog(msg)
-                    // 继续执行下面的播放逻辑
+
+            // JITTER-GUARD: Service正在播放不同的episode（如自动切集后），同步Activity到Service的当前状态
+            // Service是播放状态的唯一真相源，不要强制切回Activity中过时的episode
+            if (svcStarted && !sameEpisode) {
+                // Try to find the service's current episode by URL
+                val svcMatch = episodeList.firstOrNull { it.audioUrl == svcUrl }
+                if (svcMatch != null) {
+                    val syncMsg = "JITTER-GUARD: service playing different episode (svc=${svcMatch.title}, url matched), syncing Activity to service instead of restarting"
+                    android.util.Log.d("PlayerActivity", syncMsg)
+                    writeJitterLog(syncMsg)
+                    currentEpisode = svcMatch
+                    currentEpisodeIndex = episodeList.indexOf(svcMatch).coerceAtLeast(0)
                 } else {
-                    setPlaybackInProgress(this@PlayerActivity, null)  // Clear restart flag on sync
-                    val svcEpisode = playbackService?.getCurrentEpisode()
-                    val msg = if (svcEpisode != null) {
-                        "Activity recreation, syncing to service: ${svcEpisode.title}"
-                    } else {
-                        "Activity recreation, syncing to service URL"
-                    }
-                    android.util.Log.d("PlayerActivity", msg)
-                    writeJitterLog(msg)
-                    if (svcEpisode != null) {
-                        currentEpisode = svcEpisode
-                        val idx = episodeList.indexOfFirst { it.id == svcEpisode.id }
-                        if (idx >= 0) currentEpisodeIndex = idx
-                        saveLastEpisode()
-                    }
-                    voiceSegments = generateSimulatedSegments()
-                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
-                    updateUI()
-                    startCacheProgressUpdater()
-                    restoreBackgroundResults()
-                    setupPreCacheList()
-                    return@onServiceConnected
+                    // Can't find episode by URL, but service is playing - just update UI, don't restart
+                    val syncMsg = "JITTER-GUARD: service playing unknown episode (svcUrl=$svcUrl), updating UI without restarting"
+                    android.util.Log.d("PlayerActivity", syncMsg)
+                    writeJitterLog(syncMsg)
                 }
+                saveLastEpisode()
+                setPlaybackInProgress(this@PlayerActivity, null)
+                updateUI()
+                startCacheProgressUpdater()
+                restoreBackgroundResults()
+                setupPreCacheList()
+                return@onServiceConnected
             }
-            
-            // Service idle, starting new playback
-            // CRITICAL: Don't start playback if we already started the same episode URL recently
-            // This prevents multiple rapid relaunches from causing jitter
+
+            // JITTER-PREVENT: skip if we already started this exact URL
             if (getLastStartedUrl(this@PlayerActivity) == newUrl && isPlaybackInProgress(this@PlayerActivity)) {
                 val msg = "Already starting playback for same URL, skipping duplicate: $newUrl"
                 android.util.Log.d("PlayerActivity", msg)
                 writeJitterLog(msg)
                 return@onServiceConnected
             }
+            
+            // 需要开始/重新开始播放
+            // 如果服务正在初始化播放，跳过重复启动
+            if (playbackService?.playbackInitializing == true) {
+                val msg = "Service is initializing playback, skipping duplicate start"
+                android.util.Log.d("PlayerActivity", msg)
+                writeJitterLog(msg)
+                updateUI()
+                startCacheProgressUpdater()
+                restoreBackgroundResults()
+                setupPreCacheList()
+                return@onServiceConnected
+            }
 
             setPlaybackInProgress(this@PlayerActivity, newUrl)
-            android.util.Log.d("PlayerActivity", "Service idle, starting new playback for $newUrl")
-            writeJitterLog("Starting new playback for $newUrl")
+
+            // Show saved position immediately to prevent 0:00 flash
+            if (!isFreshStart && currentEpisode != null) {
+                val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
+                if (savedPos > 0) {
+                    binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                    binding.seekBar.progress = savedPos.toInt()
+                    binding.tvLiveIndicator.text = "恢复中..."
+                    writeJitterLog("Pre-setting UI to saved position: ${savedPos}ms before playEpisode")
+                }
+            }
+
+            val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
+            val msg = if (sameEpisode && !svcStarted) {
+                "Same episode, service was killed, restoring from saved position: ${savedPos}ms"
+            } else {
+                "Different episode, starting new playback: ${currentEpisode?.title} (was svc=${playbackService?.getCurrentEpisode()?.title})"
+            }
+            android.util.Log.d("PlayerActivity", msg)
+            writeJitterLog(msg)
+
+            if (!svcStarted) {
+                writeJitterLog("Service was killed, will restore playback. savedPos=${savedPos}ms, episode=${currentEpisode?.title}")
+            }
 
             // If episode list is empty (activity recreated without intent), try to restore from prefs
             if (episodeList.isEmpty()) {
@@ -293,6 +315,15 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
+            if (episodeList.isEmpty()) {
+                // Try to get from intent
+                val intentEpisodes = intent?.getSerializableExtra("episode_list") as? ArrayList<com.radio.app.models.Episode>
+                if (!intentEpisodes.isNullOrEmpty()) {
+                    episodeList = intentEpisodes
+                    android.util.Log.d("PlayerActivity", "Restored episode list from intent: ${episodeList.size} episodes")
+                }
+            }
+
             if (currentStation != null) {
                 playbackService?.playStation(currentStation!!)
             } else {
@@ -306,6 +337,12 @@ class PlayerActivity : AppCompatActivity() {
                             val msg = "Service was killed, restoring saved position: ${savedPosition}ms"
                             android.util.Log.d("PlayerActivity", msg)
                             writeJitterLog(msg)
+                            if (savedPosition > 0) {
+                                // Show saved position immediately to prevent 0:00 flash
+                                binding.tvCurrentTime.text = "${formatTime(savedPosition.toInt())} / --:--"
+                                binding.seekBar.progress = savedPosition.toInt()
+                                binding.tvLiveIndicator.text = "恢复中..."
+                            }
                             playbackService?.playEpisode(episode, false, savedPosition)
                         }
                     }
@@ -319,6 +356,7 @@ class PlayerActivity : AppCompatActivity() {
                     updateSegmentsUI()
                 }
             }
+            restoreBackgroundResults()
             startCacheProgressUpdater()
         }
 
@@ -336,8 +374,18 @@ class PlayerActivity : AppCompatActivity() {
             val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), category)
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "${category}.log")
+            // Add version header on first write
+            if (!logFile.exists()) {
+                logFile.appendText("=== RadioApp v2.0.18 ===\n")
+            }
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
             java.io.FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            // Limit file size to 500KB
+            if (logFile.length() > 500_000) {
+                val lines = logFile.readLines()
+                val keep = lines.takeLast(500)
+                logFile.writeText(keep.joinToString("\n") + "\n")
+            }
         } catch (_: Exception) {}
     }
     private fun writeJitterLog(msg: String) = writeLog("jitter", msg)
@@ -547,9 +595,9 @@ class PlayerActivity : AppCompatActivity() {
         currentEpisodeIndex = intent.getIntExtra("episode_index", -1)
 
         // 真正的新鲜启动：有有效的时间戳，且该时间戳尚未被处理过，
-        // 且intent中有实际节目数据，且intent action不为null（系统重建时为null）
-        val hasIntentAction = intent.action != null
-        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled && currentEpisode != null && hasIntentAction
+        // 且intent中有实际节目数据
+        // 注意：不再依赖 intent.action != null，因为从通知栏/最近任务进入时action可能为null
+        isFreshStart = freshLaunchTs > 0 && freshLaunchTs > lastHandled && currentEpisode != null
         if (isFreshStart) {
             markFreshLaunchHandled(this, freshLaunchTs)
         }
@@ -1527,12 +1575,33 @@ class PlayerActivity : AppCompatActivity() {
         val newEpisode = intent.getSerializableExtra("episode") as? Episode
         if (newEpisode != null) {
             currentEpisode = newEpisode
-            val idx = episodeList.indexOfFirst { it.id == newEpisode.id }
-            if (idx >= 0) currentEpisodeIndex = idx
+            // Update episode list from intent
+            val intentEpisodes = intent.getSerializableExtra("episode_list") as? ArrayList<com.radio.app.models.Episode>
+            if (!intentEpisodes.isNullOrEmpty()) {
+                episodeList = intentEpisodes
+                android.util.Log.d("PlayerActivity", "onNewIntent: updated episodeList from intent, size=${episodeList.size}")
+            }
+            val intentIndex = intent.getIntExtra("episode_index", -1)
+            if (intentIndex >= 0 && intentIndex < episodeList.size) {
+                currentEpisodeIndex = intentIndex
+            } else {
+                val idx = episodeList.indexOfFirst { it.id == newEpisode.id }
+                if (idx >= 0) currentEpisodeIndex = idx
+            }
             writeJitterLog("onNewIntent: updated currentEpisode to ${newEpisode.title}")
-            // If service is bound, play the new episode
+            // Check if same episode is already playing
             if (serviceBound && playbackService != null) {
-                playbackService?.playEpisode(newEpisode, false)
+                val sameEpisode = playbackService?.isSameEpisodePlaying(newEpisode.audioUrl ?: "") ?: false
+                if (sameEpisode) {
+                    writeJitterLog("onNewIntent: same episode already playing, skip restart")
+                } else {
+                    val savedPos = getSavedPositionForEpisode(this, newEpisode.id)
+                    playbackService?.playEpisode(newEpisode, false, savedPos)
+                    writeJitterLog("onNewIntent: starting playback for ${newEpisode.title}")
+                }
+            } else {
+                // Service not bound yet - episode will be played when service connects
+                writeJitterLog("onNewIntent: service not bound, will play when connected: ${newEpisode.title}")
             }
         }
         // Update the intent so that onCreate/getIntent can use the new intent

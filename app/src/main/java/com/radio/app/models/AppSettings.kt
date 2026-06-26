@@ -184,11 +184,30 @@ class AppSettings private constructor() {
 
     /**
      * 按节目名称判断是否不喜欢（每天这个节目都不喜欢）
+     * 兼容《》括号： disliked列表可能有《标题》，但实际标题可能没有《》
      */
     fun isDislikedByTitle(stationId: String?, title: String?): Boolean {
         if (stationId.isNullOrBlank() || title.isNullOrBlank()) return false
         val key = "$stationId::$title"
-        return dislikedEpisodes.contains(key)
+        if (dislikedEpisodes.contains(key)) return true
+        // 尝试去除《》括号后匹配
+        val strippedTitle = title.replace(Regex("^《|》$"), "")
+        if (strippedTitle != title) {
+            val strippedKey = "$stationId::$strippedTitle"
+            if (dislikedEpisodes.contains(strippedKey)) return true
+        }
+        // 尝试添加《》括号后匹配
+        val wrappedTitle = "《$title》"
+        val wrappedKey = "$stationId::$wrappedTitle"
+        if (dislikedEpisodes.contains(wrappedKey)) return true
+        // 也尝试从disliked列表中去除《》后匹配
+        for (dislikedKey in dislikedEpisodes) {
+            if (!dislikedKey.startsWith("$stationId::")) continue
+            val dislikedTitle = dislikedKey.removePrefix("$stationId::")
+            val strippedDisliked = dislikedTitle.replace(Regex("^《|》$"), "")
+            if (strippedDisliked == title || strippedDisliked == strippedTitle) return true
+        }
+        return false
     }
 
     fun toggleDislikedEpisode(context: Context, episode: com.radio.app.models.Episode): Boolean {
@@ -196,7 +215,28 @@ class AppSettings private constructor() {
         val title = episode.title ?: return false
         val key = "$stationId::$title"
         return if (dislikedEpisodes.contains(key)) {
+            // 移除精确匹配的 key
             dislikedEpisodes.remove(key)
+            // 同时尝试移除模糊匹配的版本（有/无《》括号）
+            val strippedTitle = title.replace(Regex("^《|》$"), "")
+            if (strippedTitle != title) {
+                val strippedKey = "$stationId::$strippedTitle"
+                dislikedEpisodes.remove(strippedKey)
+            }
+            val wrappedTitle = "《$title》"
+            val wrappedKey = "$stationId::$wrappedTitle"
+            dislikedEpisodes.remove(wrappedKey)
+            // 也尝试从 disliked 列表中去除《》后匹配
+            val toRemove = mutableListOf<String>()
+            for (dislikedKey in dislikedEpisodes) {
+                if (!dislikedKey.startsWith("$stationId::")) continue
+                val dislikedTitle = dislikedKey.removePrefix("$stationId::")
+                val strippedDisliked = dislikedTitle.replace(Regex("^《|》$"), "")
+                if (strippedDisliked == title || strippedDisliked == strippedTitle) {
+                    toRemove.add(dislikedKey)
+                }
+            }
+            dislikedEpisodes.removeAll(toRemove)
             save(context)
             false
         } else {

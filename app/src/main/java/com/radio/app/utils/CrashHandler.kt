@@ -46,8 +46,8 @@ class CrashHandler private constructor() : Thread.UncaughtExceptionHandler {
         val time = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault()).format(Date())
         val fileName = "crash_${time}.txt"
 
-        // 写入应用外部存储目录（用户可直接访问）
-        val dir = File(appContext.getExternalFilesDir(null), "crashes")
+        // 写入 /sdcard/RadioApp/logs/crash/ 目录（用户可直接访问）
+        val dir = com.radio.app.RadioApplication.getCrashLogDir()
         if (!dir.exists()) dir.mkdirs()
         val file = File(dir, fileName)
 
@@ -86,6 +86,6 @@ class CrashHandler private constructor() : Thread.UncaughtExceptionHandler {
     }
 
     fun getCrashLogDir(): File {
-        return File(appContext.getExternalFilesDir(null), "crashes")
+        return com.radio.app.RadioApplication.getCrashLogDir()
     }
 }
