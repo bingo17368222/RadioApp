@@ -80,21 +80,28 @@ jobs:
           path: build.log
           if-no-files-found: warn
 
+      - name: Get version name
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle | head -1 | sed 's/.*versionName "\([^"]*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: radio-app-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: RadioApp-v${{ steps.version.outputs.version }}
+          path: app/build/outputs/apk/debug/RadioApp-v*.apk
           if-no-files-found: error
 
       - name: Upload to GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: debug-latest
-          name: "Debug Build v${{ github.run_number }}"
-          body: "Auto-generated debug APK v${{ github.run_number }}"
-          files: app/build/outputs/apk/debug/app-debug.apk
+          tag_name: v${{ steps.version.outputs.version }}
+          name: "RadioApp v${{ steps.version.outputs.version }}"
+          body: "Auto-generated debug APK v${{ steps.version.outputs.version }}"
+          files: app/build/outputs/apk/debug/RadioApp-v*.apk
           prerelease: true
           fail_on_unmatched_files: false
         env:

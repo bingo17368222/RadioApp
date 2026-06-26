@@ -688,7 +688,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         if (precacheCompletedCount <= 0) {
             isPrecaching = false
-            writeServiceLog("notification", "showPrecacheCompleteNotification: no new files pre-cached (count=0), isPrecaching=false")
+            precacheNotificationShown = true  // Prevent repeated calls with count=0
+            writeServiceLog("notification", "showPrecacheCompleteNotification: no new files pre-cached (count=0), setting precacheNotificationShown=true to prevent repeats")
             return
         }
         val count = precacheCompletedCount
@@ -1612,6 +1613,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
+            .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
             .setOngoing(true)
@@ -1793,6 +1795,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(contentText)
+            .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
             .setOngoing(true)
@@ -2229,6 +2232,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun fetchCrossDayEpisode(nextDate: Boolean): Episode? {
+        writeServiceLog("notification", "fetchCrossDayEpisode: START, nextDate=$nextDate, currentPlayingUrl=$currentPlayingUrl, currentEpisode=${currentEpisode?.title}")
         val curEp = currentEpisode
         val curUrl = currentPlayingUrl
 
@@ -2237,16 +2241,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val currentDate: String
         if (curEp != null) {
             stationId = curEp.stationId
-            currentDate = curEp.broadcastAt?.take(10) ?: return null
+            currentDate = curEp.broadcastAt?.take(10) ?: run {
+                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - currentEpisode.broadcastAt is null or too short")
+                return null
+            }
         } else if (curUrl.isNotBlank()) {
             // Extract from URL: e.g., sijiache_20240604_0700_0900.mp4
             val urlParts = curUrl.substringAfterLast("/").split("_")
-            if (urlParts.size < 2) return null
+            if (urlParts.size < 2) {
+                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - urlParts.size=${urlParts.size} < 2, curUrl=$curUrl")
+                return null
+            }
             stationId = urlParts[0] // "sijiache"
-            val datePart = urlParts.getOrNull(1) ?: return null
-            if (datePart.length < 8) return null
+            val datePart = urlParts.getOrNull(1) ?: run {
+                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - datePart is null, urlParts=$urlParts")
+                return null
+            }
+            if (datePart.length < 8) {
+                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - datePart.length=${datePart.length} < 8, datePart=$datePart")
+                return null
+            }
             currentDate = "${datePart.substring(0, 4)}-${datePart.substring(4, 6)}-${datePart.substring(6, 8)}"
         } else {
+            writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - both currentEpisode and currentPlayingUrl are empty")
             return null
         }
 
@@ -2255,15 +2272,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            cal.time = dateFormat.parse(currentDate) ?: return null
+            cal.time = dateFormat.parse(currentDate) ?: run {
+                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - failed to parse currentDate=$currentDate")
+                return null
+            }
             cal.add(java.util.Calendar.DAY_OF_YEAR, if (nextDate) 1 else -1)
             val targetDate = dateFormat.format(cal.time)
 
+            writeServiceLog("notification", "fetchCrossDayEpisode: fetching $stationId on $targetDate (nextDate=$nextDate), currentDate=$currentDate")
             Log.d(TAG, "fetchCrossDayEpisode: fetching $stationId on $targetDate (nextDate=$nextDate)")
 
             // Try network fetch first
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val episodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+            writeServiceLog("notification", "fetchCrossDayEpisode: network fetch returned episodes=${episodes?.size ?: "null"} for $stationId on $targetDate")
 
             if (episodes != null && episodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
@@ -2273,17 +2295,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     episodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
                 }
                 if (result != null) {
+                    writeServiceLog("notification", "fetchCrossDayEpisode: RETURN result from network - title=${result.title}, id=${result.id}, broadcastAt=${result.broadcastAt}")
                     Log.d(TAG, "fetchCrossDayEpisode: found ${result.title} from network")
                     // Save to episode list for future use
                     saveEpisodeList(episodes)
                     return result
+                } else {
+                    writeServiceLog("notification", "fetchCrossDayEpisode: network episodes found but all disliked/filtered (count=${episodes.size})")
                 }
             }
 
             // Fallback: try saved episode list
+            writeServiceLog("notification", "fetchCrossDayEpisode: network fetch failed or no result, trying saved list")
             Log.d(TAG, "fetchCrossDayEpisode: network fetch failed, trying saved list")
             val savedList = loadEpisodeList()
             val targetEpisodes = savedList.filter { it.broadcastAt?.startsWith(targetDate) == true && it.stationId == stationId }
+            writeServiceLog("notification", "fetchCrossDayEpisode: saved list filtered - savedListSize=${savedList.size}, targetEpisodesSize=${targetEpisodes.size} for $stationId on $targetDate")
             if (targetEpisodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
                 val result = if (nextDate) {
@@ -2292,15 +2319,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     targetEpisodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
                 }
                 if (result != null) {
+                    writeServiceLog("notification", "fetchCrossDayEpisode: RETURN result from saved list - title=${result.title}, id=${result.id}, broadcastAt=${result.broadcastAt}")
                     Log.d(TAG, "fetchCrossDayEpisode: found ${result.title} from saved list")
                     return result
+                } else {
+                    writeServiceLog("notification", "fetchCrossDayEpisode: saved list target episodes found but all disliked/filtered (count=${targetEpisodes.size})")
                 }
             }
 
+            writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - no episode found for $stationId on $targetDate")
             Log.d(TAG, "fetchCrossDayEpisode: no episode found for $stationId on $targetDate")
         } catch (e: Exception) {
+            writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - exception: ${e.message}")
             Log.e(TAG, "fetchCrossDayEpisode error", e)
         }
+        writeServiceLog("notification", "fetchCrossDayEpisode: END - returning null, nextDate=$nextDate")
         return null
     }
 

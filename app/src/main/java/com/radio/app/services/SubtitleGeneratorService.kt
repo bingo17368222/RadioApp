@@ -623,8 +623,8 @@ class SubtitleGeneratorService : Service() {
             var offset = 0
             var lastProgress = 0
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
-            val getResultMethod = voskRecognizerClass!!.getMethod("result")
-            val getFinalResultMethod = voskRecognizerClass!!.getMethod("finalResult")
+            val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
+            val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             while (offset < audioData.size && !ctx.cancelled.get()) {
@@ -728,6 +728,7 @@ class SubtitleGeneratorService : Service() {
                 recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
                     .newInstance(model, 16000.0f as java.lang.Float)
                 logToFile("processVoskInChunks: Recognizer created successfully")
+                logToFile("processVoskInChunks: Recognizer methods: ${voskRecognizerClass!!.declaredMethods.map { "${it.name}(${it.parameterTypes.map { p -> p.simpleName }})" }}")
             } catch (e: Exception) {
                 logToFile("processVoskInChunks: FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
                 e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
@@ -741,8 +742,8 @@ class SubtitleGeneratorService : Service() {
             ctx.log("Vosk recognizer created for chunked processing")
 
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
-            val getResultMethod = voskRecognizerClass!!.getMethod("result")
-            val getFinalResultMethod = voskRecognizerClass!!.getMethod("finalResult")
+            val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
+            val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             while (!ctx.cancelled.get()) {
@@ -795,9 +796,12 @@ class SubtitleGeneratorService : Service() {
             return true
         } catch (e: Throwable) {
             if (e is OutOfMemoryError) {
+                logToFile("processVoskInChunks: OOM ERROR")
                 ctx.log("ERROR: OOM during chunked Vosk processing")
                 callback.onError("内存不足：音频处理需要更多内存。请尝试：1)关闭其他应用 2)在设置→离线引擎管理→切换到Whisper引擎")
             } else {
+                logToFile("processVoskInChunks: EXCEPTION: ${e.javaClass.name}: ${e.message}")
+                e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
                 ctx.log("ERROR: Vosk chunked processing failed: ${e.javaClass.name}: ${e.message}")
                 callback.onError("Vosk处理失败: ${e.message}")
             }
@@ -1370,20 +1374,10 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            ctx.log("Whisper engine: got ${audioData.size} bytes audio data")
             ctx.log("Whisper engine: whisper.cpp JNI not integrated in this build")
-            logToFile("generateWithWhisper: whisper.cpp JNI not available, falling back to Vosk")
-
-            // Fall back to Vosk
-            val voskModel = findVoskModel()
-            if (voskModel != null) {
-                logToFile("generateWithWhisper: Vosk fallback model found: $voskModel")
-                return generateWithVosk(episodeId, audioUrl, callback, ctx)
-            } else {
-                logToFile("generateWithWhisper: no Vosk model available for fallback either")
-                callback.onError("Whisper引擎暂不可用（whisper.cpp未集成），且未找到Vosk模型。请下载Vosk模型或在设置中切换ASR引擎为Vosk。")
-                return false
-            }
+            logToFile("generateWithWhisper: whisper.cpp JNI not available, reporting error to user")
+            callback.onError("Whisper引擎暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk。")
+            return false
         } catch (e: Exception) {
             ctx.log("ERROR: Whisper exception: ${e.message}")
             if (e is OutOfMemoryError) {
@@ -1402,18 +1396,9 @@ class SubtitleGeneratorService : Service() {
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
-        ctx.log("processWhisperInChunks: whisper.cpp JNI not integrated, falling back to Vosk chunked processing")
-        logToFile("processWhisperInChunks: whisper.cpp JNI not available, falling back to processVoskInChunks")
-        // whisper.cpp JNI 不可用：回退到 Vosk 分块处理
-        val voskModel = findVoskModel()
-        if (voskModel != null) {
-            logToFile("processWhisperInChunks: Vosk fallback model found: $voskModel")
-            return processVoskInChunks(pcmFile, voskModel, callback, ctx)
-        } else {
-            logToFile("processWhisperInChunks: no Vosk model available for fallback")
-            callback.onError("Whisper分块处理暂不可用（whisper.cpp未集成），且未找到Vosk模型。请下载Vosk模型或在设置中切换ASR引擎为Vosk。")
-            return false
-        }
+        logToFile("processWhisperInChunks: whisper.cpp JNI not available, reporting error")
+        callback.onError("Whisper分块处理暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎。")
+        return false
     }
 
     /**
