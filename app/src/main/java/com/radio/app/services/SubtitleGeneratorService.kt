@@ -1475,28 +1475,26 @@ class SubtitleGeneratorService : Service() {
                 // 未加载，继续尝试动态加载
             }
 
-            val modelsDir = getExternalFilesDir("models")
-            if (modelsDir != null && modelsDir.exists()) {
-                modelsDir.walkTopDown().filter { it.isFile && it.name == "libwhisper.so" }.forEach { soFile ->
-                    try {
-                        System.load(soFile.absolutePath)
-                        logToFile("loadWhisperNativeLibrary: loaded libwhisper.so from ${soFile.absolutePath}")
-                        return true
-                    } catch (e: UnsatisfiedLinkError) {
-                        logToFile("loadWhisperNativeLibrary: failed to load ${soFile.absolutePath}: ${e.message}")
-                    }
-                }
-            }
-
+            // Issue 5/9: Copy .so to codeCacheDir before loading (like Vosk does) to avoid external storage restrictions
+            val searchDirs = mutableListOf<File>()
+            getExternalFilesDir("models")?.let { if (it.exists()) searchDirs.add(it) }
             val engineDir = File(filesDir, "engines")
-            if (engineDir.exists()) {
-                engineDir.walkTopDown().filter { it.isFile && it.name == "libwhisper.so" }.forEach { soFile ->
+            if (engineDir.exists()) searchDirs.add(engineDir)
+
+            for (searchDir in searchDirs) {
+                searchDir.walkTopDown().filter { it.isFile && it.name == "libwhisper.so" }.forEach { soFile ->
                     try {
-                        System.load(soFile.absolutePath)
-                        logToFile("loadWhisperNativeLibrary: loaded libwhisper.so from ${soFile.absolutePath}")
+                        // Copy to internal storage first (external storage may have loading restrictions)
+                        val targetFile = File(codeCacheDir, "libwhisper.so")
+                        if (targetFile.exists()) targetFile.delete()
+                        soFile.copyTo(targetFile, overwrite = true)
+                        System.load(targetFile.absolutePath)
+                        logToFile("loadWhisperNativeLibrary: loaded libwhisper.so from ${soFile.absolutePath} (via ${targetFile.absolutePath})")
                         return true
                     } catch (e: UnsatisfiedLinkError) {
                         logToFile("loadWhisperNativeLibrary: failed to load ${soFile.absolutePath}: ${e.message}")
+                    } catch (e: Exception) {
+                        logToFile("loadWhisperNativeLibrary: error copying/loading ${soFile.absolutePath}: ${e.message}")
                     }
                 }
             }

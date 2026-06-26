@@ -1757,6 +1757,17 @@ class PlayerActivity : AppCompatActivity() {
         // a stuck progress bar. Stale processing state is now cleared above (cancelAiProcessing)
         // before any progress UI is shown, so no re-bind is needed here.
 
+        // Issue 1: Restore cached playback position to prevent seekbar rewind
+        val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
+        val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
+        val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
+        if (cachedPos > 0 && cachedEpId == currentEpisode?.id && _binding != null) {
+            binding.seekBar.max = cachedDur.toInt()
+            binding.seekBar.progress = cachedPos.toInt()
+            binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${if (cachedDur > 0) formatTime(cachedDur.toInt()) else "--:--"}"
+            writeJitterLog("onResume: restored cached position=$cachedPos, duration=$cachedDur")
+        }
+
         restoreBackgroundResults()
     }
 
@@ -1888,6 +1899,27 @@ class PlayerActivity : AppCompatActivity() {
         writeJitterLog("onPause")
         // Feature B: stop position update when activity is not visible
         positionUpdateHandler.removeCallbacks(positionUpdateRunnable)
+        // Issue 1: Cache playback position to prevent seekbar rewind on resume
+        if (serviceBound && playbackService != null) {
+            val pos = playbackService?.getCurrentPosition() ?: 0L
+            val dur = playbackService?.getDuration() ?: 0L
+            getSharedPreferences("player_position_cache", MODE_PRIVATE).edit()
+                .putLong("cached_position", pos)
+                .putLong("cached_duration", dur)
+                .putString("cached_episode_id", currentEpisode?.id ?: "")
+                .apply()
+            writeJitterLog("onPause: cached position=$pos, duration=$dur, episodeId=${currentEpisode?.id}")
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        writeJitterLog("onStop: isFinishing=$isFinishing")
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        writeJitterLog("onSaveInstanceState: called")
     }
 
     override fun onDestroy() {

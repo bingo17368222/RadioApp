@@ -215,6 +215,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
+    // Issue 1: Cache the contentIntent PendingIntent - creating it on every notification update may cause Activity recreation
+    private var cachedContentIntent: PendingIntent? = null
     // 防止切回app时重复启动播放
     @Volatile
     private var playbackStarted = false
@@ -2383,27 +2385,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val fileName = newUrl.substringAfterLast("/").substringBefore(".")
                     // e.g., "sijiache_20240605_0700_0900" -> "私驾车 06-05 07:00-09:00"
                     val titleParts = fileName.split("_")
+                    // Extract time slot from URL: sijiache_20240605_1700_1900 -> "1700" and "1900"
+                    val timeParts = fileName.split("_")
+                    val startTimeStr = if (timeParts.size >= 3) timeParts[2] else ""
+                    val endTimeStr = if (timeParts.size >= 4) timeParts[3] else ""
+
+                    // Find matching episode by time slot (not just station name)
                     val episodeList = loadEpisodeList()
-                    val constructedTitle = buildString {
-                        if (titleParts.isNotEmpty()) {
-                            // Use the station name part (first segment before date)
-                            val stationPart = titleParts[0]
-                            // Try to find matching episode in current episodeList for the station name
-                            val matchEpisode = episodeList.firstOrNull { it.audioUrl?.contains(stationPart) == true }
-                            if (matchEpisode != null) {
-                                append(matchEpisode.title)
-                            } else {
-                                append(stationPart)
+                    val matchEpisode = episodeList.firstOrNull { ep ->
+                        val epUrl = ep.audioUrl ?: ""
+                        // Match by time slot: both URL must have the same start/end time
+                        (startTimeStr.isNotBlank() && epUrl.contains("_${startTimeStr}_") &&
+                         endTimeStr.isNotBlank() && epUrl.contains("_${endTimeStr}"))
+                    }
+
+                    val constructedTitle = if (matchEpisode != null) {
+                        // Use the matched episode's title, but with the new date
+                        val dateStr = if (titleParts.size >= 2 && titleParts[1].length >= 8) {
+                            "${titleParts[1].substring(4, 6)}-${titleParts[1].substring(6, 8)}"
+                        } else ""
+                        if (dateStr.isNotBlank()) "${matchEpisode.title} $dateStr" else matchEpisode.title ?: fileName
+                    } else {
+                        // Fallback: construct from URL parts
+                        buildString {
+                            if (titleParts.isNotEmpty()) append(titleParts[0])
+                            if (titleParts.size >= 2 && titleParts[1].length >= 8) {
+                                append(" ${titleParts[1].substring(4, 6)}-${titleParts[1].substring(6, 8)}")
                             }
-                        }
-                        if (titleParts.size >= 2) {
-                            val dateStr = titleParts[1]
-                            if (dateStr.length >= 8) {
-                                append(" ${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}")
+                            if (startTimeStr.length >= 4 && endTimeStr.length >= 4) {
+                                append(" ${startTimeStr.substring(0, 2)}:${startTimeStr.substring(2, 4)}-${endTimeStr.substring(0, 2)}:${endTimeStr.substring(2, 4)}")
                             }
-                        }
-                        if (titleParts.size >= 4) {
-                            append(" ${titleParts[2].substring(0, 2)}:${titleParts[2].substring(2, 4)}-${titleParts[3].substring(0, 2)}:${titleParts[3].substring(2, 4)}")
                         }
                     }
 
@@ -2563,6 +2574,65 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Issue 10: If we've reached the end of the episode list, try cross-day
                 // instead of wrapping back to the first episode of the current day.
                 writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
+                // Issue 7: For auto-play cross-day, go to the FIRST episode of the next day (morning), not the same time slot
+                val curUrl = currentPlayingUrl ?: currentEpisode?.audioUrl ?: ""
+                val nextDateStr = if (curUrl.isNotBlank()) {
+                    // Extract current date and increment
+                    val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(curUrl)
+                    if (dateMatch != null) {
+                        val oldDate = dateMatch.groupValues[0]
+                        // Parse and increment date
+                        try {
+                            val sdf = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.getDefault())
+                            val date = sdf.parse(oldDate)
+                            val cal = java.util.Calendar.getInstance()
+                            cal.time = date
+                            cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
+                            sdf.format(cal.time)
+                        } catch (_: Exception) { null }
+                    } else null
+                } else null
+
+                if (nextDateStr != null && curUrl.isNotBlank()) {
+                    // Extract station name from URL
+                    val stationPart = curUrl.substringAfterLast("/").substringBefore("_")
+                    // Construct first episode URL (07:00-09:00 is typically the first time slot)
+                    // Try to find the first episode's time slot from the episode list
+                    val episodeList = loadEpisodeList()
+                    val firstEpisode = episodeList.firstOrNull()
+                    val firstTimeSlot = firstEpisode?.audioUrl?.let { url ->
+                        val parts = url.substringAfterLast("/").substringBefore(".").split("_")
+                        if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
+                    } ?: "0700_0900"
+
+                    // Extract the path prefix from current URL
+                    val pathPrefix = curUrl.substringBeforeLast("/").substringBeforeLast("/")
+                    val newUrl = "$pathPrefix/jmd_$nextDateStr/${stationPart}_${nextDateStr}_$firstTimeSlot.mp4"
+
+                    writeServiceLog("notification", "autoPlayNext: constructed first episode URL for next day: $newUrl")
+
+                    // Find matching title from episode list
+                    val matchEpisode = episodeList.firstOrNull { ep ->
+                        val parts = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
+                        parts.size >= 4 && parts[2] == firstTimeSlot.substringBefore("_") && parts[3] == firstTimeSlot.substringAfter("_")
+                    }
+                    val newTitle = if (matchEpisode != null) "${matchEpisode.title} ${nextDateStr.substring(4, 6)}-${nextDateStr.substring(6, 8)}" else stationPart
+
+                    val crossDayEp = Episode(
+                        id = "${stationPart}-$nextDateStr-first",
+                        title = newTitle,
+                        stationId = currentEpisode?.stationId ?: stationPart,
+                        audioUrl = newUrl,
+                        broadcastAt = "${nextDateStr.substring(0, 4)}-${nextDateStr.substring(4, 6)}-${nextDateStr.substring(6, 8)}",
+                        duration = 0
+                    )
+                    writeServiceLog("notification", "autoPlayNext: cross-day first episode: ${crossDayEp.title}, url=${crossDayEp.audioUrl}")
+                    playEpisode(crossDayEp, false)
+                    callback?.onEpisodeChanged(crossDayEp)
+                    return
+                }
+
+                // Fallback to fetchCrossDayEpisode if URL construction fails
                 val crossDayEp = fetchCrossDayEpisode(nextDate = true)
                 if (crossDayEp != null) {
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
@@ -2647,17 +2717,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun createContentIntent(): PendingIntent {
-        // Issue 1: Don't include episode in intent - Activity will get it from service.
-        // Use only SINGLE_TOP to prevent Activity recreation (FLAG_ACTIVITY_CLEAR_TOP can cause finish+recreate).
+        // Issue 1: Cache the PendingIntent - creating it on every notification update may cause Activity recreation
+        cachedContentIntent?.let { return it }
+
         val intent = Intent(this, PlayerActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("fresh_launch_ts", System.currentTimeMillis())
             putExtra("from_notification", true)
         }
-        return PendingIntent.getActivity(
+        val pi = PendingIntent.getActivity(
             this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE
         )
+        cachedContentIntent = pi
+        return pi
     }
 
     private fun applyNotificationIntents(remoteViews: RemoteViews) {
