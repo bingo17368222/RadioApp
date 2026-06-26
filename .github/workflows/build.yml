@@ -33,18 +33,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Use Gradle mirror
+      - name: Install Gradle from mirror
         run: |
-          # Replace official Gradle URL with Tencent mirror to avoid connection issues
-          sed -i 's|https\\://services.gradle.org/distributions/|https\\://mirrors.cloud.tencent.com/gradle/|g' gradle/wrapper/gradle-wrapper.properties
-          echo "Updated gradle-wrapper.properties:"
-          cat gradle/wrapper/gradle-wrapper.properties
+          # Download Gradle using curl (Java's HttpsURLConnection has connection issues)
+          GRADLE_VERSION=7.5
+          curl -fSL -o /tmp/gradle.zip "https://mirrors.cloud.tencent.com/gradle/gradle-${GRADLE_VERSION}-bin.zip"
+          unzip -q /tmp/gradle.zip -d /tmp/
+          export PATH="/tmp/gradle-${GRADLE_VERSION}/bin:$PATH"
+          echo "/tmp/gradle-${GRADLE_VERSION}/bin" >> $GITHUB_PATH
+          gradle --version
 
       - name: Build Debug APK
         run: |
           set -o pipefail
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          export PATH="/tmp/gradle-7.5/bin:$PATH"
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Show Build Log
         if: always() && !cancelled()
