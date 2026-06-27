@@ -1968,7 +1968,7 @@ class SubtitleGeneratorService : Service() {
                 logToFile("processWhisperInChunks: [v2.0.51] whisper_full CRASHED but RECOVERED (siglongjmp), falling back to Vosk for this episode")
                 bridge.free(ctxPtr)
                 // [v2.0.51] Issue 2 Fix: Don't disable Whisper permanently, just use Vosk for THIS episode
-                logToFile("processWhisperInChunks: [v2.0.51] Falling back to Vosk for episode ${episode.id} (Whisper not disabled)")
+                logToFile("processWhisperInChunks: [v2.0.51] Falling back to Vosk for this episode (Whisper not disabled)")
                 callback.onError("Whisper处理时崩溃，已自动切换到Vosk引擎处理本集。Whisper仍可在设置中使用。")
                 return false
             }
