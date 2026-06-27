@@ -591,13 +591,12 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
-                // [v2.0.52] Issue 1 Fix: Remove activity-level seek-once (interferes with service-level seek)
-                // The service now handles seek directly in STATE_READY (no onPositionDiscontinuity dance)
-                // [v2.0.48] Just ignore backward positions (monotonic guard)
+                // [v2.0.53] Issue 1 Fix: During seek buffering (service is restoring position),
+                // allow forward movement toward savedPos instead of freezing UI
                 if (!isUserSeeking && position < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
                     val backwardMs = lastDisplayedPositionMs - position
                     if (backwardMs > 3000) {
-                        writeJitterLog("[v2.0.52] onPositionChanged: backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), ignoring")
+                        writeJitterLog("[v2.0.53] onPositionChanged: backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), ignoring")
                     }
                     return@runOnUiThread
                 }

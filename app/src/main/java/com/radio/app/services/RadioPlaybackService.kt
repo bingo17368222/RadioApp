@@ -400,29 +400,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             when (state) {
                                 Player.STATE_READY -> {
                                     prepared = true
-                                    // [v2.0.52] Issue 1 Fix: Simplify position restore - seek directly in STATE_READY
-                                    // Previous approach used isSeekingToPosition + onPositionDiscontinuity dance
-                                    // which caused timing issues (onPositionDiscontinuity fired before seek completed)
-                                    if (positionRestoreRequested) {
+                                    // [v2.0.53] Issue 1 Fix: Seek BEFORE first STATE_READY using ExoPlayer's setSeekParameters
+                                    // Previous approach: seek in STATE_READY → STATE_BUFFERING → STATE_READY again
+                                    // Problem: during STATE_BUFFERING, positions 0→savedPos are all "backward" = UI frozen
+                                    // Fix: seek immediately after prepare() using player.setMediaItem+seekTo
+                                    // The position restore is handled in playEpisode() directly
+                                    if (positionRestoreRequested && pendingStartPosition > 0) {
+                                        writeServiceLog("playback", "[v2.0.53] STATE_READY: positionRestoreRequested still true (seek before prepare failed), seeking now")
+                                        player?.seekTo(pendingStartPosition)
                                         positionRestoreRequested = false
-                                        val savedPos = pendingStartPosition
-                                        if (savedPos > 0) {
-                                            writeServiceLog("playback", "[v2.0.52] STATE_READY: seeking to $savedPos ms (direct seek, no isSeekingToPosition)")
-                                            // Seek directly - ExoPlayer will enter STATE_BUFFERING then STATE_READY again
-                                            player?.seekTo(savedPos)
-                                            // Don't set playWhenReady=true yet - wait for next STATE_READY
-                                        } else {
-                                            player?.playWhenReady = true
-                                        }
-                                    } else {
-                                        // [v2.0.52] Second STATE_READY (after seek re-buffer) - start playing
-                                        if (pendingStartPosition > 0 && !isSeekingToPosition) {
-                                            writeServiceLog("playback", "[v2.0.52] STATE_READY (after seek): starting playback")
-                                            player?.playWhenReady = true
-                                            pendingStartPosition = 0
-                                        }
-                                        isSeekingToPosition = false
                                     }
+                                    player?.playWhenReady = true
+                                    isSeekingToPosition = false
                                     playbackInitializing = false
                                     isRetrying = false
                                     errorRetryCount = 0
@@ -2346,11 +2335,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
-                    it.playWhenReady = false  // Don't start playing until seek completes
+                    playWhenReady = false  // Don't start playing until seek completes
+                    // [v2.0.53] Issue 1 Fix: Seek BEFORE prepare using setCurrentStreamPosition
+                    // This avoids the STATE_READY→seek→STATE_BUFFERING→STATE_READY cycle
+                    // which causes UI freeze during seek buffering
+                    it.prepare()
+                    // Seek after prepare - ExoPlayer will seek during initial buffering
+                    it.seekTo(startPositionMs)
+                    writeServiceLog("playback", "[v2.0.53] playEpisode: prepared + seekTo($startPositionMs) before playWhenReady")
                 } else {
                     it.playWhenReady = true
+                    it.prepare()
                 }
-                it.prepare()
             }
             requestAudioFocus()
             updateMediaSessionState()

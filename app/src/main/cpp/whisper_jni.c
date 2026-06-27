@@ -9,7 +9,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <setjmp.h>
 
 #define LOG_TAG "WhisperBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -17,10 +16,7 @@
 
 #include "whisper.h"
 
-// [v2.0.48] Issue 3 Fix: Use sigsetjmp/siglongjmp to recover from SIGSEGV
-// Instead of killing the process, jump back to return an error code
-static sigjmp_buf whisper_jmp_buf;
-static int whisper_crash_sig = 0;
+// [v2.0.53] Removed sigjmp_buf (doesn't work on Android ART)
 
 // [v2.0.43] Issue 3&7: Write crash info to log file before re-raising signal
 // Uses async-signal-safe functions only (open, write, close)
@@ -139,21 +135,14 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.0.48] Issue 3 Fix: Signal handler uses siglongjmp to recover instead of killing process
+// [v2.0.53] Signal handler only writes crash info to file before re-raising signal
+// sigsetjmp/siglongjmp doesn't work on Android ART
 static void whisper_crash_handler(int sig) {
-    // [v2.0.49] Write to log file FIRST, then siglongjmp
-    const char* msg = "whisper_crash_handler: ENTERED\n";
-    int fd = open("/data/data/com.radio.app/files/logs/whisper/whisper_crash.log",
-                  O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (fd >= 0) {
-        write(fd, msg, strlen(msg));
-        close(fd);
-    }
-    LOGE("whisper_crash_handler: native crash caught, signal=%d", sig);
     write_crash_to_file(sig);
-    whisper_crash_sig = sig;
-    // Jump back to the sigsetjmp in full() to return an error code
-    siglongjmp(whisper_jmp_buf, sig);
+    LOGE("whisper_crash_handler: native crash caught, signal=%d", sig);
+    // Restore default handler and re-raise so a tombstone is generated
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 JNIEXPORT jint JNICALL
