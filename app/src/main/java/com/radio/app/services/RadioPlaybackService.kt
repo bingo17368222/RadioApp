@@ -2335,7 +2335,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
-                    playWhenReady = false  // Don't start playing until seek completes
+                    it.playWhenReady = false  // Don't start playing until seek completes
                     // [v2.0.53] Issue 1 Fix: Seek BEFORE prepare using setCurrentStreamPosition
                     // This avoids the STATE_READY→seek→STATE_BUFFERING→STATE_READY cycle
                     // which causes UI freeze during seek buffering
