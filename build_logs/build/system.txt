@@ -1,0 +1,8 @@
+2026-06-27T13:19:20.2740000Z Evaluating build.if
+2026-06-27T13:19:20.2740000Z Evaluating: success()
+2026-06-27T13:19:20.2740000Z Result: true
+2026-06-27T13:19:20.2620000Z Requested labels: ubuntu-latest
+2026-06-27T13:19:20.2620000Z Job defined at: bingo17368222/RadioApp/.github/workflows/build.yml@refs/heads/main
+2026-06-27T13:19:20.2620000Z Waiting for a runner to pick up this job...
+2026-06-27T13:19:20.7610000Z Job is about to start running on the hosted runner: GitHub Actions 1000000307
+2026-06-27T13:19:20.7760000Z Job is waiting for a hosted runner to come online.

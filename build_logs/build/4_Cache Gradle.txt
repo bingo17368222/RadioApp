@@ -1,0 +1,28 @@
+﻿2026-06-27T13:19:25.1000210Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-06-27T13:19:25.1002429Z ##[group]Run actions/cache@v4
+2026-06-27T13:19:25.1002918Z with:
+2026-06-27T13:19:25.1003362Z   path: ~/.gradle/caches
+~/.gradle/wrapper
+
+2026-06-27T13:19:25.1004221Z   key: Linux-gradle-d56d473d713640ef58d5ec852f0087337b258d5b3e727efc5e18cd296dc6940a
+2026-06-27T13:19:25.1005055Z   restore-keys: Linux-gradle-
+
+2026-06-27T13:19:25.1005586Z   enableCrossOsArchive: false
+2026-06-27T13:19:25.1006099Z   fail-on-cache-miss: false
+2026-06-27T13:19:25.1006867Z   lookup-only: false
+2026-06-27T13:19:25.1007310Z   save-always: false
+2026-06-27T13:19:25.1007730Z env:
+2026-06-27T13:19:25.1008308Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.19-10/x64
+2026-06-27T13:19:25.1009267Z   JAVA_HOME_17_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.19-10/x64
+2026-06-27T13:19:25.1009999Z ##[endgroup]
+2026-06-27T13:19:25.2194817Z (node:2266) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-27T13:19:25.2196172Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-27T13:19:25.3242368Z Cache hit for restore-key: Linux-gradle-ab116d6cbe9fe6249bc208cfad504219a93a5898817c11599a26b44f6915f07f
+2026-06-27T13:19:25.3348934Z (node:2266) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-27T13:19:26.3577061Z Received 260046848 of 581753677 (44.7%), 247.8 MBs/sec
+2026-06-27T13:19:27.3580186Z Received 532676608 of 581753677 (91.6%), 253.9 MBs/sec
+2026-06-27T13:19:27.5844754Z Received 581753677 of 581753677 (100.0%), 249.0 MBs/sec
+2026-06-27T13:19:27.5847169Z Cache Size: ~555 MB (581753677 B)
+2026-06-27T13:19:27.6005826Z [command]/usr/bin/tar -xf /home/runner/work/_temp/81455cf2-1d05-4e1d-9820-46d397932581/cache.tzst -P -C /home/runner/work/RadioApp/RadioApp --use-compress-program unzstd
+2026-06-27T13:19:30.3883250Z Cache restored successfully
+2026-06-27T13:19:30.4270890Z Cache restored from key: Linux-gradle-ab116d6cbe9fe6249bc208cfad504219a93a5898817c11599a26b44f6915f07f
