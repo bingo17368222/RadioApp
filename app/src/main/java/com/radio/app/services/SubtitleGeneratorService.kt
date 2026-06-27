@@ -896,10 +896,10 @@ class SubtitleGeneratorService : Service() {
                 chunkCount++
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
 
-                // Issue 9: Force getResult() every 50 chunks (~12.5s) even if acceptWaveForm returns false.
+                // Issue 9: Force getResult() every 10 chunks (~2.5s) even if acceptWaveForm returns false.
                 // Radio audio is continuous speech with few silence boundaries, so acceptWaveForm rarely
                 // returns true. Forcing getResult() periodically ensures Vosk outputs recognized text.
-                val forceResult = (chunkCount % 50 == 0)
+                val forceResult = (chunkCount % 10 == 0)
 
                 if (acceptResult || forceResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
@@ -945,18 +945,35 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
 
-                // Issue 9: Call getPartialResult() every 10 chunks for intermediate results.
-                // Partial results show what Vosk is currently hearing (useful for diagnosing sparseness).
+                // Issue 9: On forceResult, also call getResult() to flush Vosk's internal buffer
+                // This prevents Vosk from accumulating too much audio without outputting
+                if (forceResult && !acceptResult) {
+                    // getResult() was already called above, but if it returned empty,
+                    // the partial result above should have captured something
+                    writeVoskLog("forceResult at chunk $chunkCount: getResult returned empty, partial may have text")
+                }
+
+                // Issue 9: Call getPartialResult() every 10 chunks and SAVE as transcript if text is long enough
                 if (chunkCount % 10 == 0) {
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {
-                            val json = org.json.JSONObject(partial)
-                            val partialText = json.optString("partial", "").trim()
-                            if (partialText.isNotBlank() && partialText != lastPartialText) {
+                            val partialJson = org.json.JSONObject(partial)
+                            val partialText = partialJson.optString("partial", "").trim()
+                            if (partialText.length > 3 && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                logToFile("processVoskInChunks: partial at ${offset}ms (chunk $chunkCount): '${partialText.take(50)}...'")
-                                writeVoskLog("processVoskInChunks: partial at chunk $chunkCount, offset=$offset: '${partialText.take(100)}'")
+                                // Save partial as transcript
+                                val partialStartTime = offset * 1000L / 32000L
+                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(
+                                    text = partialText,
+                                    segmentStart = partialStartTime,
+                                    segmentEnd = partialEndTime
+                                )
+                                logToFile("processVoskInChunks: partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
+                                writeVoskLog("partial transcript saved: chunk=$chunkCount, text='${partialText.take(100)}'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { /* skip */ }
                     }
@@ -1674,15 +1691,102 @@ class SubtitleGeneratorService : Service() {
 
     /**
      * 分块处理大PCM文件（16kHz mono），供Whisper引擎使用
-     * 当前版本whisper.cpp未集成，回退到Vosk分块处理（processVoskInChunks）
+     * Issue 5: 通过 WhisperBridge JNI 桥接调用 whisper.cpp C API 进行识别。
      */
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
-        logToFile("processWhisperInChunks: START")
-        logToFile("processWhisperInChunks: whisper.cpp JNI not available, reporting error")
-        callback.onError("Whisper分块处理暂不可用：whisper.cpp原生库未集成。请使用Vosk引擎。")
-        return false
+        logToFile("processWhisperInChunks: START, pcmFile=${pcmFile.absolutePath}, modelPath=$modelPath")
+
+        try {
+            val bridge = com.radio.app.whisper.WhisperBridge()
+
+            // Load native libraries
+            val modelsDir = getExternalFilesDir("models")
+            if (!com.radio.app.whisper.WhisperBridge.loadNativeLibraries(codeCacheDir, modelsDir)) {
+                logToFile("processWhisperInChunks: failed to load Whisper native libraries")
+                callback.onError("Whisper原生库加载失败。请确保已安装Whisper引擎文件。")
+                return false
+            }
+
+            // Initialize whisper context
+            logToFile("processWhisperInChunks: initializing whisper context with model=$modelPath")
+            val ctxPtr = bridge.initFromFile(modelPath)
+            if (ctxPtr == 0L) {
+                logToFile("processWhisperInChunks: whisper_init_from_file failed")
+                callback.onError("Whisper模型初始化失败。模型文件可能损坏。")
+                return false
+            }
+            logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
+
+            // Read PCM file and convert to float samples
+            val pcmData = pcmFile.readBytes()
+            val nSamples = pcmData.size / 2  // 16-bit = 2 bytes per sample
+            val samples = FloatArray(nSamples)
+            for (i in 0 until nSamples) {
+                val sample = (pcmData[i * 2].toInt() and 0xFF) or (pcmData[i * 2 + 1].toInt() shl 8)
+                val shortSample = if (sample > 32767) sample - 65536 else sample
+                samples[i] = shortSample.toFloat() / 32768.0f
+            }
+            logToFile("processWhisperInChunks: converted PCM to float samples, nSamples=$nSamples")
+
+            // Limit to first 5 minutes
+            val maxSamples = 5 * 60 * 16000
+            val processSamples = if (nSamples > maxSamples) maxSamples else nSamples
+            logToFile("processWhisperInChunks: processing $processSamples samples (limit: ${maxSamples})")
+
+            // Run full transcription
+            logToFile("processWhisperInChunks: calling whisper_full...")
+            val result = bridge.full(ctxPtr, samples, processSamples)
+            logToFile("processWhisperInChunks: whisper_full returned $result")
+
+            if (result != 0) {
+                logToFile("processWhisperInChunks: whisper_full failed with code $result")
+                callback.onError("Whisper识别失败，错误码: $result")
+                bridge.free(ctxPtr)
+                return false
+            }
+
+            // Get segments
+            val nSegments = bridge.fullNSegments(ctxPtr)
+            logToFile("processWhisperInChunks: got $nSegments segments")
+
+            val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
+            for (i in 0 until nSegments) {
+                if (ctx.cancelled.get()) break
+
+                val text = bridge.fullGetSegmentText(ctxPtr, i)
+                val t0 = bridge.fullGetSegmentT0(ctxPtr, i)  // in centiseconds (10ms)
+                val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
+
+                if (text.isNotBlank()) {
+                    val transcript = com.radio.app.models.Transcript(
+                        text = text.trim(),
+                        segmentStart = t0 * 10,  // convert centiseconds to milliseconds
+                        segmentEnd = t1 * 10
+                    )
+                    allTranscripts.add(transcript)
+                    logToFile("processWhisperInChunks: segment $i: start=${transcript.segmentStart}ms, end=${transcript.segmentEnd}ms, text='${text.take(100)}...'")
+                    callback.onSubtitleGenerated(transcript)
+                }
+            }
+
+            // Free context
+            bridge.free(ctxPtr)
+
+            logToFile("processWhisperInChunks: COMPLETE, ${allTranscripts.size} transcripts generated")
+            callback.onComplete(allTranscripts)
+            return true
+
+        } catch (e: UnsatisfiedLinkError) {
+            logToFile("processWhisperInChunks: UnsatisfiedLinkError: ${e.message}")
+            callback.onError("Whisper JNI桥接未找到。请确保引擎文件已正确安装。错误: ${e.message}")
+            return false
+        } catch (e: Exception) {
+            logToFile("processWhisperInChunks: EXCEPTION: ${e.message}")
+            callback.onError("Whisper处理异常: ${e.message}")
+            return false
+        }
     }
 
     /**

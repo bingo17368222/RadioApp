@@ -12,8 +12,19 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 105
-        versionName "2.0.34"
+        versionCode 106
+        versionName "2.0.35"
+
+        // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
+        externalNativeBuild {
+            cmake {
+                cFlags "-DSTDC_HEADERS"
+                cppFlags ""
+            }
+        }
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
     }
 
     signingConfigs {
@@ -50,6 +61,20 @@ android {
 
     packagingOptions {
         exclude 'lib/*/libvosk.so'
+    }
+
+    // Issue 5: Point to the CMakeLists.txt that builds libwhisper_jni.so
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
+
+    // Issue 5: Prebuilt .so libraries (e.g. whisper.cpp runtime) lookup directory
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
     }
 
     applicationVariants.all { variant ->

@@ -1050,7 +1050,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     writePreCacheLog("startPcmPreDecode: PCM format outdated, regenerating")
                     pcmFile.delete()
                     infoFile.delete()
-                    File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav").delete()
                 } else if (pcmFile.exists()) {
                     pcmFile.delete()
                 }
@@ -1137,7 +1136,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated, regenerating")
                 pcmFile.delete()
                 infoFile.delete()
-                File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav").delete()
             }
         }
         writePreCacheLog("startPcmPreDecodeIfNeeded: triggering PCM pre-decode from normal cache for ${episode.title}")
@@ -1588,9 +1586,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         // Issue 4: Set date/time on RemoteViews (contentText is hidden when custom layout is used)
-        writeNotifDetailLog("updateNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle'")
+        writeNotifDetailLog("updateNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
         remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
-        writeNotifDetailLog("updateNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText')")
+        writeNotifDetailLog("updateNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
             .setContentText(contentText)
@@ -1741,7 +1739,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (timeStr.isNotBlank()) append(" · $timeStr")
             }
             rv.setTextViewText(R.id.notification_subtitle, contentText)
-            writeNotifDetailLog("updateNotificationProgressOnly: rv.setTextViewText(notification_subtitle, '$contentText'), notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange'")
+            writeNotifDetailLog("updateNotificationProgressOnly: rv.setTextViewText(notification_subtitle, '$contentText') called=true, notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', lastNotificationContentHash=$lastNotificationContentHash")
             val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setCustomContentView(rv)
@@ -1771,7 +1769,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 创建展开视图（含进度条和50点seek）
         val expandedView = RemoteViews(packageName, R.layout.notification_media_expanded)
         expandedView.setTextViewText(R.id.notification_title, notificationTitle)
+        writeNotifDetailLog("buildMediaStyleNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
         expandedView.setTextViewText(R.id.notification_subtitle, contentText)
+        writeNotifDetailLog("buildMediaStyleNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
 
         if (!isLive && prepared) {
             expandedView.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
@@ -2354,24 +2354,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (dateMatch != null) {
                     val newDateStr = targetDate.replace("-", "") // "20240605"
 
-                    // Issue 2: Cross-day just gets the next day's first/last episode - NO time slot filtering
                     val episodeList = loadEpisodeList()
+                    // Issue 2: Find first/last NON-DISLIKED episode's time slot for cross-day.
+                    // 跨天切换节目的逻辑与时间段无关，仅仅是跳过不喜欢的而已。
+                    // 如果当天剩下的节目都是不喜欢的，那就取第2天的节目；上一个节目的逻辑也是这样。
+                    val settings = AppSettings.getInstance(this)
                     val targetTimeSlot = if (nextDate) {
-                        // Going forward: use first episode's time slot (whatever it is)
-                        val firstEp = episodeList.firstOrNull()
-                        firstEp?.audioUrl?.let { url ->
+                        // Going forward: find first non-disliked episode's time slot
+                        val firstNonDisliked = episodeList.firstOrNull { ep ->
+                            !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                        }
+                        firstNonDisliked?.audioUrl?.let { url ->
                             val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                             if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
                         } ?: "0700_0900"
                     } else {
-                        // Going backward: use last episode's time slot (whatever it is)
-                        val lastEp = episodeList.lastOrNull()
-                        lastEp?.audioUrl?.let { url ->
+                        // Going backward: find last non-disliked episode's time slot
+                        val lastNonDisliked = episodeList.lastOrNull { ep ->
+                            !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                        }
+                        lastNonDisliked?.audioUrl?.let { url ->
                             val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                             if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "1700_1900"
                         } ?: "1700_1900"
                     }
-                    writeServiceLog("notification", "fetchCrossDayEpisode: targetTimeSlot=$targetTimeSlot (nextDate=$nextDate)")
+                    writeServiceLog("notification", "fetchCrossDayEpisode: targetTimeSlot=$targetTimeSlot (nextDate=$nextDate, filtered by dislike)")
 
                     // Construct new URL with target time slot
                     val stationPart = curUrl.substringAfterLast("/").substringBefore("_")

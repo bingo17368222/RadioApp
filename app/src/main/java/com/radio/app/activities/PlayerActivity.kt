@@ -77,14 +77,13 @@ class PlayerActivity : AppCompatActivity() {
     private val positionUpdateHandler = Handler(Looper.getMainLooper())
     private val positionUpdateRunnable = object : Runnable {
         override fun run() {
-            // Issue 1 Fix 4: skip highlight updates until the service reports a valid position,
-            // so the cached position restored in onResume/onCreate is not overridden prematurely.
-            // The runnable keeps polling (rescheduling) so updates resume automatically once the
-            // service connects (awaitingServicePosition == false). Returning early *without*
-            // rescheduling would stop the recurring task and break subtitle/segment auto-scroll
-            // after the service connects.
             if (!awaitingServicePosition) {
-                updateCurrentPositionHighlight()
+                // Issue 1: Only update if service reports a valid position
+                val pos = playbackService?.getCurrentPosition() ?: 0L
+                val dur = playbackService?.getDuration() ?: 0L
+                if (pos > 0 && dur > 0) {
+                    updateCurrentPositionHighlight()
+                }
             }
             positionUpdateHandler.postDelayed(this, 500)
         }
@@ -209,11 +208,15 @@ class PlayerActivity : AppCompatActivity() {
             playbackService = binder.getService()
             serviceBound = true
             playbackService?.setCallback(playbackCallback)
-            // Issue 1 Fix 4: Service connected — it is now the source of truth for playback
-            // position, so stop awaiting and let positionUpdateRunnable resume updates. Placed
-            // here (before the JITTER-GUARD) so all sync paths, including the early-return
-            // branches, release the guard.
-            awaitingServicePosition = false
+            // Issue 1: Only clear awaitingServicePosition if service reports a valid position
+            val svcPos = playbackService?.getCurrentPosition() ?: 0L
+            val svcDur = playbackService?.getDuration() ?: 0L
+            if (svcPos > 0 && svcDur > 0) {
+                awaitingServicePosition = false
+                writeJitterLog("onServiceConnected: service has valid position=$svcPos, clearing awaitingServicePosition")
+            } else {
+                writeJitterLog("onServiceConnected: service has no valid position (pos=$svcPos, dur=$svcDur), keeping awaitingServicePosition=true")
+            }
 
             // Issue 1: If currentEpisode is null (recreated from notification without episode data), get from service
             if (currentEpisode == null) {
@@ -926,12 +929,16 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnNextSegment.setOnClickListener { playbackService?.jumpToNextSegment() }
         binding.btnSkipForward.setOnClickListener { playbackService?.skipForward() }
         binding.btnSkipBackward.setOnClickListener { playbackService?.skipBackward() }
-        // Issue 1 Fix 1: moveTaskToBack instead of finish() — destroying the Activity on
-        // close caused it to be recreated from scratch on return, which made the seekbar
-        // show 0 before the service reconnected (progress rewind + flicker).
-        binding.btnClose.setOnClickListener { moveTaskToBack(true) }
+        binding.btnClose.setOnClickListener {
+            writeJitterLog("btnClose: calling finish() to exit to MainActivity")
+            finish()
+        }
         // Issue 6 & 11: 点击节目导航提示（如 "1/10"）弹出当前节目列表，可高亮当前播放项并点击切换
-        binding.tvEpisodeNavHint.setOnClickListener { showEpisodeListDialog() }
+        binding.tvEpisodeNavHint.setOnClickListener {
+            writeEpisodeLog("tvEpisodeNavHint clicked, showing episode list dialog")
+            writeJitterLog("tvEpisodeNavHint clicked, showing episode list dialog")
+            showEpisodeListDialog()
+        }
 
         binding.btnGenerateSubtitle.setOnClickListener {
             val episode = currentEpisode ?: return@setOnClickListener
@@ -1839,20 +1846,12 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private var backPressedTime = 0L
-
     override fun onBackPressed() {
-        // Issue 1 & 7: Double-tap to exit. First tap goes to background (prevents jitter),
-        // second tap within 2 seconds actually exits to MainActivity.
-        if (System.currentTimeMillis() - backPressedTime < 2000) {
-            writeJitterLog("onBackPressed: double-tap, finishing to exit")
-            super.onBackPressed()  // Actually finish and go back to MainActivity
-        } else {
-            backPressedTime = System.currentTimeMillis()
-            writeJitterLog("onBackPressed: first tap, moveTaskToBack (double-tap to exit)")
-            android.widget.Toast.makeText(this, "再按一次返回退出播放", android.widget.Toast.LENGTH_SHORT).show()
-            moveTaskToBack(true)
-        }
+        // Issue 7: Restore single-tap back to exit (pre-v2.0.32 behavior).
+        // User explicitly requested: one back press exits to MainActivity playlist.
+        // DO NOT use moveTaskToBack or double-tap - these were rejected by the user.
+        writeJitterLog("onBackPressed: calling super.onBackPressed() to exit to MainActivity")
+        super.onBackPressed()
     }
 
     override fun finish() {
