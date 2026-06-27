@@ -692,13 +692,18 @@ class SubtitleGeneratorService : Service() {
 
             ctx.log("Processing ${audioData.size} bytes of audio data with Vosk")
             val totalBytes = audioData.size
-            val chunkSize = 8192
+            // [v2.0.45] Issue 4 Fix: Increase chunk size from 8192 to 16384 for better recognition
+            // Larger chunks give Vosk more audio context per acceptWaveForm call
+            val chunkSize = 16384
             var offset = 0
             var lastProgress = 0
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
             val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
             val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
             val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
+            // [v2.0.45] Issue 4 Fix: Get endOfUtterance method to force finalization
+            var endOfUtteranceMethod: java.lang.reflect.Method? = null
+            try { endOfUtteranceMethod = voskRecognizerClass?.getMethod("endOfUtterance") } catch (_: Exception) {}
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var lastPartialText = ""
@@ -708,11 +713,14 @@ class SubtitleGeneratorService : Service() {
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 chunkCount++
-                // [v2.0.44] Issue 6 Fix: forceResult every 5 chunks for more frequent output
-                val forceResult = (chunkCount % 5 == 0)  // Force every 5 chunks (~0.13s at 8192 bytes/chunk)
+                // [v2.0.45] Issue 4 Fix: forceResult every 10 chunks with larger chunk size (16384 bytes)
+                // At 16384 bytes/chunk, 10 chunks = ~5.1 seconds of audio
+                val forceResult = (chunkCount % 10 == 0)
                 if (accepted || forceResult) {
                     if (forceResult) {
-                        logToFile("generateWithVosk: [v2.0.44] forceResult triggered at chunk=$chunkCount, offset=$offset, accepted=$accepted")
+                        // [v2.0.45] Issue 4 Fix: Call endOfUtterance to force Vosk to finalize pending partial
+                        try { endOfUtteranceMethod?.invoke(recognizer) } catch (_: Exception) {}
+                        logToFile("generateWithVosk: [v2.0.45] forceResult triggered at chunk=$chunkCount, offset=$offset, accepted=$accepted, called endOfUtterance")
                     }
                     // [v2.0.44] Issue 6 Fix: Reset lastPartialText when accepted=true so partials can be saved again
                     if (accepted) {
@@ -770,7 +778,7 @@ class SubtitleGeneratorService : Service() {
                     }
                     // [v2.0.44] Issue 6 Fix: Use resultText instead of result.isBlank() for proper empty check
                     if (forceResult && resultText.isBlank() && partialText.isBlank()) {
-                        logToFile("generateWithVosk: [v2.0.44] forceResult at chunk=$chunkCount produced NOTHING (getResult text empty, partial empty)")
+                        logToFile("generateWithVosk: [v2.0.45] forceResult at chunk=$chunkCount produced NOTHING (getResult text empty, partial empty, endOfUtterance called)")
                     }
                 } else {
                     // Get partial result for logging only (not saved as transcript)

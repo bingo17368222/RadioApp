@@ -151,10 +151,29 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
     jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
 
-    // Limit to 2 minutes max to prevent OOM and long processing
-    int maxSamples = 2 * 60 * 16000;  // 2 minutes at 16kHz
+    // [v2.0.45] Issue 3 Fix: Reduce from 2 minutes to 1 minute to prevent SIGSEGV crash
+    // 217 seconds of audio (3.4M samples) was causing crashes even with 2-min cap
+    int maxSamples = 1 * 60 * 16000;  // 1 minute at 16kHz
     int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
-    LOGI("full: n_samples=%d, processSamples=%d (capped at 2min), ctx=%p", n_samples, processSamples, ctx);
+    LOGI("full: n_samples=%d, processSamples=%d (capped at 1min), ctx=%p", n_samples, processSamples, ctx);
+
+    // [v2.0.45] Issue 3 Fix: Check for NaN/Infinity in samples that could cause SIGSEGV
+    int hasBadSamples = 0;
+    for (int i = 0; i < processSamples && i < 1000; i++) {
+        if (sample_data[i] != sample_data[i] || sample_data[i] > 1.0f || sample_data[i] < -1.0f) {
+            hasBadSamples = 1;
+            LOGE("full: bad sample at index %d: %f", i, sample_data[i]);
+            break;
+        }
+    }
+    if (hasBadSamples) {
+        LOGE("full: found NaN/Infinity/out-of-range samples, clamping to [-1, 1]");
+        for (int i = 0; i < processSamples; i++) {
+            if (sample_data[i] != sample_data[i]) sample_data[i] = 0.0f;  // NaN -> 0
+            else if (sample_data[i] > 1.0f) sample_data[i] = 1.0f;
+            else if (sample_data[i] < -1.0f) sample_data[i] = -1.0f;
+        }
+    }
 
     struct whisper_full_params params = params_func(WHISPER_SAMPLING_GREEDY);
     params.print_realtime  = false;

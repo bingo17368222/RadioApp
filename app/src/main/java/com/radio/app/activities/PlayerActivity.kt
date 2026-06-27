@@ -367,7 +367,14 @@ class PlayerActivity : AppCompatActivity() {
             val epDuration = currentEpisode?.duration ?: 0L
             // 取服务和 episode 中较大的 duration 作为校验基准（单位可能不同：ms vs s）
             val maxDuration = maxOf(svcDuration, epDuration * if (epDuration > 0 && epDuration < 100000) 1000 else 1)
-            var isValidSavedPos = savedPos > 0 && maxDuration > 0 && savedPos <= maxDuration
+            // [v2.0.45] Issue 1 Fix: When maxDuration=0 (service killed, episode from memory has no duration),
+            // treat savedPos as valid if > 0. Can't validate against unknown duration.
+            // Previously: isValidSavedPos=false → UI not pre-set → progress bar shows 0 then jumps → FLICKER
+            var isValidSavedPos = if (maxDuration > 0) {
+                savedPos > 0 && savedPos <= maxDuration
+            } else {
+                savedPos > 0  // Can't validate, but position exists
+            }
 
             // Issue 1 Fix [v2.0.42]: 当服务被杀死 (!svcStarted) 时，保留实际 savedPos 传给 playEpisode，
             // 让服务重新初始化时 seek 到正确位置。onResume 已经处理了 UI 防抖（只在服务无位置时显示缓存位置）。

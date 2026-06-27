@@ -1641,9 +1641,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun buildNotificationSubText(): String {
         val dateTimeInfo = buildString {
             if (notificationDate.isNotBlank()) {
-                // Format date: "2024-06-04T07:00:00" -> "06-04"
+                // [v2.0.45] Issue 2 Fix: Include year in date display
+                // Format date: "2024-06-04T07:00:00" -> "2024-06-04" (was "06-04")
                 if (notificationDate.length >= 10) {
-                    append(notificationDate.substring(5, 10))
+                    append(notificationDate.substring(0, 10))
                 }
             }
             if (notificationTimeRange.isNotBlank()) {
