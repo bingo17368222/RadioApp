@@ -744,13 +744,14 @@ class SubtitleGeneratorService : Service() {
                                     startTime = offset * 1000L / 32000L
                                     endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
-                                // [v2.0.47] Issue 4 Fix: Filter out very short single-char transcripts (<500ms, 1-2 chars)
-                                // These are false positives from background music/noise
+                                // [v2.0.48] Issue 4 Fix: Filter ALL 1-2 char transcripts (regardless of duration)
+                                // Radio shows have background music that vosk-model-small-cn-0.22 misrecognizes
+                                // as single characters. A 1-2 char "transcript" is never useful as a subtitle.
                                 val duration = endTime - startTime
                                 val charCount = text.replace(" ", "").length
-                                val isLikelyNoise = duration < 500 && charCount <= 2
+                                val isLikelyNoise = charCount <= 2
                                 if (isLikelyNoise) {
-                                    logToFile("generateWithVosk: [v2.0.47] FILTERED short transcript: start=${startTime}ms, dur=${duration}ms, chars=$charCount, text='$text'")
+                                    logToFile("generateWithVosk: [v2.0.48] FILTERED short transcript: start=${startTime}ms, dur=${duration}ms, chars=$charCount, text='$text'")
                                 } else {
                                     val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                     logToFile("generateWithVosk: [v2.0.47] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, text='${text.take(50)}...'")
@@ -1948,6 +1949,14 @@ class SubtitleGeneratorService : Service() {
             logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
             val result = bridge.full(ctxPtr, samples, processSamples)
             logToFile("processWhisperInChunks: bridge.full returned $result")
+
+            // [v2.0.48] Issue 3: Handle crash recovery (-777 = SIGSEGV recovered via siglongjmp)
+            if (result == -777) {
+                logToFile("processWhisperInChunks: [v2.0.48] whisper_full CRASHED but RECOVERED (siglongjmp), falling back to error handling")
+                callback.onError("Whisper处理时崩溃(SIGSEGV)，已恢复。建议使用Vosk引擎。")
+                bridge.free(ctxPtr)
+                return false
+            }
 
             // [v2.0.43] Issue 3&7: Check for crash log from native signal handler
             try {

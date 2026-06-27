@@ -200,6 +200,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var positionRestoreRequested = false
     private var pendingStartPosition: Long = -1L
     private var isSeekingToPosition = false
+    // [v2.0.48] Issue 1 Fix: Track max known position to prevent backward position reporting/saving
+    // ExoPlayer reports backward positions during re-buffering; this ensures we never go backward
+    private var maxKnownPosition = 0L
     private var lastPositionRestoreTime = 0L
     private var notificationStyle = "compact"
     private var lastNotificationTime = 0L
@@ -2236,6 +2239,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         Log.d(TAG, "playEpisode called: ${episode.title}, playbackStarted before: $playbackStarted, prepared=$prepared, url=${episode.audioUrl}, startPositionMs=$startPositionMs")
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
+        // [v2.0.48] Issue 1 Fix: Reset maxKnownPosition when switching episodes
+        maxKnownPosition = 0L
         userPaused = false // Starting new playback, not user-paused
         stopAutoSkipCheck()
         if (startPositionMs >= 0) {
@@ -2389,7 +2394,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun isSameEpisodePlaying(url: String): Boolean {
         return playbackStarted && currentPlayingUrl.isNotBlank() && currentPlayingUrl == url
     }
-    fun getCurrentPosition(): Long = player?.currentPosition ?: 0L
+    fun getCurrentPosition(): Long {
+        val pos = player?.currentPosition ?: 0L
+        // [v2.0.48] Issue 1 Fix: Return max known position to prevent backward reporting
+        // ExoPlayer reports backward positions during re-buffering
+        if (pos > maxKnownPosition) {
+            maxKnownPosition = pos
+        }
+        return maxOf(pos, maxKnownPosition)
+    }
     fun getDuration(): Long { val dur = player?.duration ?: 0L; return if (dur < 0) -1L else dur }
     fun getBufferedPercentage(): Int = player?.bufferedPercentage ?: 0
     fun getBufferedPosition(): Long = player?.bufferedPosition ?: 0L

@@ -9,12 +9,18 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <setjmp.h>
 
 #define LOG_TAG "WhisperBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #include "whisper.h"
+
+// [v2.0.48] Issue 3 Fix: Use sigsetjmp/siglongjmp to recover from SIGSEGV
+// Instead of killing the process, jump back to return an error code
+static sigjmp_buf whisper_jmp_buf;
+static int whisper_crash_sig = 0;
 
 // [v2.0.43] Issue 3&7: Write crash info to log file before re-raising signal
 // Uses async-signal-safe functions only (open, write, close)
@@ -133,13 +139,13 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.0.43] Issue 3&7: Signal handler writes crash info to log file BEFORE re-raising
+// [v2.0.48] Issue 3 Fix: Signal handler uses siglongjmp to recover instead of killing process
 static void whisper_crash_handler(int sig) {
     LOGE("whisper_crash_handler: native crash caught, signal=%d", sig);
     write_crash_to_file(sig);
-    // Restore default handler and re-raise so a tombstone is generated
-    signal(sig, SIG_DFL);
-    raise(sig);
+    whisper_crash_sig = sig;
+    // Jump back to the sigsetjmp in full() to return an error code
+    siglongjmp(whisper_jmp_buf, sig);
 }
 
 JNIEXPORT jint JNICALL
@@ -182,9 +188,14 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.translate       = false;
     params.n_threads       = 2;  // Limit threads to prevent resource contention
 
-    // Install simple signal handler to log crashes
-    signal(SIGSEGV, whisper_crash_handler);
-    signal(SIGABRT, whisper_crash_handler);
+    // Install signal handler to recover from SIGSEGV
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = whisper_crash_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
 
     LOGI("full: calling whisper_full(ctx=%p, processSamples=%d)", ctx, processSamples);
     int result = -999;
@@ -192,10 +203,25 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     // Set alarm timeout (120 seconds)
     alarm(120);
 
-    result = full_func(ctx, params, sample_data, processSamples);
+    // [v2.0.48] Issue 3 Fix: Use sigsetjmp to recover from SIGSEGV
+    // If whisper_full crashes, the signal handler will siglongjmp back here
+    whisper_crash_sig = 0;
+    int jmp_result = sigsetjmp(whisper_jmp_buf, 1);
+    if (jmp_result == 0) {
+        // Normal path: call whisper_full
+        result = full_func(ctx, params, sample_data, processSamples);
+    } else {
+        // Crash recovery path: signal handler jumped back here
+        LOGE("full: RECOVERED from signal %d (whisper_full crashed), returning error", jmp_result);
+        result = -777;  // Special error code for crash recovery
+    }
 
     // Cancel alarm
     alarm(0);
+
+    // Restore default signal handlers
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGABRT, SIG_DFL);
 
     (*env)->ReleaseFloatArrayElements(env, samples, sample_data, JNI_ABORT);
     LOGI("full: whisper_full returned %d", result);
