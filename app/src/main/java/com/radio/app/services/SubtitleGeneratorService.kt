@@ -164,16 +164,12 @@ class SubtitleGeneratorService : Service() {
                     extCrashFile.writeText("")
                     // Clear the native crash log so it doesn't trigger again
                     nativeCrashFile.writeText("")
-                    // [v2.0.49] Issue 3 Fix: Force switch to Vosk after Whisper crash
-                    // Don't try Whisper again - it will crash again. Use Vosk instead.
+                    // [v2.0.51] Issue 2 Fix: Don't disable Whisper (user explicitly requested not to)
+                    // Just log the crash and let the user continue using Whisper
                     val settings = AppSettings.getInstance(this)
                     settings.whisperCrashCount = settings.whisperCrashCount + 1
-                    settings.asrProvider = "vosk-local"
                     settings.save(this)
-                    logToFile("[v2.0.50] onCreate: AUTO-SWITCHED to Vosk after Whisper crash detected (crashCount=${settings.whisperCrashCount})")
-                    if (settings.whisperCrashCount >= 2) {
-                        logToFile("[v2.0.50] onCreate: Whisper PERMANENTLY DISABLED (crashCount=${settings.whisperCrashCount} >= 2), user cannot manually re-enable")
-                    }
+                    logToFile("[v2.0.51] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount}), NOT disabling Whisper per user request")
                 }
             }
         } catch (_: Exception) {}
@@ -319,6 +315,18 @@ class SubtitleGeneratorService : Service() {
                             val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Whisper subtitle generation FAILED")
+                                // [v2.0.51] Issue 2 Fix: Auto-fallback to Vosk for this episode (don't disable Whisper)
+                                logToFile("generateSubtitlesForEpisode: [v2.0.51] Auto-falling back to Vosk for episode $episodeId")
+                                val voskModel = findVoskModel()
+                                if (voskModel != null) {
+                                    ctx.log("Whisper failed, falling back to Vosk model: $voskModel")
+                                    generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
+                                } else {
+                                    ctx.log("Vosk model not found, cannot fallback")
+                                    wrappedCallback.onError("Whisper处理失败且Vosk模型未安装。请下载Vosk模型作为备选。")
+                                    activeTasks.remove(episodeId)
+                                    cleanupTask()
+                                }
                             }
                         } else {
                             ctx.log("ERROR: Whisper model selected but not found")
@@ -755,20 +763,14 @@ class SubtitleGeneratorService : Service() {
                                     startTime = offset * 1000L / 32000L
                                     endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
-                                // [v2.0.50] Issue 4 Fix: Only filter 1-char transcripts (single character is never useful)
-                                // v2.0.49's aggressive filtering (filler, repeated) filtered 100% of output
-                                // v2.0.39/40 with NO filtering produced good results, so minimal filtering is better
+                                // [v2.0.51] Issue 3 Fix: Remove ALL filtering - let all transcripts through
+                                // Previous versions filtered 1-2 chars, filler words, repeated chars
+                                // But this removed too much output. Let Vosk output everything.
                                 val duration = endTime - startTime
-                                val charCount = text.replace(" ", "").length
-                                val isLikelyNoise = charCount <= 1
-                                if (isLikelyNoise) {
-                                    logToFile("generateWithVosk: [v2.0.50] FILTERED (1 char): start=${startTime}ms, dur=${duration}ms, text='$text'")
-                                } else {
-                                    val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                    logToFile("generateWithVosk: [v2.0.50] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, text='${text.take(50)}...'")
-                                    allTranscripts.add(transcript)
-                                    callback.onSubtitleGenerated(transcript)
-                                }
+                                val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
+                                logToFile("generateWithVosk: [v2.0.51] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, chars=${text.replace(" ", "").length}, text='${text.take(50)}...'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
                             }
                         } catch (e: Exception) { /* skip */ }
                     }
@@ -1963,9 +1965,11 @@ class SubtitleGeneratorService : Service() {
 
             // [v2.0.48] Issue 3: Handle crash recovery (-777 = SIGSEGV recovered via siglongjmp)
             if (result == -777) {
-                logToFile("processWhisperInChunks: [v2.0.48] whisper_full CRASHED but RECOVERED (siglongjmp), falling back to error handling")
-                callback.onError("Whisper处理时崩溃(SIGSEGV)，已恢复。建议使用Vosk引擎。")
+                logToFile("processWhisperInChunks: [v2.0.51] whisper_full CRASHED but RECOVERED (siglongjmp), falling back to Vosk for this episode")
                 bridge.free(ctxPtr)
+                // [v2.0.51] Issue 2 Fix: Don't disable Whisper permanently, just use Vosk for THIS episode
+                logToFile("processWhisperInChunks: [v2.0.51] Falling back to Vosk for episode ${episode.id} (Whisper not disabled)")
+                callback.onError("Whisper处理时崩溃，已自动切换到Vosk引擎处理本集。Whisper仍可在设置中使用。")
                 return false
             }
 

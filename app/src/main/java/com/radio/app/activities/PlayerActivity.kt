@@ -78,6 +78,9 @@ class PlayerActivity : AppCompatActivity() {
     // ExoPlayer's currentPosition can jump backwards by 100+ seconds during re-buffering.
     private var lastDisplayedPositionMs = 0L
     private var isUserSeeking = false
+    // [v2.0.51] Issue 1 Fix: Flag to ensure we only seek ONCE when player starts from 0
+    // This prevents the infinite seek loop from v2.0.47
+    private var hasSoughtToSavedPos = false
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
     private var lastSubtitleHighlightIdx = -1
@@ -588,6 +591,16 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
+                // [v2.0.51] Issue 1 Fix: If player starts from 0 but we expected savedPos, seek ONCE
+                // This is different from v2.0.47 which seeked on EVERY backward position (infinite loop)
+                // Here we only seek when: position is very small (<5000), lastDisplayed is large (>60000),
+                // and we haven't already sought (hasSoughtToSavedPos flag)
+                if (!hasSoughtToSavedPos && !isUserSeeking && position < 5000 && lastDisplayedPositionMs > 60000) {
+                    writeJitterLog("[v2.0.51] onPositionChanged: player started from ${position}ms but expected ${lastDisplayedPositionMs}ms, SEEKING ONCE to saved position")
+                    playbackService?.seekTo(lastDisplayedPositionMs)
+                    hasSoughtToSavedPos = true
+                    return@runOnUiThread
+                }
                 // [v2.0.48] Issue 1 Fix: Remove active seek (caused infinite seek loop)
                 // v2.0.47's seekTo made things worse: each seek triggers re-buffering,
                 // which reports more backward positions, triggering more seeks.
@@ -2156,6 +2169,8 @@ class PlayerActivity : AppCompatActivity() {
         subtitleAdapter?.setTranscripts(emptyList())
         // [v2.0.46] Reset monotonic position guard when switching episodes
         lastDisplayedPositionMs = 0L
+        // [v2.0.51] Reset seek-once flag when switching episodes
+        hasSoughtToSavedPos = false
         if (_binding != null) {
             binding.subtitleView.visibility = View.GONE
             binding.tvSubtitleTitle.visibility = View.GONE

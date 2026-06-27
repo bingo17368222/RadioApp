@@ -87,15 +87,7 @@ class AppSettings private constructor() {
     fun safeVoiceLanguage(): String = voiceLanguage ?: LANG_CN
     fun safeUiTheme(): String = uiTheme ?: THEME_DARK
     fun safeAiModel(): String = aiModel ?: AI_MODEL_WENXIN
-    fun safeAsrProvider(): String {
-        // [v2.0.50] Issue 3 Fix: If Whisper has crashed 2+ times, force Vosk
-        // This prevents the user from manually switching back to Whisper after crashes
-        val provider = asrProvider ?: ASR_BAIDU
-        if ((provider == ASR_WHISPER || provider == "whisper-local") && whisperCrashCount >= 2) {
-            return "vosk-local"
-        }
-        return provider
-    }
+    fun safeAsrProvider(): String = asrProvider ?: ASR_BAIDU
     fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
 
     private fun load(context: Context) {
