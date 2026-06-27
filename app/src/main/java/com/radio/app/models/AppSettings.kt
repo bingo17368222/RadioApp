@@ -72,7 +72,7 @@ class AppSettings private constructor() {
     var savePlaybackPosition: Boolean = true
     var rememberLastEpisode: Boolean = true
     var wifiOnlyPreCache: Boolean = true
-    var notificationStyle: String = "full"
+    var notificationStyle: String = "compact"
     var skipSeconds: Int = 15
     var dislikedEpisodes: MutableList<String> = mutableListOf()
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
@@ -103,7 +103,7 @@ class AppSettings private constructor() {
         savePlaybackPosition = prefs.getBoolean("save_playback_position", true)
         rememberLastEpisode = prefs.getBoolean("remember_last_episode", true)
         wifiOnlyPreCache = prefs.getBoolean("wifi_only_precache", true)
-        notificationStyle = prefs.getString("notification_style", "full") ?: "full"
+        notificationStyle = prefs.getString("notification_style", "compact") ?: "compact"
         skipSeconds = prefs.getInt("skip_seconds", 15)
         splitMode = prefs.getString("split_mode", SPLIT_MODE_NONE) ?: SPLIT_MODE_NONE
 
@@ -210,12 +210,16 @@ class AppSettings private constructor() {
         val wrappedTitle = "《$title》"
         val wrappedKey = "$stationId::$wrappedTitle"
         if (dislikedEpisodes.contains(wrappedKey)) return true
-        // 也尝试从disliked列表中去除《》后匹配
+        // 也尝试从disliked列表中去除《》后匹配（含子串模糊匹配）
         for (dislikedKey in dislikedEpisodes) {
             if (!dislikedKey.startsWith("$stationId::")) continue
             val dislikedTitle = dislikedKey.removePrefix("$stationId::")
             val strippedDisliked = dislikedTitle.replace(Regex("^《|》$"), "")
             if (strippedDisliked == title || strippedDisliked == strippedTitle) return true
+            // 子串模糊匹配：任一方包含另一方（用于标题部分匹配，兼容仅存储ID的历史数据经补存后的标题差异）
+            if (strippedDisliked.length > 2 && title.length > 2) {
+                if (strippedDisliked.contains(title) || title.contains(strippedDisliked)) return true
+            }
         }
         return false
     }

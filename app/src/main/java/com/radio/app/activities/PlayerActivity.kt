@@ -426,7 +426,14 @@ class PlayerActivity : AppCompatActivity() {
                                 writeJitterLog("Service killed restore: savedPosition=${savedPosition}ms exceeds episode duration=${epDurMs}ms, clamping to 0")
                                 savedPosition = 0L
                             }
-                            val msg = "Service was killed, restoring saved position: ${savedPosition}ms (epDur=${epDurMs}ms)"
+                            // Issue 1 Fix: 当服务被杀死 (!svcStarted) 时，不向 playEpisode 传递保存的位置，
+                            // 改为传 -1（不 seek），让服务从自身保存的状态或节目开头恢复，
+                            // 避免系统重建 Activity 时恢复一个过大的位置（如 2329771ms）导致抖动。
+                            if (!svcStarted) {
+                                writeJitterLog("Service was killed (!svcStarted), NOT passing savedPos=${savedPosition}ms to playEpisode, using -1 (no seek) to avoid jitter")
+                                savedPosition = -1L
+                            }
+                            val msg = "Service was killed, restoring saved position: ${savedPosition}ms (epDur=${epDurMs}ms, svcStarted=$svcStarted)"
                             android.util.Log.d("PlayerActivity", msg)
                             writeJitterLog(msg)
                             if (savedPosition > 0) {
@@ -1331,6 +1338,10 @@ class PlayerActivity : AppCompatActivity() {
         if (index < 0 || index >= episodeList.size) return
         writeJitterLog("playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
         writeEpisodeLog("playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
+        if (playbackService == null) {
+            writeEpisodeLog("playEpisodeAtIndex: ERROR - playbackService is null, cannot switch episode")
+            return
+        }
         var targetIdx = index
         var targetEpisode = episodeList[targetIdx]
         val settings = AppSettings.getInstance(this)
@@ -1363,6 +1374,11 @@ class PlayerActivity : AppCompatActivity() {
         val afterEpisode = playbackService?.getCurrentEpisode()
         writeEpisodeLog("playEpisodeAtIndex: AFTER switch - service current episode=${afterEpisode?.title} (id=${afterEpisode?.id})")
         writeEpisodeLog("playEpisodeAtIndex: AFTER switch - target was ${targetEpisode.title}, service reports ${afterEpisode?.title}, match=${targetEpisode.id == afterEpisode?.id}")
+        // Issue 5 Fix: 延迟校验（500ms）确认切换是否真正生效
+        Handler(Looper.getMainLooper()).postDelayed({
+            val verifyEpisode = playbackService?.getCurrentEpisode()
+            writeEpisodeLog("playEpisodeAtIndex: DELAYED VERIFY (500ms) - service episode=${verifyEpisode?.title} (id=${verifyEpisode?.id}), target was ${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == verifyEpisode?.id}")
+        }, 500)
         voiceSegments = generateSimulatedSegments()
         if (voiceSegments.isNotEmpty()) updateSegmentsUI()
         updateUI()
@@ -1394,6 +1410,7 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
         }
         val listAdapter = EpisodeListAdapter(episodeList, currentId)
+        writeEpisodeLog("showEpisodeListDialog: creating adapter with currentId=$currentId, episodeList.size=${episodeList.size}")
         writeJitterLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}")
         writeEpisodeLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}, listAdapter.currentlyPlayingId=$currentId")
         listAdapter.onItemClicked = { position ->
@@ -1462,7 +1479,9 @@ class PlayerActivity : AppCompatActivity() {
             val episode = episodes[position]
             writeEpisodeLog("onBindViewHolder: position=$position, episode.title=${episode.title}, episode.id=${episode.id}, currentlyPlayingId=$currentlyPlayingId, isPlaying=${episode.id == currentlyPlayingId}")
             // Issue 6 Fix: 同时匹配 episode ID 和基于 title 的匹配（跨天同一节目也能高亮）
+            // Issue 4 Fix: 当 currentlyPlayingId 为空时，回退到按 title 匹配当前播放节目
             val isPlaying = episode.id == currentlyPlayingId ||
+                (currentlyPlayingId.isNullOrEmpty() && currentEpisode?.title == episode.title) ||
                 (currentEpisode != null && episode.title != null &&
                  currentEpisode?.title == episode.title &&
                  currentEpisode?.stationId == episode.stationId)

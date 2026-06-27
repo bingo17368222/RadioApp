@@ -896,10 +896,10 @@ class SubtitleGeneratorService : Service() {
                 chunkCount++
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
 
-                // Issue 9: Force getResult() every 5 chunks (~1.25s) even if acceptWaveForm returns false.
+                // Issue 9: Force getResult() every 3 chunks (~0.75s) even if acceptWaveForm returns false.
                 // Radio audio is continuous speech with few silence boundaries, so acceptWaveForm rarely
                 // returns true. Forcing getResult() periodically ensures Vosk outputs recognized text.
-                val forceResult = (chunkCount % 5 == 0)
+                val forceResult = (chunkCount % 3 == 0)
                 if (forceResult) {
                     writeVoskLog("processVoskInChunks: forceResult triggered at chunk=$chunkCount, offset=$offset, acceptResult=$acceptResult")
                 }
@@ -949,7 +949,7 @@ class SubtitleGeneratorService : Service() {
                 }
 
                 // Issue 9: On forceResult, if result text was empty, try to get partial result and save it
-                if (forceResult && !acceptResult) {
+                if (chunkCount % 3 == 0) {
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {
@@ -972,6 +972,35 @@ class SubtitleGeneratorService : Service() {
                         } catch (_: Exception) { /* skip */ }
                     } else {
                         writeVoskLog("forceResult at chunk $chunkCount: getResult and partial both returned empty")
+                    }
+                }
+
+                // Issue 9: If both getResult and partial returned empty on forceResult,
+                // try resetting the recognizer to flush buffered text
+                if (forceResult && !acceptResult) {
+                    try {
+                        // Call endOfUtterance to force Vosk to finalize current recognition
+                        val endOfUtteranceMethod = voskRecognizerClass?.getMethod("endOfUtterance")
+                        if (endOfUtteranceMethod != null) {
+                            endOfUtteranceMethod.invoke(recognizer)
+                            val flushResult = getResultMethod.invoke(recognizer) as? String ?: ""
+                            if (flushResult.isNotBlank()) {
+                                val flushJson = org.json.JSONObject(flushResult)
+                                val flushText = flushJson.optString("text", "").trim()
+                                if (flushText.isNotEmpty() && flushText != lastPartialText) {
+                                    lastPartialText = flushText
+                                    val flushStart = offset * 1000L / 32000L
+                                    val flushEnd = (offset + chunk.size) * 1000L / 32000L
+                                    val transcript = com.radio.app.models.Transcript(text = flushText, segmentStart = flushStart, segmentEnd = flushEnd)
+                                    logToFile("processVoskInChunks: endOfUtterance flush transcript at ${flushStart}ms: '${flushText.take(50)}...'")
+                                    writeVoskLog("endOfUtterance flush: chunk=$chunkCount, text='${flushText.take(100)}'")
+                                    allTranscripts.add(transcript)
+                                    callback.onSubtitleGenerated(transcript)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logToFile("processVoskInChunks: endOfUtterance attempt failed: ${e.message}")
                     }
                 }
 
@@ -1595,17 +1624,42 @@ class SubtitleGeneratorService : Service() {
                     }
                     if (allLoaded) {
                         logToFile("loadWhisperNativeLibrary: all Whisper .so files loaded successfully")
-                        // Also load the JNI bridge
+                        // Also load the JNI bridge - try multiple approaches
+                        var jniBridgeLoaded = false
                         try {
                             System.loadLibrary("whisper_jni")
-                            logToFile("loadWhisperNativeLibrary: loaded JNI bridge libwhisper_jni.so")
+                            jniBridgeLoaded = true
+                            logToFile("loadWhisperNativeLibrary: JNI bridge loaded via System.loadLibrary")
                         } catch (e: UnsatisfiedLinkError) {
                             if (e.message?.contains("already loaded") == true) {
+                                jniBridgeLoaded = true
                                 logToFile("loadWhisperNativeLibrary: JNI bridge already loaded")
                             } else {
-                                logToFile("loadWhisperNativeLibrary: FAILED to load JNI bridge: ${e.message}")
-                                // Don't return false - the bridge might be loaded by processWhisperInChunks later
+                                logToFile("loadWhisperNativeLibrary: System.loadLibrary failed: ${e.message}, trying alternative load...")
+                                // Try loading from the application's native library directory
+                                try {
+                                    val nativeLibDir = java.io.File(applicationInfo.nativeLibraryDir)
+                                    val jniFile = java.io.File(nativeLibDir, "libwhisper_jni.so")
+                                    logToFile("loadWhisperNativeLibrary: looking for libwhisper_jni.so at ${jniFile.absolutePath}, exists=${jniFile.exists()}")
+                                    if (jniFile.exists()) {
+                                        System.load(jniFile.absolutePath)
+                                        jniBridgeLoaded = true
+                                        logToFile("loadWhisperNativeLibrary: JNI bridge loaded via System.load from ${jniFile.absolutePath}")
+                                    } else {
+                                        // List all .so files in native lib dir for debugging
+                                        val soFiles = nativeLibDir.listFiles()?.filter { it.name.endsWith(".so") }?.map { it.name } ?: emptyList()
+                                        logToFile("loadWhisperNativeLibrary: libwhisper_jni.so NOT FOUND in ${nativeLibDir.absolutePath}, available .so files: $soFiles")
+                                    }
+                                } catch (e2: UnsatisfiedLinkError) {
+                                    logToFile("loadWhisperNativeLibrary: alternative load also failed: ${e2.message}")
+                                } catch (e2: Exception) {
+                                    logToFile("loadWhisperNativeLibrary: alternative load exception: ${e2.message}")
+                                }
                             }
+                        }
+                        if (!jniBridgeLoaded) {
+                            logToFile("loadWhisperNativeLibrary: whisper.cpp JNI bridge not available (will retry in processWhisperInChunks)")
+                            // Don't return false - the bridge might be loaded by processWhisperInChunks later
                         }
                         return true
                     }
@@ -1709,19 +1763,43 @@ class SubtitleGeneratorService : Service() {
         try {
             val bridge = com.radio.app.whisper.WhisperBridge()
 
-            // Native libraries should already be loaded by loadWhisperNativeLibrary() in generateWithWhisper
-            // Just ensure the JNI bridge is loaded
+            // Load JNI bridge - try multiple approaches
+            var jniBridgeLoaded = false
             try {
                 System.loadLibrary("whisper_jni")
-                logToFile("processWhisperInChunks: JNI bridge loaded successfully")
+                jniBridgeLoaded = true
+                logToFile("processWhisperInChunks: JNI bridge loaded via System.loadLibrary")
             } catch (e: UnsatisfiedLinkError) {
                 if (e.message?.contains("already loaded") == true) {
+                    jniBridgeLoaded = true
                     logToFile("processWhisperInChunks: JNI bridge already loaded")
                 } else {
-                    logToFile("processWhisperInChunks: FAILED to load JNI bridge: ${e.message}")
-                    callback.onError("Whisper JNI桥接加载失败: ${e.message}")
-                    return false
+                    logToFile("processWhisperInChunks: System.loadLibrary failed: ${e.message}, trying alternative load...")
+                    // Try loading from the application's native library directory
+                    try {
+                        val nativeLibDir = java.io.File(applicationInfo.nativeLibraryDir)
+                        val jniFile = java.io.File(nativeLibDir, "libwhisper_jni.so")
+                        logToFile("processWhisperInChunks: looking for libwhisper_jni.so at ${jniFile.absolutePath}, exists=${jniFile.exists()}")
+                        if (jniFile.exists()) {
+                            System.load(jniFile.absolutePath)
+                            jniBridgeLoaded = true
+                            logToFile("processWhisperInChunks: JNI bridge loaded via System.load from ${jniFile.absolutePath}")
+                        } else {
+                            // List all .so files in native lib dir for debugging
+                            val soFiles = nativeLibDir.listFiles()?.filter { it.name.endsWith(".so") }?.map { it.name } ?: emptyList()
+                            logToFile("processWhisperInChunks: libwhisper_jni.so NOT FOUND in ${nativeLibDir.absolutePath}, available .so files: $soFiles")
+                        }
+                    } catch (e2: UnsatisfiedLinkError) {
+                        logToFile("processWhisperInChunks: alternative load also failed: ${e2.message}")
+                    } catch (e2: Exception) {
+                        logToFile("processWhisperInChunks: alternative load exception: ${e2.message}")
+                    }
                 }
+            }
+            if (!jniBridgeLoaded) {
+                logToFile("processWhisperInChunks: whisper.cpp JNI bridge not available, reporting error")
+                callback.onError("Whisper JNI桥接加载失败。libwhisper_jni.so未找到。")
+                return false
             }
 
             // Set library path for dlopen (use full path to avoid soname mismatch issues)

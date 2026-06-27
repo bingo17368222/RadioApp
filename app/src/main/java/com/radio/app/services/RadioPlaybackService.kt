@@ -190,7 +190,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var pendingStartPosition: Long = -1L
     private var isSeekingToPosition = false
     private var lastPositionRestoreTime = 0L
-    private var notificationStyle = "full"
+    private var notificationStyle = "compact"
     private var lastNotificationTime = 0L
     private var pendingNotificationRunnable: Runnable? = null
     // SharedPreferences监听器，用于热切换通知栏样式
@@ -745,6 +745,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 预缓存完成后显示一次汇总通知（仅当有下载时）
      */
     private fun showPrecacheCompleteNotification() {
+        val settings = AppSettings.getInstance(this)
+        val targetCount = settings.preloadCacheCount
+        // Count actual cached files
+        val episodesDir = File(cacheDir, "episodes")
+        val cachedCount = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 }?.size ?: 0
+        writeServiceLog("notification", "showPrecacheCompleteNotification: called, cachedCount=$cachedCount, targetCount=$targetCount, precacheNotificationShown=$precacheNotificationShown")
+        if (cachedCount < targetCount) {
+            writeServiceLog("notification", "showPrecacheCompleteNotification: SKIPPED - cachedCount=$cachedCount < targetCount=$targetCount, NOT showing complete notification")
+            return
+        }
         if (precacheNotificationShown) {
             writeServiceLog("notification", "showPrecacheCompleteNotification: already shown for this session, skipping. count=$precacheCompletedCount, files=${synchronized(precacheCompletedFileNames) { precacheCompletedFileNames.toList() }}")
             return
@@ -1559,6 +1569,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, timeRange=$notificationTimeRange, playing=${player?.isPlaying}, userPaused=$userPaused, prepared=$prepared, contentHash=$lastNotificationContentHash")
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
+        writeServiceLog("notification", "updateNotification: BEFORE build - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange', style='$notificationStyle'")
         // Use userPaused instead of player?.isPlaying to avoid notification flicker during buffering.
         // When ExoPlayer buffers/re-buffers, isPlaying briefly becomes false even though the user didn't pause.
         val playing = playbackStarted && !userPaused
@@ -1651,7 +1662,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val notification: Notification = builder.build()
         notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
-
+        writeServiceLog("notification", "updateNotification: AFTER notify - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange'")
         return notification
     }
 
@@ -1801,6 +1812,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 构建系统标准MediaStyle通知栏（五按钮，支持seekbar和拖动手势）
      */
     private fun buildMediaStyleNotification(playing: Boolean, deleteIntent: PendingIntent): Notification {
+        writeServiceLog("notification", "buildMediaStyleNotification: BEFORE build - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange'")
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
         val timeStr = notificationTimeRange
         val contentText = buildString {
@@ -1872,7 +1884,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         val notification: Notification = builder.build()
         notification.flags = notification.flags or Notification.FLAG_NO_CLEAR or Notification.FLAG_ONGOING_EVENT
-
+        writeServiceLog("notification", "buildMediaStyleNotification: AFTER notify - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange'")
         return notification
     }
 
@@ -1887,7 +1899,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun reloadNotificationStyle() {
         val prefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
-        notificationStyle = prefs.getString("notification_style", "full") ?: "full"
+        notificationStyle = prefs.getString("notification_style", "compact") ?: "compact"
     }
 
     private fun buildNotification(): Notification {
@@ -1977,7 +1989,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         savePlaybackPosition = settings.savePlaybackPosition
         // 从 radio_app_settings 读取（与 AppSettings.save() 和热切换监听器使用同一文件）
         val appPrefs = getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
-        notificationStyle = appPrefs.getString("notification_style", "full") ?: "full"
+        notificationStyle = appPrefs.getString("notification_style", "compact") ?: "compact"
         skipSeconds = appPrefs.getInt("skip_seconds", 15)
         Log.d(TAG, "loadSettings: raw skip_seconds from prefs = ${appPrefs.getInt("skip_seconds", -1)}")
         // 强制迁移：旧版本残留值5必须覆盖为15
@@ -2186,6 +2198,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             startForeground(NOTIFICATION_ID, notification)
         }
         writeServiceLog("notification", "playEpisode: title=${episode.title}, notificationTitle=$notificationTitle, notificationSubText=$notificationSubText, notificationDate=$notificationDate, updateNotification called")
+        writeServiceLog("notification", "playEpisode: FULL subText='${buildNotificationSubText()}', notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange'")
         // Broadcast to notify UI that episode changed
         try {
             val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
@@ -2511,6 +2524,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun notifyPrevEpisode() {
+        writeServiceLog("notification", "notifyPrevEpisode: BEFORE switch - current title='${currentEpisode?.title}', date='$notificationDate', timeRange='$notificationTimeRange'")
         writeServiceLog("notification", "notifyPrevEpisode: called, currentEpisode=${currentEpisode?.title ?: "null"}")
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id
@@ -2537,6 +2551,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(prevEpisode, false, startPos)
+            writeServiceLog("notification", "notifyPrevEpisode: AFTER switch - new title='${prevEpisode.title}', new date='$notificationDate', new timeRange='$notificationTimeRange', fullSubText='${buildNotificationSubText()}'")
             callback?.onEpisodeChanged(prevEpisode)
             // Also send broadcast for UI update
             val intent = Intent(BROADCAST_STATE_CHANGED).apply {
@@ -2569,6 +2584,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
     private fun notifyNextEpisode() {
+        writeServiceLog("notification", "notifyNextEpisode: BEFORE switch - current title='${currentEpisode?.title}', date='$notificationDate', timeRange='$notificationTimeRange'")
         writeServiceLog("notification", "notifyNextEpisode: called, currentEpisode=${currentEpisode?.title ?: "null"}")
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id
@@ -2595,6 +2611,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
+            writeServiceLog("notification", "notifyNextEpisode: AFTER switch - new title='${nextEpisode.title}', new date='$notificationDate', new timeRange='$notificationTimeRange', fullSubText='${buildNotificationSubText()}'")
             callback?.onEpisodeChanged(nextEpisode)
             // Also send broadcast for UI update
             val intent = Intent(BROADCAST_STATE_CHANGED).apply {
