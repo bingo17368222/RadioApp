@@ -53,6 +53,8 @@ class AppSettings private constructor() {
 
     var aiModel: String = AI_MODEL_WENXIN
     var asrProvider: String = ASR_BAIDU
+    // [v2.0.50] Issue 3 Fix: Track Whisper crash count to permanently disable after 2 crashes
+    var whisperCrashCount: Int = 0
     var uiTheme: String = THEME_DARK
     var subtitleSize: String = SUBTITLE_MEDIUM
     var subtitleLanguage: String = LANG_CN
@@ -85,13 +87,22 @@ class AppSettings private constructor() {
     fun safeVoiceLanguage(): String = voiceLanguage ?: LANG_CN
     fun safeUiTheme(): String = uiTheme ?: THEME_DARK
     fun safeAiModel(): String = aiModel ?: AI_MODEL_WENXIN
-    fun safeAsrProvider(): String = asrProvider ?: ASR_BAIDU
+    fun safeAsrProvider(): String {
+        // [v2.0.50] Issue 3 Fix: If Whisper has crashed 2+ times, force Vosk
+        // This prevents the user from manually switching back to Whisper after crashes
+        val provider = asrProvider ?: ASR_BAIDU
+        if ((provider == ASR_WHISPER || provider == "whisper-local") && whisperCrashCount >= 2) {
+            return "vosk-local"
+        }
+        return provider
+    }
     fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
 
     private fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
+        whisperCrashCount = prefs.getInt("whisper_crash_count", 0)  // [v2.0.50]
         uiTheme = prefs.getString("ui_theme", THEME_DARK) ?: THEME_DARK
         preloadCache = prefs.getBoolean("preload_cache", false)
         preloadCacheCount = prefs.getInt("preload_cache_count", 1)
@@ -142,6 +153,7 @@ class AppSettings private constructor() {
         prefs.edit().apply {
             putString("ai_model", aiModel)
             putString("asr_provider", asrProvider)
+            putInt("whisper_crash_count", whisperCrashCount)  // [v2.0.50]
             putString("ui_theme", uiTheme)
             putBoolean("preload_cache", preloadCache)
             putInt("preload_cache_count", preloadCacheCount)

@@ -396,6 +396,15 @@ class PlayerActivity : AppCompatActivity() {
             } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
                 writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
+            // [v2.0.50] Issue 1 Fix: Pre-set UI even when isFreshStart=true, if service is killed and savedPos is valid
+            // This prevents the progress bar from showing 0 then jumping to savedPos (flicker)
+            if (isFreshStart && !svcStarted && currentEpisode != null && isValidSavedPos) {
+                binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                binding.seekBar.progress = savedPos.toInt()
+                binding.tvLiveIndicator.text = "恢复中..."
+                lastDisplayedPositionMs = savedPos  // [v2.0.50] Set so monotonic guard works
+                writeJitterLog("[v2.0.50] Pre-setting UI to saved position: ${savedPos}ms before playEpisode (isFreshStart=true, svcStarted=false)")
+            }
 
             val msg = if (sameEpisode && !svcStarted) {
                 "Same episode, service was killed, restoring from saved position: ${savedPos}ms (valid=$isValidSavedPos)"
