@@ -355,20 +355,25 @@ class PlayerActivity : AppCompatActivity() {
 
             setPlaybackInProgress(this@PlayerActivity, newUrl)
 
-            // Show saved position immediately to prevent 0:00 flash
-            if (!isFreshStart && currentEpisode != null) {
-                val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
-                if (savedPos > 0) {
-                    binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
-                    binding.seekBar.progress = savedPos.toInt()
-                    binding.tvLiveIndicator.text = "恢复中..."
-                    writeJitterLog("Pre-setting UI to saved position: ${savedPos}ms before playEpisode")
-                }
+            // Issue 1 Fix: 显示保存位置前，先验证其合理性（不超过 episode duration）
+            val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
+            val svcDuration = playbackService?.getDuration() ?: 0L
+            val epDuration = currentEpisode?.duration ?: 0L
+            // 取服务和 episode 中较大的 duration 作为校验基准（单位可能不同：ms vs s）
+            val maxDuration = maxOf(svcDuration, epDuration * if (epDuration > 0 && epDuration < 100000) 1000 else 1)
+            val isValidSavedPos = savedPos > 0 && (maxDuration <= 0 || savedPos <= maxDuration)
+
+            if (!isFreshStart && currentEpisode != null && isValidSavedPos) {
+                binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                binding.seekBar.progress = savedPos.toInt()
+                binding.tvLiveIndicator.text = "恢复中..."
+                writeJitterLog("Pre-setting UI to saved position: ${savedPos}ms before playEpisode (maxDur=$maxDuration)")
+            } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
+                writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
 
-            val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
             val msg = if (sameEpisode && !svcStarted) {
-                "Same episode, service was killed, restoring from saved position: ${savedPos}ms"
+                "Same episode, service was killed, restoring from saved position: ${savedPos}ms (valid=$isValidSavedPos)"
             } else {
                 "Different episode, starting new playback: ${currentEpisode?.title} (was svc=${playbackService?.getCurrentEpisode()?.title})"
             }
@@ -376,7 +381,7 @@ class PlayerActivity : AppCompatActivity() {
             writeJitterLog(msg)
 
             if (!svcStarted) {
-                writeJitterLog("Service was killed, will restore playback. savedPos=${savedPos}ms, episode=${currentEpisode?.title}")
+                writeJitterLog("Service was killed, will restore playback. savedPos=${savedPos}ms, valid=$isValidSavedPos, episode=${currentEpisode?.title}")
             }
 
             // If episode list is empty (activity recreated without intent), try to restore from prefs
@@ -413,8 +418,14 @@ class PlayerActivity : AppCompatActivity() {
                         if (isFreshStart) {
                             playbackService?.playEpisode(episode, false)
                         } else {
-                            val savedPosition = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
-                            val msg = "Service was killed, restoring saved position: ${savedPosition}ms"
+                            var savedPosition = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
+                            // Issue 1 Fix: 验证保存位置的合理性，不超过 episode duration
+                            val epDurMs = episode.duration * if (episode.duration > 0 && episode.duration < 100000) 1000 else 1
+                            if (savedPosition > 0 && epDurMs > 0 && savedPosition > epDurMs) {
+                                writeJitterLog("Service killed restore: savedPosition=${savedPosition}ms exceeds episode duration=${epDurMs}ms, clamping to 0")
+                                savedPosition = 0L
+                            }
+                            val msg = "Service was killed, restoring saved position: ${savedPosition}ms (epDur=${epDurMs}ms)"
                             android.util.Log.d("PlayerActivity", msg)
                             writeJitterLog(msg)
                             if (savedPosition > 0) {
@@ -657,16 +668,21 @@ class PlayerActivity : AppCompatActivity() {
                 currentEpisode = null
                 // Don't return - continue with initialization, service will provide episode
                 initViews()
-                // Issue 1 Fix 3: Restore cached position immediately to prevent seekbar showing 0
-                val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
-                val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
-                if (cachedPos > 0 && cachedDur > 0) {
-                    try {
-                        binding.seekBar.max = cachedDur.toInt()
-                        binding.seekBar.progress = cachedPos.toInt()
-                        binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${formatTime(cachedDur.toInt())}"
-                        writeJitterLog("onCreate: immediately restored cached position=$cachedPos, duration=$cachedDur")
-                    } catch (_: Exception) {}
+                // Issue 1 Fix 3: 系统重建时不立即恢复缓存位置，等服务连接后获取实际位置。
+                // 只在 freshLaunchTs > 0（用户主动操作）时才恢复缓存位置。
+                if (freshLaunchTs > 0) {
+                    val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
+                    val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
+                    if (cachedPos > 0 && cachedDur > 0 && cachedPos <= cachedDur) {
+                        try {
+                            binding.seekBar.max = cachedDur.toInt()
+                            binding.seekBar.progress = cachedPos.toInt()
+                            binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${formatTime(cachedDur.toInt())}"
+                            writeJitterLog("onCreate: immediately restored cached position=$cachedPos, duration=$cachedDur")
+                        } catch (_: Exception) {}
+                    }
+                } else {
+                    writeJitterLog("onCreate: freshLaunchTs=0, skipping cached position restore, waiting for service")
                 }
                 setupListeners()
                 restoreProcessingState()
@@ -796,8 +812,13 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
 
-        // 预填充保存的播放位置，避免从00:00开始闪烁（切回app时看到的"抖动"）
-        if (!isFreshStart && currentEpisode != null) {
+        // Issue 1 Fix: 只在真正的新鲜启动（用户主动操作）时预填充保存的位置。
+        // 当 freshLaunchTs=0（系统重建 Activity）时，不立即显示保存的位置，
+        // 因为保存的位置可能不准确（如 2329771ms），会导致进度条先跳到错误位置，
+        // 等服务连接后再跳回实际位置，造成"抖动"。
+        // 改为显示 "00:00 / 00:00"，等服务连接后由服务提供实际位置。
+        if (!isFreshStart && currentEpisode != null && freshLaunchTs > 0) {
+            // freshLaunchTs > 0 说明是用户主动操作（非系统重建），可以安全预填充
             val episodeKey = "${currentEpisode!!.stationId}::${currentEpisode!!.title}"
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             if (savedPos > 0) {
@@ -809,7 +830,12 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvCurrentTime.text = "00:00 / 00:00"
             }
         } else {
+            // freshLaunchTs=0（系统重建）或新鲜启动，不预填充位置
             binding.tvCurrentTime.text = "00:00 / 00:00"
+            if (!isFreshStart && currentEpisode != null) {
+                binding.tvLiveIndicator.text = "连接中..."
+                writeJitterLog("initViews: freshLaunchTs=0, skipping saved position pre-fill, waiting for service")
+            }
         }
         binding.tvTotalTime.text = "00:00"
         binding.tvCacheProgress.text = "缓存: 0%"
@@ -1406,7 +1432,8 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // Issue 6: 节目列表适配器，高亮当前正在播放的节目（背景色 + "正在播放" 标签 + 加粗标题）
+    // Issue 6: 节目列表适配器，高亮当前正在播放的节目
+    // 高亮方式：背景色 + "正在播放" 标签 + 加粗标题 + 播放按钮变为暂停图标
     inner class EpisodeListAdapter(
         private val episodes: List<Episode>,
         private val currentlyPlayingId: String?
@@ -1424,7 +1451,11 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val episode = episodes[position]
-            val isPlaying = episode.id == currentlyPlayingId
+            // Issue 6 Fix: 同时匹配 episode ID 和基于 title 的匹配（跨天同一节目也能高亮）
+            val isPlaying = episode.id == currentlyPlayingId ||
+                (currentEpisode != null && episode.title != null &&
+                 currentEpisode?.title == episode.title &&
+                 currentEpisode?.stationId == episode.stationId)
             writeEpisodeLog("onBindViewHolder: position=$position, title=${episode.title}, id=${episode.id}, isCurrentlyPlaying=$isPlaying, currentlyPlayingId=$currentlyPlayingId")
 
             holder.tvTitle.text = if (isPlaying) "▶ ${episode.title}" else episode.title
@@ -1443,21 +1474,28 @@ class PlayerActivity : AppCompatActivity() {
             val titleColor = resolveThemeColor(ctx, com.radio.app.R.attr.appTextPrimary)
 
             if (isPlaying) {
-                // Issue 6: 高亮当前播放节目
-                val tint = Color.argb(40, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
+                // Issue 6: 高亮当前播放节目 - 使用更明显的背景色
+                val tint = Color.argb(60, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
                 holder.itemView.setBackgroundColor(tint)
                 holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
                 holder.tvTitle.setTextColor(accentColor)
                 holder.tvPlayingIndicator.text = "正在播放"
                 holder.tvPlayingIndicator.setTextColor(accentColor)
                 holder.tvPlayingIndicator.visibility = View.VISIBLE
-                writeEpisodeLog("onBindViewHolder: HIGHLIGHT set for position=$position title=${episode.title}, bgColor=$tint, textColor=$accentColor, indicator=VISIBLE")
+                // Issue 6 Fix: 播放按钮变为暂停图标，并用主题色着色
+                holder.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
+                holder.btnPlay.setColorFilter(accentColor)
+                writeEpisodeLog("onBindViewHolder: HIGHLIGHT set for position=$position title=${episode.title}, bgColor=$tint, textColor=$accentColor, indicator=VISIBLE, btnPlay=pause")
             } else {
-                holder.itemView.setBackgroundColor(Color.TRANSPARENT)
+                // Issue 6 Fix: 恢复原始背景（selectableItemBackground），而非简单设置透明
+                holder.itemView.background = holder.originalBackground
                 holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
                 holder.tvTitle.setTextColor(titleColor)
                 holder.tvPlayingIndicator.visibility = View.GONE
-                writeEpisodeLog("onBindViewHolder: normal style for position=$position title=${episode.title}, bgColor=TRANSPARENT, textColor=$titleColor, indicator=GONE")
+                // Issue 6 Fix: 恢复播放按钮为默认播放图标
+                holder.btnPlay.setImageResource(R.drawable.ic_play)
+                holder.btnPlay.clearColorFilter()
+                writeEpisodeLog("onBindViewHolder: normal style for position=$position title=${episode.title}, bgColor=original, textColor=$titleColor, indicator=GONE, btnPlay=play")
             }
 
             holder.itemView.setOnClickListener {
@@ -1474,6 +1512,10 @@ class PlayerActivity : AppCompatActivity() {
             val tvDescription: TextView = view.findViewById(R.id.tv_description)
             // 复用缓存指示位作为 "正在播放" 标签展示位
             val tvPlayingIndicator: TextView = view.findViewById(R.id.tv_cached_indicator)
+            // Issue 6 Fix: 引用播放按钮，高亮时切换为暂停图标
+            val btnPlay: ImageView = view.findViewById(R.id.btn_play)
+            // Issue 6 Fix: 保存原始背景，用于在非播放项上恢复 selectableItemBackground
+            val originalBackground: android.graphics.drawable.Drawable? = view.background
         }
     }
 

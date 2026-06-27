@@ -223,6 +223,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastPreCacheCheckTime: Long = 0
     // 通知内容去重哈希：内容未变化时跳过 manager.notify()，避免 ExoPlayer 缓冲态频繁刷新导致的通知闪烁
     private var lastNotificationContentHash: Int = 0
+    // Issue 3: 切换节目后强制更新通知的标志位，绕过 contentHash 去重检查
+    @Volatile
+    private var forceNotificationUpdate: Boolean = false
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
@@ -652,23 +655,55 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // If no next episode to download in current list, fetch more days (forward only)
+        // Issue 14: If no next episode to download in current list, keep fetching more days
+        // until a downloadable episode is found or the max days limit is reached.
+        // This prevents marking pre-cache as "complete" when only 7 out of 10 target files are cached.
         if (nextToDownload == null) {
             Log.d(TAG, "Pre-cache: no more future episodes in list, fetching more days (forward)")
-            val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
-            if (expandedList.size > preCacheList.size) {
+            var fetchAttempts = 0
+            val maxFetchAttempts = 20  // Safety limit to avoid infinite loops
+            while (nextToDownload == null && fetchAttempts < maxFetchAttempts) {
+                val listSizeBefore = preCacheList.size
+                val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
+                if (expandedList.size <= listSizeBefore) {
+                    // fetchMoreDaysForPreCache returned no new episodes (max days reached or no episodes available)
+                    Log.d(TAG, "Pre-cache: fetchMoreDaysForPreCache returned no new episodes, stopping fetch loop")
+                    break
+                }
                 savePreCacheList(expandedList)
                 preCacheList = expandedList
+                // Update cachedNames to include any newly cached files
+                val updatedCachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
+                val updatedCachedNames = updatedCachedFiles.map { it.name }.toSet()
                 // Re-find current index and look for next to download
                 currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl }
                 for (i in (currentIdx + 1) until preCacheList.size) {
                     val ep = preCacheList[i]
                     val fileName = extractCacheFileName(ep.audioUrl)
                     val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
-                    if (fileName !in cachedNames && !isDisliked && ep.audioUrl.isNotBlank()) {
+                    if (fileName !in updatedCachedNames && !isDisliked && ep.audioUrl.isNotBlank()) {
                         nextToDownload = ep
                         break
                     }
+                }
+                fetchAttempts++
+            }
+            // After fetching more days, re-count future cached episodes against targetCount
+            if (nextToDownload == null) {
+                futureCachedCount = 0
+                for (i in (currentIdx + 1) until preCacheList.size) {
+                    val ep = preCacheList[i]
+                    val fileName = extractCacheFileName(ep.audioUrl)
+                    if (fileName in cachedNames) {
+                        futureCachedCount++
+                    }
+                }
+                if (futureCachedCount >= targetCount) {
+                    Log.d(TAG, "Pre-cache: target reached after fetching more days ($futureCachedCount >= $targetCount)")
+                    writeServiceLog("notification", "triggerPreCache: target reached after expanding list, futureCached=$futureCachedCount, target=$targetCount")
+                    isPrecaching = false
+                    showPrecacheCompleteNotification()
+                    return
                 }
             }
         }
@@ -680,11 +715,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // downloadPreCacheEpisode will set isPrecaching=false and post triggerPreCache()
             // on the main looper when done (success/failure/skip), which continues the chain
         } else {
-            Log.d(TAG, "Pre-cache: no more future episodes available to download")
-            writeServiceLog("notification", "triggerPreCache: END, no more episodes to download")
+            Log.d(TAG, "Pre-cache: no more future episodes available to download (futureCached=$futureCachedCount, target=$targetCount)")
+            writeServiceLog("notification", "triggerPreCache: END, no more episodes to download, futureCached=$futureCachedCount, target=$targetCount")
             isPrecaching = false
             showPrecacheCompleteNotification()
-            // Check if all future episodes are disliked
+            // Check if all future episodes are disliked or cached
             val allDisliked = ((currentIdx + 1) until preCacheList.size).all { i ->
                 val ep = preCacheList[i]
                 settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title) ||
@@ -694,6 +729,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.d(TAG, "Pre-cache: all future episodes disliked or cached")
                 Handler(Looper.getMainLooper()).post {
                     android.widget.Toast.makeText(this, "当前电台未来节目已被全部缓存或标记为不喜欢", android.widget.Toast.LENGTH_LONG).show()
+                }
+            } else if (futureCachedCount < targetCount) {
+                // Not enough episodes available to meet the target
+                Log.d(TAG, "Pre-cache: insufficient episodes available ($futureCachedCount < $targetCount)")
+                Handler(Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(this, "当前电台可用节目不足，已缓存${futureCachedCount}个（目标${targetCount}个）", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -1591,7 +1632,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeNotifDetailLog("updateNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
-            .setContentText(contentText)
+            .setContentText(fullSubText)
             .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
@@ -1658,7 +1699,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             prepared,
             if (!isLive && prepared) player?.currentPosition?.div(2000) else 0L  // 2-second granularity
         )
-        if (contentHash == lastNotificationContentHash) {
+        // Issue 3: forceNotificationUpdate bypasses the hash check after episode switch
+        val shouldForce = forceNotificationUpdate
+        if (shouldForce) {
+            forceNotificationUpdate = false
+        }
+        if (!shouldForce && contentHash == lastNotificationContentHash) {
             return  // Skip identical notification update
         }
         lastNotificationContentHash = contentHash
@@ -1793,9 +1839,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             expandedView.setViewVisibility(R.id.notification_progress_area, android.view.View.GONE)
         }
 
+        // Issue 4: Use fullSubText (with date/time) for setContentText so compact view shows date
+        val fullSubText = buildNotificationSubText()
+
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(notificationTitle)
-            .setContentText(contentText)
+            .setContentText(fullSubText)
             .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(createContentIntent())
@@ -2092,6 +2141,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationDate = ""
         notificationTimeRange = ""
         lastNotificationContentHash = 0  // Force notification update on episode change
+        forceNotificationUpdate = true  // Issue 3: bypass content hash check for next notification update
         precacheNotificationShown = false  // Reset for new episode
         lastPreCacheCheckTime = 0  // Allow immediate pre-cache check for new episode
         if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
@@ -2161,6 +2211,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
         // Force immediate notification update
         lastNotificationContentHash = 0
+        forceNotificationUpdate = true  // Issue 3: bypass content hash check
         notifyNotification()
     }
 
@@ -2387,24 +2438,45 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     writeServiceLog("notification", "fetchCrossDayEpisode: constructed URL: $newUrl")
 
-                    // Find matching title from episode list by time slot
+                    // Issue 2: Find matching title from episode list for the SAME time slot on the TARGET date.
                     val targetStart = targetTimeSlot.substringBefore("_")
                     val targetEnd = targetTimeSlot.substringAfter("_")
+                    val targetDateFormatted = "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}"
+                    // First, look for an episode on the target date with the same time slot
                     val matchEpisode = episodeList.firstOrNull { ep ->
+                        val epDate = ep.broadcastAt?.take(10) ?: ""
                         val epUrl = ep.audioUrl ?: ""
-                        epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.")
+                        epDate == targetDateFormatted && ep.stationId == stationId &&
+                            epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.")
+                    }
+                    // Fallback: look for any episode with the same time slot (any date)
+                    val matchEpisodeFallback = matchEpisode ?: episodeList.firstOrNull { ep ->
+                        val epUrl = ep.audioUrl ?: ""
+                        ep.stationId == stationId &&
+                            epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.")
                     }
 
                     val dateDisplay = if (newDateStr.length >= 8) "${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}" else ""
-                    val constructedTitle = if (matchEpisode != null) {
-                        if (dateDisplay.isNotBlank()) "${matchEpisode.title} $dateDisplay" else matchEpisode.title ?: stationPart
-                    } else {
-                        buildString {
-                            append(stationPart)
-                            if (dateDisplay.isNotBlank()) append(" $dateDisplay")
-                            if (targetStart.length >= 4 && targetEnd.length >= 4) {
-                                append(" ${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)}")
+                    val constructedTitle = if (matchEpisodeFallback != null) {
+                        // Use the real episode title from the same time slot
+                        matchEpisodeFallback.title ?: run {
+                            // Fallback to date+time format if title is null
+                            buildString {
+                                if (dateDisplay.isNotBlank()) append("$dateDisplay ")
+                                if (targetStart.length >= 4 && targetEnd.length >= 4) {
+                                    append("${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)} ")
+                                }
+                                append("节目")
                             }
+                        }
+                    } else {
+                        // No matching episode found: construct title as "MM-DD HH:MM-HH:MM 节目"
+                        buildString {
+                            if (dateDisplay.isNotBlank()) append("$dateDisplay ")
+                            if (targetStart.length >= 4 && targetEnd.length >= 4) {
+                                append("${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)} ")
+                            }
+                            append("节目")
                         }
                     }
 

@@ -168,11 +168,21 @@ class AppSettings private constructor() {
         }
     }
 
-    fun addDislikedEpisode(context: Context, episodeId: String) {
+    fun addDislikedEpisode(context: Context, episodeId: String, stationId: String? = null, title: String? = null) {
+        var changed = false
         if (!dislikedEpisodes.contains(episodeId)) {
             dislikedEpisodes.add(episodeId)
-            save(context)
+            changed = true
         }
+        // 同时存储基于 title 的 key，使 dislike 过滤能跨天匹配同一节目
+        if (!stationId.isNullOrBlank() && !title.isNullOrBlank()) {
+            val titleKey = "$stationId::$title"
+            if (!dislikedEpisodes.contains(titleKey)) {
+                dislikedEpisodes.add(titleKey)
+                changed = true
+            }
+        }
+        if (changed) save(context)
     }
 
     fun removeDislikedEpisode(context: Context, episodeId: String) {
@@ -214,10 +224,13 @@ class AppSettings private constructor() {
         val stationId = episode.stationId ?: return false
         val title = episode.title ?: return false
         val key = "$stationId::$title"
-        return if (dislikedEpisodes.contains(key)) {
-            // 移除精确匹配的 key
+        val epId = episode.id
+        // 判断是否已 dislike：title-based key 或 episode ID 任一存在即视为已 dislike
+        val isCurrentlyDisliked = dislikedEpisodes.contains(key) || dislikedEpisodes.contains(epId)
+        return if (isCurrentlyDisliked) {
+            // --- 取消 dislike：移除所有相关 key ---
+            // 移除 title-based key 及其变体（有/无《》括号）
             dislikedEpisodes.remove(key)
-            // 同时尝试移除模糊匹配的版本（有/无《》括号）
             val strippedTitle = title.replace(Regex("^《|》$"), "")
             if (strippedTitle != title) {
                 val strippedKey = "$stationId::$strippedTitle"
@@ -226,7 +239,7 @@ class AppSettings private constructor() {
             val wrappedTitle = "《$title》"
             val wrappedKey = "$stationId::$wrappedTitle"
             dislikedEpisodes.remove(wrappedKey)
-            // 也尝试从 disliked 列表中去除《》后匹配
+            // 移除所有模糊匹配的 title-based key
             val toRemove = mutableListOf<String>()
             for (dislikedKey in dislikedEpisodes) {
                 if (!dislikedKey.startsWith("$stationId::")) continue
@@ -237,10 +250,14 @@ class AppSettings private constructor() {
                 }
             }
             dislikedEpisodes.removeAll(toRemove)
+            // 同时移除 episode ID（精确匹配）
+            dislikedEpisodes.remove(epId)
             save(context)
             false
         } else {
-            dislikedEpisodes.add(key)
+            // --- 设置 dislike：同时存储 title-based key 和 episode ID ---
+            dislikedEpisodes.add(key)       // title-based key，跨天匹配同一节目
+            dislikedEpisodes.add(epId)      // episode ID，精确匹配当天那一集
             save(context)
             // 同时保存到 all_episodes 持久化存储，确保 dislike 筛选能跨天找到该节目
             if (!episode.audioUrl.isNullOrBlank()) {

@@ -53,6 +53,16 @@ class WhisperBridge {
                         }
                     }
                     if (allLoaded) {
+                        // Load the JNI bridge (libwhisper_jni.so compiled by CMake)
+                        try {
+                            System.loadLibrary("whisper_jni")
+                            Log.d(TAG, "Loaded JNI bridge: libwhisper_jni.so")
+                        } catch (e: UnsatisfiedLinkError) {
+                            Log.e(TAG, "Failed to load libwhisper_jni.so: ${e.message}")
+                            allLoaded = false
+                        }
+                    }
+                    if (allLoaded) {
                         loaded = true
                         Log.d(TAG, "All native libraries loaded successfully, whisperSoPath=$whisperSoPath")
                         return true

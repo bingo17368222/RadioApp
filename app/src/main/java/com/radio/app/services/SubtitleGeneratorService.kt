@@ -896,10 +896,10 @@ class SubtitleGeneratorService : Service() {
                 chunkCount++
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
 
-                // Issue 9: Force getResult() every 10 chunks (~2.5s) even if acceptWaveForm returns false.
+                // Issue 9: Force getResult() every 5 chunks (~1.25s) even if acceptWaveForm returns false.
                 // Radio audio is continuous speech with few silence boundaries, so acceptWaveForm rarely
                 // returns true. Forcing getResult() periodically ensures Vosk outputs recognized text.
-                val forceResult = (chunkCount % 10 == 0)
+                val forceResult = (chunkCount % 5 == 0)
 
                 if (acceptResult || forceResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
@@ -945,22 +945,41 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
 
-                // Issue 9: On forceResult, also call getResult() to flush Vosk's internal buffer
-                // This prevents Vosk from accumulating too much audio without outputting
+                // Issue 9: On forceResult, if result text was empty, try to get partial result and save it
                 if (forceResult && !acceptResult) {
-                    // getResult() was already called above, but if it returned empty,
-                    // the partial result above should have captured something
-                    writeVoskLog("forceResult at chunk $chunkCount: getResult returned empty, partial may have text")
-                }
-
-                // Issue 9: Call getPartialResult() every 10 chunks and SAVE as transcript if text is long enough
-                if (chunkCount % 10 == 0) {
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {
                             val partialJson = org.json.JSONObject(partial)
                             val partialText = partialJson.optString("partial", "").trim()
-                            if (partialText.length > 3 && partialText != lastPartialText) {
+                            if (partialText.length > 1 && partialText != lastPartialText) {
+                                lastPartialText = partialText
+                                val partialStartTime = offset * 1000L / 32000L
+                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(
+                                    text = partialText,
+                                    segmentStart = partialStartTime,
+                                    segmentEnd = partialEndTime
+                                )
+                                logToFile("processVoskInChunks: forceResult partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
+                                writeVoskLog("forceResult partial transcript saved: chunk=$chunkCount, text='${partialText.take(100)}'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
+                            }
+                        } catch (_: Exception) { /* skip */ }
+                    } else {
+                        writeVoskLog("forceResult at chunk $chunkCount: getResult and partial both returned empty")
+                    }
+                }
+
+                // Issue 9: Call getPartialResult() every 5 chunks and SAVE as transcript if text is long enough
+                if (chunkCount % 5 == 0) {
+                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    if (partial.isNotBlank()) {
+                        try {
+                            val partialJson = org.json.JSONObject(partial)
+                            val partialText = partialJson.optString("partial", "").trim()
+                            if (partialText.length > 1 && partialText != lastPartialText) {
                                 lastPartialText = partialText
                                 // Save partial as transcript
                                 val partialStartTime = offset * 1000L / 32000L
@@ -1599,6 +1618,13 @@ class SubtitleGeneratorService : Service() {
                     }
                     if (allLoaded) {
                         logToFile("loadWhisperNativeLibrary: all Whisper .so files loaded successfully")
+                        // Also load the JNI bridge
+                        try {
+                            System.loadLibrary("whisper_jni")
+                            logToFile("loadWhisperNativeLibrary: loaded JNI bridge libwhisper_jni.so")
+                        } catch (e: UnsatisfiedLinkError) {
+                            logToFile("loadWhisperNativeLibrary: failed to load JNI bridge: ${e.message}")
+                        }
                         return true
                     }
                 }
@@ -1672,11 +1698,11 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // Native library loaded, but full JNI bridge not yet implemented in this build
-            ctx.log("Whisper engine: libwhisper.so loaded, but full whisper.cpp JNI integration not yet implemented")
-            logToFile("generateWithWhisper: libwhisper.so loaded but JNI bridge not implemented in this build, audioData.size=${audioData.size}")
-            callback.onError("Whisper引擎暂不可用：whisper.cpp原生库已加载，但JNI桥接尚未集成。请使用Vosk引擎，或在设置中切换ASR引擎为Vosk。")
-            return false
+            // Save audio data to PCM cache for chunked processing
+            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+            pcmFile.writeBytes(audioData)
+            logToFile("generateWithWhisper: saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
+            return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
         } catch (e: Exception) {
             logToFile("generateWithWhisper: EXCEPTION: ${e.message}")
             ctx.log("ERROR: Whisper exception: ${e.message}")
