@@ -123,6 +123,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         fun getService(): RadioPlaybackService = this@RadioPlaybackService
     }
 
+    /** Issue 9: app version tag included in every log line */
+    private val appVersion: String by lazy {
+        try {
+            @Suppress("DEPRECATION")
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            "v${pInfo.versionName}"
+        } catch (e: Exception) {
+            "v?"
+        }
+    }
+
     private fun writeServiceLog(category: String, msg: String) {
         try {
             val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), category)
@@ -130,10 +141,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val logFile = java.io.File(logDir, "${category}.log")
             // Add version header on first write
             if (!logFile.exists()) {
-                logFile.appendText("=== RadioApp v2.0.18 ===\n")
+                logFile.appendText("=== RadioApp $appVersion ===\n")
             }
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-            java.io.FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            java.io.FileWriter(logFile, true).use { it.append("[$ts][$appVersion] $msg\n") }
             // Limit file size to 500KB
             if (logFile.length() > 500_000) {
                 val lines = logFile.readLines()
@@ -150,7 +161,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "notif_detail.log")
             val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
-            logFile.appendText("[$timestamp] $message\n")
+            logFile.appendText("[$timestamp][$appVersion] $message\n")
         } catch (_: Exception) {}
     }
 
@@ -346,7 +357,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (dur > 0) {
                 val metadata = MediaMetadataCompat.Builder()
                     .putString(MediaMetadataCompat.METADATA_KEY_TITLE, notificationTitle)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, notificationSubText)
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, buildNotificationSubText())
                     .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, dur)
                     .build()
                 mediaSession?.setMetadata(metadata)
@@ -532,6 +543,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 startPcmPreDecodeIfNeeded()
             } catch (e: Exception) {
                 Log.e(TAG, "Download error: ${e.message}")
+                writeServiceLog("notification", "DELETING file: ${targetFile.absolutePath}, size=${targetFile.length()} (download error)")
                 try { targetFile.delete() } catch (_: Exception) {}
             } finally {
                 downloadActive.set(false)
@@ -708,13 +720,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     showPrecacheCompleteNotification()
                     return
                 }
-                // Not enough episodes AND can't find more to download - don't mark as complete, just log
-                writeServiceLog("notification", "triggerPreCache: INSUFFICIENT episodes, futureCached=$futureCachedCount < target=$targetCount, will retry later")
+                // Issue 8 Fix: Not enough episodes AND can't find more to download.
+                // Don't mark as complete and DON'T bother the user - just reset isPrecaching
+                // and return silently. The pre-cache will retry on the next episode change.
+                writeServiceLog("notification", "triggerPreCache: INSUFFICIENT episodes, futureCached=$futureCachedCount < target=$targetCount, will retry silently on next episode change")
                 isPrecaching = false
                 // Do NOT call showPrecacheCompleteNotification() - this is NOT complete!
-                Handler(Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(this, "预缓存未完成：已缓存${futureCachedCount}个（目标${targetCount}个），无法获取更多节目", android.widget.Toast.LENGTH_LONG).show()
-                }
                 return
             }
         }
@@ -729,14 +740,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.d(TAG, "Pre-cache: no more future episodes available to download (futureCached=$futureCachedCount, target=$targetCount)")
             writeServiceLog("notification", "triggerPreCache: END, no more episodes to download, futureCached=$futureCachedCount, target=$targetCount")
             isPrecaching = false
-            // Only show complete notification if we actually have enough cached files
+            // Issue 8 Fix: Only show complete notification if we actually have enough
+            // FUTURE cached files. When futureCachedCount < targetCount, return silently
+            // (no Toast) - the pre-cache will retry on the next episode change.
             if (futureCachedCount >= targetCount) {
                 showPrecacheCompleteNotification()
             } else {
-                writeServiceLog("notification", "triggerPreCache: NOT showing complete notification, futureCached=$futureCachedCount < target=$targetCount")
-                Handler(Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(this, "预缓存未完成：已缓存${futureCachedCount}个（目标${targetCount}个）", android.widget.Toast.LENGTH_LONG).show()
-                }
+                writeServiceLog("notification", "triggerPreCache: NOT showing complete notification, futureCached=$futureCachedCount < target=$targetCount, will retry silently")
             }
         }
     }
@@ -747,12 +757,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun showPrecacheCompleteNotification() {
         val settings = AppSettings.getInstance(this)
         val targetCount = settings.preloadCacheCount
-        // Count actual cached files
+        // Issue 8 Fix: count only FUTURE cached episodes (after the current one), not ALL
+        // files. Counting all files is wrong because it includes old episodes and the
+        // currently playing one, so the guard passed even when no future episodes were
+        // actually cached (causing this function to be reached with precacheCompletedCount=0).
         val episodesDir = File(cacheDir, "episodes")
-        val cachedCount = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 }?.size ?: 0
-        writeServiceLog("notification", "showPrecacheCompleteNotification: called, cachedCount=$cachedCount, targetCount=$targetCount, precacheNotificationShown=$precacheNotificationShown")
+        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
+        val cachedNames = cachedFiles.map { it.name }.toSet()
+        val preCacheList = loadPreCacheList()
+        val currentEp = currentEpisode
+        val currentIdx = if (currentEp != null)
+            preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl } else -1
+        val cachedCount = if (currentIdx >= 0) {
+            var count = 0
+            for (i in (currentIdx + 1) until preCacheList.size) {
+                val ep = preCacheList[i]
+                val fileName = extractCacheFileName(ep.audioUrl)
+                if (fileName in cachedNames) count++
+            }
+            count
+        } else {
+            // Fallback: current episode not in list, count all files
+            cachedFiles.size
+        }
+        writeServiceLog("notification", "showPrecacheCompleteNotification: called, futureCachedCount=$cachedCount, targetCount=$targetCount, precacheNotificationShown=$precacheNotificationShown")
         if (cachedCount < targetCount) {
-            writeServiceLog("notification", "showPrecacheCompleteNotification: SKIPPED - cachedCount=$cachedCount < targetCount=$targetCount, NOT showing complete notification")
+            writeServiceLog("notification", "showPrecacheCompleteNotification: SKIPPED - futureCachedCount=$cachedCount < targetCount=$targetCount, NOT showing complete notification")
             return
         }
         if (precacheNotificationShown) {
@@ -1065,7 +1095,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } catch (e: Exception) {
                 Log.e(TAG, "Pre-cache download error: ${e.message}")
                 // 删除不完整的文件
-                if (targetFile.exists()) targetFile.delete()
+                if (targetFile.exists()) {
+                    writeServiceLog("notification", "DELETING file: ${targetFile.absolutePath}, size=${targetFile.length()} (pre-cache download error)")
+                    targetFile.delete()
+                }
                 // Download error, release guard and schedule next pre-cache check
                 isPrecaching = false
                 Handler(Looper.getMainLooper()).post { triggerPreCache() }
@@ -1100,9 +1133,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         return@launch
                     }
                     writePreCacheLog("startPcmPreDecode: PCM format outdated, regenerating")
+                    writeServiceLog("notification", "DELETING file: ${pcmFile.absolutePath}, size=${pcmFile.length()} (PCM format outdated)")
                     pcmFile.delete()
+                    writeServiceLog("notification", "DELETING file: ${infoFile.absolutePath}, size=${infoFile.length()} (PCM info outdated)")
                     infoFile.delete()
                 } else if (pcmFile.exists()) {
+                    writeServiceLog("notification", "DELETING file: ${pcmFile.absolutePath}, size=${pcmFile.length()} (PCM too small/invalid)")
                     pcmFile.delete()
                 }
                 writePreCacheLog("startPcmPreDecode: decoding ${audioFile.length()} bytes from ${audioFile.name} to PCM...")
@@ -1186,7 +1222,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return
                 }
                 writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated, regenerating")
+                writeServiceLog("notification", "DELETING file: ${pcmFile.absolutePath}, size=${pcmFile.length()} (PCM format outdated, pre-decode-if-needed)")
                 pcmFile.delete()
+                writeServiceLog("notification", "DELETING file: ${infoFile.absolutePath}, size=${infoFile.length()} (PCM info outdated, pre-decode-if-needed)")
                 infoFile.delete()
             }
         }
@@ -1798,8 +1836,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             rv.setTextViewText(R.id.notification_subtitle, contentText)
             writeNotifDetailLog("updateNotificationProgressOnly: rv.setTextViewText(notification_subtitle, '$contentText') called=true, notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', lastNotificationContentHash=$lastNotificationContentHash")
+            // Issue 2 & 11 Fix: preserve the full subText (with date) on the standard
+            // notification fields, otherwise this minimal rebuild overwrites the previous
+            // notification and the date/time info disappears from the system-level view.
+            val fullSubText = buildNotificationSubText()
             val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(notificationTitle)
+                .setContentText(fullSubText)
+                .setSubText(fullSubText)
                 .setCustomContentView(rv)
                 .setOngoing(true)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager

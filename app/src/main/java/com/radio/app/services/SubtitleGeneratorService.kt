@@ -48,6 +48,17 @@ class SubtitleGeneratorService : Service() {
         private const val MAX_AUDIO_DURATION_SEC = 1800L // 30分钟最大处理时长，超长音频只处理前30分钟
     }
 
+    /** Issue 9: app version tag included in every log line */
+    private val appVersion: String by lazy {
+        try {
+            @Suppress("DEPRECATION")
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            "v${pInfo.versionName}"
+        } catch (e: Exception) {
+            "v?"
+        }
+    }
+
     interface SubtitleCallback {
         fun onSubtitleGenerated(transcript: Transcript)
         fun onProgressUpdate(progress: Int, total: Int)
@@ -164,10 +175,10 @@ class SubtitleGeneratorService : Service() {
             val logFile = java.io.File(logDir, "service.log")
             // Add version header on first write
             if (!logFile.exists()) {
-                logFile.appendText("=== RadioApp v2.0.18 ===\n")
+                logFile.appendText("=== RadioApp $appVersion ===\n")
             }
             val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            FileWriter(logFile, true).use { it.append("[$ts][$appVersion] $msg\n") }
             // Limit file size to 500KB
             if (logFile.length() > 500_000) {
                 val lines = logFile.readLines()
@@ -189,7 +200,7 @@ class SubtitleGeneratorService : Service() {
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "vosk.log")
             val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
-            logFile.appendText("[$timestamp] $message\n")
+            logFile.appendText("[$timestamp][$appVersion] $message\n")
         } catch (_: Exception) {}
     }
 
@@ -896,10 +907,10 @@ class SubtitleGeneratorService : Service() {
                 chunkCount++
                 logToFile("processVoskInChunks: chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, acceptWaveForm=$acceptResult")
 
-                // Issue 9: Force getResult() every 3 chunks (~0.75s) even if acceptWaveForm returns false.
+                // Issue 6: Force getResult() every 2 chunks (~0.5s) even if acceptWaveForm returns false.
                 // Radio audio is continuous speech with few silence boundaries, so acceptWaveForm rarely
-                // returns true. Forcing getResult() periodically ensures Vosk outputs recognized text.
-                val forceResult = (chunkCount % 3 == 0)
+                // returns true. Forcing getResult() more frequently ensures Vosk outputs recognized text.
+                val forceResult = (chunkCount % 2 == 0)
                 if (forceResult) {
                     writeVoskLog("processVoskInChunks: forceResult triggered at chunk=$chunkCount, offset=$offset, acceptResult=$acceptResult")
                 }
@@ -910,6 +921,10 @@ class SubtitleGeneratorService : Service() {
                         writeVoskLog("processVoskInChunks: acceptWaveForm=true at chunk $chunkCount, offset=$offset, bytesRead=$bytesRead, result='${result.take(200)}'")
                     } else {
                         writeVoskLog("processVoskInChunks: forceResult at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
+                    }
+                    // Issue 6: log whether getResult returned empty or not after each forceResult
+                    if (forceResult) {
+                        writeVoskLog("processVoskInChunks: forceResult getResult empty=${result.isBlank()} at chunk=$chunkCount")
                     }
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
                     if (result.isNotBlank()) {
@@ -948,8 +963,8 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
 
-                // Issue 9: On forceResult, if result text was empty, try to get partial result and save it
-                if (chunkCount % 3 == 0) {
+                // Issue 6: On forceResult (every 2 chunks), if result text was empty, try to get partial result and save it
+                if (chunkCount % 2 == 0) {
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (partial.isNotBlank()) {
                         try {

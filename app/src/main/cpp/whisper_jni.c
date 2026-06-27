@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <dlfcn.h>
 #include <android/log.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #define LOG_TAG "WhisperBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -129,8 +132,38 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_progress  = false;
     params.print_timestamps = false;
     params.translate       = false;
-    LOGI("full: calling whisper_full(ctx=%p, n_samples=%d)", ctx, n_samples);
-    int result = full_func(ctx, params, sample_data, n_samples);
+    LOGI("full: params size=%zu, sizeof(whisper_full_params)=%zu", sizeof(params), sizeof(struct whisper_full_params));
+    LOGI("full: ctx=%p, sample_data=%p, n_samples=%d", ctx, sample_data, n_samples);
+
+    // Install signal handler to catch native crash
+    struct sigaction sa_old;
+    struct sigaction sa_new;
+    sa_new.sa_handler = NULL;
+    sigemptyset(&sa_new.sa_mask);
+    sa_new.sa_flags = 0;
+    sigaction(SIGSEGV, NULL, &sa_old);
+
+    int result = -999;
+    pid_t child = fork();
+    if (child == 0) {
+        // Child process - try the whisper_full call
+        result = full_func(ctx, params, sample_data, n_samples);
+        _exit(result);
+    } else if (child > 0) {
+        // Parent - wait for child
+        int status;
+        waitpid(child, &status, 0);
+        if (WIFEXITED(status)) {
+            result = WEXITSTATUS(status);
+            LOGI("full: child exited with result=%d", result);
+        } else if (WIFSIGNALED(status)) {
+            LOGE("full: child killed by signal %d", WTERMSIG(status));
+            result = -1000 - WTERMSIG(status);
+        }
+    } else {
+        LOGE("full: fork failed, calling directly");
+        result = full_func(ctx, params, sample_data, n_samples);
+    }
     (*env)->ReleaseFloatArrayElements(env, samples, sample_data, JNI_ABORT);
     LOGI("full: whisper_full returned %d", result);
     return result;

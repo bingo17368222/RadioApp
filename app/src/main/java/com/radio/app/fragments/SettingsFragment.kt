@@ -317,6 +317,43 @@ class SettingsFragment : Fragment() {
         binding.tvKeywordSettings.setOnClickListener {
             startActivity(Intent(requireContext(), KeywordSettingsActivity::class.java))
         }
+        binding.tvAbout.setOnClickListener {
+            showAboutDialog()
+        }
+    }
+
+    /** Issue 14: app version shown in the About dialog */
+    private fun getAppVersion(): String {
+        return try {
+            @Suppress("DEPRECATION")
+            val pInfo = requireContext().packageManager.getPackageInfo(requireContext().packageName, 0)
+            pInfo.versionName ?: "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
+    }
+
+    private fun getAppVersionCode(): Long {
+        return try {
+            @Suppress("DEPRECATION")
+            val pInfo = requireContext().packageManager.getPackageInfo(requireContext().packageName, 0)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                pInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pInfo.versionCode.toLong()
+            }
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    private fun showAboutDialog() {
+        AlertDialog.Builder(requireContext())
+            .setTitle("关于")
+            .setMessage("电台回放助手\n版本: ${getAppVersion()}\n版本号: ${getAppVersionCode()}")
+            .setPositiveButton("确定", null)
+            .show()
     }
 
     private fun updateUI() {
@@ -484,6 +521,22 @@ class SettingsFragment : Fragment() {
         showClearCacheDialogWithButtons(files, fileNames, checked)
     }
 
+    // Issue 10: 自定义多选列表适配器，允许文件名换行显示两行并省略结尾，
+    // 避免长缓存文件名被系统默认布局单行截断而看不全。
+    private fun createMultiChoiceAdapter(fileNames: Array<String>): ArrayAdapter<String> {
+        return object : ArrayAdapter<String>(requireContext(), android.R.layout.simple_list_item_multiple_choice, fileNames) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent)
+                view.findViewById<TextView>(android.R.id.text1)?.apply {
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    textSize = 12f
+                }
+                return view
+            }
+        }
+    }
+
     private fun showClearCacheDialogWithButtons(files: Array<File>, fileNames: Array<String>, checked: BooleanArray) {
         // 创建垂直布局：按钮在顶部（固定可见），列表在下方（可滚动）
         val contentView = LinearLayout(requireContext()).apply {
@@ -520,7 +573,7 @@ class SettingsFragment : Fragment() {
         // ListView（可滚动，位于按钮下方）
         val listView = android.widget.ListView(requireContext()).apply {
             choiceMode = android.widget.AbsListView.CHOICE_MODE_MULTIPLE
-            adapter = android.widget.ArrayAdapter(requireContext(), android.R.layout.simple_list_item_multiple_choice, fileNames)
+            adapter = createMultiChoiceAdapter(fileNames)
             for (i in checked.indices) { setItemChecked(i, checked[i]) }
         }
         contentView.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -1071,7 +1124,7 @@ class SettingsFragment : Fragment() {
         // ListView（可滚动，位于按钮下方）
         val listView = android.widget.ListView(requireContext()).apply {
             choiceMode = android.widget.AbsListView.CHOICE_MODE_MULTIPLE
-            adapter = android.widget.ArrayAdapter(requireContext(), android.R.layout.simple_list_item_multiple_choice, fileNames)
+            adapter = createMultiChoiceAdapter(fileNames)
             for (i in checked.indices) { setItemChecked(i, checked[i]) }
         }
         contentView.addView(listView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))

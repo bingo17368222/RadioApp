@@ -210,16 +210,20 @@ class AppSettings private constructor() {
         val wrappedTitle = "《$title》"
         val wrappedKey = "$stationId::$wrappedTitle"
         if (dislikedEpisodes.contains(wrappedKey)) return true
-        // 也尝试从disliked列表中去除《》后匹配（含子串模糊匹配）
+        // 归一化标题：去除所有标点符号后比较（兼容 ·、-、（）等标点差异）
+        // 说明：v2.0.39 的子串模糊匹配过于激进，会把用户喜欢的节目误判为不喜欢。
+        // 现改为精确的标点归一化匹配——仅当去掉所有标点后标题完全相同（或仅差「重播」后缀）时才命中。
+        val normalizeTitle = { s: String -> s.replace(Regex("[《》·\\-—（）()\\[】【]"), "") }
+        val normTitle = normalizeTitle(title)
+        val normStrippedTitle = normalizeTitle(strippedTitle)
         for (dislikedKey in dislikedEpisodes) {
             if (!dislikedKey.startsWith("$stationId::")) continue
             val dislikedTitle = dislikedKey.removePrefix("$stationId::")
             val strippedDisliked = dislikedTitle.replace(Regex("^《|》$"), "")
-            if (strippedDisliked == title || strippedDisliked == strippedTitle) return true
-            // 子串模糊匹配：任一方包含另一方（用于标题部分匹配，兼容仅存储ID的历史数据经补存后的标题差异）
-            if (strippedDisliked.length > 2 && title.length > 2) {
-                if (strippedDisliked.contains(title) || title.contains(strippedDisliked)) return true
-            }
+            val normDisliked = normalizeTitle(strippedDisliked)
+            if (normDisliked == normTitle || normDisliked == normStrippedTitle) return true
+            // 兼容（重播）后缀：disliked 标题去除标点后加上"重播"与当前标题匹配
+            if (normDisliked + "重播" == normTitle || normDisliked + "重播" == normStrippedTitle) return true
         }
         return false
     }

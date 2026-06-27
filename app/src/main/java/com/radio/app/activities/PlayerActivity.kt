@@ -55,6 +55,8 @@ class PlayerActivity : AppCompatActivity() {
     private var hasErrorToastShown = false
     private var episodeList: ArrayList<Episode> = ArrayList()
     private var currentEpisodeIndex = -1
+    // Issue 4: 持有节目列表对话框的适配器引用，便于切歌后刷新高亮
+    private var episodeListAdapter: EpisodeListAdapter? = null
     private var isDragging = false
     private var cacheProgressHandler: Handler? = null
     private var cacheProgressRunnable: Runnable? = null
@@ -357,12 +359,21 @@ class PlayerActivity : AppCompatActivity() {
             setPlaybackInProgress(this@PlayerActivity, newUrl)
 
             // Issue 1 Fix: 显示保存位置前，先验证其合理性（不超过 episode duration）
-            val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
+            var savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
             val svcDuration = playbackService?.getDuration() ?: 0L
             val epDuration = currentEpisode?.duration ?: 0L
             // 取服务和 episode 中较大的 duration 作为校验基准（单位可能不同：ms vs s）
             val maxDuration = maxOf(svcDuration, epDuration * if (epDuration > 0 && epDuration < 100000) 1000 else 1)
-            val isValidSavedPos = savedPos > 0 && maxDuration > 0 && savedPos <= maxDuration
+            var isValidSavedPos = savedPos > 0 && maxDuration > 0 && savedPos <= maxDuration
+
+            // Issue 1 Fix: 当服务被杀死 (!svcStarted) 时，完全不恢复任何保存位置。
+            // 即使 savedPos 通过了校验（在 episode duration 范围内），在服务尚未就绪时
+            // 恢复该位置也会导致抖动。将 savedPos 清零并跳过 "Pre-setting UI" 块。
+            if (!svcStarted) {
+                writeJitterLog("Service was killed (!svcStarted), NOT restoring savedPos=${savedPos}ms (valid=$isValidSavedPos), setting to 0 to avoid jitter")
+                savedPos = 0L
+                isValidSavedPos = false
+            }
 
             if (!isFreshStart && currentEpisode != null && isValidSavedPos && svcStarted) {
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
@@ -468,6 +479,17 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    /** Issue 9: app version tag included in every log line */
+    private val appVersion: String by lazy {
+        try {
+            @Suppress("DEPRECATION")
+            val pInfo = packageManager.getPackageInfo(packageName, 0)
+            "v${pInfo.versionName}"
+        } catch (e: Exception) {
+            "v?"
+        }
+    }
+
     private fun writeLog(category: String, msg: String) {
         try {
             val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), category)
@@ -475,10 +497,10 @@ class PlayerActivity : AppCompatActivity() {
             val logFile = java.io.File(logDir, "${category}.log")
             // Add version header on first write
             if (!logFile.exists()) {
-                logFile.appendText("=== RadioApp v2.0.18 ===\n")
+                logFile.appendText("=== RadioApp $appVersion ===\n")
             }
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-            java.io.FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
+            java.io.FileWriter(logFile, true).use { it.append("[$ts][$appVersion] $msg\n") }
             // Limit file size to 500KB
             if (logFile.length() > 500_000) {
                 val lines = logFile.readLines()
@@ -498,7 +520,7 @@ class PlayerActivity : AppCompatActivity() {
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "episode.log")
             val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
-            logFile.appendText("[$timestamp] $message\n")
+            logFile.appendText("[$timestamp][$appVersion] $message\n")
         } catch (_: Exception) {}
     }
 
@@ -1379,6 +1401,12 @@ class PlayerActivity : AppCompatActivity() {
             val verifyEpisode = playbackService?.getCurrentEpisode()
             writeEpisodeLog("playEpisodeAtIndex: DELAYED VERIFY (500ms) - service episode=${verifyEpisode?.title} (id=${verifyEpisode?.id}), target was ${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == verifyEpisode?.id}")
         }, 500)
+        // Issue 4: 切歌后刷新节目列表适配器，使高亮跟随当前播放节目
+        episodeListAdapter?.let { adapter ->
+            adapter.currentlyPlayingId = targetEpisode.id
+            adapter.notifyDataSetChanged()
+            writeEpisodeLog("playEpisodeAtIndex: refreshed adapter, currentlyPlayingId=${adapter.currentlyPlayingId}")
+        }
         voiceSegments = generateSimulatedSegments()
         if (voiceSegments.isNotEmpty()) updateSegmentsUI()
         updateUI()
@@ -1410,6 +1438,8 @@ class PlayerActivity : AppCompatActivity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
         }
         val listAdapter = EpisodeListAdapter(episodeList, currentId)
+        // Issue 4: 持有适配器引用，切歌后可刷新高亮
+        episodeListAdapter = listAdapter
         writeEpisodeLog("showEpisodeListDialog: creating adapter with currentId=$currentId, episodeList.size=${episodeList.size}")
         writeJitterLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}")
         writeEpisodeLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}, listAdapter.currentlyPlayingId=$currentId")
@@ -1462,7 +1492,8 @@ class PlayerActivity : AppCompatActivity() {
     // 高亮方式：背景色 + "正在播放" 标签 + 加粗标题 + 播放按钮变为暂停图标
     inner class EpisodeListAdapter(
         private val episodes: List<Episode>,
-        private val currentlyPlayingId: String?
+        // Issue 4: 改为 var 以便切歌后更新高亮的当前播放项
+        var currentlyPlayingId: String?
     ) : RecyclerView.Adapter<EpisodeListAdapter.ViewHolder>() {
         var onItemClicked: ((Int) -> Unit)? = null
         var onDismiss: (() -> Unit)? = null
