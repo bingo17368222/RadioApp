@@ -7,12 +7,28 @@
 #include <android/log.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #define LOG_TAG "WhisperBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #include "whisper.h"
+
+// [v2.0.43] Issue 3&7: Write crash info to log file before re-raising signal
+// Uses async-signal-safe functions only (open, write, close)
+static void write_crash_to_file(int sig) {
+    int fd = open("/data/data/com.radio.app/files/logs/whisper/whisper_crash.log",
+                  O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        char buf[256];
+        int len = snprintf(buf, sizeof(buf),
+            "=== CRASH signal=%d (SIGSEGV=11, SIGABRT=6) ===\n", sig);
+        if (len > 0) write(fd, buf, len);
+        close(fd);
+    }
+}
 
 // Function pointer types matching whisper.h API signatures
 typedef struct whisper_context* (*whisper_init_from_file_with_params_t)(
@@ -117,9 +133,10 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// Simple signal handler to log native crashes during whisper_full
+// [v2.0.43] Issue 3&7: Signal handler writes crash info to log file BEFORE re-raising
 static void whisper_crash_handler(int sig) {
     LOGE("whisper_crash_handler: native crash caught, signal=%d", sig);
+    write_crash_to_file(sig);
     // Restore default handler and re-raise so a tombstone is generated
     signal(sig, SIG_DFL);
     raise(sig);

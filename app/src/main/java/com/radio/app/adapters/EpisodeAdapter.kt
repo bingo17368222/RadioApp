@@ -26,6 +26,10 @@ class EpisodeAdapter(
         fun onEpisodeLongClick(e: Episode)
     }
 
+    // [v2.0.43] Issue 4: Currently playing episode ID for highlight
+    var currentlyPlayingId: String? = null
+    var currentlyPlayingUrl: String? = null
+
     private val dateIn = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
     private val dateOut = SimpleDateFormat("HH:mm", Locale.getDefault())
     private val settings = AppSettings.getInstance(ctx)
@@ -37,7 +41,10 @@ class EpisodeAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val episode = episodes[position]
-        holder.tvTitle.text = episode.title
+        // [v2.0.43] Issue 4: Highlight currently playing episode
+        val isPlaying = episode.id == currentlyPlayingId || episode.audioUrl == currentlyPlayingUrl
+
+        holder.tvTitle.text = if (isPlaying) "▶ ${episode.title}" else episode.title
 
         val timeText = try {
             val date: Date? = dateIn.parse(episode.broadcastAt)
@@ -63,6 +70,34 @@ class EpisodeAdapter(
             holder.tvDislikeIndicator.visibility = View.GONE
         }
 
+        // [v2.0.43] Issue 4: Apply highlight for currently playing episode (after dislike check)
+        if (isPlaying) {
+            val accentColor = try {
+                val tv = android.util.TypedValue()
+                ctx.theme.resolveAttribute(android.R.attr.colorPrimary, tv, true)
+                tv.data
+            } catch (_: Exception) { Color.parseColor("#7ED321") }
+            val tint = Color.argb(180, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
+            holder.itemView.setBackgroundColor(tint)
+            holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
+            holder.tvTitle.setTextColor(accentColor)
+            holder.tvPlayingIndicator.text = "正在播放"
+            holder.tvPlayingIndicator.setTextColor(accentColor)
+            holder.tvPlayingIndicator.visibility = View.VISIBLE
+            holder.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
+            holder.btnPlay.setColorFilter(accentColor)
+        } else {
+            holder.itemView.background = holder.originalBackground
+            holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
+            holder.tvPlayingIndicator.visibility = View.GONE
+            holder.btnPlay.clearColorFilter()
+            if (episode.audioUrl.isNullOrBlank()) {
+                holder.btnPlay.setImageResource(android.R.drawable.ic_menu_info_details)
+            } else {
+                holder.btnPlay.setImageResource(android.R.drawable.ic_media_play)
+            }
+        }
+
         // 检查是否已缓存
         val cacheFileName = try {
             val url = java.net.URL(episode.audioUrl)
@@ -78,13 +113,6 @@ class EpisodeAdapter(
             holder.tvCachedIndicator.visibility = View.GONE
         }
 
-        // 是否有回放URL
-        if (episode.audioUrl.isNullOrBlank()) {
-            holder.btnPlay.setImageResource(android.R.drawable.ic_menu_info_details)
-        } else {
-            holder.btnPlay.setImageResource(android.R.drawable.ic_media_play)
-        }
-
         holder.itemView.setOnClickListener { listener?.onEpisodeClick(episode) }
         holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
@@ -95,11 +123,13 @@ class EpisodeAdapter(
     override fun getItemCount(): Int = episodes.size
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val originalBackground: android.graphics.drawable.Drawable = view.background
         val tvTime: TextView = view.findViewById(R.id.tv_time)
         val tvTitle: TextView = view.findViewById(R.id.tv_title)
         val tvDescription: TextView = view.findViewById(R.id.tv_description)
         val btnPlay: ImageView = view.findViewById(R.id.btn_play)
         val tvDislikeIndicator: TextView = view.findViewById(R.id.tv_dislike_indicator)
         val tvCachedIndicator: TextView = view.findViewById(R.id.tv_cached_indicator)
+        val tvPlayingIndicator: TextView = view.findViewById(R.id.tv_playing_indicator)
     }
 }

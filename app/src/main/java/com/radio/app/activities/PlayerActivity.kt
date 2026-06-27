@@ -296,27 +296,25 @@ class PlayerActivity : AppCompatActivity() {
 
             // JITTER-GUARD: Service正在播放不同的episode（如自动切集后），同步Activity到Service的当前状态
             // Service是播放状态的唯一真相源，不要强制切回Activity中过时的episode
-            if (svcStarted && !sameEpisode) {
+            // [v2.0.43] Issue 5 Fix: 当 isFreshStart=true（用户主动从节目列表选择了新节目）时，
+            // 绝不同步到service的旧节目。用户的选择优先于service的当前状态。
+            // 之前的bug：即使用户选择了"下班路上"，JITTER-GUARD也会强制同步回service正在播放的"旅行大玩家"，
+            // 导致"无论点击哪个节目，当前播放的节目都不变"。
+            if (svcStarted && !sameEpisode && !isFreshStart) {
                 // Try to find the service's current episode by URL
                 val svcMatch = episodeList.firstOrNull { it.audioUrl == svcUrl }
                 if (svcMatch != null) {
-                    val syncMsg = "JITTER-GUARD: service playing different episode (svc=${svcMatch.title}, url matched), syncing Activity to service instead of restarting"
+                    val syncMsg = "JITTER-GUARD: service playing different episode (svc=${svcMatch.title}, url matched), syncing Activity to service instead of restarting (isFreshStart=$isFreshStart)"
                     android.util.Log.d("PlayerActivity", syncMsg)
                     writeJitterLog(syncMsg)
                     currentEpisode = svcMatch
-                    // Issue 10 Fix 2: clear old subtitles when syncing to the service's episode
                     clearSubtitles()
                     currentEpisodeIndex = episodeList.indexOf(svcMatch).coerceAtLeast(0)
-                    // Issue 1 Fix: update the UI immediately so the stale episode is never
-                    // rendered before the rest of the sync work runs.
                     updateUI()
                 } else {
-                    // Can't find episode by URL, but service is playing - just update UI, don't restart
-                    val syncMsg = "JITTER-GUARD: service playing unknown episode (svcUrl=$svcUrl), updating UI without restarting"
+                    val syncMsg = "JITTER-GUARD: service playing unknown episode (svcUrl=$svcUrl), updating UI without restarting (isFreshStart=$isFreshStart)"
                     android.util.Log.d("PlayerActivity", syncMsg)
                     writeJitterLog(syncMsg)
-                    // Issue 1 Fix: try to extract the episode info directly from the service so
-                    // the UI reflects what is actually playing instead of the stale episode.
                     val svcEpisode = playbackService?.getCurrentEpisode()
                     if (svcEpisode != null) {
                         currentEpisode = svcEpisode
@@ -333,6 +331,11 @@ class PlayerActivity : AppCompatActivity() {
                 restoreBackgroundResults()
                 setupPreCacheList()
                 return@onServiceConnected
+            } else if (svcStarted && !sameEpisode && isFreshStart) {
+                // [v2.0.43] Issue 5 Fix: 用户主动选择了新节目，service正在播放旧节目。
+                // 必须播放用户选择的节目，而不是同步到service的旧节目。
+                writeJitterLog("[v2.0.43] JITTER-GUARD BYPASSED: isFreshStart=true, user selected '${currentEpisode?.title}' but service playing '${playbackService?.getCurrentEpisode()?.title}'. Playing user's selection.")
+                // 不return，继续执行下面的playEpisode逻辑
             }
 
             // JITTER-PREVENT: skip if we already started this exact URL
@@ -385,7 +388,7 @@ class PlayerActivity : AppCompatActivity() {
             val msg = if (sameEpisode && !svcStarted) {
                 "Same episode, service was killed, restoring from saved position: ${savedPos}ms (valid=$isValidSavedPos)"
             } else {
-                "Different episode, starting new playback: ${currentEpisode?.title} (was svc=${playbackService?.getCurrentEpisode()?.title})"
+                "[v2.0.43] [EPISODE] Different episode, starting new playback: ${currentEpisode?.title} (was svc=${playbackService?.getCurrentEpisode()?.title}), isFreshStart=$isFreshStart"
             }
             android.util.Log.d("PlayerActivity", msg)
             writeJitterLog(msg)

@@ -112,8 +112,8 @@ class SubtitleGeneratorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // 设置线程未捕获异常处理器，将崩溃日志写入 /sdcard/RadioApp/logs/crash/
-        val crashLogDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
+        // [v2.0.43] Issue 7: Use unified log directory for all crash logs
+        val crashLogDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "crash")
         val crashHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
             try {
                 if (!crashLogDir.exists()) crashLogDir.mkdirs()
@@ -144,6 +144,25 @@ class SubtitleGeneratorService : Service() {
                 val subtitleDir = File(logDir, "subtitle")
                 if (!subtitleDir.exists()) {
                     subtitleDir.mkdirs()
+                }
+            }
+        } catch (_: Exception) {}
+
+        // [v2.0.43] Issue 3&7: Check for Whisper crash log from native signal handler on service start
+        // If the service was restarted by START_STICKY after a native crash, the crash log will be present
+        try {
+            val nativeCrashFile = java.io.File(filesDir, "logs/whisper/whisper_crash.log")
+            if (nativeCrashFile.exists()) {
+                val crashContent = nativeCrashFile.readText()
+                if (crashContent.contains("CRASH signal=") || crashContent.contains("PRE-CRASH MARKER")) {
+                    logToFile("[v2.0.43] onCreate: DETECTED WHISPER CRASH from previous run: $crashContent")
+                    // Copy to external logs directory for user export
+                    val extCrashDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "crash")
+                    if (!extCrashDir.exists()) extCrashDir.mkdirs()
+                    val extCrashFile = java.io.File(extCrashDir, "whisper_crash.log")
+                    java.io.FileWriter(extCrashFile, true).use { it.append(crashContent) }
+                    // Clear the native crash log so it doesn't trigger again
+                    nativeCrashFile.writeText("")
                 }
             }
         } catch (_: Exception) {}
@@ -689,8 +708,12 @@ class SubtitleGeneratorService : Service() {
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 chunkCount++
-                val forceResult = (chunkCount % 20 == 0)  // Force every 20 chunks (~0.1s at 8192 bytes/chunk)
+                // [v2.0.43] Issue 6 Fix: Lower forceResult threshold from 20 to 10 chunks for more frequent output
+                val forceResult = (chunkCount % 10 == 0)  // Force every 10 chunks (~0.26s at 8192 bytes/chunk)
                 if (accepted || forceResult) {
+                    if (forceResult) {
+                        logToFile("generateWithVosk: [v2.0.43] forceResult triggered at chunk=$chunkCount, offset=$offset, accepted=$accepted")
+                    }
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     if (result.isNotBlank()) {
                         try {
@@ -1119,7 +1142,8 @@ class SubtitleGeneratorService : Service() {
 
     private fun writeCrashLog(tag: String, title: String, extra: String, throwable: Throwable) {
         try {
-            val crashLogDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
+            // [v2.0.43] Issue 7: Write crash logs to the same logs directory as other logs
+            val crashLogDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "crash")
             if (!crashLogDir.exists()) crashLogDir.mkdirs()
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(java.util.Date())
             val crashFile = java.io.File(crashLogDir, "${tag}_${ts}.txt")
@@ -1130,6 +1154,8 @@ class SubtitleGeneratorService : Service() {
                 writer.appendLine(extra)
                 java.io.PrintWriter(writer).use { pw -> throwable.printStackTrace(pw) }
             }
+            // Also log to the subtitle service log so it appears in the main log
+            logToFile("writeCrashLog: $tag - $title: ${throwable.javaClass.name}: ${throwable.message}")
         } catch (_: Exception) {}
     }
 
@@ -1885,10 +1911,34 @@ class SubtitleGeneratorService : Service() {
             val processSamples = nSamples
             logToFile("processWhisperInChunks: processing $processSamples samples")
 
+            // [v2.0.43] Issue 3&7: Create crash log directory and write pre-crash marker
+            // If the process crashes in whisper_full, this is the last log entry before the crash
+            try {
+                val crashLogDir = java.io.File(filesDir, "logs/whisper")
+                if (!crashLogDir.exists()) crashLogDir.mkdirs()
+                val crashLogFile = java.io.File(crashLogDir, "whisper_crash.log")
+                // Write pre-crash marker - if this is the last entry, whisper_full crashed
+                val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                FileWriter(crashLogFile, true).use { it.append("[$ts][$appVersion] PRE-CRASH MARKER: about to call whisper_full(ctxPtr=$ctxPtr, nSamples=$processSamples, pcmFile=${pcmFile.name})\n") }
+            } catch (_: Exception) {}
+
             // Run full transcription
-            logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
+            logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples) - if no next log, process crashed in whisper_full")
             val result = bridge.full(ctxPtr, samples, processSamples)
             logToFile("processWhisperInChunks: bridge.full returned $result")
+
+            // [v2.0.43] Issue 3&7: Check for crash log from native signal handler
+            try {
+                val crashLogFile = java.io.File(filesDir, "logs/whisper/whisper_crash.log")
+                if (crashLogFile.exists()) {
+                    val crashContent = crashLogFile.readText()
+                    if (crashContent.contains("CRASH signal=")) {
+                        logToFile("processWhisperInChunks: DETECTED NATIVE CRASH from whisper_crash.log: $crashContent")
+                        // Clear the crash log so it doesn't trigger again
+                        crashLogFile.writeText("")
+                    }
+                }
+            } catch (_: Exception) {}
 
             if (result != 0) {
                 logToFile("processWhisperInChunks: whisper_full failed with code $result")

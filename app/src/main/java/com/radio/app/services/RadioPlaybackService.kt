@@ -997,7 +997,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun findPrevInList(list: List<Episode>, curId: String, settings: AppSettings): Episode? {
-        // Issue 2 Fix: 先按 ID 找当前位置，如果找不到再按 audioUrl 找
+        // [v2.0.43] Issue 2 Fix: 按 ID 或 audioUrl 找当前位置，找不到时返回 null 触发跨天获取
+        // 之前的bug: curId不在列表时返回首/尾节目导致循环（跨天节目ID不在列表→回到第一天→再跨天→再回到第一天）
         var foundCurrent = false
         for (i in list.indices.reversed()) {
             val ep = list[i]
@@ -1006,21 +1007,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 return ep
             }
         }
-        // Issue 2 Fix: 如果 curId 不在列表中，返回最后一个非不喜欢的节目（避免循环）
         if (!foundCurrent) {
-            for (i in list.indices.reversed()) {
-                val ep = list[i]
-                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                    writeServiceLog("notification", "findPrevInList: curId=$curId not in list, returning last non-disliked: ${ep.title}")
-                    return ep
-                }
-            }
+            writeServiceLog("notification", "findPrevInList: curId=$curId not in list (size=${list.size}), returning null to trigger cross-day fetch")
         }
         return null
     }
 
     private fun findNextInList(list: List<Episode>, curId: String, settings: AppSettings): Episode? {
-        // Issue 2 Fix: 先按 ID 找当前位置，如果找不到再按 audioUrl 找
+        // [v2.0.43] Issue 2 Fix: 按 ID 或 audioUrl 找当前位置，找不到时返回 null 触发跨天获取
         var foundCurrent = false
         for (ep in list) {
             if (!foundCurrent) {
@@ -1031,14 +1025,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 return ep
             }
         }
-        // Issue 2 Fix: 如果 curId 不在列表中，返回第一个非不喜欢的节目（避免循环）
         if (!foundCurrent) {
-            for (ep in list) {
-                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                    writeServiceLog("notification", "findNextInList: curId=$curId not in list, returning first non-disliked: ${ep.title}")
-                    return ep
-                }
-            }
+            writeServiceLog("notification", "findNextInList: curId=$curId not in list (size=${list.size}), returning null to trigger cross-day fetch")
         }
         return null
     }
@@ -2661,13 +2649,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                     }
 
+                    // [v2.0.43] Issue 1 Fix: Calculate duration from time slot to avoid duration=0
+                    // duration=0 causes savedPos validation to fail in PlayerActivity, leading to progress regression
+                    val calculatedDuration = try {
+                        val timeParts = targetTimeSlot.split("_")
+                        if (timeParts.size >= 2) {
+                            val startMin = timeParts[0].substring(0, 2).toInt() * 60 + timeParts[0].substring(2, 4).toInt()
+                            val endMin = timeParts[1].substring(0, 2).toInt() * 60 + timeParts[1].substring(2, 4).toInt()
+                            ((endMin - startMin).coerceAtLeast(0) * 60 * 1000).toLong()  // milliseconds
+                        } else {
+                            7200_000L  // Default 2 hours
+                        }
+                    } catch (_: Exception) {
+                        7200_000L  // Default 2 hours
+                    }
+
                     val newEpisode = Episode(
                         id = "${stationPart}-$newDateStr-cross",
                         title = constructedTitle,
                         stationId = currentEpisode?.stationId ?: stationPart,
                         audioUrl = newUrl,
                         broadcastAt = "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}",
-                        duration = 0
+                        duration = calculatedDuration
                     )
                     // Check if the constructed episode's title is disliked
                     if (settings.isDislikedByTitle(newEpisode.stationId, newEpisode.title)) {

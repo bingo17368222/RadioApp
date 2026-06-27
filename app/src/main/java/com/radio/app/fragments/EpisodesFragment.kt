@@ -91,6 +91,14 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             restoreLastSelection()
             initialLoadDone = true
         }
+        // [v2.0.43] Issue 4: Highlight currently playing episode
+        try {
+            val prefs = requireContext().getSharedPreferences("last_episode", android.content.Context.MODE_PRIVATE)
+            val playingId = prefs.getString("episode_id", null)
+            val playingUrl = prefs.getString("audio_url", null)
+            adapter?.currentlyPlayingId = playingId
+            adapter?.currentlyPlayingUrl = playingUrl
+        } catch (_: Exception) {}
         // 刷新列表以更新缓存状态标记（从播放页返回后缓存可能已变化）
         adapter?.notifyDataSetChanged()
     }
@@ -307,6 +315,15 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             Toast.makeText(context, "该节目直播尚未结束，暂无回放音频", Toast.LENGTH_SHORT).show()
             return
         }
+
+        // [v2.0.43] Issue 5: Log click event for verification
+        try {
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(requireContext()), "jitter")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "jitter.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            java.io.FileWriter(logFile, true).use { it.append("[$ts][v2.0.43] [EPISODE] EpisodesFragment.onEpisodeClick: BEFORE click - target='${episode.title}', id=${episode.id}, url=$audioUrl\n") }
+        } catch (_: Exception) {}
 
         episode.stationId?.let { stationId ->
             AppSettings.getInstance(requireContext()).incrementStationPlayCount(requireContext(), stationId)
