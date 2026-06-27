@@ -683,11 +683,14 @@ class SubtitleGeneratorService : Service() {
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var lastPartialText = ""
+            var chunkCount = 0
             while (offset < audioData.size && !ctx.cancelled.get()) {
                 val end = minOf(offset + chunkSize, audioData.size)
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
-                if (accepted) {
+                chunkCount++
+                val forceResult = (chunkCount % 50 == 0)  // Force every 50 chunks (~0.25s at 8192 bytes/chunk)
+                if (accepted || forceResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     if (result.isNotBlank()) {
                         try {
@@ -715,6 +718,23 @@ class SubtitleGeneratorService : Service() {
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (e: Exception) { /* skip */ }
+                    }
+                    // Also get partial result
+                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    if (partial.isNotBlank()) {
+                        try {
+                            val partialJson = org.json.JSONObject(partial)
+                            val partialText = partialJson.optString("partial", "").trim()
+                            if (partialText.isNotEmpty() && partialText != lastPartialText) {
+                                lastPartialText = partialText
+                                val partialStart = offset * 1000L / 32000L
+                                val partialEnd = (offset + chunk.size) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(text = partialText, segmentStart = partialStart, segmentEnd = partialEnd)
+                                logToFile("generateWithVosk: forceResult partial transcript at ${partialStart}ms: '${partialText.take(50)}...'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
+                            }
+                        } catch (_: Exception) { }
                     }
                 } else {
                     // Get partial result for logging only (not saved as transcript)

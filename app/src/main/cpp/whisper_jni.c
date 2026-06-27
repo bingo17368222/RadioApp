@@ -7,7 +7,6 @@
 #include <android/log.h>
 #include <signal.h>
 #include <unistd.h>
-#include <sys/wait.h>
 
 #define LOG_TAG "WhisperBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -118,6 +117,14 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
+// Simple signal handler to log native crashes during whisper_full
+static void whisper_crash_handler(int sig) {
+    LOGE("whisper_crash_handler: native crash caught, signal=%d", sig);
+    // Restore default handler and re-raise so a tombstone is generated
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 JNIEXPORT jint JNICALL
 Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong ctx_ptr, jfloatArray samples, jint n_samples) {
     if (!ctx_ptr || !full_func || !params_func) {
@@ -126,44 +133,34 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     }
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
     jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
-    // WHISPER_SAMPLING_GREEDY = 0
+
+    // Limit to 2 minutes max to prevent OOM and long processing
+    int maxSamples = 2 * 60 * 16000;  // 2 minutes at 16kHz
+    int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
+    LOGI("full: n_samples=%d, processSamples=%d (capped at 2min), ctx=%p", n_samples, processSamples, ctx);
+
     struct whisper_full_params params = params_func(WHISPER_SAMPLING_GREEDY);
     params.print_realtime  = false;
     params.print_progress  = false;
     params.print_timestamps = false;
     params.translate       = false;
-    LOGI("full: params size=%zu, sizeof(whisper_full_params)=%zu", sizeof(params), sizeof(struct whisper_full_params));
-    LOGI("full: ctx=%p, sample_data=%p, n_samples=%d", ctx, sample_data, n_samples);
+    params.n_threads       = 2;  // Limit threads to prevent resource contention
 
-    // Install signal handler to catch native crash
-    struct sigaction sa_old;
-    struct sigaction sa_new;
-    sa_new.sa_handler = NULL;
-    sigemptyset(&sa_new.sa_mask);
-    sa_new.sa_flags = 0;
-    sigaction(SIGSEGV, NULL, &sa_old);
+    // Install simple signal handler to log crashes
+    signal(SIGSEGV, whisper_crash_handler);
+    signal(SIGABRT, whisper_crash_handler);
 
+    LOGI("full: calling whisper_full(ctx=%p, processSamples=%d)", ctx, processSamples);
     int result = -999;
-    pid_t child = fork();
-    if (child == 0) {
-        // Child process - try the whisper_full call
-        result = full_func(ctx, params, sample_data, n_samples);
-        _exit(result);
-    } else if (child > 0) {
-        // Parent - wait for child
-        int status;
-        waitpid(child, &status, 0);
-        if (WIFEXITED(status)) {
-            result = WEXITSTATUS(status);
-            LOGI("full: child exited with result=%d", result);
-        } else if (WIFSIGNALED(status)) {
-            LOGE("full: child killed by signal %d", WTERMSIG(status));
-            result = -1000 - WTERMSIG(status);
-        }
-    } else {
-        LOGE("full: fork failed, calling directly");
-        result = full_func(ctx, params, sample_data, n_samples);
-    }
+
+    // Set alarm timeout (120 seconds)
+    alarm(120);
+
+    result = full_func(ctx, params, sample_data, processSamples);
+
+    // Cancel alarm
+    alarm(0);
+
     (*env)->ReleaseFloatArrayElements(env, samples, sample_data, JNI_ABORT);
     LOGI("full: whisper_full returned %d", result);
     return result;

@@ -2011,11 +2011,18 @@ class PlayerActivity : AppCompatActivity() {
         val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
         val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
         val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
-        if (cachedPos > 0 && cachedEpId == currentEpisode?.id && _binding != null) {
-            binding.seekBar.max = cachedDur.toInt()
-            binding.seekBar.progress = cachedPos.toInt()
-            binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${if (cachedDur > 0) formatTime(cachedDur.toInt()) else "--:--"}"
-            writeJitterLog("onResume: restored cached position=$cachedPos, duration=$cachedDur")
+        if (cachedPos > 0 && cachedEpId == currentEpisode?.id && _binding != null && serviceBound && playbackService != null) {
+            // Only restore if service is connected and has a valid position
+            val svcPos = playbackService?.getCurrentPosition() ?: 0L
+            if (svcPos <= 0) {
+                // Service doesn't have a position yet, use cached
+                binding.seekBar.max = cachedDur.toInt()
+                binding.seekBar.progress = cachedPos.toInt()
+                binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${if (cachedDur > 0) formatTime(cachedDur.toInt()) else "--:--"}"
+                writeJitterLog("onResume: restored cached position=$cachedPos, duration=$cachedDur (service has no position)")
+            } else {
+                writeJitterLog("onResume: service has position=$svcPos, NOT restoring cached=$cachedPos")
+            }
         }
         // Issue 1 Fix 4: await a valid position from the service before letting the
         // position-update runnable touch the UI, so the restored cached position holds.

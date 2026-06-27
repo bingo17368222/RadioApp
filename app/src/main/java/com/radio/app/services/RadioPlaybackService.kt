@@ -618,6 +618,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 标记预缓存开始，通知栏进度轮询将跳过更新
         precacheCompletedCount = 0
         isPrecaching = true
+        // Reset days_fetched counter for new pre-cache cycle so fetchMoreDaysForPreCache
+        // can fetch up to 20 fresh days each cycle
+        getSharedPreferences("precache_list", MODE_PRIVATE).edit().putInt("days_fetched", 0).apply()
         writeServiceLog("notification", "triggerPreCache: starting pre-cache loop, isPrecaching=true")
 
         val episodesDir = File(cacheDir, "episodes")
@@ -877,11 +880,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
 
             if (newEpisodes != null && newEpisodes.isNotEmpty()) {
+                val settings = AppSettings.getInstance(this)
                 val validNewEpisodes = newEpisodes.filter { ep ->
                     ep.audioUrl.isNotBlank() &&
                     ep.audioUrl !in existingUrls &&
                     extractCacheFileName(ep.audioUrl) !in cachedNames &&
-                    ep.audioUrl.startsWith("http")
+                    ep.audioUrl.startsWith("http") &&
+                    !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                 }
                 writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
                 resultList.addAll(validNewEpisodes)
@@ -1948,6 +1953,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun buildNotification(): Notification {
+        // Issue 9: compact notification must reflect current playing state for the
+        // play/pause action icon, otherwise it always shows the play icon.
+        val playing = playbackStarted && !userPaused
         // 紧凑模式使用MediaStyle
         if (notificationStyle == "compact") {
             return NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
@@ -1961,7 +1969,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     .setMediaSession(mediaSession?.sessionToken))
                 .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退${skipSeconds}s", 10))
                 .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
-                .addAction(createNotificationAction(ACTION_PLAY, R.drawable.notif_play, "播放", 12))
+                .addAction(createNotificationAction(
+                    if (playing) ACTION_PAUSE else ACTION_PLAY,
+                    if (playing) R.drawable.notif_pause else R.drawable.notif_play,
+                    if (playing) "暂停" else "播放", 12))
                 .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
                 .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进${skipSeconds}s", 14))
                 .build()
@@ -1979,7 +1990,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
         val timeStr = notificationTimeRange
-        val playing = playbackStarted && !userPaused
         val contentText = buildString {
             append(if (playing) "正在播放" else "已暂停")
             if (dateStr.isNotBlank()) append(" · $dateStr")
@@ -2143,6 +2153,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
                 pause()
+                updateNotification()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // Pause for navigation announcements and other transient focus changes
@@ -2274,8 +2285,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notifyNotification()
     }
 
-    fun play() { userPaused = false; player?.play() }
-    fun pause() { userPaused = true; player?.pause() }
+    fun play() {
+        userPaused = false
+        requestAudioFocus()
+        player?.play()
+        updateNotification()
+    }
+    fun pause() { userPaused = true; player?.pause(); updateNotification() }
     fun stop() {
         stopAutoSkipCheck(); saveCurrentPosition()
         downloadingJob?.cancel()
@@ -2376,20 +2392,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } else if (curUrl.isNotBlank()) {
             // Extract from URL: e.g., sijiache_20240604_0700_0900.mp4
             val urlParts = curUrl.substringAfterLast("/").split("_")
+            // Issue 2: If the current episode is a cross-day episode (ID ends with "-cross")
+            // the URL may encode a stale date. Fall back to currentEpisode?.broadcastAt?.take(10)
+            // when URL parsing fails so targetDate is computed from the real broadcast date.
+            val fallbackDate = currentEpisode?.broadcastAt?.take(10)
             if (urlParts.size < 2) {
-                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - urlParts.size=${urlParts.size} < 2, curUrl=$curUrl")
-                return null
+                if (fallbackDate != null) {
+                    stationId = currentEpisode?.stationId ?: urlParts.getOrNull(0) ?: ""
+                    currentDate = fallbackDate
+                    writeServiceLog("notification", "fetchCrossDayEpisode: URL parse failed (urlParts.size=${urlParts.size}), using broadcastAt fallback=$fallbackDate")
+                } else {
+                    writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - urlParts.size=${urlParts.size} < 2, curUrl=$curUrl")
+                    return null
+                }
+            } else {
+                stationId = urlParts[0] // "sijiache"
+                val datePart = urlParts.getOrNull(1)
+                if (datePart == null || datePart.length < 8) {
+                    if (fallbackDate != null) {
+                        currentDate = fallbackDate
+                        writeServiceLog("notification", "fetchCrossDayEpisode: URL date parse failed (datePart=$datePart), using broadcastAt fallback=$fallbackDate")
+                    } else {
+                        writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - datePart invalid, datePart=$datePart")
+                        return null
+                    }
+                } else {
+                    currentDate = "${datePart.substring(0, 4)}-${datePart.substring(4, 6)}-${datePart.substring(6, 8)}"
+                }
             }
-            stationId = urlParts[0] // "sijiache"
-            val datePart = urlParts.getOrNull(1) ?: run {
-                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - datePart is null, urlParts=$urlParts")
-                return null
-            }
-            if (datePart.length < 8) {
-                writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - datePart.length=${datePart.length} < 8, datePart=$datePart")
-                return null
-            }
-            currentDate = "${datePart.substring(0, 4)}-${datePart.substring(4, 6)}-${datePart.substring(6, 8)}"
         } else {
             writeServiceLog("notification", "fetchCrossDayEpisode: RETURN null - both currentEpisode and currentPlayingUrl are empty")
             return null
