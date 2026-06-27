@@ -689,7 +689,7 @@ class SubtitleGeneratorService : Service() {
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 chunkCount++
-                val forceResult = (chunkCount % 50 == 0)  // Force every 50 chunks (~0.25s at 8192 bytes/chunk)
+                val forceResult = (chunkCount % 20 == 0)  // Force every 20 chunks (~0.1s at 8192 bytes/chunk)
                 if (accepted || forceResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     if (result.isNotBlank()) {
@@ -721,11 +721,12 @@ class SubtitleGeneratorService : Service() {
                     }
                     // Also get partial result
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    var partialJson: org.json.JSONObject? = null
                     if (partial.isNotBlank()) {
                         try {
-                            val partialJson = org.json.JSONObject(partial)
+                            partialJson = org.json.JSONObject(partial)
                             val partialText = partialJson.optString("partial", "").trim()
-                            if (partialText.isNotEmpty() && partialText != lastPartialText) {
+                            if (partialText.isNotEmpty() && (forceResult || partialText != lastPartialText)) {
                                 lastPartialText = partialText
                                 val partialStart = offset * 1000L / 32000L
                                 val partialEnd = (offset + chunk.size) * 1000L / 32000L
@@ -735,6 +736,9 @@ class SubtitleGeneratorService : Service() {
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { }
+                    }
+                    if (forceResult && result.isBlank() && (partial.isBlank() || (partialJson?.optString("partial", "") ?: "").isEmpty())) {
+                        logToFile("generateWithVosk: forceResult at chunk=$chunkCount produced NOTHING (getResult empty, partial empty)")
                     }
                 } else {
                     // Get partial result for logging only (not saved as transcript)

@@ -366,20 +366,18 @@ class PlayerActivity : AppCompatActivity() {
             val maxDuration = maxOf(svcDuration, epDuration * if (epDuration > 0 && epDuration < 100000) 1000 else 1)
             var isValidSavedPos = savedPos > 0 && maxDuration > 0 && savedPos <= maxDuration
 
-            // Issue 1 Fix: 当服务被杀死 (!svcStarted) 时，完全不恢复任何保存位置。
-            // 即使 savedPos 通过了校验（在 episode duration 范围内），在服务尚未就绪时
-            // 恢复该位置也会导致抖动。将 savedPos 清零并跳过 "Pre-setting UI" 块。
+            // Issue 1 Fix [v2.0.42]: 当服务被杀死 (!svcStarted) 时，保留实际 savedPos 传给 playEpisode，
+            // 让服务重新初始化时 seek 到正确位置。onResume 已经处理了 UI 防抖（只在服务无位置时显示缓存位置）。
+            // 之前设为 0 会导致播放从头开始（进度回退），设为 -1 也一样。
             if (!svcStarted) {
-                writeJitterLog("Service was killed (!svcStarted), NOT restoring savedPos=${savedPos}ms (valid=$isValidSavedPos), setting to 0 to avoid jitter")
-                savedPos = 0L
-                isValidSavedPos = false
+                writeJitterLog("[v2.0.42] Service was killed (!svcStarted), keeping savedPos=${savedPos}ms (valid=$isValidSavedPos) to pass to playEpisode for position restore")
             }
 
-            if (!isFreshStart && currentEpisode != null && isValidSavedPos && svcStarted) {
+            if (!isFreshStart && currentEpisode != null && isValidSavedPos) {
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                 binding.seekBar.progress = savedPos.toInt()
                 binding.tvLiveIndicator.text = "恢复中..."
-                writeJitterLog("Pre-setting UI to saved position: ${savedPos}ms before playEpisode (maxDur=$maxDuration)")
+                writeJitterLog("[v2.0.42] Pre-setting UI to saved position: ${savedPos}ms before playEpisode (maxDur=$maxDuration, svcStarted=$svcStarted)")
             } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
                 writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
@@ -437,12 +435,12 @@ class PlayerActivity : AppCompatActivity() {
                                 writeJitterLog("Service killed restore: savedPosition=${savedPosition}ms exceeds episode duration=${epDurMs}ms, clamping to 0")
                                 savedPosition = 0L
                             }
-                            // Issue 1 Fix: 当服务被杀死 (!svcStarted) 时，不向 playEpisode 传递保存的位置，
-                            // 改为传 -1（不 seek），让服务从自身保存的状态或节目开头恢复，
-                            // 避免系统重建 Activity 时恢复一个过大的位置（如 2329771ms）导致抖动。
+                            // Issue 1 Fix (v2.0.42): 当服务被杀死 (!svcStarted) 时，不再强制把 savedPosition
+                            // 改为 -1（不 seek）。之前的 -1 会让服务从节目开头 (0) 开始播放，导致进度条从
+                            // 缓存位置跳回 0 的抖动。onResume 已修复（仅在服务没有位置时才恢复缓存位置），
+                            // 因此这里可以安全地把真实的保存位置传给 playEpisode，由它 seek 到正确位置。
                             if (!svcStarted) {
-                                writeJitterLog("Service was killed (!svcStarted), NOT passing savedPos=${savedPosition}ms to playEpisode, using -1 (no seek) to avoid jitter")
-                                savedPosition = -1L
+                                writeJitterLog("Service was killed (!svcStarted), passing actual savedPos=${savedPosition}ms to playEpisode (onResume fix prevents stale cache jitter)")
                             }
                             val msg = "Service was killed, restoring saved position: ${savedPosition}ms (epDur=${epDurMs}ms, svcStarted=$svcStarted)"
                             android.util.Log.d("PlayerActivity", msg)
@@ -513,15 +511,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun writeDislikeLog(msg: String) = writeLog("dislike", msg)
     private fun writeNotificationLog(msg: String) = writeLog("notification", msg)
 
-    // Issue 6 & 8: dedicated log file for episode list operations (highlight + click-to-switch)
+    // Issue 6 & 8: episode list operations (highlight + click-to-switch) now written to
+    // the jitter log so they are included in the user's log export.
     private fun writeEpisodeLog(message: String) {
-        try {
-            val logDir = java.io.File(getExternalFilesDir(null), "logs/episode")
-            if (!logDir.exists()) logDir.mkdirs()
-            val logFile = java.io.File(logDir, "episode.log")
-            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
-            logFile.appendText("[$timestamp][$appVersion] $message\n")
-        } catch (_: Exception) {}
+        // Write to jitter log so it's included in user's log export
+        writeJitterLog("[EPISODE] $message")
     }
 
     /**
@@ -1357,15 +1351,20 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playEpisodeAtIndex(index: Int) {
-        if (index < 0 || index >= episodeList.size) return
-        writeJitterLog("playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
-        writeEpisodeLog("playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
+        if (index < 0 || index >= episodeList.size) {
+            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: INVALID index=$index, episodeList.size=${episodeList.size}")
+            return
+        }
+        writeJitterLog("[v2.0.42] playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
+        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
         if (playbackService == null) {
-            writeEpisodeLog("playEpisodeAtIndex: ERROR - playbackService is null, cannot switch episode")
+            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: ERROR - playbackService is null, cannot switch episode")
+            Toast.makeText(this, "播放服务未连接，无法切换", Toast.LENGTH_SHORT).show()
             return
         }
         var targetIdx = index
         var targetEpisode = episodeList[targetIdx]
+        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: targetEpisode title=${targetEpisode.title}, id=${targetEpisode.id}, audioUrl=${targetEpisode.audioUrl}")
         val settings = AppSettings.getInstance(this)
         // 跳过不喜欢的节目（最多跳过10个，避免死循环）
         var skipCount = 0
@@ -1382,36 +1381,44 @@ class PlayerActivity : AppCompatActivity() {
             }
             targetEpisode = episodeList[targetIdx]
         }
+        // Issue 5 Fix: Toast 即时反馈，让用户知道点击已生效
+        Toast.makeText(this, "切换到: ${targetEpisode.title}", Toast.LENGTH_SHORT).show()
         currentEpisodeIndex = targetIdx
         currentEpisode = targetEpisode
         // Issue 10 Fix 2: clear old subtitles when switching episodes
         clearSubtitles()
         saveLastEpisode()
-        writeJitterLog("playEpisodeAtIndex: calling playEpisode with ${targetEpisode.title}")
-        writeEpisodeLog("playEpisodeAtIndex: calling playEpisode with ${targetEpisode.title}")
-        writeEpisodeLog("playEpisodeAtIndex: BEFORE switch - clicked index=$index, targetIdx=$targetIdx, targetEpisode.title=${targetEpisode.title}, targetEpisode.id=${targetEpisode.id}")
+        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: BEFORE playEpisode - target=${targetEpisode.title}, id=${targetEpisode.id}, url=${targetEpisode.audioUrl}")
         val beforeEpisode = playbackService?.getCurrentEpisode()
-        writeEpisodeLog("playEpisodeAtIndex: BEFORE switch - service current episode=${beforeEpisode?.title} (id=${beforeEpisode?.id})")
+        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: BEFORE - service current=${beforeEpisode?.title} (id=${beforeEpisode?.id})")
         playbackService?.playEpisode(targetEpisode, false)
-        val afterEpisode = playbackService?.getCurrentEpisode()
-        writeEpisodeLog("playEpisodeAtIndex: AFTER switch - service current episode=${afterEpisode?.title} (id=${afterEpisode?.id})")
-        writeEpisodeLog("playEpisodeAtIndex: AFTER switch - target was ${targetEpisode.title}, service reports ${afterEpisode?.title}, match=${targetEpisode.id == afterEpisode?.id}")
+        // Issue 5 Fix: 立即验证切换是否生效（不依赖延迟）
+        val immediateAfter = playbackService?.getCurrentEpisode()
+        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: IMMEDIATE AFTER - service=${immediateAfter?.title} (id=${immediateAfter?.id}), target=${targetEpisode.title}, match=${targetEpisode.id == immediateAfter?.id}")
+        if (targetEpisode.id != immediateAfter?.id) {
+            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: WARNING - service episode did NOT change! before=${beforeEpisode?.id}, after=${immediateAfter?.id}, target=${targetEpisode.id}")
+        }
         // Issue 5 Fix: 延迟校验（500ms）确认切换是否真正生效
         Handler(Looper.getMainLooper()).postDelayed({
             val verifyEpisode = playbackService?.getCurrentEpisode()
-            writeEpisodeLog("playEpisodeAtIndex: DELAYED VERIFY (500ms) - service episode=${verifyEpisode?.title} (id=${verifyEpisode?.id}), target was ${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == verifyEpisode?.id}")
+            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: DELAYED VERIFY (500ms) - service=${verifyEpisode?.title} (id=${verifyEpisode?.id}), target=${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == verifyEpisode?.id}")
         }, 500)
+        // Issue 5 Fix: 再延迟2秒做最终校验
+        Handler(Looper.getMainLooper()).postDelayed({
+            val finalEpisode = playbackService?.getCurrentEpisode()
+            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: FINAL VERIFY (2s) - service=${finalEpisode?.title} (id=${finalEpisode?.id}), target=${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == finalEpisode?.id}")
+        }, 2000)
         // Issue 4: 切歌后刷新节目列表适配器，使高亮跟随当前播放节目
         episodeListAdapter?.let { adapter ->
             adapter.currentlyPlayingId = targetEpisode.id
             adapter.notifyDataSetChanged()
-            writeEpisodeLog("playEpisodeAtIndex: refreshed adapter, currentlyPlayingId=${adapter.currentlyPlayingId}")
+            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: refreshed adapter, currentlyPlayingId=${adapter.currentlyPlayingId}")
         }
         voiceSegments = generateSimulatedSegments()
         if (voiceSegments.isNotEmpty()) updateSegmentsUI()
         updateUI()
         setupPreCacheList()
-        android.util.Log.d("PlayerActivity", "playEpisodeAtIndex: switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
+        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: DONE, switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
     }
 
     // Issue 6 & 11: 弹出当前节目列表对话框。高亮正在播放的节目（Issue 6），点击任意节目通过
@@ -1508,15 +1515,13 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val episode = episodes[position]
-            writeEpisodeLog("onBindViewHolder: position=$position, episode.title=${episode.title}, episode.id=${episode.id}, currentlyPlayingId=$currentlyPlayingId, isPlaying=${episode.id == currentlyPlayingId}")
-            // Issue 6 Fix: 同时匹配 episode ID 和基于 title 的匹配（跨天同一节目也能高亮）
-            // Issue 4 Fix: 当 currentlyPlayingId 为空时，回退到按 title 匹配当前播放节目
+            // Issue 4 Fix: 同时匹配 episode ID 和基于 title 的匹配（跨天同一节目也能高亮）
             val isPlaying = episode.id == currentlyPlayingId ||
                 (currentlyPlayingId.isNullOrEmpty() && currentEpisode?.title == episode.title) ||
                 (currentEpisode != null && episode.title != null &&
                  currentEpisode?.title == episode.title &&
                  currentEpisode?.stationId == episode.stationId)
-            writeEpisodeLog("onBindViewHolder: position=$position, title=${episode.title}, id=${episode.id}, isCurrentlyPlaying=$isPlaying, currentlyPlayingId=$currentlyPlayingId")
+            writeEpisodeLog("[v2.0.42] onBindViewHolder: pos=$position, title=${episode.title}, id=${episode.id}, isPlaying=$isPlaying, currentlyPlayingId=$currentlyPlayingId")
 
             holder.tvTitle.text = if (isPlaying) "▶ ${episode.title}" else episode.title
             holder.tvTime.text = try {
@@ -1528,38 +1533,45 @@ class PlayerActivity : AppCompatActivity() {
             val segments = episode.voiceSegments?.size ?: 0
             holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 
-            // 解析主题色用于高亮/还原（适配深色/浅色主题）
             val ctx = holder.itemView.context
             val accentColor = resolveThemeColor(ctx, android.R.attr.colorPrimary)
             val titleColor = resolveThemeColor(ctx, com.radio.app.R.attr.appTextPrimary)
 
             if (isPlaying) {
-                // Issue 6: 高亮当前播放节目 - 使用更明显的背景色
-                val tint = Color.argb(60, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
+                // Issue 4 Fix: 大幅提高高亮可见度——alpha从60提高到180，添加左侧色条
+                val tint = Color.argb(180, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
                 holder.itemView.setBackgroundColor(tint)
+                // 左侧添加3dp宽的强调色条（通过padding+background实现）
+                val density = ctx.resources.displayMetrics.density
+                holder.itemView.setPadding((3 * density).toInt(), holder.itemView.paddingTop,
+                    holder.itemView.paddingEnd, holder.itemView.paddingBottom)
                 holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
                 holder.tvTitle.setTextColor(accentColor)
                 holder.tvPlayingIndicator.text = "正在播放"
                 holder.tvPlayingIndicator.setTextColor(accentColor)
                 holder.tvPlayingIndicator.visibility = View.VISIBLE
-                // Issue 6 Fix: 播放按钮变为暂停图标，并用主题色着色
                 holder.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
                 holder.btnPlay.setColorFilter(accentColor)
-                writeEpisodeLog("onBindViewHolder: HIGHLIGHT set for position=$position title=${episode.title}, bgColor=$tint, textColor=$accentColor, indicator=VISIBLE, btnPlay=pause")
+                writeEpisodeLog("[v2.0.42] onBindViewHolder: HIGHLIGHT pos=$position title=${episode.title}, alpha=180, accentColor=$accentColor")
             } else {
-                // Issue 6 Fix: 恢复原始背景（selectableItemBackground），而非简单设置透明
                 holder.itemView.background = holder.originalBackground
+                val density = ctx.resources.displayMetrics.density
+                holder.itemView.setPadding((4 * density).toInt(), holder.itemView.paddingTop,
+                    holder.itemView.paddingEnd, holder.itemView.paddingBottom)
                 holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
                 holder.tvTitle.setTextColor(titleColor)
                 holder.tvPlayingIndicator.visibility = View.GONE
-                // Issue 6 Fix: 恢复播放按钮为默认播放图标
                 holder.btnPlay.setImageResource(R.drawable.ic_play)
                 holder.btnPlay.clearColorFilter()
-                writeEpisodeLog("onBindViewHolder: normal style for position=$position title=${episode.title}, bgColor=original, textColor=$titleColor, indicator=GONE, btnPlay=play")
             }
 
+            // Issue 5 Fix: 使用 bindingAdapterPosition 替代 position，确保点击位置准确
             holder.itemView.setOnClickListener {
-                onItemClicked?.invoke(position)
+                val clickPos = holder.bindingAdapterPosition
+                writeEpisodeLog("[v2.0.42] onItemClick: bindingAdapterPosition=$clickPos, position=$position, title=${episodes.getOrNull(clickPos)?.title}")
+                if (clickPos >= 0 && clickPos < episodes.size) {
+                    onItemClicked?.invoke(clickPos)
+                }
                 onDismiss?.invoke()
             }
         }
