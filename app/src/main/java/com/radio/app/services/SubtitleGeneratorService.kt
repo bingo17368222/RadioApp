@@ -708,17 +708,23 @@ class SubtitleGeneratorService : Service() {
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 chunkCount++
-                // [v2.0.43] Issue 6 Fix: Lower forceResult threshold from 20 to 10 chunks for more frequent output
-                val forceResult = (chunkCount % 10 == 0)  // Force every 10 chunks (~0.26s at 8192 bytes/chunk)
+                // [v2.0.44] Issue 6 Fix: forceResult every 5 chunks for more frequent output
+                val forceResult = (chunkCount % 5 == 0)  // Force every 5 chunks (~0.13s at 8192 bytes/chunk)
                 if (accepted || forceResult) {
                     if (forceResult) {
-                        logToFile("generateWithVosk: [v2.0.43] forceResult triggered at chunk=$chunkCount, offset=$offset, accepted=$accepted")
+                        logToFile("generateWithVosk: [v2.0.44] forceResult triggered at chunk=$chunkCount, offset=$offset, accepted=$accepted")
+                    }
+                    // [v2.0.44] Issue 6 Fix: Reset lastPartialText when accepted=true so partials can be saved again
+                    if (accepted) {
+                        lastPartialText = ""
                     }
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
+                    var resultText = ""
                     if (result.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(result as String)
-                            val text = json.optString("text", "")
+                            val text = json.optString("text", "").trim()
+                            resultText = text
                             if (text.isNotBlank()) {
                                 // Parse timestamps from Vosk result
                                 var startTime = 0L
@@ -731,7 +737,6 @@ class SubtitleGeneratorService : Service() {
                                     endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
                                 } else {
                                     // Fallback: use accumulated byte offset for approximate timestamps
-                                    // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
                                     startTime = offset * 1000L / 32000L
                                     endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
@@ -745,23 +750,27 @@ class SubtitleGeneratorService : Service() {
                     // Also get partial result
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     var partialJson: org.json.JSONObject? = null
+                    var partialText = ""
                     if (partial.isNotBlank()) {
                         try {
                             partialJson = org.json.JSONObject(partial)
-                            val partialText = partialJson.optString("partial", "").trim()
+                            partialText = partialJson.optString("partial", "").trim()
+                            // [v2.0.44] Issue 6 Fix: When forceResult=true, always save partial (even if same text, different timestamp)
+                            // Only skip if partialText is empty
                             if (partialText.isNotEmpty() && (forceResult || partialText != lastPartialText)) {
                                 lastPartialText = partialText
                                 val partialStart = offset * 1000L / 32000L
                                 val partialEnd = (offset + chunk.size) * 1000L / 32000L
                                 val transcript = com.radio.app.models.Transcript(text = partialText, segmentStart = partialStart, segmentEnd = partialEnd)
-                                logToFile("generateWithVosk: forceResult partial transcript at ${partialStart}ms: '${partialText.take(50)}...'")
+                                logToFile("generateWithVosk: [v2.0.44] forceResult partial transcript at ${partialStart}ms: '${partialText.take(50)}...'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { }
                     }
-                    if (forceResult && result.isBlank() && (partial.isBlank() || (partialJson?.optString("partial", "") ?: "").isEmpty())) {
-                        logToFile("generateWithVosk: forceResult at chunk=$chunkCount produced NOTHING (getResult empty, partial empty)")
+                    // [v2.0.44] Issue 6 Fix: Use resultText instead of result.isBlank() for proper empty check
+                    if (forceResult && resultText.isBlank() && partialText.isBlank()) {
+                        logToFile("generateWithVosk: [v2.0.44] forceResult at chunk=$chunkCount produced NOTHING (getResult text empty, partial empty)")
                     }
                 } else {
                     // Get partial result for logging only (not saved as transcript)
@@ -1911,19 +1920,19 @@ class SubtitleGeneratorService : Service() {
             val processSamples = nSamples
             logToFile("processWhisperInChunks: processing $processSamples samples")
 
-            // [v2.0.43] Issue 3&7: Create crash log directory and write pre-crash marker
-            // If the process crashes in whisper_full, this is the last log entry before the crash
+            // [v2.0.44] Issue 3&7: Write PRE-CRASH MARKER to BOTH the main service log AND whisper_crash.log
+            // This ensures the crash info is in the user's log export (external storage)
+            logToFile("[v2.0.44] PRE-CRASH MARKER: about to call whisper_full(ctxPtr=$ctxPtr, nSamples=$processSamples, pcmFile=${pcmFile.name}). If this is the last log entry, the process crashed in whisper_full.")
             try {
                 val crashLogDir = java.io.File(filesDir, "logs/whisper")
                 if (!crashLogDir.exists()) crashLogDir.mkdirs()
                 val crashLogFile = java.io.File(crashLogDir, "whisper_crash.log")
-                // Write pre-crash marker - if this is the last entry, whisper_full crashed
                 val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
                 FileWriter(crashLogFile, true).use { it.append("[$ts][$appVersion] PRE-CRASH MARKER: about to call whisper_full(ctxPtr=$ctxPtr, nSamples=$processSamples, pcmFile=${pcmFile.name})\n") }
             } catch (_: Exception) {}
 
             // Run full transcription
-            logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples) - if no next log, process crashed in whisper_full")
+            logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
             val result = bridge.full(ctxPtr, samples, processSamples)
             logToFile("processWhisperInChunks: bridge.full returned $result")
 

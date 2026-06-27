@@ -351,14 +351,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             )
         mediaSession?.setPlaybackState(builder.build())
 
-        // 设置MediaMetadata，系统需要duration才能显示SeekBar
-        if (!isLive && prepared) {
+        // [v2.0.44] Issue 5 Fix: Always set MediaMetadata with duration for progress bar
+        // Previously only set when prepared=true, causing no progress bar on initial notification
+        if (!isLive) {
             val dur = player?.duration ?: 0L
-            if (dur > 0) {
+            // [v2.0.44] Fallback to episode duration when player duration not available (not prepared yet)
+            val effectiveDur = if (dur > 0) dur else (currentEpisode?.duration?.times(1000) ?: 0L)
+            if (effectiveDur > 0) {
                 val metadata = MediaMetadataCompat.Builder()
                     .putString(MediaMetadataCompat.METADATA_KEY_TITLE, notificationTitle)
                     .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, buildNotificationSubText())
-                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, dur)
+                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, effectiveDur)
                     .build()
                 mediaSession?.setMetadata(metadata)
             }
@@ -2708,10 +2711,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "notifyPrevEpisode: searching for prev of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
         writeServiceLog("notification", "notifyPrevEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
         writeServiceLog("notification", "notifyPrevEpisode: curId in preCacheList: ${preCacheList.any { it.id == curId }}, curId in savedList: ${savedList.any { it.id == curId }}")
-        var prevEpisode = findPrevInList(loadPreCacheList(), curId, settings)
+        var prevEpisode = findPrevInList(preCacheList, curId, settings)
         // Fallback to saved episode list
         if (prevEpisode == null) {
-            prevEpisode = findPrevInList(loadEpisodeList(), curId, settings)
+            prevEpisode = findPrevInList(savedList, curId, settings)
         }
 
         if (prevEpisode != null) {
@@ -2776,10 +2779,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "notifyNextEpisode: searching for next of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
         writeServiceLog("notification", "notifyNextEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
         writeServiceLog("notification", "notifyNextEpisode: curId in preCacheList: ${preCacheList.any { it.id == curId }}, curId in savedList: ${savedList.any { it.id == curId }}")
-        var nextEpisode = findNextInList(loadPreCacheList(), curId, settings)
+        var nextEpisode = findNextInList(preCacheList, curId, settings)
         // Fallback to saved episode list
         if (nextEpisode == null) {
-            nextEpisode = findNextInList(loadEpisodeList(), curId, settings)
+            nextEpisode = findNextInList(savedList, curId, settings)
         }
 
         if (nextEpisode != null) {
