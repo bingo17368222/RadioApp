@@ -692,18 +692,15 @@ class SubtitleGeneratorService : Service() {
 
             ctx.log("Processing ${audioData.size} bytes of audio data with Vosk")
             val totalBytes = audioData.size
-            // [v2.0.45] Issue 4 Fix: Increase chunk size from 8192 to 16384 for better recognition
-            // Larger chunks give Vosk more audio context per acceptWaveForm call
-            val chunkSize = 16384
+            // [v2.0.46] Issue 4 Fix: Increase chunk size to 32768 for better recognition context
+            // Vosk needs larger audio chunks to recognize longer phrases
+            val chunkSize = 32768
             var offset = 0
             var lastProgress = 0
             val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
             val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
             val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
             val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
-            // [v2.0.45] Issue 4 Fix: Get endOfUtterance method to force finalization
-            var endOfUtteranceMethod: java.lang.reflect.Method? = null
-            try { endOfUtteranceMethod = voskRecognizerClass?.getMethod("endOfUtterance") } catch (_: Exception) {}
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var lastPartialText = ""
@@ -713,14 +710,13 @@ class SubtitleGeneratorService : Service() {
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 chunkCount++
-                // [v2.0.45] Issue 4 Fix: forceResult every 10 chunks with larger chunk size (16384 bytes)
-                // At 16384 bytes/chunk, 10 chunks = ~5.1 seconds of audio
-                val forceResult = (chunkCount % 10 == 0)
-                if (accepted || forceResult) {
-                    if (forceResult) {
-                        // [v2.0.45] Issue 4 Fix: Call endOfUtterance to force Vosk to finalize pending partial
-                        try { endOfUtteranceMethod?.invoke(recognizer) } catch (_: Exception) {}
-                        logToFile("generateWithVosk: [v2.0.45] forceResult triggered at chunk=$chunkCount, offset=$offset, accepted=$accepted, called endOfUtterance")
+                // [v2.0.46] Issue 4 Fix: Remove endOfUtterance (was breaking recognition context)
+                // Only use natural boundaries (accepted=true) + periodic partial saves
+                // Save partial every 20 chunks (~10s at 32768 bytes/chunk) to avoid losing speech
+                val savePartial = (chunkCount % 20 == 0)
+                if (accepted || savePartial) {
+                    if (savePartial && !accepted) {
+                        logToFile("generateWithVosk: [v2.0.46] periodic partial save at chunk=$chunkCount, offset=$offset")
                     }
                     // [v2.0.44] Issue 6 Fix: Reset lastPartialText when accepted=true so partials can be saved again
                     if (accepted) {
@@ -763,22 +759,21 @@ class SubtitleGeneratorService : Service() {
                         try {
                             partialJson = org.json.JSONObject(partial)
                             partialText = partialJson.optString("partial", "").trim()
-                            // [v2.0.44] Issue 6 Fix: When forceResult=true, always save partial (even if same text, different timestamp)
-                            // Only skip if partialText is empty
-                            if (partialText.isNotEmpty() && (forceResult || partialText != lastPartialText)) {
+                            // [v2.0.46] Issue 4 Fix: Save partial when savePartial or when text changes
+                            if (partialText.isNotEmpty() && (savePartial || partialText != lastPartialText)) {
                                 lastPartialText = partialText
                                 val partialStart = offset * 1000L / 32000L
                                 val partialEnd = (offset + chunk.size) * 1000L / 32000L
                                 val transcript = com.radio.app.models.Transcript(text = partialText, segmentStart = partialStart, segmentEnd = partialEnd)
-                                logToFile("generateWithVosk: [v2.0.44] forceResult partial transcript at ${partialStart}ms: '${partialText.take(50)}...'")
+                                logToFile("generateWithVosk: [v2.0.46] partial transcript at ${partialStart}ms: '${partialText.take(50)}...'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (_: Exception) { }
                     }
-                    // [v2.0.44] Issue 6 Fix: Use resultText instead of result.isBlank() for proper empty check
-                    if (forceResult && resultText.isBlank() && partialText.isBlank()) {
-                        logToFile("generateWithVosk: [v2.0.45] forceResult at chunk=$chunkCount produced NOTHING (getResult text empty, partial empty, endOfUtterance called)")
+                    // [v2.0.46] Issue 4 Fix: Log when periodic save produces nothing
+                    if (savePartial && !accepted && resultText.isBlank() && partialText.isBlank()) {
+                        logToFile("generateWithVosk: [v2.0.46] periodic save at chunk=$chunkCount produced NOTHING")
                     }
                 } else {
                     // Get partial result for logging only (not saved as transcript)

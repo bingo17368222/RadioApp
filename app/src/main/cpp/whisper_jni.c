@@ -151,11 +151,12 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
     jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
 
-    // [v2.0.45] Issue 3 Fix: Reduce from 2 minutes to 1 minute to prevent SIGSEGV crash
-    // 217 seconds of audio (3.4M samples) was causing crashes even with 2-min cap
-    int maxSamples = 1 * 60 * 16000;  // 1 minute at 16kHz
+    // [v2.0.46] Issue 3 Fix: Reduce to 30 seconds to prevent SIGSEGV
+    // v2.0.45 used 1 minute but wasn't tested (user switched to Vosk)
+    // 30 seconds = 480000 samples at 16kHz, should be safe
+    int maxSamples = 30 * 16000;  // 30 seconds at 16kHz
     int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
-    LOGI("full: n_samples=%d, processSamples=%d (capped at 1min), ctx=%p", n_samples, processSamples, ctx);
+    LOGI("full: n_samples=%d, processSamples=%d (capped at 30s), ctx=%p", n_samples, processSamples, ctx);
 
     // [v2.0.45] Issue 3 Fix: Check for NaN/Infinity in samples that could cause SIGSEGV
     int hasBadSamples = 0;

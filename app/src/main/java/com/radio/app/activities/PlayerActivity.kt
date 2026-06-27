@@ -73,6 +73,11 @@ class PlayerActivity : AppCompatActivity() {
     // While true, positionUpdateRunnable skips UI updates so the cached position restored in
     // onResume/onCreate is not overridden before the service is ready.
     private var awaitingServicePosition = true
+    // [v2.0.46] Issue 1 Fix: Monotonic position guard - prevents UI flicker when ExoPlayer
+    // reports backward positions during buffering/re-preparation.
+    // ExoPlayer's currentPosition can jump backwards by 100+ seconds during re-buffering.
+    private var lastDisplayedPositionMs = 0L
+    private var isUserSeeking = false
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
     private var lastSubtitleHighlightIdx = -1
@@ -574,6 +579,19 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
+                // [v2.0.46] Issue 1 Fix: Monotonic position guard
+                // ExoPlayer reports backward positions during buffering (e.g. 2554191→2404284)
+                // Never show a position lower than the last displayed position (unless user seeks)
+                if (!isUserSeeking && position < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
+                    val backwardMs = lastDisplayedPositionMs - position
+                    // Only log significant backward jumps (>1 second)
+                    if (backwardMs > 1000) {
+                        writeJitterLog("[v2.0.46] onPositionChanged: REJECTED backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), keeping UI at ${lastDisplayedPositionMs}ms")
+                    }
+                    return@runOnUiThread
+                }
+                lastDisplayedPositionMs = position
+
                 val pos = position.toInt()
                 val dur = duration.toInt()
                 // Feature B: store current playback position
@@ -1038,10 +1056,16 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(progress)} / ${formatTime(dur)}"
                 }
             }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true; isUserSeeking = true }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDragging = false
-                seekBar?.let { playbackService?.seekTo(it.progress.toLong()) }
+                isUserSeeking = false
+                seekBar?.let {
+                    val targetPos = it.progress.toLong()
+                    // [v2.0.46] Update lastDisplayedPositionMs so monotonic guard accepts the seek position
+                    lastDisplayedPositionMs = targetPos
+                    playbackService?.seekTo(targetPos)
+                }
             }
         })
     }
@@ -1323,13 +1347,24 @@ class PlayerActivity : AppCompatActivity() {
         if (playbackService?.isPrepared() == true) {
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val svcDur = playbackService?.getDuration() ?: -1L
+            // [v2.0.46] Issue 1 Fix: Monotonic position guard in updateCurrentPositionHighlight
+            if (!isUserSeeking && svcPos > 0 && svcPos < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
+                val backwardMs = lastDisplayedPositionMs - svcPos
+                if (backwardMs > 1000) {
+                    writeJitterLog("[v2.0.46] updateUI: REJECTED backward position ${svcPos}ms < lastDisplayed ${lastDisplayedPositionMs}ms")
+                }
+            } else if (svcPos > 0) {
+                lastDisplayedPositionMs = svcPos
+            }
             // Only update seekBar if we have valid position data (not 0 when playing)
             val isPlaying = playbackService?.isPlaying() ?: false
             if (svcPos > 0 || !isPlaying) {
-                if (svcPos > 0) {
+                // [v2.0.46] Only update UI with positions that don't go backwards
+                val displayPos = if (!isUserSeeking && svcPos < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) lastDisplayedPositionMs else svcPos
+                if (displayPos > 0) {
                     binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
-                    binding.seekBar.progress = svcPos.toInt()
-                    binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
+                    binding.seekBar.progress = displayPos.toInt()
+                    binding.tvCurrentTime.text = "${formatTime(displayPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
                 }
             }
             binding.tvLiveIndicator.text = if (playbackService?.isPlaying() == true) "播放中" else "已暂停"
@@ -2098,6 +2133,8 @@ class PlayerActivity : AppCompatActivity() {
         subtitleTranscripts = emptyList()
         lastSubtitleHighlightIdx = -1
         subtitleAdapter?.setTranscripts(emptyList())
+        // [v2.0.46] Reset monotonic position guard when switching episodes
+        lastDisplayedPositionMs = 0L
         if (_binding != null) {
             binding.subtitleView.visibility = View.GONE
             binding.tvSubtitleTitle.visibility = View.GONE
@@ -2183,8 +2220,16 @@ class PlayerActivity : AppCompatActivity() {
         positionUpdateHandler.removeCallbacks(positionUpdateRunnable)
         // Issue 1: Cache playback position to prevent seekbar rewind on resume
         if (serviceBound && playbackService != null) {
-            val pos = playbackService?.getCurrentPosition() ?: 0L
+            var pos = playbackService?.getCurrentPosition() ?: 0L
             val dur = playbackService?.getDuration() ?: 0L
+            // [v2.0.46] Issue 1 Fix: Don't cache backward positions
+            // ExoPlayer can report backward positions during buffering, which would cause
+            // the next launch to restore a wrong (backward) position
+            if (pos > 0 && lastDisplayedPositionMs > 0 && pos < lastDisplayedPositionMs) {
+                writeJitterLog("[v2.0.46] onPause: service reported backward position ${pos}ms < lastDisplayed ${lastDisplayedPositionMs}ms, using lastDisplayed instead")
+                pos = lastDisplayedPositionMs
+            }
+            if (pos > 0) lastDisplayedPositionMs = pos
             getSharedPreferences("player_position_cache", MODE_PRIVATE).edit()
                 .putLong("cached_position", pos)
                 .putLong("cached_duration", dur)
