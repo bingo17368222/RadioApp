@@ -629,6 +629,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             savePreCacheList(preCacheList)
         }
 
+        writeServiceLog("notification", "triggerPreCache: preCacheList.size=${preCacheList.size}, currentIdx=$currentIdx, cachedFiles.size=${cachedFiles.size}")
+        writeServiceLog("notification", "triggerPreCache: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(10)}")
+
         // Count future episodes that are already cached (after current index)
         var futureCachedCount = 0
         var nextToDownload: Episode? = null
@@ -705,6 +708,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     showPrecacheCompleteNotification()
                     return
                 }
+                // Not enough episodes AND can't find more to download - don't mark as complete, just log
+                writeServiceLog("notification", "triggerPreCache: INSUFFICIENT episodes, futureCached=$futureCachedCount < target=$targetCount, will retry later")
+                isPrecaching = false
+                // Do NOT call showPrecacheCompleteNotification() - this is NOT complete!
+                Handler(Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(this, "预缓存未完成：已缓存${futureCachedCount}个（目标${targetCount}个），无法获取更多节目", android.widget.Toast.LENGTH_LONG).show()
+                }
+                return
             }
         }
 
@@ -718,23 +729,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.d(TAG, "Pre-cache: no more future episodes available to download (futureCached=$futureCachedCount, target=$targetCount)")
             writeServiceLog("notification", "triggerPreCache: END, no more episodes to download, futureCached=$futureCachedCount, target=$targetCount")
             isPrecaching = false
-            showPrecacheCompleteNotification()
-            // Check if all future episodes are disliked or cached
-            val allDisliked = ((currentIdx + 1) until preCacheList.size).all { i ->
-                val ep = preCacheList[i]
-                settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title) ||
-                extractCacheFileName(ep.audioUrl) in cachedNames
-            }
-            if (allDisliked && (currentIdx + 1) < preCacheList.size) {
-                Log.d(TAG, "Pre-cache: all future episodes disliked or cached")
+            // Only show complete notification if we actually have enough cached files
+            if (futureCachedCount >= targetCount) {
+                showPrecacheCompleteNotification()
+            } else {
+                writeServiceLog("notification", "triggerPreCache: NOT showing complete notification, futureCached=$futureCachedCount < target=$targetCount")
                 Handler(Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(this, "当前电台未来节目已被全部缓存或标记为不喜欢", android.widget.Toast.LENGTH_LONG).show()
-                }
-            } else if (futureCachedCount < targetCount) {
-                // Not enough episodes available to meet the target
-                Log.d(TAG, "Pre-cache: insufficient episodes available ($futureCachedCount < $targetCount)")
-                Handler(Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(this, "当前电台可用节目不足，已缓存${futureCachedCount}个（目标${targetCount}个）", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this, "预缓存未完成：已缓存${futureCachedCount}个（目标${targetCount}个）", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -1080,7 +1081,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch
                 }
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     // Validate format - must have .info file with version=3 (original rate, no resampling)
                     val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
@@ -1114,8 +1115,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } finally {
                     durationExtractor.release()
                 }
-                // 只解码前30分钟
-                val maxDurationUs = 30 * 60 * 1000000L // 30 minutes
+                // 只解码前5分钟
+                val maxDurationUs = 5 * 60 * 1000000L // 5 minutes
                 val effectiveDurationUs = if (audioDurationUs > 0 && audioDurationUs > maxDurationUs) {
                     maxDurationUs
                 } else {
@@ -1166,7 +1167,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 检查PCM是否已解码
         val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
         if (pcmCacheDir != null) {
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
                 // Check if existing PCM needs regeneration (format changed in v2.0.5: original rate, version=3)
                 val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
@@ -1227,7 +1228,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             var outputDone = false
             var decodedBytes = 0L
             var resampledBytes = 0L
-            val maxPcmBytes = 300_000_000L // ~30min @ 48kHz stereo 16bit
+            val maxPcmBytes = 5L * 60 * 16000 * 2 // ~5min @ 16kHz mono 16bit = 9,600,000 bytes
             val decodeStartTime = System.currentTimeMillis()
             val maxDecodeTimeMs = 5 * 60 * 1000L
 
@@ -2447,13 +2448,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val epDate = ep.broadcastAt?.take(10) ?: ""
                         val epUrl = ep.audioUrl ?: ""
                         epDate == targetDateFormatted && ep.stationId == stationId &&
-                            epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.")
+                            epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.") &&
+                            !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                     }
                     // Fallback: look for any episode with the same time slot (any date)
                     val matchEpisodeFallback = matchEpisode ?: episodeList.firstOrNull { ep ->
                         val epUrl = ep.audioUrl ?: ""
                         ep.stationId == stationId &&
-                            epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.")
+                            epUrl.contains("_${targetStart}_") && epUrl.contains("_${targetEnd}.") &&
+                            !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                     }
 
                     val dateDisplay = if (newDateStr.length >= 8) "${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}" else ""
@@ -2488,6 +2491,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         broadcastAt = "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}",
                         duration = 0
                     )
+                    // Check if the constructed episode's title is disliked
+                    if (settings.isDislikedByTitle(newEpisode.stationId, newEpisode.title)) {
+                        writeServiceLog("notification", "fetchCrossDayEpisode: constructed episode title '${newEpisode.title}' is disliked, returning null")
+                        return null
+                    }
                     writeServiceLog("notification", "fetchCrossDayEpisode: RETURN constructed episode: ${newEpisode.title}, url=${newEpisode.audioUrl}")
                     return newEpisode
                 }
@@ -2513,6 +2521,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // Try preCacheList first
+        val preCacheList = loadPreCacheList()
+        val savedList = loadEpisodeList()
+        writeServiceLog("notification", "notifyPrevEpisode: searching for prev of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
+        writeServiceLog("notification", "notifyPrevEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
+        writeServiceLog("notification", "notifyPrevEpisode: curId in preCacheList: ${preCacheList.any { it.id == curId }}, curId in savedList: ${savedList.any { it.id == curId }}")
         var prevEpisode = findPrevInList(loadPreCacheList(), curId, settings)
         // Fallback to saved episode list
         if (prevEpisode == null) {
@@ -2566,6 +2579,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // Try preCacheList first
+        val preCacheList = loadPreCacheList()
+        val savedList = loadEpisodeList()
+        writeServiceLog("notification", "notifyNextEpisode: searching for next of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
+        writeServiceLog("notification", "notifyNextEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
+        writeServiceLog("notification", "notifyNextEpisode: curId in preCacheList: ${preCacheList.any { it.id == curId }}, curId in savedList: ${savedList.any { it.id == curId }}")
         var nextEpisode = findNextInList(loadPreCacheList(), curId, settings)
         // Fallback to saved episode list
         if (nextEpisode == null) {

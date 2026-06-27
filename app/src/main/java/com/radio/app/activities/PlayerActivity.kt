@@ -362,9 +362,9 @@ class PlayerActivity : AppCompatActivity() {
             val epDuration = currentEpisode?.duration ?: 0L
             // 取服务和 episode 中较大的 duration 作为校验基准（单位可能不同：ms vs s）
             val maxDuration = maxOf(svcDuration, epDuration * if (epDuration > 0 && epDuration < 100000) 1000 else 1)
-            val isValidSavedPos = savedPos > 0 && (maxDuration <= 0 || savedPos <= maxDuration)
+            val isValidSavedPos = savedPos > 0 && maxDuration > 0 && savedPos <= maxDuration
 
-            if (!isFreshStart && currentEpisode != null && isValidSavedPos) {
+            if (!isFreshStart && currentEpisode != null && isValidSavedPos && svcStarted) {
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                 binding.seekBar.progress = savedPos.toInt()
                 binding.tvLiveIndicator.text = "恢复中..."
@@ -1356,7 +1356,13 @@ class PlayerActivity : AppCompatActivity() {
         saveLastEpisode()
         writeJitterLog("playEpisodeAtIndex: calling playEpisode with ${targetEpisode.title}")
         writeEpisodeLog("playEpisodeAtIndex: calling playEpisode with ${targetEpisode.title}")
+        writeEpisodeLog("playEpisodeAtIndex: BEFORE switch - clicked index=$index, targetIdx=$targetIdx, targetEpisode.title=${targetEpisode.title}, targetEpisode.id=${targetEpisode.id}")
+        val beforeEpisode = playbackService?.getCurrentEpisode()
+        writeEpisodeLog("playEpisodeAtIndex: BEFORE switch - service current episode=${beforeEpisode?.title} (id=${beforeEpisode?.id})")
         playbackService?.playEpisode(targetEpisode, false)
+        val afterEpisode = playbackService?.getCurrentEpisode()
+        writeEpisodeLog("playEpisodeAtIndex: AFTER switch - service current episode=${afterEpisode?.title} (id=${afterEpisode?.id})")
+        writeEpisodeLog("playEpisodeAtIndex: AFTER switch - target was ${targetEpisode.title}, service reports ${afterEpisode?.title}, match=${targetEpisode.id == afterEpisode?.id}")
         voiceSegments = generateSimulatedSegments()
         if (voiceSegments.isNotEmpty()) updateSegmentsUI()
         updateUI()
@@ -1391,6 +1397,7 @@ class PlayerActivity : AppCompatActivity() {
         writeJitterLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}")
         writeEpisodeLog("showEpisodeListDialog: adapter created, currentlyPlayingId=${currentEpisode?.id}, listAdapter.currentlyPlayingId=$currentId")
         listAdapter.onItemClicked = { position ->
+            writeEpisodeLog("showEpisodeListDialog: onItemClicked position=$position, episode=${episodeList.getOrNull(position)?.title}")
             if (position in episodeList.indices) {
                 val episode = episodeList[position]
                 writeJitterLog("showEpisodeListDialog: episode clicked at position=$position, episode=${episode.title}, id=${episode.id}")
@@ -1416,6 +1423,7 @@ class PlayerActivity : AppCompatActivity() {
                     ?.scrollToPositionWithOffset(currentEpisodeIndex, 0)
             }
         }
+        writeEpisodeLog("showEpisodeListDialog: showing dialog with ${episodeList.size} episodes, currentEpisodeIndex=$currentEpisodeIndex, currentId=$currentId")
         dialog.show()
     }
 
@@ -1452,6 +1460,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
             val episode = episodes[position]
+            writeEpisodeLog("onBindViewHolder: position=$position, episode.title=${episode.title}, episode.id=${episode.id}, currentlyPlayingId=$currentlyPlayingId, isPlaying=${episode.id == currentlyPlayingId}")
             // Issue 6 Fix: 同时匹配 episode ID 和基于 title 的匹配（跨天同一节目也能高亮）
             val isPlaying = episode.id == currentlyPlayingId ||
                 (currentEpisode != null && episode.title != null &&

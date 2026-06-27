@@ -596,7 +596,7 @@ class SubtitleGeneratorService : Service() {
 
             // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
-            val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
             logToFile("generateWithVosk: PCM file=${pcm16kFile.absolutePath}, size=${pcm16kFile.length()}, willChunk=${pcm16kFile.length() > 50_000_000}")
             if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
@@ -634,11 +634,11 @@ class SubtitleGeneratorService : Service() {
             if (audioData == null) {
                 // Try chunked processing for original PCM cache if it exists
                 val pcmCacheDir2 = File(getExternalFilesDir(null), "pcm_cache")
-                val pcmFile = File(pcmCacheDir2, "${episodeId}_30min.pcm")
+                val pcmFile = File(pcmCacheDir2, "${episodeId}_5min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     // Original PCM cache needs resampling - resample to 16kHz temp file first
                     ctx.log("Original PCM cache exists, attempting resample + chunked processing")
-                    val infoFile = File(pcmCacheDir2, "${episodeId}_30min.info")
+                    val infoFile = File(pcmCacheDir2, "${episodeId}_5min.info")
                     var inSampleRate = 44100
                     var inChannels = 2
                     if (infoFile.exists()) {
@@ -900,6 +900,9 @@ class SubtitleGeneratorService : Service() {
                 // Radio audio is continuous speech with few silence boundaries, so acceptWaveForm rarely
                 // returns true. Forcing getResult() periodically ensures Vosk outputs recognized text.
                 val forceResult = (chunkCount % 5 == 0)
+                if (forceResult) {
+                    writeVoskLog("processVoskInChunks: forceResult triggered at chunk=$chunkCount, offset=$offset, acceptResult=$acceptResult")
+                }
 
                 if (acceptResult || forceResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
@@ -952,7 +955,7 @@ class SubtitleGeneratorService : Service() {
                         try {
                             val partialJson = org.json.JSONObject(partial)
                             val partialText = partialJson.optString("partial", "").trim()
-                            if (partialText.length > 1 && partialText != lastPartialText) {
+                            if (partialText.isNotEmpty() && partialText != lastPartialText) {
                                 lastPartialText = partialText
                                 val partialStartTime = offset * 1000L / 32000L
                                 val partialEndTime = (offset + chunk.size) * 1000L / 32000L
@@ -969,32 +972,6 @@ class SubtitleGeneratorService : Service() {
                         } catch (_: Exception) { /* skip */ }
                     } else {
                         writeVoskLog("forceResult at chunk $chunkCount: getResult and partial both returned empty")
-                    }
-                }
-
-                // Issue 9: Call getPartialResult() every 5 chunks and SAVE as transcript if text is long enough
-                if (chunkCount % 5 == 0) {
-                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                    if (partial.isNotBlank()) {
-                        try {
-                            val partialJson = org.json.JSONObject(partial)
-                            val partialText = partialJson.optString("partial", "").trim()
-                            if (partialText.length > 1 && partialText != lastPartialText) {
-                                lastPartialText = partialText
-                                // Save partial as transcript
-                                val partialStartTime = offset * 1000L / 32000L
-                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
-                                val transcript = com.radio.app.models.Transcript(
-                                    text = partialText,
-                                    segmentStart = partialStartTime,
-                                    segmentEnd = partialEndTime
-                                )
-                                logToFile("processVoskInChunks: partial transcript at ${partialStartTime}ms: '${partialText.take(50)}...'")
-                                writeVoskLog("partial transcript saved: chunk=$chunkCount, text='${partialText.take(100)}'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
-                            }
-                        } catch (_: Exception) { /* skip */ }
                     }
                 }
 
@@ -1094,7 +1071,7 @@ class SubtitleGeneratorService : Service() {
         logToFile("getAudioDataForProcessing: START, audioUrl=$audioUrl")
         // 1) Try 16kHz PCM cache first (should be small, ~60MB for 30min)
         val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
-        val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+        val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
         if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
             ctx.log("Using 16kHz PCM cache: ${pcm16kFile.length()} bytes")
             logToFile("generateSubtitlesForEpisode: PCM converted, size=${pcm16kFile.length()}")
@@ -1116,7 +1093,7 @@ class SubtitleGeneratorService : Service() {
             }
         }
         // 2) Try original PCM cache - stream resample to avoid OOM
-        val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+        val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
         if (pcmFile.exists() && pcmFile.length() > 1024) {
             // Safety check: skip PCM cache if file is too large for in-memory processing
             val pcmFileSize = pcmFile.length()
@@ -1127,7 +1104,7 @@ class SubtitleGeneratorService : Service() {
             } else {
             ctx.log("Stream-resampling original PCM to 16kHz (file size=${pcmFile.length()})")
             // Read .info for sample rate
-            val infoFile = File(pcmCacheDir, "${episodeId}_30min.info")
+            val infoFile = File(pcmCacheDir, "${episodeId}_5min.info")
             var inSampleRate = 44100
             var inChannels = 2
             if (infoFile.exists()) {
@@ -1623,7 +1600,12 @@ class SubtitleGeneratorService : Service() {
                             System.loadLibrary("whisper_jni")
                             logToFile("loadWhisperNativeLibrary: loaded JNI bridge libwhisper_jni.so")
                         } catch (e: UnsatisfiedLinkError) {
-                            logToFile("loadWhisperNativeLibrary: failed to load JNI bridge: ${e.message}")
+                            if (e.message?.contains("already loaded") == true) {
+                                logToFile("loadWhisperNativeLibrary: JNI bridge already loaded")
+                            } else {
+                                logToFile("loadWhisperNativeLibrary: FAILED to load JNI bridge: ${e.message}")
+                                // Don't return false - the bridge might be loaded by processWhisperInChunks later
+                            }
                         }
                         return true
                     }
@@ -1674,7 +1656,7 @@ class SubtitleGeneratorService : Service() {
 
             // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
-            val pcm16kFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
             if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Whisper processing")
@@ -1686,7 +1668,7 @@ class SubtitleGeneratorService : Service() {
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
             if (audioData == null) {
                 // Try chunked processing for original PCM cache if it exists
-                val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     ctx.log("Original PCM cache exists, attempting chunked Whisper processing")
                     logToFile("generateWithWhisper: using chunked processing for original PCM cache")
@@ -1699,7 +1681,7 @@ class SubtitleGeneratorService : Service() {
             }
 
             // Save audio data to PCM cache for chunked processing
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             pcmFile.writeBytes(audioData)
             logToFile("generateWithWhisper: saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
             return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
@@ -1727,12 +1709,19 @@ class SubtitleGeneratorService : Service() {
         try {
             val bridge = com.radio.app.whisper.WhisperBridge()
 
-            // Load native libraries
-            val modelsDir = getExternalFilesDir("models")
-            if (!com.radio.app.whisper.WhisperBridge.loadNativeLibraries(codeCacheDir, modelsDir)) {
-                logToFile("processWhisperInChunks: failed to load Whisper native libraries")
-                callback.onError("Whisper原生库加载失败。请确保已安装Whisper引擎文件。")
-                return false
+            // Native libraries should already be loaded by loadWhisperNativeLibrary() in generateWithWhisper
+            // Just ensure the JNI bridge is loaded
+            try {
+                System.loadLibrary("whisper_jni")
+                logToFile("processWhisperInChunks: JNI bridge loaded successfully")
+            } catch (e: UnsatisfiedLinkError) {
+                if (e.message?.contains("already loaded") == true) {
+                    logToFile("processWhisperInChunks: JNI bridge already loaded")
+                } else {
+                    logToFile("processWhisperInChunks: FAILED to load JNI bridge: ${e.message}")
+                    callback.onError("Whisper JNI桥接加载失败: ${e.message}")
+                    return false
+                }
             }
 
             // Set library path for dlopen (use full path to avoid soname mismatch issues)
@@ -1751,9 +1740,22 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
 
-            // Read PCM file and convert to float samples
-            val pcmData = pcmFile.readBytes()
-            val nSamples = pcmData.size / 2  // 16-bit = 2 bytes per sample
+            // 4. 读取PCM文件 - 限制最多5分钟 (5*60*16000*2 = 9,600,000 bytes)
+            val maxPcmBytes = 5L * 60 * 16000 * 2  // 5 minutes of 16kHz 16-bit mono
+            val fileBytes = pcmFile.length()
+            val bytesToRead = if (fileBytes > maxPcmBytes) maxPcmBytes.toInt() else fileBytes.toInt()
+            logToFile("processWhisperInChunks: PCM file size=${fileBytes} bytes, reading $bytesToRead bytes (${bytesToRead / 16000 / 2} seconds)")
+
+            val pcmData = ByteArray(bytesToRead)
+            var read = 0
+            pcmFile.inputStream().use { input ->
+                while (read < bytesToRead) {
+                    val r = input.read(pcmData, read, bytesToRead - read)
+                    if (r < 0) break
+                    read += r
+                }
+            }
+            val nSamples = read / 2  // 16-bit = 2 bytes per sample
             val samples = FloatArray(nSamples)
             for (i in 0 until nSamples) {
                 val sample = (pcmData[i * 2].toInt() and 0xFF) or (pcmData[i * 2 + 1].toInt() shl 8)
@@ -1762,15 +1764,14 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: converted PCM to float samples, nSamples=$nSamples")
 
-            // Limit to first 5 minutes
-            val maxSamples = 5 * 60 * 16000
-            val processSamples = if (nSamples > maxSamples) maxSamples else nSamples
-            logToFile("processWhisperInChunks: processing $processSamples samples (limit: ${maxSamples})")
+            // 5. 使用实际读取的样本数
+            val processSamples = nSamples
+            logToFile("processWhisperInChunks: processing $processSamples samples")
 
             // Run full transcription
-            logToFile("processWhisperInChunks: calling whisper_full...")
+            logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
             val result = bridge.full(ctxPtr, samples, processSamples)
-            logToFile("processWhisperInChunks: whisper_full returned $result")
+            logToFile("processWhisperInChunks: bridge.full returned $result")
 
             if (result != 0) {
                 logToFile("processWhisperInChunks: whisper_full failed with code $result")
@@ -1829,7 +1830,7 @@ class SubtitleGeneratorService : Service() {
         try {
             val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
             if (pcmCacheDir == null || !pcmCacheDir.exists()) return null
-            val pcmFile = File(pcmCacheDir, "${episodeId}_30min_16k.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
                 logToFile("find16kHzPcmCache: found 16kHz PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
                 return pcmFile
