@@ -591,25 +591,13 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
-                // [v2.0.51] Issue 1 Fix: If player starts from 0 but we expected savedPos, seek ONCE
-                // This is different from v2.0.47 which seeked on EVERY backward position (infinite loop)
-                // Here we only seek when: position is very small (<5000), lastDisplayed is large (>60000),
-                // and we haven't already sought (hasSoughtToSavedPos flag)
-                if (!hasSoughtToSavedPos && !isUserSeeking && position < 5000 && lastDisplayedPositionMs > 60000) {
-                    writeJitterLog("[v2.0.51] onPositionChanged: player started from ${position}ms but expected ${lastDisplayedPositionMs}ms, SEEKING ONCE to saved position")
-                    playbackService?.seekTo(lastDisplayedPositionMs)
-                    hasSoughtToSavedPos = true
-                    return@runOnUiThread
-                }
-                // [v2.0.48] Issue 1 Fix: Remove active seek (caused infinite seek loop)
-                // v2.0.47's seekTo made things worse: each seek triggers re-buffering,
-                // which reports more backward positions, triggering more seeks.
-                // Now: just ignore backward positions (v2.0.46 approach was correct).
-                // The Service's maxKnownPosition ensures saved positions are never backward.
+                // [v2.0.52] Issue 1 Fix: Remove activity-level seek-once (interferes with service-level seek)
+                // The service now handles seek directly in STATE_READY (no onPositionDiscontinuity dance)
+                // [v2.0.48] Just ignore backward positions (monotonic guard)
                 if (!isUserSeeking && position < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
                     val backwardMs = lastDisplayedPositionMs - position
                     if (backwardMs > 3000) {
-                        writeJitterLog("[v2.0.48] onPositionChanged: backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), ignoring (NOT seeking)")
+                        writeJitterLog("[v2.0.52] onPositionChanged: backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), ignoring")
                     }
                     return@runOnUiThread
                 }

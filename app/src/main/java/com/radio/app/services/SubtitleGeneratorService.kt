@@ -315,18 +315,8 @@ class SubtitleGeneratorService : Service() {
                             val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Whisper subtitle generation FAILED")
-                                // [v2.0.51] Issue 2 Fix: Auto-fallback to Vosk for this episode (don't disable Whisper)
-                                logToFile("generateSubtitlesForEpisode: [v2.0.51] Auto-falling back to Vosk for episode $episodeId")
-                                val voskModel = findVoskModel()
-                                if (voskModel != null) {
-                                    ctx.log("Whisper failed, falling back to Vosk model: $voskModel")
-                                    generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
-                                } else {
-                                    ctx.log("Vosk model not found, cannot fallback")
-                                    wrappedCallback.onError("Whisper处理失败且Vosk模型未安装。请下载Vosk模型作为备选。")
-                                    activeTasks.remove(episodeId)
-                                    cleanupTask()
-                                }
+                                // [v2.0.52] Issue 2: No Vosk fallback per user requirement
+                                // Whisper must work on its own
                             }
                         } else {
                             ctx.log("ERROR: Whisper model selected but not found")
@@ -729,25 +719,16 @@ class SubtitleGeneratorService : Service() {
                 val chunk = audioData.copyOfRange(offset, end)
                 val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 chunkCount++
-                // [v2.0.46] Issue 4 Fix: Remove endOfUtterance (was breaking recognition context)
-                // Only use natural boundaries (accepted=true) + periodic partial saves
-                // Save partial every 20 chunks (~10s at 32768 bytes/chunk) to avoid losing speech
-                val savePartial = (chunkCount % 20 == 0)
-                if (accepted || savePartial) {
-                    if (savePartial && !accepted) {
-                        logToFile("generateWithVosk: [v2.0.46] periodic partial save at chunk=$chunkCount, offset=$offset")
-                    }
-                    // [v2.0.44] Issue 6 Fix: Reset lastPartialText when accepted=true so partials can be saved again
-                    if (accepted) {
-                        lastPartialText = ""
-                    }
+                // [v2.0.52] Issue 3 Fix: Only process when accepted=true (natural boundary)
+                // Remove periodic partial saves (savePartial) which interfered with Vosk's recognition
+                // by calling getResult()/getPartialResult() every 20 chunks, disrupting internal state
+                if (accepted) {
+                    lastPartialText = ""
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
-                    var resultText = ""
                     if (result.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(result as String)
                             val text = json.optString("text", "").trim()
-                            resultText = text
                             if (text.isNotBlank()) {
                                 // Parse timestamps from Vosk result
                                 var startTime = 0L
@@ -759,57 +740,17 @@ class SubtitleGeneratorService : Service() {
                                     startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
                                     endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
                                 } else {
-                                    // Fallback: use accumulated byte offset for approximate timestamps
                                     startTime = offset * 1000L / 32000L
                                     endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
-                                // [v2.0.51] Issue 3 Fix: Remove ALL filtering - let all transcripts through
-                                // Previous versions filtered 1-2 chars, filler words, repeated chars
-                                // But this removed too much output. Let Vosk output everything.
+                                // [v2.0.52] No filtering - let all transcripts through
                                 val duration = endTime - startTime
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("generateWithVosk: [v2.0.51] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, chars=${text.replace(" ", "").length}, text='${text.take(50)}...'")
+                                logToFile("generateWithVosk: [v2.0.52] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, chars=${text.replace(" ", "").length}, text='${text.take(80)}'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
                             }
                         } catch (e: Exception) { /* skip */ }
-                    }
-                    // Also get partial result
-                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                    var partialJson: org.json.JSONObject? = null
-                    var partialText = ""
-                    if (partial.isNotBlank()) {
-                        try {
-                            partialJson = org.json.JSONObject(partial)
-                            partialText = partialJson.optString("partial", "").trim()
-                            // [v2.0.46] Issue 4 Fix: Save partial when savePartial or when text changes
-                            if (partialText.isNotEmpty() && (savePartial || partialText != lastPartialText)) {
-                                lastPartialText = partialText
-                                val partialStart = offset * 1000L / 32000L
-                                val partialEnd = (offset + chunk.size) * 1000L / 32000L
-                                val transcript = com.radio.app.models.Transcript(text = partialText, segmentStart = partialStart, segmentEnd = partialEnd)
-                                logToFile("generateWithVosk: [v2.0.46] partial transcript at ${partialStart}ms: '${partialText.take(50)}...'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
-                            }
-                        } catch (_: Exception) { }
-                    }
-                    // [v2.0.46] Issue 4 Fix: Log when periodic save produces nothing
-                    if (savePartial && !accepted && resultText.isBlank() && partialText.isBlank()) {
-                        logToFile("generateWithVosk: [v2.0.46] periodic save at chunk=$chunkCount produced NOTHING")
-                    }
-                } else {
-                    // Get partial result for logging only (not saved as transcript)
-                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                    if (partial.isNotBlank()) {
-                        try {
-                            val json = org.json.JSONObject(partial)
-                            val partialText = json.optString("partial", "")
-                            if (partialText.isNotBlank() && partialText != lastPartialText) {
-                                lastPartialText = partialText
-                                logToFile("generateWithVosk: partial at ${offset}ms: '${partialText.take(50)}...'")
-                            }
-                        } catch (_: Exception) { /* skip */ }
                     }
                 }
                 offset = end
@@ -1961,17 +1902,10 @@ class SubtitleGeneratorService : Service() {
             // Run full transcription
             logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
             val result = bridge.full(ctxPtr, samples, processSamples)
-            logToFile("processWhisperInChunks: bridge.full returned $result")
+            logToFile("processWhisperInChunks: [v2.0.52] bridge.full returned $result")
 
-            // [v2.0.48] Issue 3: Handle crash recovery (-777 = SIGSEGV recovered via siglongjmp)
-            if (result == -777) {
-                logToFile("processWhisperInChunks: [v2.0.51] whisper_full CRASHED but RECOVERED (siglongjmp), falling back to Vosk for this episode")
-                bridge.free(ctxPtr)
-                // [v2.0.51] Issue 2 Fix: Don't disable Whisper permanently, just use Vosk for THIS episode
-                logToFile("processWhisperInChunks: [v2.0.51] Falling back to Vosk for this episode (Whisper not disabled)")
-                callback.onError("Whisper处理时崩溃，已自动切换到Vosk引擎处理本集。Whisper仍可在设置中使用。")
-                return false
-            }
+            // [v2.0.52] Issue 2: Remove -777 crash recovery handling (siglongjmp removed)
+            // If whisper crashes, the process dies. No fallback to Vosk per user requirement.
 
             // [v2.0.43] Issue 3&7: Check for crash log from native signal handler
             try {

@@ -400,6 +400,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             when (state) {
                                 Player.STATE_READY -> {
                                     prepared = true
+                                    // [v2.0.52] Issue 1 Fix: Simplify position restore - seek directly in STATE_READY
+                                    // Previous approach used isSeekingToPosition + onPositionDiscontinuity dance
+                                    // which caused timing issues (onPositionDiscontinuity fired before seek completed)
+                                    if (positionRestoreRequested) {
+                                        positionRestoreRequested = false
+                                        val savedPos = pendingStartPosition
+                                        if (savedPos > 0) {
+                                            writeServiceLog("playback", "[v2.0.52] STATE_READY: seeking to $savedPos ms (direct seek, no isSeekingToPosition)")
+                                            // Seek directly - ExoPlayer will enter STATE_BUFFERING then STATE_READY again
+                                            player?.seekTo(savedPos)
+                                            // Don't set playWhenReady=true yet - wait for next STATE_READY
+                                        } else {
+                                            player?.playWhenReady = true
+                                        }
+                                    } else {
+                                        // [v2.0.52] Second STATE_READY (after seek re-buffer) - start playing
+                                        if (pendingStartPosition > 0 && !isSeekingToPosition) {
+                                            writeServiceLog("playback", "[v2.0.52] STATE_READY (after seek): starting playback")
+                                            player?.playWhenReady = true
+                                            pendingStartPosition = 0
+                                        }
+                                        isSeekingToPosition = false
+                                    }
                                     playbackInitializing = false
                                     isRetrying = false
                                     errorRetryCount = 0

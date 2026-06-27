@@ -165,28 +165,24 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
     jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
 
-    // [v2.0.47] Issue 3 Fix: Reduce to 10 seconds - 30 seconds still crashed
-    // 10 seconds = 160000 samples at 16kHz
-    int maxSamples = 10 * 16000;
+    // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp (doesn't work on Android ART)
+    // Android ART intercepts SIGSEGV before custom signal handlers, so siglongjmp never fires.
+    // Instead: reduce to 5 seconds + fix NaN check to check ALL samples (not just first 1000)
+    int maxSamples = 5 * 16000;  // 5 seconds at 16kHz
     int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
-    LOGI("full: n_samples=%d, processSamples=%d (capped at 10s), ctx=%p", n_samples, processSamples, ctx);
+    LOGI("full: n_samples=%d, processSamples=%d (capped at 5s), ctx=%p", n_samples, processSamples, ctx);
 
     // [v2.0.45] Issue 3 Fix: Check for NaN/Infinity in samples that could cause SIGSEGV
-    int hasBadSamples = 0;
-    for (int i = 0; i < processSamples && i < 1000; i++) {
-        if (sample_data[i] != sample_data[i] || sample_data[i] > 1.0f || sample_data[i] < -1.0f) {
-            hasBadSamples = 1;
-            LOGE("full: bad sample at index %d: %f", i, sample_data[i]);
-            break;
+    // [v2.0.52] Fix: Check ALL processSamples (not just first 1000)
+    int nan_count = 0;
+    for (int i = 0; i < processSamples; i++) {
+        if (!isnormal(sample_data[i]) && sample_data[i] != 0.0f) {
+            sample_data[i] = 0.0f;  // Replace NaN/Inf with silence
+            nan_count++;
         }
     }
-    if (hasBadSamples) {
-        LOGE("full: found NaN/Infinity/out-of-range samples, clamping to [-1, 1]");
-        for (int i = 0; i < processSamples; i++) {
-            if (sample_data[i] != sample_data[i]) sample_data[i] = 0.0f;  // NaN -> 0
-            else if (sample_data[i] > 1.0f) sample_data[i] = 1.0f;
-            else if (sample_data[i] < -1.0f) sample_data[i] = -1.0f;
-        }
+    if (nan_count > 0) {
+        LOGI("full: fixed %d NaN/Inf samples (out of %d)", nan_count, processSamples);
     }
 
     struct whisper_full_params params = params_func(WHISPER_SAMPLING_GREEDY);
@@ -196,34 +192,17 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.translate       = false;
     params.n_threads       = 1;  // [v2.0.49] Issue 3 Fix: Single thread to allow siglongjmp recovery
 
-    // [v2.0.49] Issue 3 Fix: Use sigaction with SA_NODEFER to allow siglongjmp recovery
-    // v2.0.48 used siglongjmp but it didn't work because the signal was still blocked
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = whisper_crash_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_NODEFER;  // Don't block the signal in the handler
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGABRT, &sa, NULL);
+    // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp - doesn't work on Android ART
+    // Just install simple crash logger (writes to file before process dies)
+    signal(SIGSEGV, whisper_crash_handler);
+    signal(SIGABRT, whisper_crash_handler);
 
-    LOGI("full: calling whisper_full(ctx=%p, processSamples=%d)", ctx, processSamples);
-    int result = -999;
+    LOGI("full: calling whisper_full(ctx=%p, processSamples=%d, n_threads=%d)", ctx, processSamples, params.n_threads);
 
-    // Set alarm timeout (120 seconds)
-    alarm(120);
+    // Set alarm timeout (60 seconds)
+    alarm(60);
 
-    // [v2.0.48] Issue 3 Fix: Use sigsetjmp to recover from SIGSEGV
-    // If whisper_full crashes, the signal handler will siglongjmp back here
-    whisper_crash_sig = 0;
-    int jmp_result = sigsetjmp(whisper_jmp_buf, 1);
-    if (jmp_result == 0) {
-        // Normal path: call whisper_full
-        result = full_func(ctx, params, sample_data, processSamples);
-    } else {
-        // Crash recovery path: signal handler jumped back here
-        LOGE("full: RECOVERED from signal %d (whisper_full crashed), returning error", jmp_result);
-        result = -777;  // Special error code for crash recovery
-    }
+    int result = full_func(ctx, params, sample_data, processSamples);
 
     // Cancel alarm
     alarm(0);
