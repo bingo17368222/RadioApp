@@ -1709,6 +1709,12 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
+            // Set library path for dlopen (use full path to avoid soname mismatch issues)
+            com.radio.app.whisper.WhisperBridge.getWhisperSoPath()?.let { soPath ->
+                logToFile("processWhisperInChunks: setting whisper library path to $soPath")
+                bridge.setLibraryPath(soPath)
+            }
+
             // Initialize whisper context
             logToFile("processWhisperInChunks: initializing whisper context with model=$modelPath")
             val ctxPtr = bridge.initFromFile(modelPath)

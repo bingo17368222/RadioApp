@@ -4,6 +4,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <dlfcn.h>
+#include <android/log.h>
+
+#define LOG_TAG "WhisperBridge"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
 #include "whisper.h"
 
 // Function pointer types matching whisper.h API signatures
@@ -32,11 +38,32 @@ static whisper_free_t free_func = NULL;
 static whisper_full_default_params_t params_func = NULL;
 static whisper_context_default_params_t ctx_params_func = NULL;
 
+// Path to libwhisper.so, set from Java via setLibraryPathNative
+static char whisper_so_path[512] = "libwhisper.so";
+
 // Load function pointers from libwhisper.so using dlopen
 static int load_whisper_funcs() {
     if (init_func != NULL) return 1;
-    whisper_lib = dlopen("libwhisper.so", RTLD_NOW);
-    if (!whisper_lib) return 0;
+
+    LOGI("load_whisper_funcs: attempting dlopen(\"%s\")", whisper_so_path);
+    whisper_lib = dlopen(whisper_so_path, RTLD_NOW);
+    if (!whisper_lib) {
+        const char* err = dlerror();
+        LOGE("load_whisper_funcs: dlopen(\"%s\") failed: %s", whisper_so_path, err ? err : "unknown");
+
+        // Fallback: try just the library name (works if already loaded via System.load)
+        if (strcmp(whisper_so_path, "libwhisper.so") != 0) {
+            LOGI("load_whisper_funcs: fallback dlopen(\"libwhisper.so\")");
+            whisper_lib = dlopen("libwhisper.so", RTLD_NOW);
+        }
+        if (!whisper_lib) {
+            err = dlerror();
+            LOGE("load_whisper_funcs: fallback dlopen also failed: %s", err ? err : "unknown");
+            return 0;
+        }
+    }
+    LOGI("load_whisper_funcs: dlopen succeeded, resolving symbols...");
+
     init_func       = (whisper_init_from_file_with_params_t) dlsym(whisper_lib, "whisper_init_from_file_with_params");
     full_func       = (whisper_full_t)                       dlsym(whisper_lib, "whisper_full");
     nseg_func       = (whisper_full_n_segments_t)             dlsym(whisper_lib, "whisper_full_n_segments");
@@ -46,26 +73,54 @@ static int load_whisper_funcs() {
     free_func       = (whisper_free_t)                        dlsym(whisper_lib, "whisper_free");
     params_func     = (whisper_full_default_params_t)         dlsym(whisper_lib, "whisper_full_default_params");
     ctx_params_func = (whisper_context_default_params_t)      dlsym(whisper_lib, "whisper_context_default_params");
-    return (init_func && full_func && nseg_func && text_func && free_func && params_func) ? 1 : 0;
+
+    LOGI("load_whisper_funcs: init_func=%p, full_func=%p, nseg_func=%p, text_func=%p, free_func=%p, params_func=%p",
+         init_func, full_func, nseg_func, text_func, free_func, params_func);
+
+    if (!init_func || !full_func || !nseg_func || !text_func || !free_func || !params_func) {
+        LOGE("load_whisper_funcs: one or more required symbols not found");
+        return 0;
+    }
+    LOGI("load_whisper_funcs: all symbols resolved successfully");
+    return 1;
+}
+
+JNIEXPORT void JNICALL
+Java_com_radio_app_whisper_WhisperBridge_setLibraryPathNative(JNIEnv* env, jobject thiz, jstring path) {
+    const char* cpath = (*env)->GetStringUTFChars(env, path, NULL);
+    if (cpath) {
+        strncpy(whisper_so_path, cpath, sizeof(whisper_so_path) - 1);
+        whisper_so_path[sizeof(whisper_so_path) - 1] = '\0';
+        LOGI("setLibraryPathNative: path set to \"%s\"", whisper_so_path);
+        (*env)->ReleaseStringUTFChars(env, path, cpath);
+    }
 }
 
 JNIEXPORT jlong JNICALL
 Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz, jstring model_path) {
-    if (!load_whisper_funcs()) return 0;
+    if (!load_whisper_funcs()) {
+        LOGE("initFromFile: load_whisper_funcs failed");
+        return 0;
+    }
     const char* path = (*env)->GetStringUTFChars(env, model_path, NULL);
     struct whisper_context_params cparams;
     memset(&cparams, 0, sizeof(cparams));
     if (ctx_params_func) {
         cparams = ctx_params_func();
     }
+    LOGI("initFromFile: calling whisper_init_from_file_with_params(\"%s\")", path);
     struct whisper_context* ctx = init_func(path, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path, path);
+    LOGI("initFromFile: result ctx=%p", ctx);
     return (jlong)(intptr_t)ctx;
 }
 
 JNIEXPORT jint JNICALL
 Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong ctx_ptr, jfloatArray samples, jint n_samples) {
-    if (!ctx_ptr || !full_func || !params_func) return -1;
+    if (!ctx_ptr || !full_func || !params_func) {
+        LOGE("full: invalid state - ctx_ptr=%lld, full_func=%p, params_func=%p", (long long)ctx_ptr, full_func, params_func);
+        return -1;
+    }
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
     jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
     // WHISPER_SAMPLING_GREEDY = 0
@@ -74,8 +129,10 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_progress  = false;
     params.print_timestamps = false;
     params.translate       = false;
+    LOGI("full: calling whisper_full(ctx=%p, n_samples=%d)", ctx, n_samples);
     int result = full_func(ctx, params, sample_data, n_samples);
     (*env)->ReleaseFloatArrayElements(env, samples, sample_data, JNI_ABORT);
+    LOGI("full: whisper_full returned %d", result);
     return result;
 }
 

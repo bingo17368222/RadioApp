@@ -7,5 +7,5 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_library(whisper_jni SHARED whisper_jni.c)
 find_library(log-lib log)
 
-# Link with log (Android logging) and dl (dlopen/dlsym)
+# Link with log (Android logging + __android_log_print) and dl (dlopen/dlsym)
 target_link_libraries(whisper_jni ${log-lib} dl)

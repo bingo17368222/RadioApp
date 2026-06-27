@@ -1,5 +1,7 @@
 package com.radio.app.whisper
 
+import android.util.Log
+
 /**
  * JNI bridge for whisper.cpp C API.
  * The native methods are implemented in libwhisper_jni.so (compiled from whisper_jni.c).
@@ -8,22 +10,26 @@ package com.radio.app.whisper
  */
 class WhisperBridge {
     companion object {
+        private const val TAG = "WhisperBridge"
         private var loaded = false
-        
+        private var whisperSoPath: String? = null
+
+        fun getWhisperSoPath(): String? = whisperSoPath
+
         fun loadNativeLibraries(codeCacheDir: java.io.File, modelsDir: java.io.File?): Boolean {
             if (loaded) return true
             val soFiles = listOf(
-                "libggml-base-whisper.so", 
-                "libggml-cpu-whisper.so", 
-                "libggml-whisper.so", 
+                "libggml-base-whisper.so",
+                "libggml-cpu-whisper.so",
+                "libggml-whisper.so",
                 "libwhisper.so"
             )
             val searchDirs = mutableListOf<java.io.File>()
             modelsDir?.let { if (it.exists()) searchDirs.add(it) }
-            
+
             for (searchDir in searchDirs) {
                 val foundFiles = mutableMapOf<String, java.io.File>()
-                searchDir.walkTopDown().filter { it.isFile && it.name in soFiles }.forEach { 
+                searchDir.walkTopDown().filter { it.isFile && it.name in soFiles }.forEach {
                     foundFiles[it.name] = it
                 }
                 if (foundFiles.containsKey("libwhisper.so")) {
@@ -34,59 +40,75 @@ class WhisperBridge {
                             val targetFile = java.io.File(codeCacheDir, soName)
                             if (targetFile.exists()) targetFile.delete()
                             soFile.copyTo(targetFile, overwrite = true)
+                            Log.d(TAG, "Loading native library: ${targetFile.absolutePath}")
                             System.load(targetFile.absolutePath)
+                            if (soName == "libwhisper.so") {
+                                whisperSoPath = targetFile.absolutePath
+                            }
                         } catch (e: UnsatisfiedLinkError) {
                             if (e.message?.contains("already loaded") != true) {
+                                Log.e(TAG, "Failed to load $soName: ${e.message}")
                                 allLoaded = false
                             }
                         }
                     }
                     if (allLoaded) {
                         loaded = true
+                        Log.d(TAG, "All native libraries loaded successfully, whisperSoPath=$whisperSoPath")
                         return true
                     }
                 }
             }
+            Log.e(TAG, "Failed to load native libraries")
             return false
         }
     }
-    
-    // Native method declarations - these will be implemented in whisper_jni.c
-    // For now, they're placeholders that will throw UnsatisfiedLinkError if called
-    // without the JNI bridge .so file
-    
+
+    /**
+     * Set the full path to libwhisper.so for dlopen.
+     * Must be called before initFromFile().
+     */
+    fun setLibraryPath(path: String) {
+        Log.d(TAG, "setLibraryPath: $path")
+        setLibraryPathNative(path)
+    }
+
+    // Native method declarations
+
+    private external fun setLibraryPathNative(path: String)
+
     /**
      * Initialize whisper context from model file.
      * Returns a pointer (as Long) to the whisper_context.
      */
     external fun initFromFile(modelPath: String): Long
-    
+
     /**
      * Run full transcription on PCM float samples.
-     * Returns number of segments.
+     * Returns 0 on success, non-zero on error.
      */
     external fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int): Int
-    
+
     /**
      * Get the number of segments from the last full() call.
      */
     external fun fullNSegments(ctxPtr: Long): Int
-    
+
     /**
      * Get text of segment i.
      */
     external fun fullGetSegmentText(ctxPtr: Long, segmentIndex: Int): String
-    
+
     /**
-     * Get start time of segment i (in milliseconds).
+     * Get start time of segment i (in centiseconds, multiply by 10 for ms).
      */
     external fun fullGetSegmentT0(ctxPtr: Long, segmentIndex: Int): Long
-    
+
     /**
-     * Get end time of segment i (in milliseconds).
+     * Get end time of segment i (in centiseconds, multiply by 10 for ms).
      */
     external fun fullGetSegmentT1(ctxPtr: Long, segmentIndex: Int): Long
-    
+
     /**
      * Free the whisper context.
      */
