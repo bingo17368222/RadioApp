@@ -2082,6 +2082,15 @@ class PlayerActivity : AppCompatActivity() {
                 writeJitterLog("[v2.0.47] onResume: service has position=$svcPos, NOT restoring cached=$cachedPos")
             // [v2.0.47] Issue 1 Fix: Set lastDisplayedPositionMs to service position so monotonic guard works
             if (svcPos > 0) lastDisplayedPositionMs = svcPos
+
+            // [v2.0.49] Issue 1 Fix: If service position has gone backward (ExoPlayer re-buffered from earlier position),
+            // seek ONCE to the cached position. This is different from v2.0.47 which seeked on every onPositionChanged
+            // (causing infinite loop). Here we only seek once in onResume.
+            if (cachedPos > 0 && svcPos > 0 && cachedPos - svcPos > 5000) {
+                writeJitterLog("[v2.0.49] onResume: service position ${svcPos}ms is ${cachedPos - svcPos}ms BEHIND cached ${cachedPos}ms, SEEKING ONCE to cached position")
+                playbackService?.seekTo(cachedPos)
+                lastDisplayedPositionMs = cachedPos
+            }
             }
         }
         // Issue 1 Fix 4: await a valid position from the service before letting the

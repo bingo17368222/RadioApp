@@ -141,6 +141,14 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
 
 // [v2.0.48] Issue 3 Fix: Signal handler uses siglongjmp to recover instead of killing process
 static void whisper_crash_handler(int sig) {
+    // [v2.0.49] Write to log file FIRST, then siglongjmp
+    const char* msg = "whisper_crash_handler: ENTERED\n";
+    int fd = open("/data/data/com.radio.app/files/logs/whisper/whisper_crash.log",
+                  O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        write(fd, msg, strlen(msg));
+        close(fd);
+    }
     LOGE("whisper_crash_handler: native crash caught, signal=%d", sig);
     write_crash_to_file(sig);
     whisper_crash_sig = sig;
@@ -186,14 +194,15 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_progress  = false;
     params.print_timestamps = false;
     params.translate       = false;
-    params.n_threads       = 2;  // Limit threads to prevent resource contention
+    params.n_threads       = 1;  // [v2.0.49] Issue 3 Fix: Single thread to allow siglongjmp recovery
 
-    // Install signal handler to recover from SIGSEGV
+    // [v2.0.49] Issue 3 Fix: Use sigaction with SA_NODEFER to allow siglongjmp recovery
+    // v2.0.48 used siglongjmp but it didn't work because the signal was still blocked
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = whisper_crash_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    sa.sa_flags = SA_NODEFER;  // Don't block the signal in the handler
     sigaction(SIGSEGV, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
 

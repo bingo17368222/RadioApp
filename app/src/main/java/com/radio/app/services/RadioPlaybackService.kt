@@ -1604,7 +1604,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let { p ->
                 callback?.let { cb ->
                     try {
-                        val pos = p.currentPosition
+                        // [v2.0.49] Issue 1 Fix: Use getCurrentPosition() instead of p.currentPosition
+                        // getCurrentPosition() applies maxKnownPosition guard to prevent backward reporting
+                        val pos = getCurrentPosition()
                         val dur = p.duration
                         val effectiveDur = if (dur > 0) dur else if (isLive) -1L else 0L
                         cb.onPositionChanged(pos, effectiveDur)

@@ -163,6 +163,13 @@ class SubtitleGeneratorService : Service() {
                     java.io.FileWriter(extCrashFile, true).use { it.append(crashContent) }
                     // Clear the native crash log so it doesn't trigger again
                     nativeCrashFile.writeText("")
+                    // [v2.0.49] Issue 3 Fix: Force switch to Vosk after Whisper crash
+                    // Don't try Whisper again - it will crash again. Use Vosk instead.
+                    val settings = AppSettings.getInstance(this)
+                    if (settings.asrProvider == AppSettings.ASR_WHISPER || settings.asrProvider == "whisper-local") {
+                        settings.asrProvider = "vosk-local"
+                        logToFile("[v2.0.49] onCreate: AUTO-SWITCHED to Vosk after Whisper crash detected")
+                    }
                 }
             }
         } catch (_: Exception) {}
@@ -744,14 +751,26 @@ class SubtitleGeneratorService : Service() {
                                     startTime = offset * 1000L / 32000L
                                     endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
-                                // [v2.0.48] Issue 4 Fix: Filter ALL 1-2 char transcripts (regardless of duration)
-                                // Radio shows have background music that vosk-model-small-cn-0.22 misrecognizes
-                                // as single characters. A 1-2 char "transcript" is never useful as a subtitle.
+                                // [v2.0.49] Issue 4 Fix: Comprehensive noise filtering
+                                // 1. Filter 1-2 char transcripts (too short to be useful)
+                                // 2. Filter pure filler words (啊, 呢, 哦, 嗯, 呃, 唉, 唉, etc.)
+                                // 3. Filter repeated same character (啊啊啊啊, 嗯嗯嗯嗯)
                                 val duration = endTime - startTime
                                 val charCount = text.replace(" ", "").length
-                                val isLikelyNoise = charCount <= 2
+                                val noSpaceText = text.replace(" ", "")
+                                val isShort = charCount <= 2
+                                val isFiller = noSpaceText.length <= 4 && noSpaceText.all { c -> c in "啊呢哦嗯呃唉唉哈呵嘿吧啦呀哇呐嘛" }
+                                // Check if all characters are the same (e.g., "啊啊啊啊")
+                                val isRepeated = noSpaceText.length >= 2 && noSpaceText.all { it == noSpaceText[0] }
+                                val isLikelyNoise = isShort || isFiller || isRepeated
                                 if (isLikelyNoise) {
-                                    logToFile("generateWithVosk: [v2.0.48] FILTERED short transcript: start=${startTime}ms, dur=${duration}ms, chars=$charCount, text='$text'")
+                                    val reason = when {
+                                        isShort -> "short($charCount chars)"
+                                        isFiller -> "filler"
+                                        isRepeated -> "repeated"
+                                        else -> "unknown"
+                                    }
+                                    logToFile("generateWithVosk: [v2.0.49] FILTERED ($reason): start=${startTime}ms, dur=${duration}ms, chars=$charCount, text='$text'")
                                 } else {
                                     val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                     logToFile("generateWithVosk: [v2.0.47] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, text='${text.take(50)}...'")
