@@ -579,14 +579,16 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
-                // [v2.0.46] Issue 1 Fix: Monotonic position guard
-                // ExoPlayer reports backward positions during buffering (e.g. 2554191→2404284)
-                // Never show a position lower than the last displayed position (unless user seeks)
+                // [v2.0.47] Issue 1 Fix: Monotonic position guard with ACTIVE SEEK
+                // ExoPlayer reports backward positions during re-buffering (e.g. 2068350→1423934)
+                // v2.0.46 only rejected UI updates, but audio was still playing from wrong position
+                // Now: actively seek the player forward to the correct position
                 if (!isUserSeeking && position < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
                     val backwardMs = lastDisplayedPositionMs - position
-                    // Only log significant backward jumps (>1 second)
-                    if (backwardMs > 1000) {
-                        writeJitterLog("[v2.0.46] onPositionChanged: REJECTED backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), keeping UI at ${lastDisplayedPositionMs}ms")
+                    if (backwardMs > 3000) {
+                        writeJitterLog("[v2.0.47] onPositionChanged: DETECTED backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), ACTIVELY SEEKING player to ${lastDisplayedPositionMs}ms")
+                        // Actively seek the player to the correct position
+                        playbackService?.seekTo(lastDisplayedPositionMs)
                     }
                     return@runOnUiThread
                 }
@@ -1347,11 +1349,12 @@ class PlayerActivity : AppCompatActivity() {
         if (playbackService?.isPrepared() == true) {
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val svcDur = playbackService?.getDuration() ?: -1L
-            // [v2.0.46] Issue 1 Fix: Monotonic position guard in updateCurrentPositionHighlight
+            // [v2.0.47] Issue 1 Fix: Monotonic position guard in updateCurrentPositionHighlight with active seek
             if (!isUserSeeking && svcPos > 0 && svcPos < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
                 val backwardMs = lastDisplayedPositionMs - svcPos
-                if (backwardMs > 1000) {
-                    writeJitterLog("[v2.0.46] updateUI: REJECTED backward position ${svcPos}ms < lastDisplayed ${lastDisplayedPositionMs}ms")
+                if (backwardMs > 3000) {
+                    writeJitterLog("[v2.0.47] updateUI: DETECTED backward position ${svcPos}ms < lastDisplayed ${lastDisplayedPositionMs}ms, ACTIVELY SEEKING")
+                    playbackService?.seekTo(lastDisplayedPositionMs)
                 }
             } else if (svcPos > 0) {
                 lastDisplayedPositionMs = svcPos
@@ -2078,7 +2081,9 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${if (cachedDur > 0) formatTime(cachedDur.toInt()) else "--:--"}"
                 writeJitterLog("onResume: restored cached position=$cachedPos, duration=$cachedDur (service has no position)")
             } else {
-                writeJitterLog("onResume: service has position=$svcPos, NOT restoring cached=$cachedPos")
+                writeJitterLog("[v2.0.47] onResume: service has position=$svcPos, NOT restoring cached=$cachedPos")
+            // [v2.0.47] Issue 1 Fix: Set lastDisplayedPositionMs to service position so monotonic guard works
+            if (svcPos > 0) lastDisplayedPositionMs = svcPos
             }
         }
         // Issue 1 Fix 4: await a valid position from the service before letting the

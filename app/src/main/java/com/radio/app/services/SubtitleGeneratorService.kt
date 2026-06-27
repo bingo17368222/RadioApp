@@ -744,10 +744,19 @@ class SubtitleGeneratorService : Service() {
                                     startTime = offset * 1000L / 32000L
                                     endTime = (offset + chunk.size) * 1000L / 32000L
                                 }
-                                val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("generateWithVosk: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
+                                // [v2.0.47] Issue 4 Fix: Filter out very short single-char transcripts (<500ms, 1-2 chars)
+                                // These are false positives from background music/noise
+                                val duration = endTime - startTime
+                                val charCount = text.replace(" ", "").length
+                                val isLikelyNoise = duration < 500 && charCount <= 2
+                                if (isLikelyNoise) {
+                                    logToFile("generateWithVosk: [v2.0.47] FILTERED short transcript: start=${startTime}ms, dur=${duration}ms, chars=$charCount, text='$text'")
+                                } else {
+                                    val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
+                                    logToFile("generateWithVosk: [v2.0.47] transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, dur=${duration}ms, text='${text.take(50)}...'")
+                                    allTranscripts.add(transcript)
+                                    callback.onSubtitleGenerated(transcript)
+                                }
                             }
                         } catch (e: Exception) { /* skip */ }
                     }
@@ -1895,11 +1904,12 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
 
-            // 4. 读取PCM文件 - 限制最多5分钟 (5*60*16000*2 = 9,600,000 bytes)
-            val maxPcmBytes = 5L * 60 * 16000 * 2  // 5 minutes of 16kHz 16-bit mono
+            // [v2.0.47] Issue 3 Fix: Reduce PCM reading to 1 minute (60*16000*2 = 1,920,000 bytes)
+            // C code further caps to 10 seconds, but reducing Kotlin-side reduces memory usage
+            val maxPcmBytes = 1L * 60 * 16000 * 2  // 1 minute of 16kHz 16-bit mono
             val fileBytes = pcmFile.length()
             val bytesToRead = if (fileBytes > maxPcmBytes) maxPcmBytes.toInt() else fileBytes.toInt()
-            logToFile("processWhisperInChunks: PCM file size=${fileBytes} bytes, reading $bytesToRead bytes (${bytesToRead / 16000 / 2} seconds)")
+            logToFile("processWhisperInChunks: [v2.0.47] PCM file size=${fileBytes} bytes, reading $bytesToRead bytes (${bytesToRead / 16000 / 2} seconds), C code will cap to 10s")
 
             val pcmData = ByteArray(bytesToRead)
             var read = 0
