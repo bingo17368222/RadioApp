@@ -731,17 +731,19 @@ class SubtitleGeneratorService : Service() {
                             val text = json.optString("text", "").trim()
                             if (text.isNotBlank()) {
                                 // Parse timestamps from Vosk result
-                                var startTime = 0L
-                                var endTime = 0L
+                                // [v2.0.54] Add 15-min offset since we skip first 15 minutes of audio
+                                val offsetMs = 15L * 60 * 1000  // 15 minutes in ms
+                                var startTime = offsetMs
+                                var endTime = offsetMs
                                 val resultArr = json.optJSONArray("result")
                                 if (resultArr != null && resultArr.length() > 0) {
                                     val firstWord = resultArr.getJSONObject(0)
                                     val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
-                                    startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
-                                    endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                                    startTime = offsetMs + (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                                    endTime = offsetMs + (lastWord.optDouble("end", 0.0) * 1000).toLong()
                                 } else {
-                                    startTime = offset * 1000L / 32000L
-                                    endTime = (offset + chunk.size) * 1000L / 32000L
+                                    startTime = offsetMs + offset * 1000L / 32000L
+                                    endTime = offsetMs + (offset + chunk.size) * 1000L / 32000L
                                 }
                                 // [v2.0.52] No filtering - let all transcripts through
                                 val duration = endTime - startTime
@@ -816,18 +818,25 @@ class SubtitleGeneratorService : Service() {
     ): Boolean {
         logToFile("processVoskInChunks: START, pcmFile=${pcmFile.absolutePath}, size=${pcmFile.length()}")
         val totalSize = pcmFile.length()
-        // Issue 9: Limit to first 5 minutes for testing (5 * 60 * 16000 * 2 = 9,600,000 bytes)
-        val maxBytes = 5L * 60 * 16000 * 2
-        val processLimit = if (totalSize > maxBytes) maxBytes else totalSize
-        logToFile("processVoskInChunks: totalSize=${totalSize / 1024}KB, processing limit=${processLimit / 1024}KB (5 min), willProcessAll=${totalSize <= maxBytes}")
-        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing in 8192-byte chunks (256ms per chunk)")
+        // [v2.0.54] Issue 4: Process 15-20 min range to avoid background music in first 5 min
+        val startOffsetBytes = 15L * 60 * 16000 * 2  // 15 min offset
+        val maxBytes = 5L * 60 * 16000 * 2  // 5 minutes from offset
+        val processLimit = if (totalSize > startOffsetBytes + maxBytes) maxBytes
+                          else if (totalSize > startOffsetBytes) (totalSize - startOffsetBytes)
+                          else totalSize
+        logToFile("processVoskInChunks: [v2.0.54] totalSize=${totalSize / 1024}KB, offset=${startOffsetBytes / 1024}KB (15min), limit=${processLimit / 1024}KB (5min)")
+        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing 15-20min range in 8192-byte chunks")
         callback.onProgressUpdate(0, 100)
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
+        // [v2.0.54] Skip first 15 minutes
+        if (totalSize > startOffsetBytes) {
+            inputStream.skip(startOffsetBytes)
+        }
         val chunkSize = 8192 // 256ms per chunk - better balance for Vosk speech detection
         val buffer = ByteArray(chunkSize)
-        var offset = 0L
+        var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
         var chunkCount = 0
         var acceptTrueCount = 0
@@ -1859,16 +1868,26 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
 
-            // [v2.0.47] Issue 3 Fix: Reduce PCM reading to 1 minute (60*16000*2 = 1,920,000 bytes)
-            // C code further caps to 10 seconds, but reducing Kotlin-side reduces memory usage
-            val maxPcmBytes = 1L * 60 * 16000 * 2  // 1 minute of 16kHz 16-bit mono
+            // [v2.0.54] Issue 4: Change to 15-20 min range to avoid background music in first 5 min
+            // Skip first 15 minutes, process 5 minutes (15*60*16000*2 to 20*60*16000*2)
+            val startOffsetBytes = 15L * 60 * 16000 * 2  // 15 min offset
+            val maxPcmBytes = 5L * 60 * 16000 * 2  // 5 minutes
             val fileBytes = pcmFile.length()
-            val bytesToRead = if (fileBytes > maxPcmBytes) maxPcmBytes.toInt() else fileBytes.toInt()
-            logToFile("processWhisperInChunks: [v2.0.47] PCM file size=${fileBytes} bytes, reading $bytesToRead bytes (${bytesToRead / 16000 / 2} seconds), C code will cap to 10s")
+            val bytesToRead = if (fileBytes > startOffsetBytes + maxPcmBytes) maxPcmBytes.toInt()
+                              else if (fileBytes > startOffsetBytes) (fileBytes - startOffsetBytes).toInt()
+                              else 0
+            if (bytesToRead <= 0) {
+                logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes) for 15-20min, aborting")
+                callback.onError("音频文件太短，无法从第15分钟开始处理")
+                bridge.free(ctxPtr)
+                return false
+            }
+            logToFile("processWhisperInChunks: [v2.0.54] PCM=${fileBytes} bytes, skip 15min=${startOffsetBytes}, read ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s)")
 
             val pcmData = ByteArray(bytesToRead)
             var read = 0
             pcmFile.inputStream().use { input ->
+                input.skip(startOffsetBytes)  // Skip first 15 minutes
                 while (read < bytesToRead) {
                     val r = input.read(pcmData, read, bytesToRead - read)
                     if (r < 0) break
@@ -1940,10 +1959,12 @@ class SubtitleGeneratorService : Service() {
                 val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
 
                 if (text.isNotBlank()) {
+                    // [v2.0.54] Add 15-min offset to Whisper timestamps (audio starts from 15min mark)
+                    val whisperOffsetMs = 15L * 60 * 1000
                     val transcript = com.radio.app.models.Transcript(
                         text = text.trim(),
-                        segmentStart = t0 * 10,  // convert centiseconds to milliseconds
-                        segmentEnd = t1 * 10
+                        segmentStart = whisperOffsetMs + t0 * 10,  // convert centiseconds to milliseconds
+                        segmentEnd = whisperOffsetMs + t1 * 10
                     )
                     allTranscripts.add(transcript)
                     logToFile("processWhisperInChunks: segment $i: start=${transcript.segmentStart}ms, end=${transcript.segmentEnd}ms, text='${text.take(100)}...'")

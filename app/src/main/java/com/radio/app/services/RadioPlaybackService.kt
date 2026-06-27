@@ -2336,13 +2336,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
                     it.playWhenReady = false  // Don't start playing until seek completes
-                    // [v2.0.53] Issue 1 Fix: Seek BEFORE prepare using setCurrentStreamPosition
+                    // [v2.0.53] Issue 1 Fix: Seek BEFORE first STATE_READY
                     // This avoids the STATE_READY→seek→STATE_BUFFERING→STATE_READY cycle
-                    // which causes UI freeze during seek buffering
                     it.prepare()
                     // Seek after prepare - ExoPlayer will seek during initial buffering
                     it.seekTo(startPositionMs)
-                    writeServiceLog("playback", "[v2.0.53] playEpisode: prepared + seekTo($startPositionMs) before playWhenReady")
+                    // [v2.0.54] Clear positionRestoreRequested so STATE_READY doesn't seek again
+                    positionRestoreRequested = false
+                    writeServiceLog("playback", "[v2.0.54] playEpisode: prepared + seekTo($startPositionMs), positionRestoreRequested=false")
                 } else {
                     it.playWhenReady = true
                     it.prepare()
