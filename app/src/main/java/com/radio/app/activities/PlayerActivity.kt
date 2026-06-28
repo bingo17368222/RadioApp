@@ -224,7 +224,13 @@ class PlayerActivity : AppCompatActivity() {
             val svcDur = playbackService?.getDuration() ?: 0L
             if (svcPos > 0 && svcDur > 0) {
                 awaitingServicePosition = false
-                writeJitterLog("onServiceConnected: service has valid position=$svcPos, clearing awaitingServicePosition")
+                // [v2.0.55] Issue 1 Fix: Immediately sync UI to service position (PowerAmp approach)
+                // Don't pre-set to cached position then jump - directly show service position
+                lastDisplayedPositionMs = svcPos
+                binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${formatTime(svcDur.toInt())}"
+                binding.seekBar.max = svcDur.toInt()
+                binding.seekBar.progress = svcPos.toInt()
+                writeJitterLog("[v2.0.55] onServiceConnected: synced UI to service position=$svcPos (no flicker)")
             } else {
                 writeJitterLog("onServiceConnected: service has no valid position (pos=$svcPos, dur=$svcDur), keeping awaitingServicePosition=true")
             }
@@ -391,23 +397,19 @@ class PlayerActivity : AppCompatActivity() {
                 writeJitterLog("[v2.0.42] Service was killed (!svcStarted), keeping savedPos=${savedPos}ms (valid=$isValidSavedPos) to pass to playEpisode for position restore")
             }
 
-            if (!isFreshStart && currentEpisode != null && isValidSavedPos) {
+            if (!isFreshStart && currentEpisode != null && isValidSavedPos && !svcStarted) {
+                // [v2.0.55] Issue 1 Fix: Only pre-set UI when service was KILLED (no position available)
+                // PowerAmp approach: when service is alive, use its current position directly (no pre-set)
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                 binding.seekBar.progress = savedPos.toInt()
                 binding.tvLiveIndicator.text = "恢复中..."
-                writeJitterLog("[v2.0.42] Pre-setting UI to saved position: ${savedPos}ms before playEpisode (maxDur=$maxDuration, svcStarted=$svcStarted)")
+                writeJitterLog("[v2.0.55] Pre-setting UI to saved position: ${savedPos}ms (service killed, svcStarted=false)")
             } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
                 writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
-            // [v2.0.50] Issue 1 Fix: Pre-set UI even when isFreshStart=true, if service is killed and savedPos is valid
-            // This prevents the progress bar from showing 0 then jumping to savedPos (flicker)
-            if (isFreshStart && !svcStarted && currentEpisode != null && isValidSavedPos) {
-                binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
-                binding.seekBar.progress = savedPos.toInt()
-                binding.tvLiveIndicator.text = "恢复中..."
-                lastDisplayedPositionMs = savedPos  // [v2.0.50] Set so monotonic guard works
-                writeJitterLog("[v2.0.50] Pre-setting UI to saved position: ${savedPos}ms before playEpisode (isFreshStart=true, svcStarted=false)")
-            }
+            // [v2.0.55] Issue 1 Fix: Removed isFreshStart pre-setting (caused flicker when service position differs)
+            // When service is alive (svcStarted=true), awaitingServicePosition blocks UI updates until
+            // service reports its actual position, so no pre-set needed and no flicker.
 
             val msg = if (sameEpisode && !svcStarted) {
                 "Same episode, service was killed, restoring from saved position: ${savedPos}ms (valid=$isValidSavedPos)"
@@ -2088,18 +2090,14 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${if (cachedDur > 0) formatTime(cachedDur.toInt()) else "--:--"}"
                 writeJitterLog("onResume: restored cached position=$cachedPos, duration=$cachedDur (service has no position)")
             } else {
-                writeJitterLog("[v2.0.47] onResume: service has position=$svcPos, NOT restoring cached=$cachedPos")
-            // [v2.0.47] Issue 1 Fix: Set lastDisplayedPositionMs to service position so monotonic guard works
-            if (svcPos > 0) lastDisplayedPositionMs = svcPos
-
-            // [v2.0.49] Issue 1 Fix: If service position has gone backward (ExoPlayer re-buffered from earlier position),
-            // seek ONCE to the cached position. This is different from v2.0.47 which seeked on every onPositionChanged
-            // (causing infinite loop). Here we only seek once in onResume.
-            if (cachedPos > 0 && svcPos > 0 && cachedPos - svcPos > 5000) {
-                writeJitterLog("[v2.0.49] onResume: service position ${svcPos}ms is ${cachedPos - svcPos}ms BEHIND cached ${cachedPos}ms, SEEKING ONCE to cached position")
-                playbackService?.seekTo(cachedPos)
-                lastDisplayedPositionMs = cachedPos
-            }
+                // [v2.0.55] Issue 1 Fix: Sync UI directly to service position (no cached position pre-set)
+                // PowerAmp approach: always use service's actual position, never cached
+                val svcDur = playbackService?.getDuration() ?: 0L
+                lastDisplayedPositionMs = svcPos
+                binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
+                if (svcDur > 0) binding.seekBar.max = svcDur.toInt()
+                binding.seekBar.progress = svcPos.toInt()
+                writeJitterLog("[v2.0.55] onResume: synced UI to service position=$svcPos (cached=$cachedPos ignored, no flicker)")
             }
         }
         // Issue 1 Fix 4: await a valid position from the service before letting the

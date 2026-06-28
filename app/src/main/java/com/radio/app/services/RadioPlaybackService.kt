@@ -2213,7 +2213,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 player?.volume = 1.0f
-                play()
+                // [v2.0.55] Issue 6 Fix: 用户手动暂停后，音频焦点恢复（如电话结束）不应自动恢复播放
+                if (!userPaused) {
+                    play()
+                } else {
+                    writeServiceLog("audiofocus", "[v2.0.55] AUDIOFOCUS_GAIN ignored: userPaused=true")
+                }
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
                 pause()
@@ -2899,6 +2904,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     writeNotifDetailLog("autoPlayNextEpisode: cross-day episode found, switching - title=${crossDayEp.title}, id=${crossDayEp.id}")
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
                     playEpisode(crossDayEp, false)
+                    updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
                     callback?.onEpisodeChanged(crossDayEp)
                     return
                 }
@@ -2912,6 +2918,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
+            updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
             // 通过回调通知 Activity 更新界面
             callback?.onEpisodeChanged(nextEpisode)
         } catch (e: Exception) {

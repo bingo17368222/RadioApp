@@ -821,17 +821,24 @@ class SubtitleGeneratorService : Service() {
         // [v2.0.54] Issue 4: Process 15-20 min range to avoid background music in first 5 min
         val startOffsetBytes = 15L * 60 * 16000 * 2  // 15 min offset
         val maxBytes = 5L * 60 * 16000 * 2  // 5 minutes from offset
-        val processLimit = if (totalSize > startOffsetBytes + maxBytes) maxBytes
-                          else if (totalSize > startOffsetBytes) (totalSize - startOffsetBytes)
-                          else totalSize
-        logToFile("processVoskInChunks: [v2.0.54] totalSize=${totalSize / 1024}KB, offset=${startOffsetBytes / 1024}KB (15min), limit=${processLimit / 1024}KB (5min)")
-        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing 15-20min range in 8192-byte chunks")
+        // [v2.0.55] Issue 4 Fix: If PCM is under 15 min, process from beginning instead of erroring
+        val skipped15Min = totalSize > startOffsetBytes
+        val processLimit = if (skipped15Min) {
+            if (totalSize > startOffsetBytes + maxBytes) maxBytes
+            else (totalSize - startOffsetBytes)
+        } else {
+            // PCM too short for 15-min offset, process from beginning (max 5 min)
+            minOf(totalSize, maxBytes)
+        }
+        logToFile("processVoskInChunks: [v2.0.55] totalSize=${totalSize / 1024}KB, skipped15Min=$skipped15Min, offset=${if (skipped15Min) startOffsetBytes / 1024 else 0}KB, limit=${processLimit / 1024}KB (5min)")
+        ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing ${if (skipped15Min) "15-20min" else "0-5min"} range in 8192-byte chunks")
         callback.onProgressUpdate(0, 100)
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.54] Skip first 15 minutes
-        if (totalSize > startOffsetBytes) {
+        // [v2.0.54] Skip first 15 minutes (only if PCM is long enough)
+        // [v2.0.55] Issue 4 Fix: Use skipped15Min flag to decide whether to skip
+        if (skipped15Min) {
             inputStream.skip(startOffsetBytes)
         }
         val chunkSize = 8192 // 256ms per chunk - better balance for Vosk speech detection
@@ -967,19 +974,21 @@ class SubtitleGeneratorService : Service() {
                                 logToFile("processVoskInChunks: chunk $chunkCount produced empty text")
                             }
                             if (text.isNotBlank()) {
-                                var startTime = 0L
-                                var endTime = 0L
+                                // [v2.0.55] Issue 3 Fix: Add 15-min offset only if we actually skipped 15 min
+                                val offsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                                var startTime = offsetMs
+                                var endTime = offsetMs
                                 val resultArr = json.optJSONArray("result")
                                 if (resultArr != null && resultArr.length() > 0) {
                                     val firstWord = resultArr.getJSONObject(0)
                                     val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
-                                    startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
-                                    endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                                    startTime = offsetMs + (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                                    endTime = offsetMs + (lastWord.optDouble("end", 0.0) * 1000).toLong()
                                 } else {
                                     // Fallback: use accumulated byte offset for approximate timestamps
                                     // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
-                                    startTime = offset * 1000L / 32000L
-                                    endTime = (offset + chunk.size) * 1000L / 32000L
+                                    startTime = offsetMs + offset * 1000L / 32000L
+                                    endTime = offsetMs + (offset + chunk.size) * 1000L / 32000L
                                 }
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                                 logToFile("processVoskInChunks: transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
@@ -1004,8 +1013,10 @@ class SubtitleGeneratorService : Service() {
                             val partialText = partialJson.optString("partial", "").trim()
                             if (partialText.isNotEmpty() && partialText != lastPartialText) {
                                 lastPartialText = partialText
-                                val partialStartTime = offset * 1000L / 32000L
-                                val partialEndTime = (offset + chunk.size) * 1000L / 32000L
+                                // [v2.0.55] Issue 3 Fix: Add 15-min offset to partial timestamps
+                                val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                                val partialStartTime = partialOffsetMs + offset * 1000L / 32000L
+                                val partialEndTime = partialOffsetMs + (offset + chunk.size) * 1000L / 32000L
                                 val transcript = com.radio.app.models.Transcript(
                                     text = partialText,
                                     segmentStart = partialStartTime,
@@ -1036,8 +1047,10 @@ class SubtitleGeneratorService : Service() {
                                 val flushText = flushJson.optString("text", "").trim()
                                 if (flushText.isNotEmpty() && flushText != lastPartialText) {
                                     lastPartialText = flushText
-                                    val flushStart = offset * 1000L / 32000L
-                                    val flushEnd = (offset + chunk.size) * 1000L / 32000L
+                                    // [v2.0.55] Issue 3 Fix: Add 15-min offset to flush timestamps
+                                    val flushOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                                    val flushStart = flushOffsetMs + offset * 1000L / 32000L
+                                    val flushEnd = flushOffsetMs + (offset + chunk.size) * 1000L / 32000L
                                     val transcript = com.radio.app.models.Transcript(text = flushText, segmentStart = flushStart, segmentEnd = flushEnd)
                                     logToFile("processVoskInChunks: endOfUtterance flush transcript at ${flushStart}ms: '${flushText.take(50)}...'")
                                     writeVoskLog("endOfUtterance flush: chunk=$chunkCount, text='${flushText.take(100)}'")
@@ -1080,20 +1093,22 @@ class SubtitleGeneratorService : Service() {
                     val json = org.json.JSONObject(finalResult)
                     val text = json.optString("text", "")
                     if (text.isNotBlank()) {
-                        var startTime = 0L
-                        var endTime = 0L
+                        // [v2.0.55] Issue 3 Fix: Add 15-min offset only if we actually skipped 15 min
+                        val offsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                        var startTime = offsetMs
+                        var endTime = offsetMs
                         val resultArr = json.optJSONArray("result")
                         if (resultArr != null && resultArr.length() > 0) {
                             val firstWord = resultArr.getJSONObject(0)
                             val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
-                            startTime = (firstWord.optDouble("start", 0.0) * 1000).toLong()
-                            endTime = (lastWord.optDouble("end", 0.0) * 1000).toLong()
+                            startTime = offsetMs + (firstWord.optDouble("start", 0.0) * 1000).toLong()
+                            endTime = offsetMs + (lastWord.optDouble("end", 0.0) * 1000).toLong()
                         } else {
                             // Fallback: use accumulated byte offset for approximate timestamps
                             // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
                             // chunk is out of scope after the loop, use chunkSize for end estimate
-                            startTime = offset * 1000L / 32000L
-                            endTime = (offset + chunkSize) * 1000L / 32000L
+                            startTime = offsetMs + offset * 1000L / 32000L
+                            endTime = offsetMs + (offset + chunkSize) * 1000L / 32000L
                         }
                         val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
                         logToFile("processVoskInChunks: final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
@@ -1437,8 +1452,11 @@ class SubtitleGeneratorService : Service() {
             logToFile("findVoskModel: all modelDirs: ${modelDirs?.map { it.name }}")
             if (!modelDirs.isNullOrEmpty()) {
                 // 优先查找名称包含vosk的目录
+                // [v2.0.55] Issue 5 Fix: Prefer large (non-"small") models over small models.
+                // 用户安装的大模型如 vosk-model-cn-0.22 名称不含 "small"，应优先于 vosk-model-small-cn-0.22 被选中。
                 val voskDirs = modelDirs.filter { it.name.contains("vosk", ignoreCase = true) }
-                logToFile("findVoskModel: voskDirs found: ${voskDirs.map { it.name }}")
+                    .sortedByDescending { !it.name.contains("small", ignoreCase = true) }  // 名称不含 "small" 的(大模型)排在前面
+                logToFile("findVoskModel: voskDirs found (sorted, large models first): ${voskDirs.map { it.name }}")
                 for (dir in voskDirs) {
                     val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
                     logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
@@ -1481,6 +1499,7 @@ class SubtitleGeneratorService : Service() {
         val engineDir = File(filesDir, "engines")
         if (engineDir.exists()) {
             val voskDirs = engineDir.listFiles()?.filter { it.isDirectory && it.name.contains("vosk", ignoreCase = true) }
+                ?.sortedByDescending { !it.name.contains("small", ignoreCase = true) }  // [v2.0.55] Issue 5 Fix: 大模型优先
             for (dir in voskDirs ?: emptyList()) {
                 val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
                 logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
@@ -1870,19 +1889,26 @@ class SubtitleGeneratorService : Service() {
 
             // [v2.0.54] Issue 4: Change to 15-20 min range to avoid background music in first 5 min
             // Skip first 15 minutes, process 5 minutes (15*60*16000*2 to 20*60*16000*2)
-            val startOffsetBytes = 15L * 60 * 16000 * 2  // 15 min offset
+            var startOffsetBytes = 15L * 60 * 16000 * 2  // 15 min offset
             val maxPcmBytes = 5L * 60 * 16000 * 2  // 5 minutes
             val fileBytes = pcmFile.length()
-            val bytesToRead = if (fileBytes > startOffsetBytes + maxPcmBytes) maxPcmBytes.toInt()
-                              else if (fileBytes > startOffsetBytes) (fileBytes - startOffsetBytes).toInt()
-                              else 0
+            // [v2.0.55] Issue 4 Fix: If PCM is under 15 min, process from beginning instead of erroring
+            val skipped15Min = fileBytes > startOffsetBytes
+            val bytesToRead = if (skipped15Min) {
+                if (fileBytes > startOffsetBytes + maxPcmBytes) maxPcmBytes.toInt()
+                else (fileBytes - startOffsetBytes).toInt()
+            } else {
+                // PCM too short for 15-min offset, process from beginning
+                startOffsetBytes = 0
+                minOf(fileBytes, maxPcmBytes).toInt()
+            }
             if (bytesToRead <= 0) {
-                logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes) for 15-20min, aborting")
-                callback.onError("音频文件太短，无法从第15分钟开始处理")
+                logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes), aborting")
+                callback.onError("音频文件太短，无法处理")
                 bridge.free(ctxPtr)
                 return false
             }
-            logToFile("processWhisperInChunks: [v2.0.54] PCM=${fileBytes} bytes, skip 15min=${startOffsetBytes}, read ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s)")
+            logToFile("processWhisperInChunks: [v2.0.55] PCM=${fileBytes} bytes, skipped15Min=$skipped15Min, skip=${startOffsetBytes} bytes, read ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s)")
 
             val pcmData = ByteArray(bytesToRead)
             var read = 0
@@ -1903,9 +1929,10 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: converted PCM to float samples, nSamples=$nSamples")
 
-            // 5. 使用实际读取的样本数
-            val processSamples = nSamples
-            logToFile("processWhisperInChunks: processing $processSamples samples")
+            // [v2.0.55] Issue 2 Fix: Cap samples to 5 seconds in Kotlin to reduce memory
+            val maxSamples = 5 * 16000  // 5 seconds at 16kHz = 80000 samples
+            val processSamples = if (nSamples > maxSamples) maxSamples else nSamples
+            logToFile("processWhisperInChunks: [v2.0.55] nSamples=$nSamples, capping to $processSamples (5s)")
 
             // [v2.0.44] Issue 3&7: Write PRE-CRASH MARKER to BOTH the main service log AND whisper_crash.log
             // This ensures the crash info is in the user's log export (external storage)
@@ -1959,8 +1986,8 @@ class SubtitleGeneratorService : Service() {
                 val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
 
                 if (text.isNotBlank()) {
-                    // [v2.0.54] Add 15-min offset to Whisper timestamps (audio starts from 15min mark)
-                    val whisperOffsetMs = 15L * 60 * 1000
+                    // [v2.0.55] Issue 4 Fix: Add 15-min offset only if we actually skipped 15 min
+                    val whisperOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
                     val transcript = com.radio.app.models.Transcript(
                         text = text.trim(),
                         segmentStart = whisperOffsetMs + t0 * 10,  // convert centiseconds to milliseconds
