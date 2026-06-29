@@ -306,9 +306,13 @@ class SettingsFragment : Fragment() {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
                 val selected = binding.spinnerAsrProvider.selectedItem.toString()
+                // [v2.0.60] Issue 6 Fix: Match new Vosk labels that start with "Vosk" (not "本地Vosk")
                 val providerId = when {
-                    selected.startsWith("本地Whisper") -> "whisper-local"
-                    selected.startsWith("本地Vosk") -> "vosk-local"
+                    selected.startsWith("本地Whisper") || selected.startsWith("Whisper") -> "whisper-local"
+                    selected.startsWith("Vosk") -> "vosk-local"
+                    selected.startsWith("百度") -> AppSettings.ASR_BAIDU
+                    selected.startsWith("FunASR") -> AppSettings.ASR_FUNASR
+                    selected.startsWith("Whisper在线") -> AppSettings.ASR_WHISPER
                     else -> {
                         val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
                         if (position < providers.size) providers[position] else selected
@@ -316,7 +320,7 @@ class SettingsFragment : Fragment() {
                 }
                 settings.asrProvider = providerId
                 save()
-                Toast.makeText(requireContext(), "ASR方案已切换: $selected", Toast.LENGTH_SHORT).show()
+                Toast.makeText(requireContext(), "ASR方案已切换: $selected (provider=$providerId)", Toast.LENGTH_SHORT).show()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
@@ -439,12 +443,15 @@ class SettingsFragment : Fragment() {
             binding.spinnerAsrProvider.setSelection(index)
         } else if (savedProvider == "whisper-local") {
             val whisperIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
-                adapter?.getItem(it)?.toString()?.startsWith("本地Whisper") == true
+                val item = adapter?.getItem(it)?.toString() ?: ""
+                item.startsWith("本地Whisper") || item.startsWith("Whisper")
             }
             if (whisperIndex >= 0) binding.spinnerAsrProvider.setSelection(whisperIndex)
         } else if (savedProvider == "vosk-local") {
+            // [v2.0.60] Issue 6 Fix: Match new Vosk labels (start with "Vosk", not "本地Vosk")
             val voskIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
-                adapter?.getItem(it)?.toString()?.startsWith("本地Vosk") == true
+                val item = adapter?.getItem(it)?.toString() ?: ""
+                item.startsWith("Vosk") || item.startsWith("本地Vosk")
             }
             if (voskIndex >= 0) binding.spinnerAsrProvider.setSelection(voskIndex)
         }

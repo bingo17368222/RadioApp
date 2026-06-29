@@ -876,6 +876,13 @@ class SubtitleGeneratorService : Service() {
     /**
      * 分块处理大PCM文件（16kHz mono），每5秒一个chunk，避免OOM
      */
+    // [v2.0.60] Helper: recursively compute total size (bytes) of a directory tree.
+    // Used to estimate Vosk model memory footprint before loading it into native heap.
+    private fun calculateDirSize(dir: java.io.File): Long {
+        if (!dir.exists()) return 0L
+        return dir.walkTopDown().filter { it.isFile }.map { it.length() }.sum()
+    }
+
     private fun processVoskInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
@@ -936,9 +943,26 @@ class SubtitleGeneratorService : Service() {
 
             logToFile("processVoskInChunks: creating Vosk Model with path=$modelPath")
             logToFile("processVoskInChunks: model dir exists=${File(modelPath).exists()}, contents=${File(modelPath).list()?.toList()}")
+            // [v2.0.60] Issue 3+4 Fix: Check memory before loading large Vosk model.
+            // org.vosk.Model loads the entire model into native memory; a 1.3GB model on a
+            // memory-constrained :subtitle process causes a silent OOM that kills the process
+            // before the Kotlin try-catch can report it. Pre-check and bail out gracefully.
+            val modelDir = java.io.File(modelPath)
+            val modelSizeMB = calculateDirSize(modelDir) / 1024 / 1024
+            val maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024
+            val freeMemMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
+            logToFile("processVoskInChunks: [v2.0.60] model=${modelSizeMB}MB, maxHeap=${maxHeapMB}MB, freeMem=${freeMemMB}MB")
+            if (modelSizeMB > maxHeapMB * 0.7) {
+                logToFile("processVoskInChunks: [v2.0.60] Model too large (${modelSizeMB}MB > 70% of maxHeap ${maxHeapMB}MB), OOM likely")
+                callback.onError("Vosk模型过大(${modelSizeMB}MB)，超过可用内存(${maxHeapMB}MB)。请使用小模型或增加设备内存。")
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Vosk模型过大(${modelSizeMB}MB)，超过可用内存(${maxHeapMB}MB)"
+                ))
+                return false
+            }
             try {
                 model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
-                val modelDir = java.io.File(modelPath)
                 logToFile("processVoskInChunks: Vosk model path=$modelPath, exists=${modelDir.exists()}, size=${if (modelDir.exists()) modelDir.walkTopDown().map { it.length() }.sum() / 1024 / 1024 else 0}MB")
                 logToFile("processVoskInChunks: Model created successfully")
                 writeVoskLog("Vosk Model created: path=$modelPath, size=${if (modelDir.exists()) modelDir.walkTopDown().map { it.length() }.sum() / 1024 / 1024 else 0}MB")
@@ -1202,24 +1226,15 @@ class SubtitleGeneratorService : Service() {
             callback.onComplete(allTranscripts)
             return true
         } catch (e: Throwable) {
-            if (e is OutOfMemoryError) {
-                logToFile("processVoskInChunks: [v2.0.59] OOM ERROR: ${e.message}")
-                ctx.log("ERROR: OOM during chunked Vosk processing")
-                callback.onError("内存不足：音频处理需要更多内存。请尝试：1)关闭其他应用 2)在设置→离线引擎管理→切换到Whisper引擎")
-                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
-                    "episodeId" to ctx.episodeId,
-                    "message" to "Vosk内存不足: ${e.message}"
-                ))
-            } else {
-                logToFile("processVoskInChunks: [v2.0.59] EXCEPTION: ${e.javaClass.name}: ${e.message}")
-                e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
-                ctx.log("ERROR: Vosk chunked processing failed: ${e.javaClass.name}: ${e.message}")
-                callback.onError("Vosk处理失败: ${e.message}")
-                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
-                    "episodeId" to ctx.episodeId,
-                    "message" to "Vosk处理失败: ${e.message}"
-                ))
-            }
+            val errorMsg = "${e.javaClass.name}: ${e.message}"
+            logToFile("processVoskInChunks: [v2.0.60] OUTER CATCH: $errorMsg")
+            e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
+            ctx.log("ERROR: Vosk chunked processing failed: $errorMsg")
+            callback.onError("Vosk处理失败: $errorMsg")
+            sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                "episodeId" to ctx.episodeId,
+                "message" to "Vosk处理失败: $errorMsg"
+            ))
             return false
         } finally {
             try { recognizer?.let { voskRecognizerClass!!.getMethod("close").invoke(it) } } catch (_: Exception) {}
@@ -2037,6 +2052,18 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.59] Issue 2 Fix: Wrap bridge.full() in try-catch to catch native/OOM crashes
             // so the main app receives an error broadcast instead of silent process death.
             var ctxFreed = false
+            // [v2.0.60] Issue 2 Fix: Check memory before Whisper processing.
+            // bridge.full() drives whisper.cpp which allocates native buffers proportional to
+            // model size + samples; low free heap risks a silent native OOM that kills the
+            // :subtitle process. Log state and run GC when memory is tight.
+            val freeMemMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
+            val maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024
+            logToFile("processWhisperInChunks: [v2.0.60] BEFORE bridge.full: freeMem=${freeMemMB}MB, maxHeap=${maxHeapMB}MB, processSamples=$processSamples")
+            if (freeMemMB < 50) {
+                logToFile("processWhisperInChunks: [v2.0.60] Low memory (${freeMemMB}MB < 50MB), running GC")
+                System.gc()
+                Thread.sleep(100)
+            }
             try {
                 logToFile("processWhisperInChunks: [v2.0.59] calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
                 val result = bridge.full(ctxPtr, samples, processSamples)

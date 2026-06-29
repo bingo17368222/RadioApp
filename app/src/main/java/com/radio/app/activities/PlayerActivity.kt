@@ -670,15 +670,11 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
-                // [v2.0.53] Issue 1 Fix: During seek buffering (service is restoring position),
-                // allow forward movement toward savedPos instead of freezing UI
-                if (!isUserSeeking && position < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
-                    val backwardMs = lastDisplayedPositionMs - position
-                    if (backwardMs > 3000) {
-                        writeJitterLog("[v2.0.53] onPositionChanged: backward position ${position}ms < lastDisplayed ${lastDisplayedPositionMs}ms (backward ${backwardMs}ms), ignoring")
-                    }
-                    return@runOnUiThread
-                }
+                // [v2.0.60] Issue 1 Fix: Remove monotonic guard entirely
+                // The monotonic guard was causing UI freeze when ExoPlayer reports position 0
+                // during buffering/re-preparation after episode switch.
+                // Without the guard, UI shows the actual position (0→growing→seekTarget)
+                // which is the correct behavior (same as PowerAmp).
                 lastDisplayedPositionMs = position
 
                 val pos = position.toInt()
@@ -1444,20 +1440,15 @@ class PlayerActivity : AppCompatActivity() {
         if (playbackService?.isPrepared() == true) {
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val svcDur = playbackService?.getDuration() ?: -1L
-            // [v2.0.48] Issue 1 Fix: Just ignore backward positions (no active seek)
-            if (!isUserSeeking && svcPos > 0 && svcPos < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) {
-                val backwardMs = lastDisplayedPositionMs - svcPos
-                if (backwardMs > 3000) {
-                    writeJitterLog("[v2.0.48] updateUI: backward position ${svcPos}ms < lastDisplayed ${lastDisplayedPositionMs}ms, ignoring")
-                }
-            } else if (svcPos > 0) {
+            // [v2.0.60] Issue 1 Fix: Remove monotonic guard in updateUI too
+            if (svcPos > 0) {
                 lastDisplayedPositionMs = svcPos
             }
             // Only update seekBar if we have valid position data (not 0 when playing)
             val isPlaying = playbackService?.isPlaying() ?: false
             if (svcPos > 0 || !isPlaying) {
-                // [v2.0.46] Only update UI with positions that don't go backwards
-                val displayPos = if (!isUserSeeking && svcPos < lastDisplayedPositionMs && lastDisplayedPositionMs > 0) lastDisplayedPositionMs else svcPos
+                // [v2.0.60] Always use actual position (no backward guard)
+                val displayPos = svcPos
                 if (displayPos > 0) {
                     binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
                     binding.seekBar.progress = displayPos.toInt()
@@ -2356,13 +2347,7 @@ class PlayerActivity : AppCompatActivity() {
         if (serviceBound && playbackService != null) {
             var pos = playbackService?.getCurrentPosition() ?: 0L
             val dur = playbackService?.getDuration() ?: 0L
-            // [v2.0.46] Issue 1 Fix: Don't cache backward positions
-            // ExoPlayer can report backward positions during buffering, which would cause
-            // the next launch to restore a wrong (backward) position
-            if (pos > 0 && lastDisplayedPositionMs > 0 && pos < lastDisplayedPositionMs) {
-                writeJitterLog("[v2.0.46] onPause: service reported backward position ${pos}ms < lastDisplayed ${lastDisplayedPositionMs}ms, using lastDisplayed instead")
-                pos = lastDisplayedPositionMs
-            }
+            // [v2.0.60] Issue 1 Fix: Removed backward position guard - cache actual position
             if (pos > 0) lastDisplayedPositionMs = pos
             getSharedPreferences("player_position_cache", MODE_PRIVATE).edit()
                 .putLong("cached_position", pos)
