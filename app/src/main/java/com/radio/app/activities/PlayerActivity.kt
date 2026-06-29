@@ -232,7 +232,10 @@ class PlayerActivity : AppCompatActivity() {
                 binding.seekBar.progress = svcPos.toInt()
                 writeJitterLog("[v2.0.55] onServiceConnected: synced UI to service position=$svcPos (no flicker)")
             } else {
-                writeJitterLog("onServiceConnected: service has no valid position (pos=$svcPos, dur=$svcDur), keeping awaitingServicePosition=true")
+                // [v2.0.56] Issue 1 Fix: Reset lastDisplayedPositionMs when service has no position
+                // Otherwise the monotonic guard blocks UI updates for the new episode (position 0 < old position)
+                lastDisplayedPositionMs = 0
+                writeJitterLog("[v2.0.56] onServiceConnected: service has no position (pos=$svcPos), reset lastDisplayedPositionMs=0")
             }
 
             // Issue 1: If currentEpisode is null (recreated from notification without episode data), get from service

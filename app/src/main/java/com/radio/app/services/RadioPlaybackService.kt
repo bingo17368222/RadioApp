@@ -2213,20 +2213,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 player?.volume = 1.0f
-                // [v2.0.55] Issue 6 Fix: 用户手动暂停后，音频焦点恢复（如电话结束）不应自动恢复播放
+                // [v2.0.55] Issue 6 Fix: Don't auto-resume if user manually paused
                 if (!userPaused) {
                     play()
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.55] AUDIOFOCUS_GAIN ignored: userPaused=true")
+                    writeServiceLog("audiofocus", "[v2.0.56] AUDIOFOCUS_GAIN ignored: userPaused=true")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
-                pause()
+                pause(userInitiated = false)  // [v2.0.56] System pause, not user
                 updateNotification()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // Pause for navigation announcements and other transient focus changes
-                pause()
+                // [v2.0.56] System pause for transient focus changes (navigation, notifications)
+                pause(userInitiated = false)
             }
         }
     }
@@ -2378,10 +2378,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             startForeground(NOTIFICATION_ID, notification)
         }
     }
-    fun pause() {
-        userPaused = true
+    fun pause(userInitiated: Boolean = true) {
+        // [v2.0.56] Issue 5 Fix: Only set userPaused when USER initiates pause
+        // System pauses (audio focus loss) should NOT set userPaused, so audio focus
+        // management can auto-resume after the user manually plays again
+        if (userInitiated) {
+            userPaused = true
+        }
         player?.pause()
-        writeServiceLog("notification", "[v2.0.42] pause() called, userPaused=true, posting notification via startForeground to update play/pause icon")
+        writeServiceLog("notification", "[v2.0.56] pause(userInitiated=$userInitiated) called, userPaused=$userPaused")
         forceNotificationUpdate = true
         lastNotificationContentHash = 0
         val notification = updateNotification()

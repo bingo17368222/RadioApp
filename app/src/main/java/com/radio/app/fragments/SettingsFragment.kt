@@ -120,17 +120,32 @@ class SettingsFragment : Fragment() {
                 }
             }
 
-            val voskModels = arrayOf(
-                "vosk-small-cn" to "本地Vosk 中文",
-                "vosk-small-en" to "本地Vosk 英文"
-            )
-            for ((dir, label) in voskModels) {
-                val modelDir = File(modelsDir, dir)
-                if (modelDir.exists()) {
-                    val totalSize = calculateDirSize(modelDir)
-                    if (totalSize >= 1024 * 1024) {
-                        adapter.add(label)
+            // [v2.0.56] Issue 4 Fix: Scan for actual Vosk model directories (not hardcoded names)
+            // Actual directory names: vosk-model-small-cn-0.22, vosk-model-cn-0.22, etc.
+            val allDirs = modelsDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+            val voskDirs = allDirs.filter {
+                it.name.contains("vosk", ignoreCase = true) &&
+                !it.name.equals("vosk-engine", ignoreCase = true)  // Exclude engine directory
+            }.sortedByDescending { !it.name.contains("small", ignoreCase = true) }  // Large models first
+
+            for (dir in voskDirs) {
+                // [v2.0.56] Validate model directory has am/ and graph/ subdirs
+                val amDir = File(dir, "am")
+                val graphDir = File(dir, "graph")
+                if (!amDir.exists() || !graphDir.exists()) {
+                    Log.d("SettingsFragment", "Skipping incomplete Vosk model: ${dir.name} (missing am/ or graph/)")
+                    continue
+                }
+                val totalSize = calculateDirSize(dir)
+                if (totalSize >= 1024 * 1024) {
+                    // [v2.0.56] Generate label from directory name
+                    val label = when {
+                        dir.name.contains("small", ignoreCase = true) -> "本地Vosk 小模型(${dir.name})"
+                        dir.name.contains("large", ignoreCase = true) -> "本地Vosk 大模型(${dir.name})"
+                        else -> "本地Vosk ${dir.name}"
                     }
+                    Log.d("SettingsFragment", "Adding Vosk model: $label (size=${totalSize / 1024 / 1024}MB)")
+                    adapter.add(label)
                 }
             }
         } catch (e: Exception) {

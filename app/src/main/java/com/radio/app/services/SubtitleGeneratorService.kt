@@ -1364,42 +1364,32 @@ class SubtitleGeneratorService : Service() {
 
     /**
      * 验证目录是否包含有效的Vosk模型
-     * 宽松检测：支持多种Vosk模型结构
-     * 1. am/final.mdl + conf/model.conf (标准结构)
-     * 2. 根目录有 .mdl 文件 (简单模型)
-     * 3. HCLG.fst 文件 (Kaldi模型)
-     * 4. graph/Gr.fst 或 graph/HCLr.fst (替代graph结构)
-     * 5. 目录名以 "vosk-model" 开头且包含 .mdl 或 .fst 文件
+     * [v2.0.56] Issue 3 Fix: 严格验证 - 有效的 Vosk 模型目录必须至少包含 am/ 和 graph/ 子目录。
+     * 这样可以拒绝未完成的下载（目录里只有 .zip.tmp 文件，缺少实际模型文件 am/、graph/ 等）。
      * 同时检测一层嵌套子目录（zip解压可能产生嵌套）
      */
     private fun isValidVoskModel(dir: File): Boolean {
         if (!dir.isDirectory) return false
-        val files = dir.listFiles() ?: return false
-        if (files.isEmpty()) return false
-
-        // Accept any vosk-model-* directory that has content
-        if (dir.name.startsWith("vosk-model", ignoreCase = true)) {
-            logToFile("isValidVoskModel: ${dir.name} accepted (vosk-model prefix, ${files.size} entries)")
+        // [v2.0.56] Issue 3 Fix: A valid Vosk model directory must contain at least
+        // am/ and graph/ subdirectories.
+        val amDir = File(dir, "am")
+        val graphDir = File(dir, "graph")
+        if (amDir.exists() && amDir.isDirectory && graphDir.exists() && graphDir.isDirectory) {
+            logToFile("isValidVoskModel: ${dir.name} accepted (has am/ and graph/)")
             return true
         }
-
-        // For other directories, check for model files recursively
-        fun hasModelFiles(d: File, depth: Int = 0): Boolean {
-            if (depth > 3) return false
-            val fs = d.listFiles() ?: return false
-            for (f in fs) {
-                if (f.isFile) {
-                    val n = f.name.lowercase()
-                    if (n.endsWith(".mdl") || n.endsWith(".fst") || n.endsWith(".conf") ||
-                        n == "hclg.fst" || n == "gr.fst" || n == "hclr.fst") return true
-                } else if (f.isDirectory) {
-                    if (f.name in listOf("am", "conf", "graph", "ivector", "rescore")) return true
-                    if (hasModelFiles(f, depth + 1)) return true
-                }
+        // Fallback: handle nested extraction (zip may produce dir/<model-name>/am)
+        val subdirs = dir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        for (sub in subdirs) {
+            val subAm = File(sub, "am")
+            val subGraph = File(sub, "graph")
+            if (subAm.exists() && subAm.isDirectory && subGraph.exists() && subGraph.isDirectory) {
+                logToFile("isValidVoskModel: ${dir.name} accepted (nested ${sub.name} has am/ and graph/)")
+                return true
             }
-            return false
         }
-        return hasModelFiles(dir)
+        logToFile("isValidVoskModel: ${dir.name} rejected (missing am/ or graph/ subdirs)")
+        return false
     }
 
     /**
@@ -1461,7 +1451,11 @@ class SubtitleGeneratorService : Service() {
                     val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
                     logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
                     if (dir.name.startsWith("vosk-model", ignoreCase = true) && dir.listFiles()?.isNotEmpty() == true) {
-                        logToFile("findVoskModel: ACCEPTED ${dir.name} by name prefix (non-empty dir)")
+                        if (!isValidVoskModel(dir)) {
+                            logToFile("findVoskModel: REJECTED ${dir.name} - missing am/ or graph/ subdirs (incomplete download?)")
+                            continue  // Skip this directory, try next
+                        }
+                        logToFile("findVoskModel: ACCEPTED ${dir.name} (valid model with am/ and graph/)")
                         return dir.absolutePath
                     }
                     if (isValidVoskModel(dir)) {
@@ -1478,7 +1472,11 @@ class SubtitleGeneratorService : Service() {
                     val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
                     logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
                     if (dir.name.startsWith("vosk-model", ignoreCase = true) && dir.listFiles()?.isNotEmpty() == true) {
-                        logToFile("findVoskModel: ACCEPTED ${dir.name} by name prefix (non-empty dir)")
+                        if (!isValidVoskModel(dir)) {
+                            logToFile("findVoskModel: REJECTED ${dir.name} - missing am/ or graph/ subdirs (incomplete download?)")
+                            continue  // Skip this directory, try next
+                        }
+                        logToFile("findVoskModel: ACCEPTED ${dir.name} (valid model with am/ and graph/)")
                         return dir.absolutePath
                     }
                     if (isValidVoskModel(dir)) {
@@ -1504,7 +1502,11 @@ class SubtitleGeneratorService : Service() {
                 val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
                 logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
                 if (dir.name.startsWith("vosk-model", ignoreCase = true) && dir.listFiles()?.isNotEmpty() == true) {
-                    logToFile("findVoskModel: ACCEPTED ${dir.name} by name prefix (non-empty dir)")
+                    if (!isValidVoskModel(dir)) {
+                        logToFile("findVoskModel: REJECTED ${dir.name} - missing am/ or graph/ subdirs (incomplete download?)")
+                        continue  // Skip this directory, try next
+                    }
+                    logToFile("findVoskModel: ACCEPTED ${dir.name} (valid model with am/ and graph/)")
                     return dir.absolutePath
                 }
                 if (isValidVoskModel(dir)) {

@@ -156,10 +156,11 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
 
     // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp (doesn't work on Android ART)
     // Android ART intercepts SIGSEGV before custom signal handlers, so siglongjmp never fires.
-    // Instead: reduce to 5 seconds + fix NaN check to check ALL samples (not just first 1000)
-    int maxSamples = 5 * 16000;  // 5 seconds at 16kHz
+    // [v2.0.56] Issue 2 Fix: Reduce to 1 second (was 5s) - even 5s (80000 samples) still crashes.
+    // Also fix NaN check to check ALL samples (not just first 1000)
+    int maxSamples = 1 * 16000;  // 1 second at 16kHz (reduced from 5s to avoid crash)
     int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
-    LOGI("full: n_samples=%d, processSamples=%d (capped at 5s), ctx=%p", n_samples, processSamples, ctx);
+    LOGI("full: n_samples=%d, processSamples=%d (capped at 1s), ctx=%p", n_samples, processSamples, ctx);
 
     // [v2.0.45] Issue 3 Fix: Check for NaN/Infinity in samples that could cause SIGSEGV
     // [v2.0.52] Fix: Check ALL processSamples (not just first 1000)
@@ -180,6 +181,10 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_timestamps = false;
     params.translate       = false;
     params.n_threads       = 1;  // [v2.0.49] Issue 3 Fix: Single thread to allow siglongjmp recovery
+    // [v2.0.56] Issue 2 Fix: Minimize memory usage to avoid crash
+    params.n_max_text_ctx = 0;
+    params.offset_ms = 0;
+    params.duration_ms = 0;
 
     // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp - doesn't work on Android ART
     // Just install simple crash logger (writes to file before process dies)
@@ -190,6 +195,11 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
 
     // Set alarm timeout (60 seconds)
     alarm(60);
+
+    // [v2.0.56] Issue 2 Fix: Detailed logging right before full_func to diagnose crash
+    LOGI("full: alarm set, about to call full_func");
+    LOGI("full: BEFORE whisper_full, processSamples=%d, ctx=%p, sample_data=%p", processSamples, ctx, sample_data);
+    LOGI("full: params: n_threads=%d, n_max_text_ctx=%d, offset_ms=%d", params.n_threads, params.n_max_text_ctx, params.offset_ms);
 
     int result = full_func(ctx, params, sample_data, processSamples);
 
