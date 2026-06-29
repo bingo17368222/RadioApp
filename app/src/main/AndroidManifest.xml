@@ -63,6 +63,7 @@
         <service
             android:name=".services.SubtitleGeneratorService"
             android:exported="false"
+            android:process=":subtitle"
             android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

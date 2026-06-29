@@ -84,6 +84,74 @@ class PlayerActivity : AppCompatActivity() {
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
     private var lastSubtitleHighlightIdx = -1
+    // [跨进程] 服务运行在 ":subtitle" 进程，SubtitleCallback 回调对象无法跨进程传递，
+    // 改用广播回传结果。这里维护一份通过广播累积的字幕列表（与数据库互为校验，onResume 时从 DB 同步）。
+    private val subtitleBroadcastList = mutableListOf<Transcript>()
+    // [跨进程] 字幕广播接收器的注册状态（防止重复注册 / 重复注销导致崩溃）
+    private var subtitleReceiverRegistered = false
+    // [跨进程] 接收 SubtitleGeneratorService 发出的字幕广播：在字幕进程崩溃后，主进程（播放）仍可收到
+    // 已生成的字幕结果。回调机制保留作为同进程回退。
+    private val subtitleReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val episodeId = intent.getStringExtra("episodeId") ?: return
+            // 仅处理当前节目，避免切集后旧任务的广播污染当前界面
+            val currentId = currentEpisode?.id
+            if (currentId != null && episodeId != currentId) return
+            when (intent.action) {
+                "com.radio.app.SUBTITLE_GENERATED" -> {
+                    val text = intent.getStringExtra("text") ?: ""
+                    val startMs = intent.getLongExtra("startMs", 0)
+                    val endMs = intent.getLongExtra("endMs", 0)
+                    val transcript = Transcript(text = text, segmentStart = startMs, segmentEnd = endMs).apply {
+                        this.episodeId = episodeId
+                    }
+                    // 去重：同进程回退时回调与广播可能同时触发同一字幕
+                    if (subtitleBroadcastList.none { it.segmentStart == startMs && it.segmentEnd == endMs && it.text == text }) {
+                        subtitleBroadcastList.add(transcript)
+                    }
+                    runOnUiThread {
+                        if (_binding == null) return@runOnUiThread
+                        subtitleTranscripts = subtitleBroadcastList.toList()
+                        subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                        binding.subtitleView.visibility = View.GONE
+                        binding.tvSubtitleTitle.visibility = View.VISIBLE
+                        binding.recyclerSubtitles.visibility = View.VISIBLE
+                    }
+                }
+                "com.radio.app.SUBTITLE_PROGRESS" -> {
+                    val progress = intent.getIntExtra("progress", 0)
+                    runOnUiThread {
+                        if (_binding == null) return@runOnUiThread
+                        binding.progressSubtitle.progress = progress
+                        binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getCurrentAsrLabel()})"
+                    }
+                }
+                "com.radio.app.SUBTITLE_ERROR" -> {
+                    val message = intent.getStringExtra("message") ?: "未知错误"
+                    runOnUiThread {
+                        if (_binding == null) return@runOnUiThread
+                        finishAiProcessing("subtitle")
+                        binding.tvSubtitleStatus.text = "字幕生成失败: $message"
+                        binding.tvSubtitleStatus.visibility = View.VISIBLE
+                        Toast.makeText(this@PlayerActivity, message, Toast.LENGTH_SHORT).show()
+                        android.util.Log.e("PlayerActivity", "Subtitle broadcast error: $message")
+                    }
+                }
+                "com.radio.app.SUBTITLE_COMPLETE" -> {
+                    runOnUiThread {
+                        if (_binding == null) return@runOnUiThread
+                        finishAiProcessing("subtitle")
+                        subtitleTranscripts = subtitleBroadcastList.toList()
+                        subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                        binding.subtitleView.visibility = View.GONE
+                        binding.tvSubtitleTitle.visibility = View.VISIBLE
+                        binding.recyclerSubtitles.visibility = View.VISIBLE
+                        Toast.makeText(this@PlayerActivity, "字幕生成完成，共${subtitleTranscripts.size}条", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
     private var lastSegmentHighlightIdx = -1
     private val positionUpdateHandler = Handler(Looper.getMainLooper())
     private val positionUpdateRunnable = object : Runnable {
@@ -230,12 +298,19 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${formatTime(svcDur.toInt())}"
                 binding.seekBar.max = svcDur.toInt()
                 binding.seekBar.progress = svcPos.toInt()
-                writeJitterLog("[v2.0.55] onServiceConnected: synced UI to service position=$svcPos (no flicker)")
+                writeJitterLog("[v2.0.58] onServiceConnected: synced UI to service position=$svcPos (no flicker)")
             } else {
-                // [v2.0.56] Issue 1 Fix: Reset lastDisplayedPositionMs when service has no position
-                // Otherwise the monotonic guard blocks UI updates for the new episode (position 0 < old position)
-                lastDisplayedPositionMs = 0
-                writeJitterLog("[v2.0.56] onServiceConnected: service has no position (pos=$svcPos), reset lastDisplayedPositionMs=0")
+                // [v2.0.58] Issue 1 Fix: When service has pos=0, keep savedPos as lastDisplayedPositionMs
+                // This prevents UI showing 0 then jumping to savedPos (flicker)
+                // The monotonic guard will block 0 during buffering, just like Pre-setting UI
+                val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
+                if (savedPos > 0) {
+                    lastDisplayedPositionMs = savedPos
+                    writeJitterLog("[v2.0.58] onServiceConnected: service pos=0, keeping lastDisplayedPositionMs=$savedPos (prevents flicker)")
+                } else {
+                    lastDisplayedPositionMs = 0
+                    writeJitterLog("[v2.0.58] onServiceConnected: service pos=0, no savedPos, reset lastDisplayedPositionMs=0")
+                }
             }
 
             // Issue 1: If currentEpisode is null (recreated from notification without episode data), get from service
@@ -1695,6 +1770,8 @@ class PlayerActivity : AppCompatActivity() {
         saveProcessingState()
         if (_binding == null) return
         if (taskType == "subtitle") {
+            // [跨进程] 新任务开始时清空广播累积列表，避免残留上一轮字幕
+            subtitleBroadcastList.clear()
             binding.progressSubtitle.progress = 0
             binding.progressSubtitle.visibility = View.VISIBLE
             binding.tvSubtitleStatus.visibility = View.VISIBLE
@@ -2035,6 +2112,17 @@ class PlayerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         writeJitterLog("onResume: subtitleProcessing=$subtitleProcessing, segmentProcessing=$segmentProcessing, serviceBound=$serviceBound")
+        // [跨进程] 注册字幕广播接收器（服务运行在 ":subtitle" 进程，结果通过广播回传）
+        if (!subtitleReceiverRegistered) {
+            val filter = IntentFilter().apply {
+                addAction("com.radio.app.SUBTITLE_GENERATED")
+                addAction("com.radio.app.SUBTITLE_PROGRESS")
+                addAction("com.radio.app.SUBTITLE_ERROR")
+                addAction("com.radio.app.SUBTITLE_COMPLETE")
+            }
+            registerReceiver(subtitleReceiver, filter)
+            subtitleReceiverRegistered = true
+        }
         // 恢复处理状态持久化
         restoreProcessingState()
         
@@ -2135,6 +2223,10 @@ class PlayerActivity : AppCompatActivity() {
             // subtitles exist previously caused segments to be permanently hidden.
             // Feature A: restore subtitle RecyclerView
             subtitleTranscripts = dbTranscripts
+            // [跨进程] 将广播累积列表与数据库对齐：暂停期间漏收的广播结果已落盘到 DB，
+            // 这里以 DB 为准重建累积列表，避免后续广播追加时把 DB 里的字幕丢掉。
+            subtitleBroadcastList.clear()
+            subtitleBroadcastList.addAll(dbTranscripts)
             subtitleAdapter?.setTranscripts(subtitleTranscripts)
             binding.tvSubtitleTitle.visibility = View.VISIBLE
             binding.recyclerSubtitles.visibility = View.VISIBLE
@@ -2142,6 +2234,8 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             // Issue 8: no subtitles for this episode — hide the subtitle RecyclerView and its
             // title so the subtitle area below the button is empty, while segments stay visible.
+            // [跨进程] 无字幕时同步清空广播累积列表
+            subtitleBroadcastList.clear()
             binding.recyclerSubtitles.visibility = View.GONE
             binding.tvSubtitleTitle.visibility = View.GONE
         }
@@ -2154,6 +2248,8 @@ class PlayerActivity : AppCompatActivity() {
         subtitleTranscripts = emptyList()
         lastSubtitleHighlightIdx = -1
         subtitleAdapter?.setTranscripts(emptyList())
+        // [跨进程] 同步清空广播累积列表
+        subtitleBroadcastList.clear()
         // [v2.0.46] Reset monotonic position guard when switching episodes
         lastDisplayedPositionMs = 0L
         // [v2.0.51] Reset seek-once flag when switching episodes
@@ -2239,6 +2335,13 @@ class PlayerActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         writeJitterLog("onPause")
+        // [跨进程] 注销字幕广播接收器（下次 onResume 会重新注册）
+        if (subtitleReceiverRegistered) {
+            try {
+                unregisterReceiver(subtitleReceiver)
+            } catch (_: Exception) {}
+            subtitleReceiverRegistered = false
+        }
         // Feature B: stop position update when activity is not visible
         positionUpdateHandler.removeCallbacks(positionUpdateRunnable)
         // Issue 1: Cache playback position to prevent seekbar rewind on resume

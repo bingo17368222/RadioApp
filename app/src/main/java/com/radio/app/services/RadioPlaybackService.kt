@@ -354,21 +354,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             )
         mediaSession?.setPlaybackState(builder.build())
 
-        // [v2.0.44] Issue 5 Fix: Always set MediaMetadata with duration for progress bar
-        // Previously only set when prepared=true, causing no progress bar on initial notification
-        if (!isLive) {
-            val dur = player?.duration ?: 0L
-            // [v2.0.44] Fallback to episode duration when player duration not available (not prepared yet)
-            val effectiveDur = if (dur > 0) dur else (currentEpisode?.duration?.times(1000) ?: 0L)
-            if (effectiveDur > 0) {
-                val metadata = MediaMetadataCompat.Builder()
-                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, notificationTitle)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, buildNotificationSubText())
-                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, effectiveDur)
-                    .build()
-                mediaSession?.setMetadata(metadata)
-            }
-        }
+        // [v2.0.44] Issue 5 Fix: 同步 MediaSession 元数据，确保切换节目后通知栏元数据及时更新
+        updateMediaSessionMetadata()
+    }
+
+    /**
+     * [Issue 5 Fix] 更新 MediaSession 元数据（节目标题/日期/时间段/时长）。
+     * MediaStyle 通知栏直接读取 MediaSession 的当前元数据进行渲染，因此必须在构建/刷新
+     * 通知栏之前调用。切换节目后即使播放器尚未准备好（duration 未知），也用节目元数据
+     * 时长回退，确保覆盖上一集的陈旧元数据，避免通知栏显示旧节目信息。
+     */
+    private fun updateMediaSessionMetadata() {
+        val episode = currentEpisode ?: return  // 直播时 currentEpisode 为 null，直接返回
+        // 优先使用播放器实际时长，未准备好时回退到节目元数据时长（毫秒）
+        val dur = player?.duration ?: 0L
+        val effectiveDur = if (dur > 0) dur else (episode.duration.times(1000))
+        val metadata = MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, episode.title)
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, notificationDate)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, notificationTimeRange)
+            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, effectiveDur)
+            .build()
+        mediaSession?.setMetadata(metadata)
     }
 
     private fun ensurePlayerInitialized() {
@@ -1674,6 +1681,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun updateNotification(): Notification {
         writeServiceLog("notification", "updateNotification: title=$notificationTitle, subText=$notificationSubText, date=$notificationDate, timeRange=$notificationTimeRange, playing=${player?.isPlaying}, userPaused=$userPaused, prepared=$prepared, contentHash=$lastNotificationContentHash")
+        // [Issue 5 Fix] 构建通知栏前先刷新 MediaSession 元数据，避免显示上一集陈旧信息
+        updateMediaSessionMetadata()
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
         writeServiceLog("notification", "updateNotification: BEFORE build - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange', style='$notificationStyle'")
@@ -2317,6 +2326,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "playEpisode: URL fallback date/time - date='$notificationDate', timeRange='$notificationTimeRange', url='${episode.audioUrl}'")
         writeServiceLog("notification", "playEpisode: final date/time - date='$notificationDate', timeRange='$notificationTimeRange'")
         writeNotifDetailLog("playEpisode: SET notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', episode=${episode.title}")
+        // [Issue 5 Fix] 节目切换后立即刷新 MediaSession 元数据，确保通知栏显示新一集信息
+        updateMediaSessionMetadata()
         val notification = updateNotification()
         // 立即推送前台通知，确保通知栏立即更新，不被进度轮询覆盖
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -2909,6 +2920,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     writeNotifDetailLog("autoPlayNextEpisode: cross-day episode found, switching - title=${crossDayEp.title}, id=${crossDayEp.id}")
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
                     playEpisode(crossDayEp, false)
+                    updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
+                    forceNotificationUpdate = true
+                    lastNotificationContentHash = 0
                     updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
                     callback?.onEpisodeChanged(crossDayEp)
                     return
@@ -2923,6 +2937,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
+            updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
+            forceNotificationUpdate = true
+            lastNotificationContentHash = 0
             updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
             // 通过回调通知 Activity 更新界面
             callback?.onEpisodeChanged(nextEpisode)

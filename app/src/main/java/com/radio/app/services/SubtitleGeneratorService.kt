@@ -244,6 +244,33 @@ class SubtitleGeneratorService : Service() {
     }
 
     /**
+     * [跨进程] 当 SubtitleGeneratorService 运行在 ":subtitle" 进程时，SubtitleCallback 回调对象
+     * 无法跨进程传递（LocalBinder.getService() 跨进程返回的是 BinderProxy）。因此在每个回调触发
+     * 的同时发送广播，主进程的 PlayerActivity 通过 BroadcastReceiver 接收，从而在字幕进程崩溃
+     * （OOM/SIGSEGV）时主进程（播放）仍能正常工作并收到已生成的结果。
+     *
+     * 广播限定在本应用包内投递（intent.setPackage），避免字幕内容泄露给其他应用。
+     */
+    private fun sendSubtitleBroadcast(action: String, extras: Map<String, Any?>) {
+        try {
+            val intent = Intent(action)
+            intent.setPackage(packageName)
+            for ((key, value) in extras) {
+                when (value) {
+                    is String -> intent.putExtra(key, value)
+                    is Int -> intent.putExtra(key, value)
+                    is Long -> intent.putExtra(key, value)
+                    is Boolean -> intent.putExtra(key, value)
+                    is android.os.Parcelable -> intent.putExtra(key, value)
+                }
+            }
+            sendBroadcast(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "sendSubtitleBroadcast failed for $action: ${e.message}")
+        }
+    }
+
+    /**
      * Generate subtitles with independent per-task progress
      */
     fun generateSubtitlesForEpisode(episodeId: String, audioUrl: String, callback: SubtitleCallback) {
@@ -256,13 +283,23 @@ class SubtitleGeneratorService : Service() {
         }
         ctx.log("Starting subtitle generation, audioUrl=$audioUrl")
 
-        // 包装回调，同时更新通知
+        // 包装回调，同时更新通知；并同时发送跨进程广播，保证 :subtitle 进程崩溃后主进程仍可收到结果
         val wrappedCallback = object : SubtitleCallback {
             override fun onSubtitleGenerated(transcript: Transcript) {
                 // Ensure episodeId is set for DB persistence
                 if (transcript.episodeId.isNullOrBlank()) transcript.episodeId = episodeId
                 callback.onSubtitleGenerated(transcript)
-                // Incrementally save to database
+                // [跨进程] 发送字幕生成广播（回调跨进程无效，广播作为主通道）
+                sendSubtitleBroadcast(
+                    "com.radio.app.SUBTITLE_GENERATED",
+                    mapOf(
+                        "episodeId" to episodeId,
+                        "text" to (transcript.text ?: ""),
+                        "startMs" to transcript.segmentStart,
+                        "endMs" to transcript.segmentEnd
+                    )
+                )
+                // Incrementally save to database (服务直接写库，崩溃前已落盘的结果不会丢失)
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@SubtitleGeneratorService)
                     dbHelper.saveTranscript(transcript)
@@ -274,11 +311,28 @@ class SubtitleGeneratorService : Service() {
             override fun onProgressUpdate(progress: Int, total: Int) {
                 if (ctx.cancelled.get() || globalCancelled.get()) return
                 callback.onProgressUpdate(progress, total)
+                // [跨进程] 发送进度广播
+                sendSubtitleBroadcast(
+                    "com.radio.app.SUBTITLE_PROGRESS",
+                    mapOf(
+                        "episodeId" to episodeId,
+                        "progress" to progress,
+                        "total" to total
+                    )
+                )
                 updateProgressNotification(progress, "字幕生成")
                 ctx.lastReportedProgress = progress
             }
             override fun onError(error: String) {
                 callback.onError(error)
+                // [跨进程] 发送错误广播
+                sendSubtitleBroadcast(
+                    "com.radio.app.SUBTITLE_ERROR",
+                    mapOf(
+                        "episodeId" to episodeId,
+                        "message" to error
+                    )
+                )
                 // Ensure task is cleaned up on error: cancel ongoing notification immediately
                 cancelProgressNotification()
                 activeTasks.remove(episodeId)
@@ -286,6 +340,13 @@ class SubtitleGeneratorService : Service() {
             }
             override fun onComplete(transcripts: List<Transcript>) {
                 callback.onComplete(transcripts)
+                // [跨进程] 发送完成广播
+                sendSubtitleBroadcast(
+                    "com.radio.app.SUBTITLE_COMPLETE",
+                    mapOf(
+                        "episodeId" to episodeId
+                    )
+                )
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
                     updateProgressNotification(100, "字幕生成完成")
                 }
@@ -2343,15 +2404,36 @@ class SubtitleGeneratorService : Service() {
             }
             wakeLock?.acquire(3600000)
 
-            // 关键修复：onStartCommand只启动前台通知，不启动任务
-            // 任务由Activity通过binder调用generateSegmentsForEpisode/generateSubtitlesForEpisode启动
-            // 这样Activity的回调才能正确接收进度和结果
+            // [v2.0.58] Issue 2+3+4 Fix: Start task directly in onStartCommand
+            // When service runs in :subtitle process, Activity binder call fails (BinderProxy != LocalBinder)
+            // So we must start the task here. Broadcasts are sent by wrappedCallback for cross-process communication.
             val progressNotification = createProgressNotification(0, taskLabel)
             try { startForeground(NOTIFICATION_ID, progressNotification) }
             catch (e: Exception) { Log.w(TAG, "startForeground failed: ${e.message}") }
 
-            // 在Activity绑定之前，不启动任务
-            // 任务启动时会通过回调更新通知进度
+            // Only start if not already running (prevents duplicate when Activity also binds in-process)
+            if (!activeTasks.containsKey(episodeId)) {
+                logToFile("onStartCommand: [v2.0.58] starting $taskType task for episode=$episodeId (cross-process mode)")
+                if (taskType == "segment") {
+                    val dummyCallback = object : SegmentCallback {
+                        override fun onSegmentGenerated(episodeId: String, startMs: Long, endMs: Long, title: String?) {}
+                        override fun onProgressUpdate(progress: Int, total: Int) {}
+                        override fun onError(message: String) {}
+                        override fun onComplete() {}
+                    }
+                    generateSegmentsForEpisode(episodeId, audioUrl, dummyCallback)
+                } else {
+                    val dummyCallback = object : SubtitleCallback {
+                        override fun onSubtitleGenerated(transcript: Transcript) {}
+                        override fun onProgressUpdate(progress: Int, total: Int) {}
+                        override fun onError(message: String) {}
+                        override fun onComplete() {}
+                    }
+                    generateSubtitlesForEpisode(episodeId, audioUrl, dummyCallback)
+                }
+            } else {
+                logToFile("onStartCommand: task already running for $episodeId, skipping")
+            }
         }
         return START_NOT_STICKY
     }
