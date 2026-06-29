@@ -86,7 +86,7 @@ class SettingsFragment : Fragment() {
         aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAiModel.adapter = aiModelAdapter
 
-        val asrProviderLabels = mutableListOf("百度语音", "FunASR", "Whisper在线", "本地Vosk")
+        val asrProviderLabels = mutableListOf("百度语音", "FunASR", "Whisper在线")
         val asrProviderAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, asrProviderLabels)
         asrProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAsrProvider.adapter = asrProviderAdapter
@@ -120,12 +120,10 @@ class SettingsFragment : Fragment() {
                 }
             }
 
-            // [v2.0.56] Issue 4 Fix: Scan for actual Vosk model directories (not hardcoded names)
-            // Actual directory names: vosk-model-small-cn-0.22, vosk-model-cn-0.22, etc.
+            // [v2.0.57] Issue 6 Fix: Clear descriptions for Vosk models
             val allDirs = modelsDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
             val voskDirs = allDirs.filter {
-                it.name.contains("vosk", ignoreCase = true) &&
-                !it.name.equals("vosk-engine", ignoreCase = true)  // Exclude engine directory
+                it.name.contains("vosk-model", ignoreCase = true)  // Must start with vosk-model
             }.sortedByDescending { !it.name.contains("small", ignoreCase = true) }  // Large models first
 
             for (dir in voskDirs) {
@@ -138,13 +136,16 @@ class SettingsFragment : Fragment() {
                 }
                 val totalSize = calculateDirSize(dir)
                 if (totalSize >= 1024 * 1024) {
-                    // [v2.0.56] Generate label from directory name
+                    // [v2.0.57] Generate clear label with size info
+                    val sizeMB = totalSize / 1024 / 1024
                     val label = when {
-                        dir.name.contains("small", ignoreCase = true) -> "本地Vosk 小模型(${dir.name})"
-                        dir.name.contains("large", ignoreCase = true) -> "本地Vosk 大模型(${dir.name})"
-                        else -> "本地Vosk ${dir.name}"
+                        dir.name.contains("small", ignoreCase = true) -> "Vosk中文小模型 (${sizeMB}MB)"
+                        dir.name.contains("large", ignoreCase = true) -> "Vosk中文大模型 (${sizeMB}MB)"
+                        dir.name.contains("cn", ignoreCase = true) -> "Vosk中文模型 (${sizeMB}MB)"
+                        dir.name.contains("en", ignoreCase = true) -> "Vosk英文模型 (${sizeMB}MB)"
+                        else -> "Vosk模型 ${dir.name} (${sizeMB}MB)"
                     }
-                    Log.d("SettingsFragment", "Adding Vosk model: $label (size=${totalSize / 1024 / 1024}MB)")
+                    Log.d("SettingsFragment", "Adding Vosk model: $label")
                     adapter.add(label)
                 }
             }

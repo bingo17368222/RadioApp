@@ -400,19 +400,18 @@ class PlayerActivity : AppCompatActivity() {
                 writeJitterLog("[v2.0.42] Service was killed (!svcStarted), keeping savedPos=${savedPos}ms (valid=$isValidSavedPos) to pass to playEpisode for position restore")
             }
 
-            if (!isFreshStart && currentEpisode != null && isValidSavedPos && !svcStarted) {
-                // [v2.0.55] Issue 1 Fix: Only pre-set UI when service was KILLED (no position available)
-                // PowerAmp approach: when service is alive, use its current position directly (no pre-set)
+            // [v2.0.57] Issue 1 Fix: Pre-set UI to savedPos when service is killed (regardless of isFreshStart)
+            // PowerAmp approach: show saved position immediately, then sync to service when ready
+            // Key: set lastDisplayedPositionMs = savedPos so monotonic guard blocks 0 during buffering
+            if (!svcStarted && currentEpisode != null && isValidSavedPos) {
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                 binding.seekBar.progress = savedPos.toInt()
                 binding.tvLiveIndicator.text = "恢复中..."
-                writeJitterLog("[v2.0.55] Pre-setting UI to saved position: ${savedPos}ms (service killed, svcStarted=false)")
+                lastDisplayedPositionMs = savedPos  // Block 0 during buffering
+                writeJitterLog("[v2.0.57] Pre-setting UI to saved position: ${savedPos}ms (svcStarted=$svcStarted, isFreshStart=$isFreshStart)")
             } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
                 writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
-            // [v2.0.55] Issue 1 Fix: Removed isFreshStart pre-setting (caused flicker when service position differs)
-            // When service is alive (svcStarted=true), awaitingServicePosition blocks UI updates until
-            // service reports its actual position, so no pre-set needed and no flicker.
 
             val msg = if (sameEpisode && !svcStarted) {
                 "Same episode, service was killed, restoring from saved position: ${savedPos}ms (valid=$isValidSavedPos)"

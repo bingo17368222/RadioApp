@@ -154,13 +154,23 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
     jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
 
+    // [v2.0.57] Issue 2 Fix: Explicit NULL checks before processing
+    if (!ctx) {
+        LOGE("full: ctx is NULL, aborting");
+        return -1;
+    }
+    if (!full_func) {
+        LOGE("full: full_func is NULL (library not loaded), aborting");
+        return -2;
+    }
+
     // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp (doesn't work on Android ART)
     // Android ART intercepts SIGSEGV before custom signal handlers, so siglongjmp never fires.
-    // [v2.0.56] Issue 2 Fix: Reduce to 1 second (was 5s) - even 5s (80000 samples) still crashes.
+    // [v2.0.57] Issue 2 Fix: Reduce to 0.5 second (was 1s) - minimize memory to avoid OOM crash.
     // Also fix NaN check to check ALL samples (not just first 1000)
-    int maxSamples = 1 * 16000;  // 1 second at 16kHz (reduced from 5s to avoid crash)
+    int maxSamples = 8000;  // 0.5 second - minimize memory
     int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
-    LOGI("full: n_samples=%d, processSamples=%d (capped at 1s), ctx=%p", n_samples, processSamples, ctx);
+    LOGI("full: n_samples=%d, processSamples=%d (capped at 0.5s), ctx=%p", n_samples, processSamples, ctx);
 
     // [v2.0.45] Issue 3 Fix: Check for NaN/Infinity in samples that could cause SIGSEGV
     // [v2.0.52] Fix: Check ALL processSamples (not just first 1000)
@@ -185,6 +195,10 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.n_max_text_ctx = 0;
     params.offset_ms = 0;
     params.duration_ms = 0;
+    // [v2.0.57] Issue 2 Fix: Minimize memory usage to avoid OOM
+    params.no_context = true;        // disable context memory
+    params.single_segment = true;    // reduce segmentation memory
+    params.max_tokens = 1;           // minimize token processing
 
     // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp - doesn't work on Android ART
     // Just install simple crash logger (writes to file before process dies)

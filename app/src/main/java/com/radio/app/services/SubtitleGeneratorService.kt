@@ -636,10 +636,12 @@ class SubtitleGeneratorService : Service() {
             // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
-            logToFile("generateWithVosk: PCM file=${pcm16kFile.absolutePath}, size=${pcm16kFile.length()}, willChunk=${pcm16kFile.length() > 50_000_000}")
-            if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
+            logToFile("generateWithVosk: PCM file=${pcm16kFile.absolutePath}, size=${pcm16kFile.length()}, willChunk=${pcm16kFile.length() > 1024}")
+            // [v2.0.57] Issue 3+4 Fix: Always use chunked processing to avoid OOM
+            // Previous threshold was 50MB - but even 7MB PCM + 1.3GB model = OOM
+            if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Vosk processing")
+                ctx.log("[v2.0.57] Using chunked Vosk processing (PCM=${sizeMB}MB)")
                 return processVoskInChunks(pcm16kFile, modelPath, callback, ctx)
             }
 
@@ -892,13 +894,17 @@ class SubtitleGeneratorService : Service() {
                     logToFile("processVoskInChunks: setWords failed: ${e.message}")
                 }
                 logToFile("processVoskInChunks: Recognizer methods: ${voskRecognizerClass!!.declaredMethods.map { "${it.name}(${it.parameterTypes.map { p -> p.simpleName }})" }}")
+            } catch (oom: OutOfMemoryError) {
+                logToFile("processVoskInChunks: [v2.0.57] OOM loading model: ${oom.message}")
+                callback.onError("内存不足无法加载Vosk模型。大模型需要1.3GB内存，请使用小模型或关闭其他应用")
+                return false
             } catch (e: Exception) {
-                logToFile("processVoskInChunks: FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
+                logToFile("processVoskInChunks: [v2.0.57] FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
                 e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
                 callback.onError("Vosk模型初始化失败: ${e.message}")
                 return false
             } catch (e: UnsatisfiedLinkError) {
-                logToFile("processVoskInChunks: UnsatisfiedLinkError creating Model: ${e.message}")
+                logToFile("processVoskInChunks: [v2.0.57] UnsatisfiedLinkError creating Model: ${e.message}")
                 callback.onError("Vosk原生方法调用失败: ${e.message}")
                 return false
             }
