@@ -1364,7 +1364,7 @@ class SubtitleGeneratorService : Service() {
 
     /**
      * 验证目录是否包含有效的Vosk模型
-     * [v2.0.56] Issue 3 Fix: 严格验证 - 有效的 Vosk 模型目录必须至少包含 am/ 和 graph/ 子目录。
+     * v2.0.56 Issue 3 Fix: 严格验证 - 有效的 Vosk 模型目录必须至少包含 am/ 和 graph/ 子目录。
      * 这样可以拒绝未完成的下载（目录里只有 .zip.tmp 文件，缺少实际模型文件 am/、graph/ 等）。
      * 同时检测一层嵌套子目录（zip解压可能产生嵌套）
      */
