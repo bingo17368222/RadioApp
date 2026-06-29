@@ -956,17 +956,29 @@ class SubtitleGeneratorService : Service() {
                 }
                 logToFile("processVoskInChunks: Recognizer methods: ${voskRecognizerClass!!.declaredMethods.map { "${it.name}(${it.parameterTypes.map { p -> p.simpleName }})" }}")
             } catch (oom: OutOfMemoryError) {
-                logToFile("processVoskInChunks: [v2.0.57] OOM loading model: ${oom.message}")
+                logToFile("processVoskInChunks: [v2.0.59] OOM loading model: ${oom.message}")
                 callback.onError("内存不足无法加载Vosk模型。大模型需要1.3GB内存，请使用小模型或关闭其他应用")
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Vosk内存不足: ${oom.message}"
+                ))
                 return false
             } catch (e: Exception) {
-                logToFile("processVoskInChunks: [v2.0.57] FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
+                logToFile("processVoskInChunks: [v2.0.59] FAILED to create Model/Recognizer: ${e.javaClass.name}: ${e.message}")
                 e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
                 callback.onError("Vosk模型初始化失败: ${e.message}")
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Vosk处理失败: ${e.message}"
+                ))
                 return false
             } catch (e: UnsatisfiedLinkError) {
-                logToFile("processVoskInChunks: [v2.0.57] UnsatisfiedLinkError creating Model: ${e.message}")
+                logToFile("processVoskInChunks: [v2.0.59] UnsatisfiedLinkError creating Model: ${e.message}")
                 callback.onError("Vosk原生方法调用失败: ${e.message}")
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Vosk处理失败: ${e.message}"
+                ))
                 return false
             }
             ctx.log("Vosk recognizer created for chunked processing")
@@ -1191,14 +1203,22 @@ class SubtitleGeneratorService : Service() {
             return true
         } catch (e: Throwable) {
             if (e is OutOfMemoryError) {
-                logToFile("processVoskInChunks: OOM ERROR")
+                logToFile("processVoskInChunks: [v2.0.59] OOM ERROR: ${e.message}")
                 ctx.log("ERROR: OOM during chunked Vosk processing")
                 callback.onError("内存不足：音频处理需要更多内存。请尝试：1)关闭其他应用 2)在设置→离线引擎管理→切换到Whisper引擎")
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Vosk内存不足: ${e.message}"
+                ))
             } else {
-                logToFile("processVoskInChunks: EXCEPTION: ${e.javaClass.name}: ${e.message}")
+                logToFile("processVoskInChunks: [v2.0.59] EXCEPTION: ${e.javaClass.name}: ${e.message}")
                 e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
                 ctx.log("ERROR: Vosk chunked processing failed: ${e.javaClass.name}: ${e.message}")
                 callback.onError("Vosk处理失败: ${e.message}")
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Vosk处理失败: ${e.message}"
+                ))
             }
             return false
         } finally {
@@ -1998,10 +2018,10 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: converted PCM to float samples, nSamples=$nSamples")
 
-            // [v2.0.55] Issue 2 Fix: Cap samples to 5 seconds in Kotlin to reduce memory
-            val maxSamples = 5 * 16000  // 5 seconds at 16kHz = 80000 samples
+            // [v2.0.59] Issue 2 Fix: Cap samples to 1 second in Kotlin to match C code cap, minimize memory
+            val maxSamples = 1 * 16000  // [v2.0.59] 1 second - match C code cap, minimize memory
             val processSamples = if (nSamples > maxSamples) maxSamples else nSamples
-            logToFile("processWhisperInChunks: [v2.0.55] nSamples=$nSamples, capping to $processSamples (5s)")
+            logToFile("processWhisperInChunks: [v2.0.59] nSamples=$nSamples, capping to $processSamples (1s)")
 
             // [v2.0.44] Issue 3&7: Write PRE-CRASH MARKER to BOTH the main service log AND whisper_crash.log
             // This ensures the crash info is in the user's log export (external storage)
@@ -2014,66 +2034,84 @@ class SubtitleGeneratorService : Service() {
                 FileWriter(crashLogFile, true).use { it.append("[$ts][$appVersion] PRE-CRASH MARKER: about to call whisper_full(ctxPtr=$ctxPtr, nSamples=$processSamples, pcmFile=${pcmFile.name})\n") }
             } catch (_: Exception) {}
 
-            // Run full transcription
-            logToFile("processWhisperInChunks: calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
-            val result = bridge.full(ctxPtr, samples, processSamples)
-            logToFile("processWhisperInChunks: [v2.0.52] bridge.full returned $result")
-
-            // [v2.0.52] Issue 2: Remove -777 crash recovery handling (siglongjmp removed)
-            // If whisper crashes, the process dies. No fallback to Vosk per user requirement.
-
-            // [v2.0.43] Issue 3&7: Check for crash log from native signal handler
+            // [v2.0.59] Issue 2 Fix: Wrap bridge.full() in try-catch to catch native/OOM crashes
+            // so the main app receives an error broadcast instead of silent process death.
+            var ctxFreed = false
             try {
-                val crashLogFile = java.io.File(filesDir, "logs/whisper/whisper_crash.log")
-                if (crashLogFile.exists()) {
-                    val crashContent = crashLogFile.readText()
-                    if (crashContent.contains("CRASH signal=")) {
-                        logToFile("processWhisperInChunks: DETECTED NATIVE CRASH from whisper_crash.log: $crashContent")
-                        // Clear the crash log so it doesn't trigger again
-                        crashLogFile.writeText("")
+                logToFile("processWhisperInChunks: [v2.0.59] calling bridge.full(ctxPtr=$ctxPtr, nSamples=$processSamples)")
+                val result = bridge.full(ctxPtr, samples, processSamples)
+                logToFile("processWhisperInChunks: [v2.0.59] bridge.full returned $result")
+
+                // [v2.0.52] Issue 2: Remove -777 crash recovery handling (siglongjmp removed)
+                // If whisper crashes, the process dies. No fallback to Vosk per user requirement.
+
+                // [v2.0.43] Issue 3&7: Check for crash log from native signal handler
+                try {
+                    val crashLogFile = java.io.File(filesDir, "logs/whisper/whisper_crash.log")
+                    if (crashLogFile.exists()) {
+                        val crashContent = crashLogFile.readText()
+                        if (crashContent.contains("CRASH signal=")) {
+                            logToFile("processWhisperInChunks: DETECTED NATIVE CRASH from whisper_crash.log: $crashContent")
+                            // Clear the crash log so it doesn't trigger again
+                            crashLogFile.writeText("")
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                if (result != 0) {
+                    logToFile("processWhisperInChunks: whisper_full failed with code $result")
+                    callback.onError("Whisper识别失败，错误码: $result")
+                    bridge.free(ctxPtr)
+                    ctxFreed = true
+                    return false
+                }
+
+                // Get segments
+                val nSegments = bridge.fullNSegments(ctxPtr)
+                logToFile("processWhisperInChunks: got $nSegments segments")
+
+                val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
+                for (i in 0 until nSegments) {
+                    if (ctx.cancelled.get()) break
+
+                    val text = bridge.fullGetSegmentText(ctxPtr, i)
+                    val t0 = bridge.fullGetSegmentT0(ctxPtr, i)  // in centiseconds (10ms)
+                    val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
+
+                    if (text.isNotBlank()) {
+                        // [v2.0.55] Issue 4 Fix: Add 15-min offset only if we actually skipped 15 min
+                        val whisperOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                        val transcript = com.radio.app.models.Transcript(
+                            text = text.trim(),
+                            segmentStart = whisperOffsetMs + t0 * 10,  // convert centiseconds to milliseconds
+                            segmentEnd = whisperOffsetMs + t1 * 10
+                        )
+                        allTranscripts.add(transcript)
+                        logToFile("processWhisperInChunks: segment $i: start=${transcript.segmentStart}ms, end=${transcript.segmentEnd}ms, text='${text.take(100)}...'")
+                        callback.onSubtitleGenerated(transcript)
                     }
                 }
-            } catch (_: Exception) {}
 
-            if (result != 0) {
-                logToFile("processWhisperInChunks: whisper_full failed with code $result")
-                callback.onError("Whisper识别失败，错误码: $result")
+                // Free context
                 bridge.free(ctxPtr)
+                ctxFreed = true
+
+                logToFile("processWhisperInChunks: COMPLETE, ${allTranscripts.size} transcripts generated")
+                callback.onComplete(allTranscripts)
+                return true
+            } catch (e: Throwable) {
+                logToFile("processWhisperInChunks: [v2.0.59] bridge.full CRASHED: ${e.javaClass.name}: ${e.message}")
+                callback.onError("Whisper处理失败: ${e.message}")
+                // Send error broadcast so the main app/process is notified
+                sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                    "episodeId" to ctx.episodeId,
+                    "message" to "Whisper处理失败: ${e.message}"
+                ))
+                if (!ctxFreed) {
+                    bridge.free(ctxPtr)
+                }
                 return false
             }
-
-            // Get segments
-            val nSegments = bridge.fullNSegments(ctxPtr)
-            logToFile("processWhisperInChunks: got $nSegments segments")
-
-            val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
-            for (i in 0 until nSegments) {
-                if (ctx.cancelled.get()) break
-
-                val text = bridge.fullGetSegmentText(ctxPtr, i)
-                val t0 = bridge.fullGetSegmentT0(ctxPtr, i)  // in centiseconds (10ms)
-                val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
-
-                if (text.isNotBlank()) {
-                    // [v2.0.55] Issue 4 Fix: Add 15-min offset only if we actually skipped 15 min
-                    val whisperOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
-                    val transcript = com.radio.app.models.Transcript(
-                        text = text.trim(),
-                        segmentStart = whisperOffsetMs + t0 * 10,  // convert centiseconds to milliseconds
-                        segmentEnd = whisperOffsetMs + t1 * 10
-                    )
-                    allTranscripts.add(transcript)
-                    logToFile("processWhisperInChunks: segment $i: start=${transcript.segmentStart}ms, end=${transcript.segmentEnd}ms, text='${text.take(100)}...'")
-                    callback.onSubtitleGenerated(transcript)
-                }
-            }
-
-            // Free context
-            bridge.free(ctxPtr)
-
-            logToFile("processWhisperInChunks: COMPLETE, ${allTranscripts.size} transcripts generated")
-            callback.onComplete(allTranscripts)
-            return true
 
         } catch (e: UnsatisfiedLinkError) {
             logToFile("processWhisperInChunks: UnsatisfiedLinkError: ${e.message}")

@@ -340,7 +340,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun updateMediaSessionState() {
         val state = if (player?.isPlaying == true)
             PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-        val pos = player?.currentPosition ?: 0L
+        // [v2.0.59] Issue 5 Fix: Use pendingStartPosition when player not ready (pos=0 after episode switch)
+        // This prevents the notification progress bar from disappearing after cross-day episode switch
+        val rawPos = player?.currentPosition ?: 0L
+        val pos = if (rawPos > 0) rawPos else pendingStartPosition
         val builder = PlaybackStateCompat.Builder()
             .setState(state, pos, 1.0f)
             .setActions(

@@ -737,6 +737,10 @@ class PlayerActivity : AppCompatActivity() {
                 android.util.Log.d("PlayerActivity", "onEpisodeChanged: ${episode.title}")
                 writeJitterLog("onEpisodeChanged: ${episode.title} (id=${episode.id})")
                 currentEpisode = episode
+                // [v2.0.59] Issue 1 Fix: Reset lastDisplayedPositionMs when episode changes
+                // Otherwise the monotonic guard blocks UI updates for the new episode (position 0 < old position)
+                lastDisplayedPositionMs = 0
+                writeJitterLog("[v2.0.59] onEpisodeChanged: reset lastDisplayedPositionMs=0 for new episode")
                 // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
                 clearSubtitles()
                 val newIdx = episodeList.indexOfFirst { it.id == episode.id }
@@ -1274,11 +1278,15 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
+            android.util.Log.w("PlayerActivity", "Subtitle service disconnected (process may have crashed)")
+            writeJitterLog("[v2.0.59] Subtitle service disconnected (process crashed?)")
             subtitleService = null
             subtitleServiceBound = false
             // Issue 9 (partial): the subtitle service died while we may have been showing
             // progress (cancelled via notification or killed by the system). Hide any
             // progress UI immediately so it does not get stuck visible or race to 100%.
+            // [v2.0.59] Don't show error here - the error broadcast will handle it.
+            // But if no broadcast was received, the process was killed before sending one.
             if (subtitleProcessing || segmentProcessing) {
                 cancelAiProcessing()
             }
