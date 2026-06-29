@@ -53,6 +53,7 @@ class AppSettings private constructor() {
 
     var aiModel: String = AI_MODEL_WENXIN
     var asrProvider: String = ASR_BAIDU
+    var voskModelDir: String = ""  // [v2.0.61] Issue 6 Fix: Save selected Vosk model directory name
     // [v2.0.50] Issue 3 Fix: Track Whisper crash count to permanently disable after 2 crashes
     var whisperCrashCount: Int = 0
     var uiTheme: String = THEME_DARK
@@ -94,6 +95,7 @@ class AppSettings private constructor() {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
+        voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""  // [v2.0.61] Issue 6
         whisperCrashCount = prefs.getInt("whisper_crash_count", 0)  // [v2.0.50]
         uiTheme = prefs.getString("ui_theme", THEME_DARK) ?: THEME_DARK
         preloadCache = prefs.getBoolean("preload_cache", false)
@@ -145,6 +147,7 @@ class AppSettings private constructor() {
         prefs.edit().apply {
             putString("ai_model", aiModel)
             putString("asr_provider", asrProvider)
+            putString("vosk_model_dir", voskModelDir)  // [v2.0.61] Issue 6
             putInt("whisper_crash_count", whisperCrashCount)  // [v2.0.50]
             putString("ui_theme", uiTheme)
             putBoolean("preload_cache", preloadCache)

@@ -15,6 +15,7 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
+        android:largeHeap="true"
         android:name=".RadioApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

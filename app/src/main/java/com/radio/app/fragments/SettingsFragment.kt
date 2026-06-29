@@ -36,6 +36,8 @@ class SettingsFragment : Fragment() {
     private lateinit var settings: AppSettings
     private var previousTheme: String? = null
     private var suppressListeners = true
+    // [v2.0.61] Issue 6 Fix: Track Vosk model directory names for spinner label → dir mapping
+    private val voskModelDirs = mutableMapOf<String, String>()  // label → directory name
     private var audioTrack: android.media.AudioTrack? = null
     @Volatile private var pcmPlaybackActive = false
 
@@ -136,16 +138,16 @@ class SettingsFragment : Fragment() {
                 }
                 val totalSize = calculateDirSize(dir)
                 if (totalSize >= 1024 * 1024) {
-                    // [v2.0.57] Generate clear label with size info
-                    val sizeMB = totalSize / 1024 / 1024
-                    val label = when {
-                        dir.name.contains("small", ignoreCase = true) -> "Vosk中文小模型 (${sizeMB}MB)"
-                        dir.name.contains("large", ignoreCase = true) -> "Vosk中文大模型 (${sizeMB}MB)"
-                        dir.name.contains("cn", ignoreCase = true) -> "Vosk中文模型 (${sizeMB}MB)"
-                        dir.name.contains("en", ignoreCase = true) -> "Vosk英文模型 (${sizeMB}MB)"
-                        else -> "Vosk模型 ${dir.name} (${sizeMB}MB)"
-                    }
+            // [v2.0.61] Issue 7 Fix: Simplified labels - "Vosk大模型" / "Vosk小模型"
+            val label = when {
+                dir.name.contains("small", ignoreCase = true) -> "Vosk小模型"
+                dir.name.contains("large", ignoreCase = true) -> "Vosk大模型"
+                dir.name.contains("cn", ignoreCase = true) -> "Vosk中文模型"
+                dir.name.contains("en", ignoreCase = true) -> "Vosk英文模型"
+                else -> "Vosk模型"
+            }
                     Log.d("SettingsFragment", "Adding Vosk model: $label")
+                    voskModelDirs[label] = dir.name  // [v2.0.61] Issue 6: Track dir name
                     adapter.add(label)
                 }
             }
@@ -306,13 +308,19 @@ class SettingsFragment : Fragment() {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
                 val selected = binding.spinnerAsrProvider.selectedItem.toString()
-                // [v2.0.60] Issue 6 Fix: Match new Vosk labels that start with "Vosk" (not "本地Vosk")
+                // [v2.0.61] Issue 6 Fix: Correct label → provider mapping
+                // IMPORTANT: Check "Whisper在线" BEFORE "本地Whisper" (both start with "Whisper")
                 val providerId = when {
-                    selected.startsWith("本地Whisper") || selected.startsWith("Whisper") -> "whisper-local"
-                    selected.startsWith("Vosk") -> "vosk-local"
+                    selected.startsWith("Whisper在线") -> AppSettings.ASR_WHISPER  // Online Whisper = "whisper"
+                    selected.startsWith("本地Whisper") -> "whisper-local"  // Local Whisper
+                    selected.startsWith("Vosk") -> {
+                        // [v2.0.61] Issue 6: Save the specific Vosk model directory
+                        val dirName = voskModelDirs[selected] ?: ""
+                        settings.voskModelDir = dirName
+                        "vosk-local"
+                    }
                     selected.startsWith("百度") -> AppSettings.ASR_BAIDU
                     selected.startsWith("FunASR") -> AppSettings.ASR_FUNASR
-                    selected.startsWith("Whisper在线") -> AppSettings.ASR_WHISPER
                     else -> {
                         val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
                         if (position < providers.size) providers[position] else selected
@@ -320,7 +328,8 @@ class SettingsFragment : Fragment() {
                 }
                 settings.asrProvider = providerId
                 save()
-                Toast.makeText(requireContext(), "ASR方案已切换: $selected (provider=$providerId)", Toast.LENGTH_SHORT).show()
+                val dirInfo = if (providerId == "vosk-local") " (dir=${settings.voskModelDir})" else ""
+                Toast.makeText(requireContext(), "ASR方案已切换: $selected → $providerId$dirInfo", Toast.LENGTH_SHORT).show()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
@@ -437,6 +446,7 @@ class SettingsFragment : Fragment() {
         binding.spinnerAsrProvider.onItemSelectedListener = null
         val asrProviders = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
         val savedProvider = settings.asrProvider
+        val savedVoskDir = settings.voskModelDir  // [v2.0.61] Issue 6: Use saved Vosk model dir
         val index = asrProviders.indexOfFirst { it == savedProvider }
         val adapter = binding.spinnerAsrProvider.adapter as? ArrayAdapter<*>
         if (index >= 0) {
@@ -444,14 +454,23 @@ class SettingsFragment : Fragment() {
         } else if (savedProvider == "whisper-local") {
             val whisperIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
                 val item = adapter?.getItem(it)?.toString() ?: ""
-                item.startsWith("本地Whisper") || item.startsWith("Whisper")
+                item.startsWith("本地Whisper")
             }
             if (whisperIndex >= 0) binding.spinnerAsrProvider.setSelection(whisperIndex)
         } else if (savedProvider == "vosk-local") {
-            // [v2.0.60] Issue 6 Fix: Match new Vosk labels (start with "Vosk", not "本地Vosk")
-            val voskIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
-                val item = adapter?.getItem(it)?.toString() ?: ""
-                item.startsWith("Vosk") || item.startsWith("本地Vosk")
+            // [v2.0.61] Issue 6 Fix: Match the SPECIFIC Vosk model by saved directory name
+            // Find the label that maps to the saved directory, not just the first Vosk label
+            val voskLabel = voskModelDirs.entries.find { it.value == savedVoskDir }?.key
+            val voskIndex = if (voskLabel != null) {
+                (0 until (adapter?.count ?: 0)).indexOfFirst {
+                    adapter?.getItem(it)?.toString() == voskLabel
+                }
+            } else {
+                // Fallback: find first Vosk label
+                (0 until (adapter?.count ?: 0)).indexOfFirst {
+                    val item = adapter?.getItem(it)?.toString() ?: ""
+                    item.startsWith("Vosk")
+                }
             }
             if (voskIndex >= 0) binding.spinnerAsrProvider.setSelection(voskIndex)
         }

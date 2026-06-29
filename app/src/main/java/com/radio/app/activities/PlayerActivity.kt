@@ -78,6 +78,12 @@ class PlayerActivity : AppCompatActivity() {
     // ExoPlayer's currentPosition can jump backwards by 100+ seconds during re-buffering.
     private var lastDisplayedPositionMs = 0L
     private var isUserSeeking = false
+    // [v2.0.61] Issue 1 Fix: pendingSeekTarget - only block UI during initial seek restoration
+    // Unlike the old monotonic guard (which blocked ALL backward positions forever),
+    // this flag is set when we know ExoPlayer is seeking to a target position,
+    // and cleared once position reaches the target. This prevents 0→target flicker
+    // without blocking legitimate episode switches.
+    private var pendingSeekTarget = 0L
     // [v2.0.51] Issue 1 Fix: Flag to ensure we only seek ONCE when player starts from 0
     // This prevents the infinite seek loop from v2.0.47
     private var hasSoughtToSavedPos = false
@@ -306,7 +312,8 @@ class PlayerActivity : AppCompatActivity() {
                 val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
                 if (savedPos > 0) {
                     lastDisplayedPositionMs = savedPos
-                    writeJitterLog("[v2.0.58] onServiceConnected: service pos=0, keeping lastDisplayedPositionMs=$savedPos (prevents flicker)")
+                    pendingSeekTarget = savedPos  // [v2.0.61] Issue 1: prevent 0→target flicker
+                    writeJitterLog("[v2.0.58] onServiceConnected: service pos=0, keeping lastDisplayedPositionMs=$savedPos, pendingSeekTarget=$savedPos (prevents flicker)")
                 } else {
                     lastDisplayedPositionMs = 0
                     writeJitterLog("[v2.0.58] onServiceConnected: service pos=0, no savedPos, reset lastDisplayedPositionMs=0")
@@ -483,7 +490,8 @@ class PlayerActivity : AppCompatActivity() {
                 binding.seekBar.progress = savedPos.toInt()
                 binding.tvLiveIndicator.text = "恢复中..."
                 lastDisplayedPositionMs = savedPos  // Block 0 during buffering
-                writeJitterLog("[v2.0.57] Pre-setting UI to saved position: ${savedPos}ms (svcStarted=$svcStarted, isFreshStart=$isFreshStart)")
+                pendingSeekTarget = savedPos  // [v2.0.61] Issue 1: prevent 0→target flicker
+                writeJitterLog("[v2.0.57] Pre-setting UI to saved position: ${savedPos}ms (svcStarted=$svcStarted, isFreshStart=$isFreshStart, pendingSeekTarget=$pendingSeekTarget)")
             } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
                 writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
@@ -670,17 +678,25 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPositionChanged(position: Long, duration: Long) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
-                // [v2.0.60] Issue 1 Fix: Remove monotonic guard entirely
-                // The monotonic guard was causing UI freeze when ExoPlayer reports position 0
-                // during buffering/re-preparation after episode switch.
-                // Without the guard, UI shows the actual position (0→growing→seekTarget)
-                // which is the correct behavior (same as PowerAmp).
-                lastDisplayedPositionMs = position
+                // [v2.0.61] Issue 1 Fix: Use pendingSeekTarget to prevent 0→target flicker
+                // Only block during initial seek restoration, NOT during episode switches
+                val displayPosition = if (pendingSeekTarget > 0 && position < pendingSeekTarget && position < 5000) {
+                    // ExoPlayer is still seeking to target, show target position to avoid 0→target jump
+                    pendingSeekTarget
+                } else {
+                    // Either reached target, or no pending seek, or position > 5s (past buffering)
+                    if (pendingSeekTarget > 0 && position >= pendingSeekTarget - 1000) {
+                        writeJitterLog("[v2.0.61] onPositionChanged: reached seekTarget, position=$position >= target=$pendingSeekTarget, clearing")
+                        pendingSeekTarget = 0L
+                    }
+                    position
+                }
+                lastDisplayedPositionMs = displayPosition
 
-                val pos = position.toInt()
+                val pos = displayPosition.toInt()
                 val dur = duration.toInt()
                 // Feature B: store current playback position
-                currentPlaybackPositionMs = position
+                currentPlaybackPositionMs = displayPosition
                 if (isDragging) return@runOnUiThread
                 if (dur > 0) {
                     binding.seekBar.max = dur
@@ -736,6 +752,7 @@ class PlayerActivity : AppCompatActivity() {
                 // [v2.0.59] Issue 1 Fix: Reset lastDisplayedPositionMs when episode changes
                 // Otherwise the monotonic guard blocks UI updates for the new episode (position 0 < old position)
                 lastDisplayedPositionMs = 0
+                pendingSeekTarget = 0L  // [v2.0.61] Issue 1: Clear pending seek for new episode
                 writeJitterLog("[v2.0.59] onEpisodeChanged: reset lastDisplayedPositionMs=0 for new episode")
                 // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
                 clearSubtitles()

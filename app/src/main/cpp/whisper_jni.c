@@ -152,7 +152,16 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         return -1;
     }
     struct whisper_context* ctx = (struct whisper_context*)(intptr_t)ctx_ptr;
-    jfloat* sample_data = (*env)->GetFloatArrayElements(env, samples, NULL);
+    // [v2.0.61] Issue 2 Fix: Use GetFloatArrayRegion instead of GetFloatArrayElements
+    // GetFloatArrayElements may return a direct pointer that GC can move, causing SIGSEGV
+    // GetFloatArrayRegion copies data to a C buffer that is immune to GC movement
+    jfloat* sample_data = (jfloat*)malloc(n_samples * sizeof(jfloat));
+    if (!sample_data) {
+        LOGE("full: failed to allocate sample_data buffer for %d samples", n_samples);
+        return -3;
+    }
+    (*env)->GetFloatArrayRegion(env, samples, 0, n_samples, sample_data);
+    LOGI("full: [v2.0.61] copied %d samples to C buffer (GetFloatArrayRegion)", n_samples);
 
     // [v2.0.57] Issue 2 Fix: Explicit NULL checks before processing
     if (!ctx) {
@@ -224,7 +233,8 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     signal(SIGSEGV, SIG_DFL);
     signal(SIGABRT, SIG_DFL);
 
-    (*env)->ReleaseFloatArrayElements(env, samples, sample_data, JNI_ABORT);
+    // [v2.0.61] Issue 2 Fix: Free the C-allocated buffer (not ReleaseFloatArrayElements)
+    free(sample_data);
     LOGI("full: whisper_full returned %d", result);
     return result;
 }

@@ -1537,17 +1537,29 @@ class SubtitleGeneratorService : Service() {
 
     private fun findVoskModel(): String? {
         logToFile("findVoskModel: searching for Vosk models...")
+        // [v2.0.61] Issue 6 Fix: Use saved Vosk model directory if set
+        val savedVoskDir = AppSettings.getInstance(this).voskModelDir
+        if (savedVoskDir.isNotEmpty()) {
+            logToFile("findVoskModel: [v2.0.61] savedVoskDir=$savedVoskDir, looking for this specific model")
+        }
         // 1. 检查外部存储手动下载的模型（只查找Vosk模型，不查找Whisper ggml模型）
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {
             val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
             logToFile("findVoskModel: all modelDirs: ${modelDirs?.map { it.name }}")
             if (!modelDirs.isNullOrEmpty()) {
+                // [v2.0.61] Issue 6 Fix: If savedVoskDir is set, find it FIRST (before sorting)
+                if (savedVoskDir.isNotEmpty()) {
+                    val savedDir = modelDirs.find { it.name == savedVoskDir }
+                    if (savedDir != null && isValidVoskModel(savedDir)) {
+                        logToFile("findVoskModel: [v2.0.61] FOUND saved model: ${savedDir.name}")
+                        return savedDir.absolutePath
+                    }
+                    logToFile("findVoskModel: [v2.0.61] saved model $savedVoskDir not found or invalid, falling back to auto-detect")
+                }
                 // 优先查找名称包含vosk的目录
-                // [v2.0.55] Issue 5 Fix: Prefer large (non-"small") models over small models.
-                // 用户安装的大模型如 vosk-model-cn-0.22 名称不含 "small"，应优先于 vosk-model-small-cn-0.22 被选中。
                 val voskDirs = modelDirs.filter { it.name.contains("vosk", ignoreCase = true) }
-                    .sortedByDescending { !it.name.contains("small", ignoreCase = true) }  // 名称不含 "small" 的(大模型)排在前面
+                    .sortedByDescending { !it.name.contains("small", ignoreCase = true) }  // Large models first
                 logToFile("findVoskModel: voskDirs found (sorted, large models first): ${voskDirs.map { it.name }}")
                 for (dir in voskDirs) {
                     val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
