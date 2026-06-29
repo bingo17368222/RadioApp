@@ -2416,18 +2416,18 @@ class SubtitleGeneratorService : Service() {
                 logToFile("onStartCommand: [v2.0.58] starting $taskType task for episode=$episodeId (cross-process mode)")
                 if (taskType == "segment") {
                     val dummyCallback = object : SegmentCallback {
-                        override fun onSegmentGenerated(episodeId: String, startMs: Long, endMs: Long, title: String?) {}
+                        override fun onSegmentGenerated(segment: VoiceSegment) {}
                         override fun onProgressUpdate(progress: Int, total: Int) {}
-                        override fun onError(message: String) {}
-                        override fun onComplete() {}
+                        override fun onError(error: String) {}
+                        override fun onComplete(segments: List<VoiceSegment>) {}
                     }
                     generateSegmentsForEpisode(episodeId, audioUrl, dummyCallback)
                 } else {
                     val dummyCallback = object : SubtitleCallback {
                         override fun onSubtitleGenerated(transcript: Transcript) {}
                         override fun onProgressUpdate(progress: Int, total: Int) {}
-                        override fun onError(message: String) {}
-                        override fun onComplete() {}
+                        override fun onError(error: String) {}
+                        override fun onComplete(transcripts: List<Transcript>) {}
                     }
                     generateSubtitlesForEpisode(episodeId, audioUrl, dummyCallback)
                 }
