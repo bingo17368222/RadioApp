@@ -124,15 +124,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     // [v2.0.80] Issue 1 Fix: Called by PlayerActivity.onResume() to activate skip blackout.
-    // Without this, lastClientBindTime is only set in onBind (which happens once, long before
-    // subsequent onResume calls), so the 3-second post-resume skip blackout never fires.
+    // [v2.0.82] Reduced blackout to 1s (was 3s). Removed counter reset side effects that
+    // interacted with circuit breaker causing death spiral.
     fun notifyActivityResumed() {
         lastClientBindTime = System.currentTimeMillis()
-        // Reset skip storm state on resume (fresh start, no queued events)
+        // Reset skip storm state on resume (fresh start)
         consecutiveSkipCount = 0
         skipCircuitBreakerUntil = 0L
         backwardSkipDistanceInWindow = 0L
-        writeServiceLog("playback", "[v2.0.80] notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
+        writeServiceLog("playback", "[v2.0.82] notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
     }
 
     /** Issue 9: app version tag included in every log line */
@@ -323,15 +323,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // v2.0.79 allowed 2 skips (30s) before tripping at 45s. Now trip at 30s (after 2 skips)
     // with 15s block (was 10s). Also: when block expires, add 5s grace where consecutive=1
     // (not 0) so a single skip won't immediately re-trip.
-    private val MAX_CONSECUTIVE_SKIPS = 2  // trip at 3rd consecutive skip (was 3)
+    private val MAX_CONSECUTIVE_SKIPS = 5  // [v2.0.82] trip at 6th consecutive (was 2, too aggressive)
     private val SKIP_STORM_WINDOW_MS = 15_000L
-    private val SKIP_CIRCUIT_BREAKER_MS = 15_000L  // 15s block (was 10s)
-    private val SKIP_BACKWARD_DISTANCE_CAP_MS = 30_000L  // 30s backward = storm (was 45s)
+    private val SKIP_CIRCUIT_BREAKER_MS = 5_000L  // [v2.0.82] 5s block (was 15s, too long)
+    private val SKIP_BACKWARD_DISTANCE_CAP_MS = 60_000L  // [v2.0.82] 60s backward = storm (was 30s)
     private val SKIP_DISTANCE_WINDOW_MS = 15_000L
-    private val POST_RESUME_BLACKOUT_MS = 3_000L
-    private val POST_RESUME_BLACKOUT_MAX_MS = 10_000L  // [v2.0.81] max auto-extend
-    private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 5_000L
-    private val LOW_POSITION_SKIP_DEDUP_MS = 5_000L  // 5s dedup for seekTo(0) (was 3s)
+    private val POST_RESUME_BLACKOUT_MS = 1_000L  // [v2.0.82] 1s (was 3s, caused button unresponsive)
+    private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 3_000L  // [v2.0.82] 3s (was 5s)
+    private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L  // [v2.0.82] 3s (was 5s)
     private var consecutiveSkipCount = 0
     private var skipStormFirstTime = 0L
     private var skipCircuitBreakerUntil = 0L
@@ -341,11 +340,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastEpisodeStartTime = 0L  // set when playEpisode starts new episode
     private var lastSeekToZeroTime = 0L  // dedup seekTo(0) when position is low
     // [v2.0.81] Issue 1 Fix: Track ALL skip requests (including blocked/dropped) for storm detection.
-    // v2.0.80 bug: circuit breaker only counted EXECUTED skips. Blackout blocked 119 skips but
-    // these weren't counted, so when blackout expired the breaker didn't trip until 2 MORE skips
-    // executed (30s leaked). Now we count ALL requests to trip the breaker BEFORE any leak.
-    private var totalSkipRequestsInWindow = 0
-    private var skipRequestWindowStart = 0L
+    // [v2.0.82] REMOVED totalSkipRequestsInWindow - it counted blocked/blackout requests
+    // toward circuit breaker, causing "enter app → 5 blocked clicks → 15s lock" death spiral.
     private var notificationStyle = "compact"
     private var lastNotificationTime = 0L
     private var pendingNotificationRunnable: Runnable? = null
@@ -3135,6 +3131,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // flicker. ExoPlayer's isPlaying may briefly return true after pause() due to state
         // propagation delay; buildNotification() checks this flag to force playing=false.
         pauseConfirmedUntil = System.currentTimeMillis() + 2000L
+        // [v2.0.82] Reset skip storm state on pause - user is actively controlling playback
+        consecutiveSkipCount = 0
+        skipCircuitBreakerUntil = 0L
+        backwardSkipDistanceInWindow = 0L
         // [v2.0.76] Cancel any pending audio focus resume timers when pausing
         audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
         audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
@@ -3231,24 +3231,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isLive) return
         val now = System.currentTimeMillis()
 
-        // [v2.0.79] Circuit breaker
+        // [v2.0.82] Circuit breaker
         if (now < skipCircuitBreakerUntil) {
-            writeServiceLog("playback", "[v2.0.79] skipForward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
+            writeServiceLog("playback", "[v2.0.82] skipForward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
             return
         }
-        // [v2.0.79] Post-resume blackout
+        // [v2.0.82] Post-resume blackout - simple 1s block
         if (lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS) {
-            writeServiceLog("playback", "[v2.0.79] skipForward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
+            writeServiceLog("playback", "[v2.0.82] skipForward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
             return
         }
-        // [v2.0.79] Episode-change cooldown
+        // [v2.0.82] Episode-change cooldown
         if (lastEpisodeStartTime > 0 && now - lastEpisodeStartTime < EPISODE_CHANGE_SKIP_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.0.79] skipForward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms since episode start)")
+            writeServiceLog("playback", "[v2.0.82] skipForward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms since episode start)")
             return
         }
-        // [v2.0.79] Debounce: 1000ms (was 800ms)
-        if (now - lastSkipDirectionTime < 1000L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.79] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
+        // [v2.0.82] Debounce: 800ms (reduced from 1000ms)
+        if (now - lastSkipDirectionTime < 800L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.82] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }
         lastSkipDirectionTime = now
@@ -3258,10 +3258,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             consecutiveSkipCount = 1
             skipStormFirstTime = now
         }
-        // [v2.0.79] Trip at >3 (4th consecutive skip)
+        // [v2.0.82] Trip at >5 (6th consecutive skip) - was >2, too aggressive
         if (consecutiveSkipCount > MAX_CONSECUTIVE_SKIPS) {
             skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.79] skipForward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            writeServiceLog("playback", "[v2.0.82] skipForward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
             return
         }
 
@@ -3271,51 +3271,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val d = it.duration; if (d < 100000) d * 1000 else d
         } ?: 0
         val targetPos = if (dur > 0 && pPos > dur) dur else pPos
-        writeServiceLog("playback", "[v2.0.79] skipForward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount)")
+        writeServiceLog("playback", "[v2.0.82] skipForward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount)")
         seekTo(targetPos)
     }
     fun skipBackward() {
         if (isLive) return
         val now = System.currentTimeMillis()
 
-        // [v2.0.81] Issue 1 Fix: Count ALL skip requests (including blocked/dropped) for storm detection.
-        // v2.0.80 only counted EXECUTED skips → breaker couldn't predict storm from blocked requests.
-        if (skipRequestWindowStart == 0L || now - skipRequestWindowStart > SKIP_STORM_WINDOW_MS) {
-            skipRequestWindowStart = now
-            totalSkipRequestsInWindow = 1
-        } else {
-            totalSkipRequestsInWindow++
-        }
-        // [v2.0.81] If we see 5+ requests in the window (even blocked), trip circuit breaker immediately.
-        // This prevents the "blackout expires → 2 skips leak → breaker trips" pattern.
-        if (totalSkipRequestsInWindow >= 5) {
-            skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.81] skipBackward: CIRCUIT BREAKER TRIPPED by request count! $totalSkipRequestsInWindow requests in ${now - skipRequestWindowStart}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
-            return
-        }
+        // [v2.0.82] REMOVED totalSkipRequestsInWindow counter.
+        // v2.0.81 bug: blackout-blocked requests still incremented the counter,
+        // causing "enter app → 5 blocked clicks → 15s lock" death spiral.
+        // Now only EXECUTED skips count toward circuit breaker.
 
         // [v2.0.79] Circuit breaker
         if (now < skipCircuitBreakerUntil) {
-            writeServiceLog("playback", "[v2.0.81] skipBackward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining, reqCount=$totalSkipRequestsInWindow)")
+            writeServiceLog("playback", "[v2.0.82] skipBackward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
             return
         }
-        // [v2.0.81] Post-resume blackout: AUTO-EXTEND if skip requests keep coming.
-        // v2.0.80: fixed 3s blackout expired → 1-2 skips leaked. v2.0.81: each blocked skip
-        // extends the blackout by 1s (up to 10s max), so continuous button mashing stays blocked.
+        // [v2.0.80] Post-resume blackout - simple 1s block, NO counter increment
         if (lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS) {
-            // Extend blackout if we're still receiving skip requests near the end of the window
-            val remaining = POST_RESUME_BLACKOUT_MS - (now - lastClientBindTime)
-            if (remaining < 1000 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MAX_MS) {
-                lastClientBindTime = now - POST_RESUME_BLACKOUT_MS + 1000  // extend by ~1s
-                writeServiceLog("playback", "[v2.0.81] skipBackward: EXTENDING blackout (reqCount=$totalSkipRequestsInWindow, extended to ${POST_RESUME_BLACKOUT_MS - (now - lastClientBindTime)}ms remaining)")
-            } else {
-                writeServiceLog("playback", "[v2.0.81] skipBackward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind, reqCount=$totalSkipRequestsInWindow)")
-            }
+            writeServiceLog("playback", "[v2.0.82] skipBackward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
             return
         }
-        // [v2.0.79] Episode-change cooldown (5s after new episode starts)
+        // [v2.0.79] Episode-change cooldown
         if (lastEpisodeStartTime > 0 && now - lastEpisodeStartTime < EPISODE_CHANGE_SKIP_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.0.81] skipBackward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms since episode start)")
+            writeServiceLog("playback", "[v2.0.82] skipBackward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms since episode start)")
             return
         }
 
@@ -3325,7 +3305,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.79] Low-position dedup
         if (targetPos == 0L) {
             if (now - lastSeekToZeroTime < LOW_POSITION_SKIP_DEDUP_MS && lastSeekToZeroTime > 0) {
-                writeServiceLog("playback", "[v2.0.81] skipBackward: DROPPED low-pos dedup (targetPos=0, ${now - lastSeekToZeroTime}ms since last seekTo(0))")
+                writeServiceLog("playback", "[v2.0.82] skipBackward: DROPPED low-pos dedup (targetPos=0, ${now - lastSeekToZeroTime}ms since last seekTo(0))")
                 return
             }
             lastSeekToZeroTime = now
@@ -3337,7 +3317,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // [v2.0.79] Debounce: 1000ms
         if (now - lastSkipDirectionTime < 1000L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.81] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms, reqCount=$totalSkipRequestsInWindow)")
+            writeServiceLog("playback", "[v2.0.82] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }
         lastSkipDirectionTime = now
@@ -3349,21 +3329,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             skipStormFirstTime = now
             backwardSkipDistanceInWindow = 0L
         }
-        // [v2.0.79] Trip at >2 (3rd consecutive skip)
+        // [v2.0.82] Trip at >5 (6th consecutive skip) - was >2, way too aggressive
         if (consecutiveSkipCount > MAX_CONSECUTIVE_SKIPS) {
             skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.81] skipBackward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            writeServiceLog("playback", "[v2.0.82] skipBackward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
             return
         }
         // [v2.0.79] Distance cap: use >= (fixes 4×15s=60s not triggering)
         backwardSkipDistanceInWindow += skipSeconds * 1000L
         if (backwardSkipDistanceInWindow >= SKIP_BACKWARD_DISTANCE_CAP_MS) {
             skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.81] skipBackward: CIRCUIT BREAKER TRIPPED by distance! ${backwardSkipDistanceInWindow/1000}s backward in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            writeServiceLog("playback", "[v2.0.82] skipBackward: CIRCUIT BREAKER TRIPPED by distance! ${backwardSkipDistanceInWindow/1000}s backward in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
             return
         }
 
-        writeServiceLog("playback", "[v2.0.81] skipBackward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount, backDist=${backwardSkipDistanceInWindow/1000}s, reqCount=$totalSkipRequestsInWindow)")
+        writeServiceLog("playback", "[v2.0.82] skipBackward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount, backDist=${backwardSkipDistanceInWindow/1000}s)")
         seekTo(targetPos)
     }
     fun isPlaying(): Boolean = player?.isPlaying ?: false
