@@ -209,17 +209,59 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val FOCUS_LOSS_PERMANENT = 2
     private val FOCUS_LOSS_DUCK = 3
     private var audioFocusLossType = FOCUS_LOSS_NONE
+    // [v2.0.77] Issue 5 Fix: Active polling recovery for permanent audio focus loss.
+    // Many Chinese apps (Pinduoduo, some video players) NEVER call abandonAudioFocus() after
+    // they finish playing video, so we NEVER receive AUDIOFOCUS_GAIN. The 60-second passive
+    // wait is insufficient. Solution: after a permanent loss, actively poll every 5 seconds
+    // by trying to re-request audio focus. If request is GRANTED, it means the other app
+    // has released focus (or been killed by LMKD), so we can resume.
+    private var focusRecoveryAttempts = 0
+    private val focusProbeRunnable = object : Runnable {
+        override fun run() {
+            if (audioFocusLossType != FOCUS_LOSS_PERMANENT || !pausedByAudioFocus || userPaused) {
+                writeServiceLog("audiofocus", "[v2.0.77] focusProbe: stopping (lossType=$audioFocusLossType, pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
+                return
+            }
+            focusRecoveryAttempts++
+            writeServiceLog("audiofocus", "[v2.0.77] focusProbe: attempt #$focusRecoveryAttempts (polling every 5s after PERMANENT loss)")
+            // Actively try to re-request audio focus. If the other app has released it
+            // (e.g., Pinduoduo video finished but didn't call abandon), our request will be GRANTED
+            // and we'll get AUDIOFOCUS_GAIN callback which triggers resume.
+            val granted = requestAudioFocus()
+            if (granted) {
+                writeServiceLog("audiofocus", "[v2.0.77] focusProbe: requestAudioFocus GRANTED on attempt #$focusRecoveryAttempts! AUDIOFOCUS_GAIN callback will resume playback.")
+                // requestAudioFocus success should trigger onAudioFocusChange(GAIN) automatically
+                // on Android 8+ (AudioFocusRequest callback). For older API, we manually resume.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    handler.post {
+                        if (pausedByAudioFocus && !userPaused && playbackStarted) {
+                            writeServiceLog("audiofocus", "[v2.0.77] focusProbe: manual resume (pre-O API)")
+                            pausedByAudioFocus = false
+                            audioFocusLossType = FOCUS_LOSS_NONE
+                            play()
+                        }
+                    }
+                }
+            } else {
+                writeServiceLog("audiofocus", "[v2.0.77] focusProbe: requestAudioFocus DENIED (focus still held by other app), retrying in 5s")
+                if (focusRecoveryAttempts < 24) {  // max 2 minutes of polling
+                    audioFocusHandler.postDelayed(this, 5000L)
+                } else {
+                    writeServiceLog("audiofocus", "[v2.0.77] focusProbe: max attempts (24) reached, stopping polling (user must manually resume)")
+                }
+            }
+        }
+    }
     // [v2.0.75] Issue 6 Fix: Permanent loss recovery timer.
     // Many Chinese short-video apps (Pinduoduo, Douyin) incorrectly use AUDIOFOCUS_GAIN (permanent)
     // instead of AUDIOFOCUS_GAIN_TRANSIENT, causing AUDIOFOCUS_LOSS instead of LOSS_TRANSIENT.
     // When permanent loss occurs, wait for a potential GAIN within 60 seconds (user finishes video),
-    // then auto-resume. If no GAIN within 60s, user must manually press play.
+    // then auto-resume. If no GAIN within 60s, active probing (focusProbeRunnable) takes over.
     private val permanentLossRecoveryRunnable = Runnable {
         if (audioFocusLossType == FOCUS_LOSS_PERMANENT && pausedByAudioFocus && !userPaused) {
-            writeServiceLog("audiofocus", "[v2.0.75] permanentLossRecovery: 60s elapsed without GAIN, will NOT auto-resume (user must press play)")
-            // Do NOT auto-resume after timeout - user must manually press play
-            pausedByAudioFocus = false
-            audioFocusLossType = FOCUS_LOSS_NONE
+            writeServiceLog("audiofocus", "[v2.0.77] permanentLossRecovery: 60s passive wait elapsed without GAIN, starting active focus probing")
+            focusRecoveryAttempts = 0
+            audioFocusHandler.post(focusProbeRunnable)
         }
     }
     private val audioFocusPermanentLossTimeoutMs = 60_000L
@@ -248,6 +290,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // ExoPlayer reports backward positions during re-buffering; this ensures we never go backward
     private var maxKnownPosition = 0L
     private var lastPositionRestoreTime = 0L
+    // [v2.0.77] Issue 1 Fix: seekTo debounce/duplicate protection to prevent seekTo(0) storms.
+    // Logs show repeated skipBackward/seekTo(0) calls at ~300ms intervals (likely misfiring
+    // notification PendingIntents or headset button repeats). Rate-limit seeks and ignore
+    // repeated seeks to the same position within a short window.
+    private var lastSeekCallTime = 0L
+    private var lastSeekTargetPos = -1L
+    private var lastSkipDirectionTime = 0L  // for skipForward/skipBackward debounce
     private var notificationStyle = "compact"
     private var lastNotificationTime = 0L
     private var pendingNotificationRunnable: Runnable? = null
@@ -300,6 +349,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     @Volatile
     private var playbackStarted = false
     private var currentPlayingUrl = ""
+    // [v2.0.77] Issue 6 Fix: Track whether we've already called startForeground() to avoid
+    // repeated startForeground() calls which cause notification flicker/disappear on many OEM devices.
+    private var isForegroundService = false
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -317,6 +369,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         startNotificationProgressUpdater()
         startPositionSaver()
         // 提升为前台服务，防止后台被杀
+        // [v2.0.77] Issue 6 Fix: Mark foreground started so subsequent updates use notify() not startForeground()
+        isForegroundService = true
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(RadioApplication.NOTIFICATION_ID, buildNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
@@ -1993,9 +2047,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val epId = currentEpisode?.id ?: "null"
             val epTitle = currentEpisode?.title ?: "null"
             val isPlaying = player?.isPlaying ?: false
-            writeServiceLog("notification", "[v2.0.73-PROGRESS] progress_area=VISIBLE, pos=$pos, rawPlayerDur=$rawPlayerDur, safeDur=$dur, prepared=$prepared, isPlaying=$isPlaying, playbackStarted=$playbackStarted, userPaused=$userPaused, epId=$epId, epTitle=$epTitle, progressBar will show=${dur > 0}")
+            writeServiceLog("notification", "[v2.0.77-PROGRESS] progress_area=VISIBLE, pos=$pos, rawPlayerDur=$rawPlayerDur, safeDur=$dur, prepared=$prepared, isPlaying=$isPlaying, playbackStarted=$playbackStarted, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, epId=$epId, epTitle=$epTitle, progressBar will show=${dur > 0}")
             if (dur > 0) {
-                val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
+                // [v2.0.77] Issue 6 Fix: Cap pos to dur to prevent overflow/full-progress bug.
+                // pos can temporarily exceed dur during seek storms or after episode switches.
+                val safePos = pos.coerceIn(0L, dur)
+                val progress = ((safePos * 1000) / dur).toInt().coerceIn(0, 1000)
                 remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
                 val totalSec = dur.toInt() / 1000
                 val curSec = pos.toInt() / 1000
@@ -2217,9 +2274,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val rv = RemoteViews(packageName, R.layout.notification_minimal)
             // Set progress area VISIBLE for non-live
             rv.setViewVisibility(R.id.notification_progress_area, android.view.View.VISIBLE)
-            val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
+            // [v2.0.77] Issue 6 Fix: Cap pos to dur
+            val safePos = pos.coerceIn(0L, dur)
+            val progress = ((safePos * 1000) / dur).toInt().coerceIn(0, 1000)
             rv.setProgressBar(R.id.notification_progress, 1000, progress, false)
-            rv.setTextViewText(R.id.notification_time_text, "${formatTimeNotif(pos.toInt() / 1000)}/${formatTimeNotif(dur.toInt() / 1000)}")
+            rv.setTextViewText(R.id.notification_time_text, "${formatTimeNotif(safePos.toInt() / 1000)}/${formatTimeNotif(dur.toInt() / 1000)}")
             applyNotificationIntents(rv)
             applyThemeToNotification(rv)
             rv.setImageViewResource(R.id.play_pause_icon,
@@ -2290,15 +2349,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val epId = currentEpisode?.id ?: "null"
             val epTitle = currentEpisode?.title ?: "null"
             val isPlaying = player?.isPlaying ?: false
-            writeServiceLog("notification", "[v2.0.73-PROGRESS-MEDIA] progress_area=VISIBLE, pos=$pos, rawPlayerDur=$rawPlayerDur, safeDur=$dur, prepared=$prepared, isPlaying=$isPlaying, playbackStarted=$playbackStarted, userPaused=$userPaused, epId=$epId, epTitle=$epTitle, progressBar will show=${dur > 0}")
+            writeServiceLog("notification", "[v2.0.77-PROGRESS-MEDIA] progress_area=VISIBLE, pos=$pos, rawPlayerDur=$rawPlayerDur, safeDur=$dur, prepared=$prepared, isPlaying=$isPlaying, playbackStarted=$playbackStarted, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, epId=$epId, epTitle=$epTitle, progressBar will show=${dur > 0}")
             if (dur > 0) {
-                val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
+                // [v2.0.77] Issue 6 Fix: Cap pos to dur
+                val safePos = pos.coerceIn(0L, dur)
+                val progress = ((safePos * 1000) / dur).toInt().coerceIn(0, 1000)
                 expandedView.setProgressBar(R.id.notification_progress, 1000, progress, false)
                 val totalSec = dur.toInt() / 1000
-                val curSec = pos.toInt() / 1000
+                val curSec = safePos.toInt() / 1000
                 expandedView.setTextViewText(R.id.notification_time_text,
                     "${formatTimeNotif(curSec)}/${formatTimeNotif(totalSec)}")
-                writeServiceLog("notification", "[v2.0.73-PROGRESS-MEDIA] progress set: progress=$progress/1000, curTime=${formatTimeNotif(curSec)}, totalTime=${formatTimeNotif(totalSec)}")
+                writeServiceLog("notification", "[v2.0.77-PROGRESS-MEDIA] progress set: progress=$progress/1000, curTime=${formatTimeNotif(curSec)}, totalTime=${formatTimeNotif(totalSec)}")
             } else {
                 writeServiceLog("notification", "[v2.0.73-PROGRESS-MEDIA] WARNING: dur<=0 after getSafeDuration, progress bar visible but no progress value (rawPlayerDur=$rawPlayerDur, lastValidDur=$lastValidDurationMs, epDur=${currentEpisode?.duration})")
             }
@@ -2359,9 +2420,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun buildNotification(): Notification {
-        // Issue 9: compact notification must reflect current playing state for the
-        // play/pause action icon, otherwise it always shows the play icon.
-        val playing = playbackStarted && !userPaused
+        // [v2.0.77] Issue 5/6 Fix: playing state MUST include pausedByAudioFocus check.
+        // v2.0.76 bug: used `playbackStarted && !userPaused` which missed pausedByAudioFocus=true,
+        // causing notification button to show "pause" icon (playing state) even when audio focus
+        // loss (Pinduoduo video) had paused playback. User had to manually press pause then play.
+        val playing = playbackStarted && !userPaused && !pausedByAudioFocus
         // 紧凑模式使用MediaStyle
         if (notificationStyle == "compact") {
             return NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
@@ -2413,10 +2476,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val pos = getCurrentPosition()
                 val dur = getSafeDuration()
                 if (dur > 0) {
-                    val progress = ((pos * 1000) / dur).toInt().coerceIn(0, 1000)
+                    // [v2.0.77] Issue 6 Fix: Cap pos to dur
+                    val safePos = pos.coerceIn(0L, dur)
+                    val progress = ((safePos * 1000) / dur).toInt().coerceIn(0, 1000)
                     remoteViews.setProgressBar(R.id.notification_progress, 1000, progress, false)
                     val totalSec = dur.toInt() / 1000
-                    val curSec = pos.toInt() / 1000
+                    val curSec = safePos.toInt() / 1000
                     remoteViews.setTextViewText(R.id.notification_time_text,
                         "${formatTimeNotif(curSec)}/${formatTimeNotif(totalSec)}")
                 } else {
@@ -2531,6 +2596,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (playbackStarted || player?.isPlaying == true) {
             Log.d(TAG, "onTaskRemoved: playback is active, keeping service alive")
             val notification = buildNotification()
+            isForegroundService = true  // [v2.0.77] mark as foreground
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             } else {
@@ -2616,8 +2682,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("audiofocus", "[v2.0.74] onAudioFocusChange: $focusChange (${focusChangeToString(focusChange)}), timeSinceLast=${timeSinceLastChange}ms, userPaused=$userPaused, pausedByAudioFocus=$pausedByAudioFocus, lossType=$audioFocusLossType, isPlaying=${player?.isPlaying}, playbackStarted=$playbackStarted")
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                // Cancel any pending debounced resume
+                // Cancel any pending debounced resume and probing
                 audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
+                audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+                audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] stop probing
+                focusRecoveryAttempts = 0
 
                 // [v2.0.74] Issue 6/7 Fix: Handle based on loss type
                 when (audioFocusLossType) {
@@ -2678,21 +2747,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Permanent focus loss (Pinduoduo/Douyin video playing long-form content)
                 audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
                 audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+                audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] cancel any prior probe
+                focusRecoveryAttempts = 0
                 pendingAudioFocusResume = false
                 audioFocusLossType = FOCUS_LOSS_PERMANENT
                 if (!userPaused && playbackStarted) {
                     pausedByAudioFocus = true
-                    writeServiceLog("audiofocus", "[v2.0.75] AUDIOFOCUS_LOSS (PERMANENT): pausing, will auto-resume if GAIN within 60s (Pinduoduo-style app recovery)")
+                    writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): pausing, passive GAIN wait 60s then active probing (Pinduoduo/Douyin recovery)")
                     pause(userInitiated = false)
-                    // Start recovery timer: if GAIN arrives within 60s, auto-resume; else give up
+                    // Start recovery timer: if GAIN arrives within 60s, auto-resume; else start active probing
                     audioFocusHandler.postDelayed(permanentLossRecoveryRunnable, audioFocusPermanentLossTimeoutMs)
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.75] AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
+                    writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 // Temporary loss (navigation voice, phone call, notification sound with audio)
                 audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
+                audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] cancel probe
+                focusRecoveryAttempts = 0
                 pendingAudioFocusResume = false
                 audioFocusLossType = FOCUS_LOSS_TRANSIENT
                 if (!userPaused && playbackStarted && player?.isPlaying == true) {
@@ -2886,10 +2959,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         updateMediaSessionMetadata()
         val notification = updateNotification()
         // 立即推送前台通知，确保通知栏立即更新，不被进度轮询覆盖
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        // [v2.0.77] Issue 6 Fix: Use notify() if already foreground
+        if (!isForegroundService) {
+            isForegroundService = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+            try {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                    .notify(NOTIFICATION_ID, notification)
+            } catch (_: Exception) {}
         }
         writeServiceLog("notification", "playEpisode: title=${episode.title}, notificationTitle=$notificationTitle, notificationSubText=$notificationSubText, notificationDate=$notificationDate, updateNotification called")
         writeServiceLog("notification", "playEpisode: FULL subText='${buildNotificationSubText()}', notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange'")
@@ -2940,10 +3022,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
         // [v2.0.76] Also cancel permanent loss recovery timer
         audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+        // [v2.0.77] Issue 5 Fix: Also cancel active focus probing
+        audioFocusHandler.removeCallbacks(focusProbeRunnable)
+        focusRecoveryAttempts = 0
         requestAudioFocus()
         player?.play()
         // [v2.0.76] Issue 6 Fix: Immediately update MediaSession to STATE_PLAYING
-        writeServiceLog("notification", "[v2.0.76] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
+        writeServiceLog("notification", "[v2.0.77] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
         forceNotificationUpdate = true
         lastNotificationContentHash = 0
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
@@ -2954,22 +3039,44 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 PlaybackStateCompat.ACTION_STOP)
             .build())
         val notification = updateNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        // [v2.0.77] Issue 6 Fix: Use notify() instead of startForeground() after initial startup
+        // to prevent notification flicker/disappear on OEM devices.
+        if (!isForegroundService) {
+            isForegroundService = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+            try {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                    .notify(NOTIFICATION_ID, notification)
+            } catch (e: Exception) {
+                Log.w(TAG, "notify failed, falling back to startForeground", e)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            }
         }
     }
     fun pause(userInitiated: Boolean = true) {
         if (userInitiated) {
             userPaused = true
+            // [v2.0.77] When user manually pauses, clear audio focus recovery state
+            pausedByAudioFocus = false
+            audioFocusLossType = FOCUS_LOSS_NONE
         }
         // [v2.0.76] Cancel any pending audio focus resume timers when pausing
         audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
         audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+        audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] cancel probe
+        focusRecoveryAttempts = 0
         player?.pause()
-        // [v2.0.76] Issue 6 Fix: Immediately update MediaSession PlaybackState to STATE_PAUSED
-        writeServiceLog("notification", "[v2.0.76] pause(userInitiated=$userInitiated) called, userPaused=$userPaused, updating MediaSession to STATE_PAUSED")
+        // [v2.0.77] Issue 5/6 Fix: Immediately update MediaSession PlaybackState to STATE_PAUSED
+        writeServiceLog("notification", "[v2.0.77] pause(userInitiated=$userInitiated) called, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, updating MediaSession to STATE_PAUSED")
         forceNotificationUpdate = true
         lastNotificationContentHash = 0
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
@@ -2980,10 +3087,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 PlaybackStateCompat.ACTION_STOP)
             .build())
         val notification = updateNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        // [v2.0.77] Issue 6 Fix: Use notify() instead of startForeground() after initial startup
+        if (!isForegroundService) {
+            isForegroundService = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+            try {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                    .notify(NOTIFICATION_ID, notification)
+            } catch (e: Exception) {
+                Log.w(TAG, "notify failed in pause(), falling back to startForeground", e)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            }
         }
     }
     fun stop() {
@@ -2991,12 +3114,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         downloadingJob?.cancel()
         downloadActive.set(false)
         player?.let { it.stop(); abandonAudioFocus() }
+        isForegroundService = false  // [v2.0.77] reset foreground flag
+        stopForeground(STOP_FOREGROUND_REMOVE)  // [v2.0.77] properly exit foreground before cancel
         (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
             .cancel(NOTIFICATION_ID)
         stopSelf()
     }
     fun seekTo(pos: Long) {
         if (isLive) return
+        val now = System.currentTimeMillis()
+        // [v2.0.77] Issue 1 Fix: Anti-seek-storm protection.
+        // 1) Ignore duplicate seeks to the same position within 500ms
+        // 2) Ignore seekTo(0) if we already have a known position >30s (player reset artifact / storm)
+        // 3) Rate-limit: max 1 seek per 200ms (prevents 300ms-interval storms)
+        val dupSamePos = (pos == lastSeekTargetPos) && (now - lastSeekCallTime < 500L)
+        val zeroStorm = (pos < 2000L) && (authoritativePosition > 30000L) && (now - lastPositionRestoreTime > 5000L)
+        val rateLimited = (now - lastSeekCallTime < 200L) && lastSeekCallTime > 0
+        if (dupSamePos) {
+            writeServiceLog("playback", "[v2.0.77] seekTo: DROPPED duplicate seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
+            return
+        }
+        if (zeroStorm) {
+            writeServiceLog("playback", "[v2.0.77] seekTo: DROPPED seekTo($pos) storm - authPos=$authoritativePosition >30s, ignoring (likely misfire)")
+            return
+        }
+        if (rateLimited) {
+            writeServiceLog("playback", "[v2.0.77] seekTo: DROPPED rate-limited seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
+            return
+        }
+        lastSeekCallTime = now
+        lastSeekTargetPos = pos
         // [v2.0.72] Issue 1/10 Fix: Queue seek when player is not prepared instead of
         // silently dropping it. Previously, seeking during episode switch/buffering
         // (prepared=false) would return immediately with no effect.
@@ -3006,28 +3153,44 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         maxKnownPosition = pos
         if (prepared && player != null) {
             player?.seekTo(pos)
-            writeServiceLog("playback", "[v2.0.72] seekTo: immediate seek to $pos (prepared=true)")
+            writeServiceLog("playback", "[v2.0.77] seekTo: immediate seek to $pos (prepared=true)")
         } else {
             // Player not ready - store seek and apply when STATE_READY fires
             pendingStartPosition = pos
             positionRestoreRequested = true
-            writeServiceLog("playback", "[v2.0.72] seekTo: queued seek to $pos (prepared=$prepared, will apply on STATE_READY)")
+            writeServiceLog("playback", "[v2.0.77] seekTo: queued seek to $pos (prepared=$prepared, will apply on STATE_READY)")
         }
     }
     fun skipForward() {
         if (isLive) return
+        val now = System.currentTimeMillis()
+        // [v2.0.77] Issue 1 Fix: Debounce skipForward/skipBackward to 300ms minimum interval
+        if (now - lastSkipDirectionTime < 300L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.77] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms since last skip)")
+            return
+        }
+        lastSkipDirectionTime = now
         val curPos = getCurrentPosition()
         val pPos = curPos + skipSeconds * 1000
         val dur = if (prepared) player?.duration ?: 0 else currentEpisode?.let {
             val d = it.duration; if (d < 100000) d * 1000 else d
         } ?: 0
         val targetPos = if (dur > 0 && pPos > dur) dur else pPos
+        writeServiceLog("playback", "[v2.0.77] skipForward: curPos=$curPos -> targetPos=$targetPos")
         seekTo(targetPos)
     }
     fun skipBackward() {
         if (isLive) return
+        val now = System.currentTimeMillis()
+        // [v2.0.77] Issue 1 Fix: Debounce skipForward/skipBackward to 300ms minimum interval
+        if (now - lastSkipDirectionTime < 300L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.77] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms since last skip)")
+            return
+        }
+        lastSkipDirectionTime = now
         val curPos = getCurrentPosition()
         val targetPos = maxOf(0, curPos - skipSeconds * 1000)
+        writeServiceLog("playback", "[v2.0.77] skipBackward: curPos=$curPos -> targetPos=$targetPos")
         seekTo(targetPos)
     }
     fun isPlaying(): Boolean = player?.isPlaying ?: false
@@ -3090,16 +3253,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     // v2.0.73: Safely get player duration, filtering out invalid values (0, negative, TIME_UNSET).
     // Returns last known valid duration or default 2 hours when player duration is unavailable.
+    // [v2.0.77] Issue 6 Fix: Also reject absurdly small durations (< 60s) to prevent "full progress" bug.
+    // When player briefly reports dur=1000ms during reset, we must NOT cache that as lastValidDurationMs
+    // or subsequent pos=22min/dur=1s shows as 100% progress.
     private fun getSafeDuration(): Long {
         val rawDur = player?.duration ?: 0L
-        if (rawDur > 0 && rawDur < 24L * 60 * 60 * 1000) {  // Valid: positive and less than 24 hours
+        // [v2.0.77] Valid: positive, >=60s, <24h. Reject tiny durations (player reset artifacts).
+        if (rawDur >= 60_000L && rawDur < 24L * 60 * 60 * 1000) {
             lastValidDurationMs = rawDur
             return rawDur
         }
         // Invalid duration - try episode duration
         val epDur = currentEpisode?.duration ?: 0L
-        val epDurMs = if (epDur in 1..100000) epDur * 1000 else if (epDur > 100000) epDur else 0L
-        if (epDurMs > 0) {
+        val epDurMs = if (epDur in 60..100000) epDur * 1000 else if (epDur > 100000 && epDur < 24L*60*60*1000) epDur else 0L
+        if (epDurMs >= 60_000L) {
             lastValidDurationMs = epDurMs
             return epDurMs
         }
