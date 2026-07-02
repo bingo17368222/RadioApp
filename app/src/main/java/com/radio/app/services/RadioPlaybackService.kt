@@ -121,17 +121,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     inner class LocalBinder : Binder() {
         fun getService(): RadioPlaybackService = this@RadioPlaybackService
-        // [v2.0.80] Issue 1 Fix: Called by PlayerActivity.onResume() to activate skip blackout.
-        // Without this, lastClientBindTime is only set in onBind (which happens once, long before
-        // subsequent onResume calls), so the 3-second post-resume skip blackout never fires.
-        fun notifyActivityResumed() {
-            lastClientBindTime = System.currentTimeMillis()
-            // Reset skip storm state on resume (fresh start, no queued events)
-            consecutiveSkipCount = 0
-            skipCircuitBreakerUntil = 0L
-            backwardSkipDistanceInWindow = 0L
-            writeServiceLog("playback", "[v2.0.80] notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
-        }
+    }
+
+    // [v2.0.80] Issue 1 Fix: Called by PlayerActivity.onResume() to activate skip blackout.
+    // Without this, lastClientBindTime is only set in onBind (which happens once, long before
+    // subsequent onResume calls), so the 3-second post-resume skip blackout never fires.
+    fun notifyActivityResumed() {
+        lastClientBindTime = System.currentTimeMillis()
+        // Reset skip storm state on resume (fresh start, no queued events)
+        consecutiveSkipCount = 0
+        skipCircuitBreakerUntil = 0L
+        backwardSkipDistanceInWindow = 0L
+        writeServiceLog("playback", "[v2.0.80] notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
     }
 
     /** Issue 9: app version tag included in every log line */
