@@ -2268,8 +2268,6 @@ class SubtitleGeneratorService : Service() {
                     ctx.lastErrorDetail = detail
                     logToFile("processWhisperInChunks: [v2.0.81] INSUFFICIENT JAVA HEAP for Whisper: $detail")
                     callback.onError("$detail。请关闭其他应用或重启App后重试。")
-                    // [v2.0.81] Fix resource leak: release model context before returning
-                    try { bridge.free(ctxPtr) } catch (_: Exception) {}
                     return false
                 }
             }
