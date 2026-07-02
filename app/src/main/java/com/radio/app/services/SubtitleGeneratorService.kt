@@ -429,9 +429,11 @@ class SubtitleGeneratorService : Service() {
                             }
                         } else {
                             // [v2.0.76] Whisper model not found - log detailed reason, NO fallback to Vosk.
-                            val failReason = "Whisper模型文件未找到（路径=${settings.whisperModelDir}）"
+                            val modelsDir = getExternalFilesDir("models")
+                            val failReason = "Whisper模型文件未找到（已搜索路径：${modelsDir?.absolutePath}、${filesDir}/engines）"
+                            ctx.lastErrorDetail = failReason
                             ctx.log("ERROR: $failReason")
-                            logToFile("generateSubtitlesForEpisode: [v2.0.76] Whisper model not found. whisperModelDir=${settings.whisperModelDir}. NO fallback to Vosk.")
+                            logToFile("generateSubtitlesForEpisode: [v2.0.76] $failReason. NO fallback to Vosk.")
                             wrappedCallback.onError("$failReason。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB），或手动切换到Vosk引擎。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
