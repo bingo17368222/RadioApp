@@ -233,7 +233,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // requestAudioFocus success should trigger onAudioFocusChange(GAIN) automatically
                 // on Android 8+ (AudioFocusRequest callback). For older API, we manually resume.
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    handler.post {
+                    audioFocusHandler.post {
                         if (pausedByAudioFocus && !userPaused && playbackStarted) {
                             writeServiceLog("audiofocus", "[v2.0.77] focusProbe: manual resume (pre-O API)")
                             pausedByAudioFocus = false
