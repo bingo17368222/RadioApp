@@ -2275,6 +2275,11 @@ class PlayerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         writeJitterLog("onResume: subtitleProcessing=$subtitleProcessing, segmentProcessing=$segmentProcessing, serviceBound=$serviceBound")
+        // [v2.0.80] Issue 1 Fix: Notify service that Activity resumed to activate skip blackout window.
+        // v2.0.79 bug: lastClientBindTime was only set in onBind (39s before onResume), so the
+        // 3-second post-resume blackout never triggered. Skip storms started 159ms after onResume.
+        // Now we update the timestamp on every onResume so the 3s blackout catches queued events.
+        try { playbackService?.notifyActivityResumed() } catch (_: Exception) {}
         // [跨进程] 注册字幕广播接收器（服务运行在 ":subtitle" 进程，结果通过广播回传）
         if (!subtitleReceiverRegistered) {
             val filter = IntentFilter().apply {

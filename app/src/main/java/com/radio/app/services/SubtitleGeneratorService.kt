@@ -798,19 +798,24 @@ class SubtitleGeneratorService : Service() {
             val totalMemMB = memInfo.totalMem / 1024 / 1024
             val availMemMB = memInfo.availMem / 1024 / 1024
             val maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024
-            logToFile("generateWithVosk: [v2.0.78] model=${modelSizeMB}MB, isLarge=$isLargeModel, totalMem=${totalMemMB}MB, avail=${availMemMB}MB, maxHeap=${maxHeapMB}MB, lowRam=${memInfo.lowMemory}")
+            logToFile("generateWithVosk: [v2.0.80] model=${modelSizeMB}MB, isLarge=$isLargeModel, totalMem=${totalMemMB}MB, avail=${availMemMB}MB, maxHeap=${maxHeapMB}MB, lowRam=${memInfo.lowMemory}")
             if (isLargeModel && totalMemMB < 2048) {
                 val detail = "Vosk大模型(${modelSizeMB}MB)需要2GB以上总内存（当前${totalMemMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("generateWithVosk: [v2.0.78] BLOCKING large model (low total RAM): $detail")
+                logToFile("generateWithVosk: [v2.0.80] BLOCKING large model (low total RAM): $detail")
                 callback.onError("$detail 请使用小模型(vosk-model-small-cn-0.22)。")
                 return false
             }
-            if (isLargeModel && availMemMB < modelSizeMB + 300) {
-                val detail = "Vosk大模型加载需要${modelSizeMB + 300}MB可用内存（当前${availMemMB}MB）"
+            // [v2.0.80] Issue 4 Fix: Raised threshold from modelSizeMB+300 to modelSizeMB+1500.
+            // v2.0.79: avail=2367MB passed check (2044+300=2344 < 2367) but Model.<init> crashed.
+            // Vosk large model (vosk-model-cn-0.22, ~1.3GB on disk) needs ~3.5GB native memory
+            // for mmap graph + HMM + decoder runtime. modelSizeMB estimate (2044MB) + 1500MB buffer
+            // = 3544MB required avail. This will correctly block on devices with < 3.5GB free.
+            if (isLargeModel && availMemMB < modelSizeMB + 1500) {
+                val detail = "Vosk大模型加载需要${modelSizeMB + 1500}MB可用内存（当前${availMemMB}MB）。大模型(vosk-model-cn-0.22)需要约3.5GB空闲内存才能稳定加载。"
                 ctx.lastErrorDetail = detail
-                logToFile("generateWithVosk: [v2.0.78] BLOCKING large model (insufficient avail mem): $detail")
-                callback.onError("$detail 请关闭其他应用后重试，或使用小模型。")
+                logToFile("generateWithVosk: [v2.0.80] BLOCKING large model (insufficient avail mem): $detail")
+                callback.onError("$detail 请关闭其他应用释放内存后重试，或使用小模型(vosk-model-small-cn-0.22)。")
                 return false
             }
 
@@ -955,26 +960,27 @@ class SubtitleGeneratorService : Service() {
             actManager?.getMemoryInfo(memInfo)
             val totalMemMB = memInfo.totalMem / 1024 / 1024
             val availMemMB = memInfo.availMem / 1024 / 1024
-            logToFile("processVoskInChunks: [v2.0.75] model=${modelSizeMB}MB, nameSuggestsLarge=$nameSuggestsLarge, isLarge=$isLargeModel, maxHeap=${maxHeapMB}MB, freeMem=${freeMemMB}MB, totalDevice=${totalMemMB}MB, avail=${availMemMB}MB, lowRam=${memInfo.lowMemory}")
+            logToFile("processVoskInChunks: [v2.0.80] model=${modelSizeMB}MB, nameSuggestsLarge=$nameSuggestsLarge, isLarge=$isLargeModel, maxHeap=${maxHeapMB}MB, freeMem=${freeMemMB}MB, totalDevice=${totalMemMB}MB, avail=${availMemMB}MB, lowRam=${memInfo.lowMemory}")
             // [v2.0.75] Issue 4 Fix: Lower total RAM threshold from 3GB to 2GB.
             // Many modern phones with 2-3GB RAM can run the large model if enough memory is available.
             // The availMem check below is the real gatekeeper; totalMem is just a quick reject.
             if (isLargeModel && totalMemMB < 2048) {
                 val detail = "Vosk大模型(${modelSizeMB}MB)需要2GB以上总内存（当前${totalMemMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.76] BLOCKING large model load (low total RAM): $detail")
+                logToFile("processVoskInChunks: [v2.0.80] BLOCKING large model load (low total RAM): $detail")
                 ctx.log("ERROR: $detail")
                 callback.onError("$detail 请使用小模型(vosk-model-small-cn-0.22)。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to ctx.episodeId, "message" to detail))
                 return false
             }
-            if (isLargeModel && availMemMB < modelSizeMB + 300) {
-                val detail = "Vosk大模型加载需要${modelSizeMB + 300}MB可用内存（当前${availMemMB}MB）"
+            // [v2.0.80] Issue 4 Fix: Raised from modelSizeMB+300 to modelSizeMB+1500 (same as generateWithVosk)
+            if (isLargeModel && availMemMB < modelSizeMB + 1500) {
+                val detail = "Vosk大模型加载需要${modelSizeMB + 1500}MB可用内存（当前${availMemMB}MB）。大模型需要约3.5GB空闲内存才能稳定加载。"
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.76] BLOCKING large model load (insufficient avail mem): $detail")
+                logToFile("processVoskInChunks: [v2.0.80] BLOCKING large model load (insufficient avail mem): $detail")
                 ctx.log("ERROR: $detail")
-                callback.onError("$detail 请关闭其他应用后重试，或使用小模型。")
+                callback.onError("$detail 请关闭其他应用释放内存后重试，或使用小模型(vosk-model-small-cn-0.22)。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to ctx.episodeId, "message" to detail))
                 return false
@@ -2417,10 +2423,15 @@ class SubtitleGeneratorService : Service() {
                 val mi = android.app.ActivityManager.MemoryInfo()
                 am?.getMemoryInfo(mi)
                 val availNativeMB = mi.availMem / 1024 / 1024
-                if (availNativeMB < 1000) {
-                    logToFile("processWhisperInChunks: [v2.0.79] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < 1000MB, aborting to avoid LMKD kill")
+                // [v2.0.80] Issue 2 Fix: Raised native memory threshold from 1000MB to 3000MB.
+                // v2.0.79 had availMem=2954MB which passed 1000MB check, but bridge.full() on
+                // 5min audio (4.8M samples) caused native memory to spike beyond available RAM
+                // during attention/KV cache computation → LMKD SIGKILL.
+                // whisper.cpp tiny model inference on 5min audio needs ~2.5-3GB peak native RSS.
+                if (availNativeMB < 3000) {
+                    logToFile("processWhisperInChunks: [v2.0.80] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < 3000MB, aborting to avoid LMKD kill")
                     if (allTranscripts.isEmpty()) {
-                        val detail = "Whisper推理时native内存不足（可用${availNativeMB}MB，需要1000MB+）"
+                        val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要3000MB+用于attention/KV cache计算）"
                         ctx.lastErrorDetail = detail
                         callback.onError("$detail。请关闭其他应用释放内存后重试，或使用Vosk引擎。")
                         try { bridge.free(ctxPtr) } catch (_: Exception) {}

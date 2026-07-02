@@ -121,6 +121,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     inner class LocalBinder : Binder() {
         fun getService(): RadioPlaybackService = this@RadioPlaybackService
+        // [v2.0.80] Issue 1 Fix: Called by PlayerActivity.onResume() to activate skip blackout.
+        // Without this, lastClientBindTime is only set in onBind (which happens once, long before
+        // subsequent onResume calls), so the 3-second post-resume skip blackout never fires.
+        fun notifyActivityResumed() {
+            lastClientBindTime = System.currentTimeMillis()
+            // Reset skip storm state on resume (fresh start, no queued events)
+            consecutiveSkipCount = 0
+            skipCircuitBreakerUntil = 0L
+            backwardSkipDistanceInWindow = 0L
+            writeServiceLog("playback", "[v2.0.80] notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
+        }
     }
 
     /** Issue 9: app version tag included in every log line */
@@ -307,19 +318,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastSeekCallTime = 0L
     private var lastSeekTargetPos = -1L
     private var lastSkipDirectionTime = 0L  // for skipForward/skipBackward debounce
-    // [v2.0.79] Issue 1 Fix: Skip storm circuit breaker - FIXED MATH.
-    // v2.0.78 bug: 800ms debounce × 4 skips = 3.2s > 3s window → counter resets before reaching
-    // threshold of 5. Also distance cap used > instead of >=, so 4×15s=60s never triggered.
-    // Fix: window=15s, threshold=3 (trips at 4th), distance cap uses >=, debounce=1000ms.
-    // Also add episode-change cooldown: ignore all skips for 5s after playEpisode starts.
-    private val MAX_CONSECUTIVE_SKIPS = 3  // trip at 4th consecutive skip
-    private val SKIP_STORM_WINDOW_MS = 15_000L  // 15-second rolling window
-    private val SKIP_CIRCUIT_BREAKER_MS = 10_000L  // 10-second block when tripped
-    private val SKIP_BACKWARD_DISTANCE_CAP_MS = 45_000L  // 45s backward in window = storm
+    // [v2.0.80] Issue 1 Fix: Tighter circuit breaker params.
+    // v2.0.79 allowed 2 skips (30s) before tripping at 45s. Now trip at 30s (after 2 skips)
+    // with 15s block (was 10s). Also: when block expires, add 5s grace where consecutive=1
+    // (not 0) so a single skip won't immediately re-trip.
+    private val MAX_CONSECUTIVE_SKIPS = 2  // trip at 3rd consecutive skip (was 3)
+    private val SKIP_STORM_WINDOW_MS = 15_000L
+    private val SKIP_CIRCUIT_BREAKER_MS = 15_000L  // 15s block (was 10s)
+    private val SKIP_BACKWARD_DISTANCE_CAP_MS = 30_000L  // 30s backward = storm (was 45s)
     private val SKIP_DISTANCE_WINDOW_MS = 15_000L
-    private val POST_RESUME_BLACKOUT_MS = 3_000L  // 3s blackout after Activity bind
-    private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 5_000L  // 5s cooldown after new episode
-    private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L  // dedup seekTo(0) when pos < 15s
+    private val POST_RESUME_BLACKOUT_MS = 3_000L
+    private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 5_000L
+    private val LOW_POSITION_SKIP_DEDUP_MS = 5_000L  // 5s dedup for seekTo(0) (was 3s)
     private var consecutiveSkipCount = 0
     private var skipStormFirstTime = 0L
     private var skipCircuitBreakerUntil = 0L
