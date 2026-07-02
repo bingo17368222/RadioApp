@@ -403,8 +403,17 @@ class SubtitleGeneratorService : Service() {
 
                 // 根据ASR引擎设置选择模型
                 val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
-                val asrProvider = settings.safeAsrProvider()
+                var asrProvider = settings.safeAsrProvider()
                 val savedVoskDir = settings.voskModelDir
+                // [v2.0.83] Fix: If user selected a Vosk model dir but engine is still whisper,
+                // auto-switch to vosk-local. This was the root cause of "user selected Vosk small
+                // model but got Whisper errors" - savedVoskDir and asrProvider are independent settings.
+                if (savedVoskDir.isNotBlank() && (asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local")) {
+                    logToFile("generateSubtitlesForEpisode: [v2.0.83] AUTO-SWITCHING engine from $asrProvider to vosk-local because savedVoskDir=$savedVoskDir is set")
+                    asrProvider = "vosk-local"
+                    settings.asrProvider = "vosk-local"
+                    settings.save(this@SubtitleGeneratorService)
+                }
                 ctx.log("ASR provider: $asrProvider, savedVoskDir=$savedVoskDir")
                 logToFile("generateSubtitlesForEpisode: ASR engine selected = $asrProvider, savedVoskDir=$savedVoskDir, episodeId=$episodeId")
 

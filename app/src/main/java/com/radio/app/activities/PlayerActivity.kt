@@ -2515,11 +2515,16 @@ class PlayerActivity : AppCompatActivity() {
         // [v2.0.73] Issue 1 Fix: Only cache position when player is prepared and position is valid.
         // During episode switches, player reports position=1197ms or 0ms which corrupts the cache,
         // causing resume to seek to beginning instead of last valid position.
+        // [v2.0.83] Fix: Use lastDisplayedPositionMs (UI-stabilized position) instead of service
+        // getCurrentPosition() which may be dragged back by skipBackward storm. STAB-HOLD pins
+        // UI to a stable position, but onPause was caching the storm-dragged service position.
         if (serviceBound && playbackService != null) {
             val isPrepared = playbackService?.isPrepared() ?: false
-            val pos = playbackService?.getCurrentPosition() ?: 0L
+            val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val dur = playbackService?.getDuration() ?: 0L
             val epId = currentEpisode?.id ?: ""
+            // [v2.0.83] Prefer lastDisplayedPositionMs if it's larger (skipBackward storm dragged svcPos back)
+            val pos = if (lastDisplayedPositionMs > svcPos) lastDisplayedPositionMs else svcPos
             // Only cache if: player is prepared, position > 5s (not at beginning), duration valid, episode known
             if (isPrepared && pos > 5000 && dur > 30000 && epId.isNotBlank()) {
                 lastDisplayedPositionMs = pos
@@ -2528,7 +2533,7 @@ class PlayerActivity : AppCompatActivity() {
                     .putLong("cached_duration", dur)
                     .putString("cached_episode_id", epId)
                     .apply()
-                writeJitterLog("onPause: cached position=$pos, duration=$dur, episodeId=$epId (prepared=true)")
+                writeJitterLog("onPause: cached position=$pos (svcPos=$svcPos, uiPos=$lastDisplayedPositionMs), duration=$dur, episodeId=$epId (prepared=true)")
             } else {
                 writeJitterLog("onPause: SKIPPED position cache (prepared=$isPrepared, pos=$pos, dur=$dur, epId=$epId) - keeping previous cache")
             }

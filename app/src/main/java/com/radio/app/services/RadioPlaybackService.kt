@@ -233,58 +233,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // Also add a pause-confirmed flag to prevent notification flicker after pause().
     private var focusRecoveryAttempts = 0
     private var pauseConfirmedUntil = 0L  // [v2.0.78] force notification to show PAUSED until this time
+    // [v2.0.83] DISABLED focusProbe active probing. requestAudioFocus() always returns GRANTED
+    // because AudioFocus is a soft resource - the system grants it to whoever asks. This caused
+    // "不管是否退出拼多多，几秒后都会自动恢复播放" - app would steal focus from Pinduoduo and
+    // resume playback even while user was still watching Pinduoduo videos.
+    // Now: PERMANENT loss → pause and wait for passive GAIN callback (user returns to app).
     private val focusProbeRunnable = object : Runnable {
         override fun run() {
-            if (audioFocusLossType != FOCUS_LOSS_PERMANENT || !pausedByAudioFocus || userPaused) {
-                writeServiceLog("audiofocus", "[v2.0.78] focusProbe: stopping (lossType=$audioFocusLossType, pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
-                return
-            }
-            focusRecoveryAttempts++
-            writeServiceLog("audiofocus", "[v2.0.78] focusProbe: attempt #$focusRecoveryAttempts (polling every 3s after PERMANENT loss)")
-            // Actively try to re-request audio focus. If the other app has released it
-            // (e.g., Pinduoduo video finished but didn't call abandon), our request will be GRANTED
-            // and we'll get AUDIOFOCUS_GAIN callback which triggers resume.
-            val granted = requestAudioFocus()
-            if (granted) {
-                writeServiceLog("audiofocus", "[v2.0.78] focusProbe: requestAudioFocus GRANTED on attempt #$focusRecoveryAttempts! Resuming playback.")
-                // On Android 8+, requestAudioFocus success triggers onAudioFocusChange(GAIN) callback.
-                // But to be safe, also directly resume here if still paused by audio focus.
-                audioFocusHandler.post {
-                    if (pausedByAudioFocus && !userPaused && playbackStarted) {
-                        writeServiceLog("audiofocus", "[v2.0.78] focusProbe: direct resume after successful focus re-request")
-                        pausedByAudioFocus = false
-                        audioFocusLossType = FOCUS_LOSS_NONE
-                        pauseConfirmedUntil = 0L
-                        player?.play()
-                        forceNotificationUpdate = true
-                        lastNotificationContentHash = 0
-                        mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
-                            .setState(PlaybackStateCompat.STATE_PLAYING, getCurrentPosition(), 1.0f)
-                            .setActions(PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
-                                PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or PlaybackStateCompat.ACTION_SEEK_TO or
-                                PlaybackStateCompat.ACTION_STOP)
-                            .build())
-                        notifyNotification()
-                    }
-                }
-            } else {
-                writeServiceLog("audiofocus", "[v2.0.78] focusProbe: requestAudioFocus DENIED (focus still held), retrying in 3s")
-                if (focusRecoveryAttempts < 60) {  // max 3 minutes of polling (60 * 3s = 180s)
-                    audioFocusHandler.postDelayed(this, 3000L)
-                } else {
-                    writeServiceLog("audiofocus", "[v2.0.78] focusProbe: max attempts (60) reached, stopping polling")
-                }
-            }
+            // [v2.0.83] Disabled - do not actively request audio focus
+            writeServiceLog("audiofocus", "[v2.0.83] focusProbe: DISABLED, not actively requesting focus")
+            return
         }
     }
-    // [v2.0.78] Shorten passive wait from 60s to 10s for faster recovery
+    // [v2.0.83] Disabled permanent loss recovery - no active probing
     private val permanentLossRecoveryRunnable = Runnable {
-        if (audioFocusLossType == FOCUS_LOSS_PERMANENT && pausedByAudioFocus && !userPaused) {
-            writeServiceLog("audiofocus", "[v2.0.78] permanentLossRecovery: 10s passive wait elapsed, starting active focus probing")
-            focusRecoveryAttempts = 0
-            audioFocusHandler.post(focusProbeRunnable)
-        }
+        // [v2.0.83] Disabled - do not start focus probing after PERMANENT loss
+        // Only passive AUDIOFOCUS_GAIN callback will resume playback
+        writeServiceLog("audiofocus", "[v2.0.83] permanentLossRecovery: DISABLED, waiting for passive GAIN only")
+        return@Runnable
     }
     private val audioFocusPermanentLossTimeoutMs = 10_000L
     // [v2.0.73] Issue 5 Fix: Cache last valid duration to avoid Long.MIN_VALUE from ExoPlayer
@@ -328,7 +294,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val SKIP_CIRCUIT_BREAKER_MS = 5_000L  // [v2.0.82] 5s block (was 15s, too long)
     private val SKIP_BACKWARD_DISTANCE_CAP_MS = 60_000L  // [v2.0.82] 60s backward = storm (was 30s)
     private val SKIP_DISTANCE_WINDOW_MS = 15_000L
-    private val POST_RESUME_BLACKOUT_MS = 1_000L  // [v2.0.82] 1s (was 3s, caused button unresponsive)
+    private val POST_RESUME_BLACKOUT_MS = 2_000L  // [v2.0.83] 2s (was 1s, still too short)
     private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 3_000L  // [v2.0.82] 3s (was 5s)
     private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L  // [v2.0.82] 3s (was 5s)
     private var consecutiveSkipCount = 0
@@ -2799,10 +2765,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 audioFocusLossType = FOCUS_LOSS_PERMANENT
                 if (!userPaused && playbackStarted) {
                     pausedByAudioFocus = true
-                    writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): pausing, passive GAIN wait 60s then active probing (Pinduoduo/Douyin recovery)")
+                    writeServiceLog("audiofocus", "[v2.0.83] AUDIOFOCUS_LOSS (PERMANENT): pausing, will NOT auto-resume (waiting for passive GAIN when user returns)")
                     pause(userInitiated = false)
-                    // Start recovery timer: if GAIN arrives within 60s, auto-resume; else start active probing
-                    audioFocusHandler.postDelayed(permanentLossRecoveryRunnable, audioFocusPermanentLossTimeoutMs)
+                    // [v2.0.83] Do NOT start focus probing - it steals focus from other apps.
+                    // Only passive AUDIOFOCUS_GAIN callback (system gives focus back) will resume.
                 } else {
                     writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
                 }
