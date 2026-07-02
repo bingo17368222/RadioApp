@@ -1211,7 +1211,7 @@ class SubtitleGeneratorService : Service() {
                 // v2.0.80 had 0 PARTIALs. This log shows whether getPartialResult returns empty or if
                 // the shouldEmit condition is blocking. Logs even when partial is blank.
                 if (chunkCount % 20 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.81] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$accepted, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                    logToFile("processVoskInChunks: [v2.0.81] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
                 }
                 if (partial.isNotBlank()) {
                     try {
