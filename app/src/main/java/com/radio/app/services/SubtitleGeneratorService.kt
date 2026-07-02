@@ -897,10 +897,13 @@ class SubtitleGeneratorService : Service() {
         var acceptTrueCount = 0
         var acceptFalseCount = 0
         var lastPartialText = ""
-        // [v2.0.77] Issue 3 Fix: Emit partial results every 500ms (vs 300ms before) to reduce
-        // jittery single-character partials while still keeping output reasonably dense.
-        var lastEmitTime = 0L
-        // [v2.0.77] Force a partial emit at least every 1.5s even if text hasn't changed much
+        // [v2.0.79] Issue 3 Fix: SEPARATE timers for FINAL and PARTIAL emission.
+        // v2.0.77-78 bug: lastEmitTime was shared between FINAL and PARTIAL. When a FINAL was
+        // emitted, lastEmitTime was updated, which blocked the next PARTIAL for 500ms. With
+        // FINALs every ~1.5s and 500ms chunks, PARTIALs were almost always blocked.
+        // Result: 213 FINALs but only 17 PARTIALs in v2.0.78 log. Fix: use separate timers.
+        var lastPartialEmitTime = 0L  // only updated when PARTIAL is emitted
+        var lastFinalEmitTime = 0L   // only updated when FINAL is emitted (not used to block PARTIAL)
         var lastForceEmitTime = 0L
         // Issue 9: Dedicated Vosk log - log start parameters
         writeVoskLog("processVoskInChunks START [v2.0.77]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), totalSize=$totalSize, processLimit=$processLimit")
@@ -1178,6 +1181,9 @@ class SubtitleGeneratorService : Service() {
                                     logToFile("processVoskInChunks: FIRST transcript at ${firstResultTime}ms from processing start")
                                 }
                                 callback.onSubtitleGenerated(transcript)
+                                // [v2.0.79] Only update FINAL timer, do NOT update lastPartialEmitTime.
+                                // This ensures FINALs don't block PARTIAL emission.
+                                lastFinalEmitTime = currentTimeMs
                                 // [v2.0.75] Issue 3 Fix: Reset lastPartialText after final result.
                                 // After acceptWaveForm returns true, Vosk resets its internal buffer for the
                                 // next utterance. Partial results after this point are for a NEW utterance,
@@ -1197,10 +1203,11 @@ class SubtitleGeneratorService : Service() {
                         val partialJson = org.json.JSONObject(partial)
                         val partialText = partialJson.optString("partial", "").trim()
                         if (chunkCount % 20 == 0 && partialText.isNotEmpty()) {
-                            logToFile("processVoskInChunks: [v2.0.77] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', timeMs=$currentTimeMs, lastEmit=$lastEmitTime")
+                            logToFile("processVoskInChunks: [v2.0.79] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime")
                         }
-                        val shouldEmit = (partialText.isNotEmpty() && partialText != lastPartialText && currentTimeMs - lastEmitTime >= 500) ||
-                                         (partialText.isNotEmpty() && partialText.length > lastPartialText.length + 3 && currentTimeMs - lastEmitTime >= 500) ||
+                        // [v2.0.79] Use lastPartialEmitTime (not lastFinalEmitTime) for PARTIAL throttle
+                        val shouldEmit = (partialText.isNotEmpty() && partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 300) ||
+                                         (partialText.isNotEmpty() && partialText.length > lastPartialText.length + 3 && currentTimeMs - lastPartialEmitTime >= 300) ||
                                          (partialText.isNotEmpty() && currentTimeMs - lastForceEmitTime >= 1500 && partialText != lastPartialText)
                         if (shouldEmit) {
                             val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
@@ -1211,11 +1218,12 @@ class SubtitleGeneratorService : Service() {
                                 segmentStart = partialStartTime,
                                 segmentEnd = partialEndTime
                             )
-                            logToFile("processVoskInChunks: [v2.0.77] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
+                            logToFile("processVoskInChunks: [v2.0.79] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
                             writeVoskLog("partial: chunk=$chunkCount, text='${partialText.take(100)}'")
                             allTranscripts.add(transcript)
                             callback.onSubtitleGenerated(transcript)
-                            lastEmitTime = currentTimeMs
+                            // [v2.0.79] Only update PARTIAL timers, not FINAL timer
+                            lastPartialEmitTime = currentTimeMs
                             lastForceEmitTime = currentTimeMs
                             lastPartialText = partialText
                         }
@@ -2402,6 +2410,28 @@ class SubtitleGeneratorService : Service() {
                     }
                 }
 
+                // [v2.0.79] Issue 2 Fix: Check NATIVE available memory before each whisper inference.
+                // v2.0.78 only checked Java heap; but whisper.cpp's native memory during bridge.full()
+                // can spike 500-700MB for tiny model. If availMem < 1000MB, abort to avoid LMKD kill.
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                val mi = android.app.ActivityManager.MemoryInfo()
+                am?.getMemoryInfo(mi)
+                val availNativeMB = mi.availMem / 1024 / 1024
+                if (availNativeMB < 1000) {
+                    logToFile("processWhisperInChunks: [v2.0.79] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < 1000MB, aborting to avoid LMKD kill")
+                    if (allTranscripts.isEmpty()) {
+                        val detail = "Whisper推理时native内存不足（可用${availNativeMB}MB，需要1000MB+）"
+                        ctx.lastErrorDetail = detail
+                        callback.onError("$detail。请关闭其他应用释放内存后重试，或使用Vosk引擎。")
+                        try { bridge.free(ctxPtr) } catch (_: Exception) {}
+                        return false
+                    } else {
+                        logToFile("processWhisperInChunks: [v2.0.79] Returning ${allTranscripts.size} partial transcripts before native OOM")
+                        break
+                    }
+                }
+                // [v2.0.79] Release the chunk float array reference after copying to allow GC
+                // (the main samples array is still held, but at least the chunk copy can be freed)
                 var chunkSuccess = false
                 try {
                     val result = bridge.full(ctxPtr, chunkFloat, chunkSamples)
