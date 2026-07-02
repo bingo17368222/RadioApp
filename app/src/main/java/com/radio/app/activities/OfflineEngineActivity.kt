@@ -155,10 +155,10 @@ class OfflineEngineActivity : AppCompatActivity() {
         ),
         EngineInfo(
             "Vosk 中模型 (英文)",
-            "Vosk medium-en 英文模型\n大小: 约280MB | 识别率: ~93% | 速度: 中等\n适用: 高精度英文语音识别",
-            "约280MB",
-            "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip",
-            "vosk-model-en-us-0.22"
+            "Vosk en-us-0.22-lgraph 英文中模型(动态图)\n大小: 约128MB | 识别率: ~92% | 速度: 中等\n适用: 高精度英文语音识别",
+            "约128MB",
+            "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip",
+            "vosk-model-en-us-0.22-lgraph"
         ),
         EngineInfo(
             "Vosk 大模型 (英文)",

@@ -91,6 +91,26 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             restoreLastSelection()
             initialLoadDone = true
         }
+        // [v2.0.71] Issue 7: Sync date to currently playing episode's date
+        try {
+            val prefs = requireContext().getSharedPreferences("last_episode", android.content.Context.MODE_PRIVATE)
+            val playingBroadcastAt = prefs.getString("broadcast_at", null)
+            if (!playingBroadcastAt.isNullOrEmpty() && playingBroadcastAt.length >= 10) {
+                val playingDateStr = playingBroadcastAt.substring(0, 10)  // yyyy-MM-dd
+                val playingDate = dateFormat.parse(playingDateStr)
+                if (playingDate != null) {
+                    val playingCal = Calendar.getInstance()
+                    playingCal.time = playingDate
+                    // Only switch if different from current selected date
+                    if (playingCal.get(Calendar.DAY_OF_YEAR) != selectedDate.get(Calendar.DAY_OF_YEAR) ||
+                        playingCal.get(Calendar.YEAR) != selectedDate.get(Calendar.YEAR)) {
+                        selectedDate.time = playingDate
+                        buildDatePills()
+                        selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time)) }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
         // [v2.0.43] Issue 4: Highlight currently playing episode
         try {
             val prefs = requireContext().getSharedPreferences("last_episode", android.content.Context.MODE_PRIVATE)
@@ -198,6 +218,19 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             }
             dateContainer?.addView(pill)
             dateButtons.add(pill)
+        }
+
+        // [v2.0.70] Issue 7: Auto-center the highlighted (selected) date in the HorizontalScrollView
+        val selectedIdx = 7  // i=0 in -7..7 → index 7
+        dateContainer?.post {
+            try {
+                val selectedPill = dateButtons.getOrNull(selectedIdx)
+                if (selectedPill != null) {
+                    val sv = (dateContainer?.parent as? android.widget.HorizontalScrollView)
+                    val targetScroll = selectedPill.left - (sv?.width ?: 0) / 2 + selectedPill.width / 2
+                    sv?.smoothScrollTo(targetScroll.coerceAtLeast(0), 0)
+                }
+            } catch (_: Exception) {}
         }
     }
 

@@ -53,6 +53,39 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- [v2.0.75] Issue 5 Fix: 添加进度条区域到minimal布局。
+         之前minimal布局没有进度条，导致updateNotificationProgressOnly()
+         用minimal布局重建通知时进度条消失。 -->
+    <LinearLayout
+        android:id="@+id/notification_progress_area"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/notification_time_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00/00:00"
+            android:textSize="10sp"
+            android:textColor="#CCCCCC"
+            android:maxLines="1" />
+
+        <ProgressBar
+            android:id="@+id/notification_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="16dp"
+            android:max="1000"
+            android:progress="0"
+            android:progressDrawable="@drawable/notification_progress_drawable" />
+    </LinearLayout>
+
     <!-- 5个按钮（紧凑布局） -->
     <LinearLayout
         android:layout_width="match_parent"

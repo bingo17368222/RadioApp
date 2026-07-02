@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 #include <dlfcn.h>
 #include <android/log.h>
 #include <signal.h>
@@ -177,15 +178,17 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     // Android ART intercepts SIGSEGV before custom signal handlers, so siglongjmp never fires.
     // [v2.0.57] Issue 2 Fix: Reduce to 0.5 second (was 1s) - minimize memory to avoid OOM crash.
     // Also fix NaN check to check ALL samples (not just first 1000)
-    int maxSamples = 8000;  // 0.5 second - minimize memory
-    int processSamples = n_samples < maxSamples ? n_samples : maxSamples;
-    LOGI("full: n_samples=%d, processSamples=%d (capped at 0.5s), ctx=%p", n_samples, processSamples, ctx);
+    // [v2.0.62] Issue 2 Fix: Process ALL samples passed from Kotlin (Kotlin handles chunking).
+    // The previous 8000 (0.5s) cap was the root cause of "no output" - Whisper needs >=3s of audio.
+    // Kotlin layer now passes 10-second chunks to balance memory vs recognition quality.
+    int processSamples = n_samples;
+    LOGI("full: n_samples=%d, processSamples=%d, ctx=%p", n_samples, processSamples, ctx);
 
-    // [v2.0.45] Issue 3 Fix: Check for NaN/Infinity in samples that could cause SIGSEGV
-    // [v2.0.52] Fix: Check ALL processSamples (not just first 1000)
+    // [v2.0.66] Issue 1 Fix: Check for NaN/Infinity using isfinite() from <math.h>.
+    // Previously used isnormal() which was an implicit declaration (undefined behavior → SIGSEGV).
     int nan_count = 0;
     for (int i = 0; i < processSamples; i++) {
-        if (!isnormal(sample_data[i]) && sample_data[i] != 0.0f) {
+        if (!isfinite(sample_data[i])) {
             sample_data[i] = 0.0f;  // Replace NaN/Inf with silence
             nan_count++;
         }
@@ -199,15 +202,17 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_progress  = false;
     params.print_timestamps = false;
     params.translate       = false;
-    params.n_threads       = 1;  // [v2.0.49] Issue 3 Fix: Single thread to allow siglongjmp recovery
-    // [v2.0.56] Issue 2 Fix: Minimize memory usage to avoid crash
+    params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
+    // [v2.0.66] Issue 1 Fix: Use single thread to reduce memory pressure.
+    // GREEDY sampling with 1 thread to minimize memory usage and avoid SIGSEGV.
+    params.n_threads       = 1;
+    // [v2.0.66] Reduce memory: no context, single segment, limit tokens
     params.n_max_text_ctx = 0;
     params.offset_ms = 0;
     params.duration_ms = 0;
-    // [v2.0.57] Issue 2 Fix: Minimize memory usage to avoid OOM
-    params.no_context = true;        // disable context memory
-    params.single_segment = true;    // reduce segmentation memory
-    params.max_tokens = 1;           // minimize token processing
+    params.no_context = true;
+    params.single_segment = true;
+    params.max_tokens = 32;  // Limit tokens to prevent OOM on long audio
 
     // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp - doesn't work on Android ART
     // Just install simple crash logger (writes to file before process dies)

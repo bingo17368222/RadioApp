@@ -23,17 +23,49 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Cache Gradle
+      - name: Cache Gradle + Android SDK
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+            ~/android-sdk
+          key: ${{ runner.os }}-gradle-sdk-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: |
+            ${{ runner.os }}-gradle-sdk-
             ${{ runner.os }}-gradle-
 
-      - name: Install Gradle and remove local proxy
+      - name: Install Android SDK
+        run: |
+          set -e
+          SDK_DIR="$HOME/android-sdk"
+          mkdir -p "$SDK_DIR"
+          cd "$SDK_DIR"
+
+          if [ ! -d "cmdline-tools/latest/bin" ]; then
+            echo "Downloading Android SDK command line tools..."
+            curl -fsSL -o cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q cmdline-tools.zip
+            mkdir -p cmdline-tools/latest
+            mv cmdline-tools/bin cmdline-tools/lib cmdline-tools/latest/ 2>/dev/null || true
+            rm -f cmdline-tools.zip
+          fi
+
+          export ANDROID_HOME="$SDK_DIR"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
+          # Accept licenses
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          # Install required SDK components
+          sdkmanager "platforms;android-33" "build-tools;33.0.0" "platform-tools" "ndk;25.1.8937393"
+
+          echo "=== Android SDK installed ==="
+          sdkmanager --list_installed | head -20
+
+      - name: Install Gradle (Tencent mirror)
         run: |
           # Remove local proxy settings that don't work on CI
           sed -i '/systemProp\.http\.proxy/d; /systemProp\.https\.proxy/d' gradle.properties
@@ -42,8 +74,10 @@ jobs:
 
           # Download Gradle using curl (Java's HttpsURLConnection has connection issues on CI)
           GRADLE_VERSION=7.5
-          curl -fSL -o /tmp/gradle.zip "https://mirrors.cloud.tencent.com/gradle/gradle-${GRADLE_VERSION}-bin.zip"
-          unzip -q /tmp/gradle.zip -d /tmp/
+          if [ ! -d "/tmp/gradle-${GRADLE_VERSION}" ]; then
+            curl -fSL -o /tmp/gradle.zip "https://mirrors.cloud.tencent.com/gradle/gradle-${GRADLE_VERSION}-bin.zip"
+            unzip -q /tmp/gradle.zip -d /tmp/
+          fi
           export PATH="/tmp/gradle-${GRADLE_VERSION}/bin:$PATH"
           echo "/tmp/gradle-${GRADLE_VERSION}/bin" >> $GITHUB_PATH
           gradle --version
