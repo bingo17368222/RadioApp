@@ -215,56 +215,66 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // wait is insufficient. Solution: after a permanent loss, actively poll every 5 seconds
     // by trying to re-request audio focus. If request is GRANTED, it means the other app
     // has released focus (or been killed by LMKD), so we can resume.
+    // [v2.0.78] Issue 5 Fix: Shorter passive wait + faster probing.
+    // v2.0.77 waited 60s passively which was too long; Pinduoduo videos are usually 15-30s.
+    // Start probing after 10s passive wait, probe every 3s (was 5s), for up to 3 minutes.
+    // Also add a pause-confirmed flag to prevent notification flicker after pause().
     private var focusRecoveryAttempts = 0
+    private var pauseConfirmedUntil = 0L  // [v2.0.78] force notification to show PAUSED until this time
     private val focusProbeRunnable = object : Runnable {
         override fun run() {
             if (audioFocusLossType != FOCUS_LOSS_PERMANENT || !pausedByAudioFocus || userPaused) {
-                writeServiceLog("audiofocus", "[v2.0.77] focusProbe: stopping (lossType=$audioFocusLossType, pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
+                writeServiceLog("audiofocus", "[v2.0.78] focusProbe: stopping (lossType=$audioFocusLossType, pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
                 return
             }
             focusRecoveryAttempts++
-            writeServiceLog("audiofocus", "[v2.0.77] focusProbe: attempt #$focusRecoveryAttempts (polling every 5s after PERMANENT loss)")
+            writeServiceLog("audiofocus", "[v2.0.78] focusProbe: attempt #$focusRecoveryAttempts (polling every 3s after PERMANENT loss)")
             // Actively try to re-request audio focus. If the other app has released it
             // (e.g., Pinduoduo video finished but didn't call abandon), our request will be GRANTED
             // and we'll get AUDIOFOCUS_GAIN callback which triggers resume.
             val granted = requestAudioFocus()
             if (granted) {
-                writeServiceLog("audiofocus", "[v2.0.77] focusProbe: requestAudioFocus GRANTED on attempt #$focusRecoveryAttempts! AUDIOFOCUS_GAIN callback will resume playback.")
-                // requestAudioFocus success should trigger onAudioFocusChange(GAIN) automatically
-                // on Android 8+ (AudioFocusRequest callback). For older API, we manually resume.
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    audioFocusHandler.post {
-                        if (pausedByAudioFocus && !userPaused && playbackStarted) {
-                            writeServiceLog("audiofocus", "[v2.0.77] focusProbe: manual resume (pre-O API)")
-                            pausedByAudioFocus = false
-                            audioFocusLossType = FOCUS_LOSS_NONE
-                            play()
-                        }
+                writeServiceLog("audiofocus", "[v2.0.78] focusProbe: requestAudioFocus GRANTED on attempt #$focusRecoveryAttempts! Resuming playback.")
+                // On Android 8+, requestAudioFocus success triggers onAudioFocusChange(GAIN) callback.
+                // But to be safe, also directly resume here if still paused by audio focus.
+                audioFocusHandler.post {
+                    if (pausedByAudioFocus && !userPaused && playbackStarted) {
+                        writeServiceLog("audiofocus", "[v2.0.78] focusProbe: direct resume after successful focus re-request")
+                        pausedByAudioFocus = false
+                        audioFocusLossType = FOCUS_LOSS_NONE
+                        pauseConfirmedUntil = 0L
+                        player?.play()
+                        forceNotificationUpdate = true
+                        lastNotificationContentHash = 0
+                        mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
+                            .setState(PlaybackStateCompat.STATE_PLAYING, getCurrentPosition(), 1.0f)
+                            .setActions(PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
+                                PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or PlaybackStateCompat.ACTION_SEEK_TO or
+                                PlaybackStateCompat.ACTION_STOP)
+                            .build())
+                        notifyNotification()
                     }
                 }
             } else {
-                writeServiceLog("audiofocus", "[v2.0.77] focusProbe: requestAudioFocus DENIED (focus still held by other app), retrying in 5s")
-                if (focusRecoveryAttempts < 24) {  // max 2 minutes of polling
-                    audioFocusHandler.postDelayed(this, 5000L)
+                writeServiceLog("audiofocus", "[v2.0.78] focusProbe: requestAudioFocus DENIED (focus still held), retrying in 3s")
+                if (focusRecoveryAttempts < 60) {  // max 3 minutes of polling (60 * 3s = 180s)
+                    audioFocusHandler.postDelayed(this, 3000L)
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.77] focusProbe: max attempts (24) reached, stopping polling (user must manually resume)")
+                    writeServiceLog("audiofocus", "[v2.0.78] focusProbe: max attempts (60) reached, stopping polling")
                 }
             }
         }
     }
-    // [v2.0.75] Issue 6 Fix: Permanent loss recovery timer.
-    // Many Chinese short-video apps (Pinduoduo, Douyin) incorrectly use AUDIOFOCUS_GAIN (permanent)
-    // instead of AUDIOFOCUS_GAIN_TRANSIENT, causing AUDIOFOCUS_LOSS instead of LOSS_TRANSIENT.
-    // When permanent loss occurs, wait for a potential GAIN within 60 seconds (user finishes video),
-    // then auto-resume. If no GAIN within 60s, active probing (focusProbeRunnable) takes over.
+    // [v2.0.78] Shorten passive wait from 60s to 10s for faster recovery
     private val permanentLossRecoveryRunnable = Runnable {
         if (audioFocusLossType == FOCUS_LOSS_PERMANENT && pausedByAudioFocus && !userPaused) {
-            writeServiceLog("audiofocus", "[v2.0.77] permanentLossRecovery: 60s passive wait elapsed without GAIN, starting active focus probing")
+            writeServiceLog("audiofocus", "[v2.0.78] permanentLossRecovery: 10s passive wait elapsed, starting active focus probing")
             focusRecoveryAttempts = 0
             audioFocusHandler.post(focusProbeRunnable)
         }
     }
-    private val audioFocusPermanentLossTimeoutMs = 60_000L
+    private val audioFocusPermanentLossTimeoutMs = 10_000L
     // [v2.0.73] Issue 5 Fix: Cache last valid duration to avoid Long.MIN_VALUE from ExoPlayer
     // during episode switches (player.getDuration() returns C.TIME_UNSET = -9223372036854775807
     // when player is reset, causing notification progress bar to disappear)
@@ -297,6 +307,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastSeekCallTime = 0L
     private var lastSeekTargetPos = -1L
     private var lastSkipDirectionTime = 0L  // for skipForward/skipBackward debounce
+    // [v2.0.78] Issue 1 Fix: Skip storm circuit breaker.
+    // v2.0.77 logs showed skipBackward firing every ~250ms (4/sec = 60s backward/sec) after onResume,
+    // caused by queued MediaSession/notification PendingIntent events. Each -15s skip lands on a different
+    // position so dupSamePos can't catch it. Add multi-layer protection:
+    // 1. Skip debounce increased from 300ms to 800ms
+    // 2. Consecutive skip counter: if >4 skips in 3 seconds, trip circuit breaker for 5 seconds
+    // 3. Post-rebind blackout: ignore skips for 1500ms after Activity binds/resumes
+    // 4. Total backward distance cap: if 10s window sees >60s of backward seek, block
+    private val MAX_CONSECUTIVE_SKIPS = 4
+    private val SKIP_STORM_WINDOW_MS = 3000L
+    private val SKIP_CIRCUIT_BREAKER_MS = 5000L
+    private val SKIP_BACKWARD_DISTANCE_CAP_MS = 60_000L
+    private val SKIP_DISTANCE_WINDOW_MS = 10_000L
+    private val POST_RESUME_BLACKOUT_MS = 1500L
+    private var consecutiveSkipCount = 0
+    private var skipStormFirstTime = 0L
+    private var skipCircuitBreakerUntil = 0L
+    private var lastBackwardSkipTime = 0L
+    private var backwardSkipDistanceInWindow = 0L
+    private var lastClientBindTime = 0L  // set when Activity (re)binds to service
     private var notificationStyle = "compact"
     private var lastNotificationTime = 0L
     private var pendingNotificationRunnable: Runnable? = null
@@ -2000,8 +2030,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 每次更新时重新加载通知栏样式，确保设置更改即时生效
         reloadNotificationStyle()
         writeServiceLog("notification", "updateNotification: BEFORE build - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange', style='$notificationStyle'")
-        // [v2.0.76] Issue 6 Fix: Use authoritative playing state including pausedByAudioFocus
-        val playing = playbackStarted && !userPaused && !pausedByAudioFocus
+        // [v2.0.78] Issue 5/6 Fix: Also check pauseConfirmedUntil to prevent post-pause flicker.
+        // For 2 seconds after pause(), force playing=false regardless of ExoPlayer transient state.
+        val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
+        val playing = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
 
         // Build informative subtitle with date and time
         val fullSubText = buildNotificationSubText()
@@ -2222,8 +2254,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val pos = getCurrentPosition()
         val dur = if (!isLive) getSafeDuration() else 0L
         val rawPlayerDur = player?.duration ?: 0L
-        // [v2.0.76] Issue 6 Fix: Include pausedByAudioFocus in playing state calculation
-        val playing = playbackStarted && !userPaused && !pausedByAudioFocus
+        // [v2.0.78] Include pauseConfirmedUntil to prevent flicker
+        val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
+        val playing = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
         val epId = currentEpisode?.id ?: "null"
         val epTitle = currentEpisode?.title ?: "null"
         // [v2.0.75] Issue 5: 详细日志 - 进度条状态、总时长、播放进度、关键标志
@@ -2420,11 +2453,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun buildNotification(): Notification {
-        // [v2.0.77] Issue 5/6 Fix: playing state MUST include pausedByAudioFocus check.
-        // v2.0.76 bug: used `playbackStarted && !userPaused` which missed pausedByAudioFocus=true,
-        // causing notification button to show "pause" icon (playing state) even when audio focus
-        // loss (Pinduoduo video) had paused playback. User had to manually press pause then play.
-        val playing = playbackStarted && !userPaused && !pausedByAudioFocus
+        // [v2.0.78] Issue 5/6 Fix: playing state includes pauseConfirmedUntil to prevent flicker.
+        val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
+        val playing = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
         // 紧凑模式使用MediaStyle
         if (notificationStyle == "compact") {
             return NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
@@ -3025,6 +3056,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.77] Issue 5 Fix: Also cancel active focus probing
         audioFocusHandler.removeCallbacks(focusProbeRunnable)
         focusRecoveryAttempts = 0
+        // [v2.0.78] Issue 1 Fix: User-initiated play resets skip storm state
+        consecutiveSkipCount = 0
+        skipCircuitBreakerUntil = 0L
+        backwardSkipDistanceInWindow = 0L
+        // [v2.0.78] Issue 5 Fix: Clear pause confirmation window on play
+        pauseConfirmedUntil = 0L
         requestAudioFocus()
         player?.play()
         // [v2.0.76] Issue 6 Fix: Immediately update MediaSession to STATE_PLAYING
@@ -3069,14 +3106,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             pausedByAudioFocus = false
             audioFocusLossType = FOCUS_LOSS_NONE
         }
+        // [v2.0.78] Issue 5 Fix: Set pause-confirmed window (2 seconds) to prevent notification
+        // flicker. ExoPlayer's isPlaying may briefly return true after pause() due to state
+        // propagation delay; buildNotification() checks this flag to force playing=false.
+        pauseConfirmedUntil = System.currentTimeMillis() + 2000L
         // [v2.0.76] Cancel any pending audio focus resume timers when pausing
         audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
         audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
         audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] cancel probe
         focusRecoveryAttempts = 0
         player?.pause()
-        // [v2.0.77] Issue 5/6 Fix: Immediately update MediaSession PlaybackState to STATE_PAUSED
-        writeServiceLog("notification", "[v2.0.77] pause(userInitiated=$userInitiated) called, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, updating MediaSession to STATE_PAUSED")
+        // [v2.0.78] Issue 5/6 Fix: Immediately update MediaSession PlaybackState to STATE_PAUSED
+        writeServiceLog("notification", "[v2.0.78] pause(userInitiated=$userInitiated) called, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, updating MediaSession to STATE_PAUSED")
         forceNotificationUpdate = true
         lastNotificationContentHash = 0
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
@@ -3164,33 +3205,101 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun skipForward() {
         if (isLive) return
         val now = System.currentTimeMillis()
-        // [v2.0.77] Issue 1 Fix: Debounce skipForward/skipBackward to 300ms minimum interval
-        if (now - lastSkipDirectionTime < 300L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.77] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms since last skip)")
+
+        // [v2.0.78] Issue 1 Fix: Circuit breaker - if tripped, block all skips
+        if (now < skipCircuitBreakerUntil) {
+            writeServiceLog("playback", "[v2.0.78] skipForward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
+            return
+        }
+
+        // [v2.0.78] Post-resume blackout: ignore skips immediately after client binds
+        if (lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS) {
+            writeServiceLog("playback", "[v2.0.78] skipForward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
+            return
+        }
+
+        // [v2.0.78] Increase debounce from 300ms to 800ms for stronger storm protection
+        if (now - lastSkipDirectionTime < 800L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.78] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms since last skip)")
             return
         }
         lastSkipDirectionTime = now
+        consecutiveSkipCount++
+        if (consecutiveSkipCount == 1) skipStormFirstTime = now
+        // Reset counter if window expired
+        if (now - skipStormFirstTime > SKIP_STORM_WINDOW_MS) {
+            consecutiveSkipCount = 1
+            skipStormFirstTime = now
+        }
+        // Trip circuit breaker if too many consecutive skips
+        if (consecutiveSkipCount > MAX_CONSECUTIVE_SKIPS) {
+            skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
+            writeServiceLog("playback", "[v2.0.78] skipForward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking for ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            return
+        }
+
         val curPos = getCurrentPosition()
         val pPos = curPos + skipSeconds * 1000
         val dur = if (prepared) player?.duration ?: 0 else currentEpisode?.let {
             val d = it.duration; if (d < 100000) d * 1000 else d
         } ?: 0
         val targetPos = if (dur > 0 && pPos > dur) dur else pPos
-        writeServiceLog("playback", "[v2.0.77] skipForward: curPos=$curPos -> targetPos=$targetPos")
+        writeServiceLog("playback", "[v2.0.78] skipForward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount)")
         seekTo(targetPos)
     }
     fun skipBackward() {
         if (isLive) return
         val now = System.currentTimeMillis()
-        // [v2.0.77] Issue 1 Fix: Debounce skipForward/skipBackward to 300ms minimum interval
-        if (now - lastSkipDirectionTime < 300L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.77] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms since last skip)")
+
+        // [v2.0.78] Issue 1 Fix: Circuit breaker
+        if (now < skipCircuitBreakerUntil) {
+            writeServiceLog("playback", "[v2.0.78] skipBackward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
+            return
+        }
+
+        // [v2.0.78] Post-resume blackout
+        if (lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS) {
+            writeServiceLog("playback", "[v2.0.78] skipBackward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
+            return
+        }
+
+        // [v2.0.78] Track backward distance in rolling window
+        if (lastBackwardSkipTime > 0 && now - lastBackwardSkipTime > SKIP_DISTANCE_WINDOW_MS) {
+            backwardSkipDistanceInWindow = 0L  // reset expired window
+        }
+
+        // [v2.0.78] Increase debounce from 300ms to 800ms
+        if (now - lastSkipDirectionTime < 800L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.78] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms since last skip)")
             return
         }
         lastSkipDirectionTime = now
+        lastBackwardSkipTime = now
+        consecutiveSkipCount++
+        if (consecutiveSkipCount == 1) skipStormFirstTime = now
+        if (now - skipStormFirstTime > SKIP_STORM_WINDOW_MS) {
+            consecutiveSkipCount = 1
+            skipStormFirstTime = now
+            backwardSkipDistanceInWindow = 0L
+        }
+        // Trip circuit breaker on consecutive count
+        if (consecutiveSkipCount > MAX_CONSECUTIVE_SKIPS) {
+            skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
+            writeServiceLog("playback", "[v2.0.78] skipBackward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking for ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            // Restore position to before the storm (where we were when storm started)
+            return
+        }
+        // Check backward distance cap
+        backwardSkipDistanceInWindow += skipSeconds * 1000L
+        if (backwardSkipDistanceInWindow > SKIP_BACKWARD_DISTANCE_CAP_MS) {
+            skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
+            writeServiceLog("playback", "[v2.0.78] skipBackward: CIRCUIT BREAKER TRIPPED by distance! ${backwardSkipDistanceInWindow/1000}s backward in ${now - skipStormFirstTime}ms, blocking for ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            return
+        }
+
         val curPos = getCurrentPosition()
         val targetPos = maxOf(0, curPos - skipSeconds * 1000)
-        writeServiceLog("playback", "[v2.0.77] skipBackward: curPos=$curPos -> targetPos=$targetPos")
+        writeServiceLog("playback", "[v2.0.78] skipBackward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount, backDist=${backwardSkipDistanceInWindow/1000}s)")
         seekTo(targetPos)
     }
     fun isPlaying(): Boolean = player?.isPlaying ?: false
@@ -3853,7 +3962,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun applyNotificationIntents(remoteViews: RemoteViews) {
-        val playing = playbackStarted && !userPaused
+        // [v2.0.78] Fix: include pausedByAudioFocus and pauseConfirmedUntil
+        val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
+        val playing = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
         try { remoteViews.setOnClickPendingIntent(R.id.btn_rewind,
             PendingIntent.getService(this, 1, Intent(this, RadioPlaybackService::class.java).apply { action = ACTION_REWIND },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)) } catch (_: Exception) {}
@@ -3925,7 +4036,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Intent(BROADCAST_STATE_CHANGED).apply { putExtra(EXTRA_IS_PLAYING, playing) })
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        // [v2.0.78] Issue 1 Fix: Track when client (Activity) binds to service.
+        // Skip commands received within POST_RESUME_BLACKOUT_MS of bind are likely queued/stale events.
+        lastClientBindTime = System.currentTimeMillis()
+        // Reset skip storm state on new client connection
+        consecutiveSkipCount = 0
+        skipCircuitBreakerUntil = 0L
+        backwardSkipDistanceInWindow = 0L
+        writeServiceLog("playback", "[v2.0.78] onBind: client connected, reset skip storm state")
+        return binder
+    }
+
+    override fun onRebind(intent: Intent?) {
+        lastClientBindTime = System.currentTimeMillis()
+        consecutiveSkipCount = 0
+        skipCircuitBreakerUntil = 0L
+        backwardSkipDistanceInWindow = 0L
+        writeServiceLog("playback", "[v2.0.78] onRebind: client reconnected, reset skip storm state")
+        super.onRebind(intent)
+    }
 
     override fun onDestroy() {
         super.onDestroy()

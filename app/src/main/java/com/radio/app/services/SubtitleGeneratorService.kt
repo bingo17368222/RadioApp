@@ -779,232 +779,69 @@ class SubtitleGeneratorService : Service() {
                 return processVoskInChunks(pcm16kFile, modelPath, callback, ctx)
             }
 
-            ctx.log("Initializing Vosk recognizer with model: $modelPath")
-            var recognizer: Any? = null
-            var model: Any? = null
-            try {
-                // [v2.0.72] Check available memory before loading large model
-                val modelFile = File(modelPath)
-                val isLargeModel = modelFile.name.contains("cn-0.22") && !modelFile.name.contains("small")
-                if (isLargeModel) {
-                    val runtime = Runtime.getRuntime()
-                    val maxMem = runtime.maxMemory()
-                    val freeMem = runtime.freeMemory()
-                    val totalMem = runtime.totalMemory()
-                    val usedMem = totalMem - freeMem
-                    val availMem = maxMem - usedMem
-                    logToFile("generateWithVosk: [v2.0.72] large model detected, availMem=${availMem/1024/1024}MB, maxMem=${maxMem/1024/1024}MB")
-                    ctx.log("Loading large Vosk model (${modelFile.name}), available memory: ${availMem/1024/1024}MB. This may fail on low-memory devices.")
-                }
-                model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
-                recognizer = voskRecognizerClass!!.getConstructor(voskModelClass, Float::class.javaPrimitiveType)
-                    .newInstance(model, 16000.0f as java.lang.Float)
-            } catch (e: Throwable) {
-                val modelName = File(modelPath).name
-                val isLarge = modelName.contains("cn-0.22") && !modelName.contains("small")
-                val detail = when {
-                    e is OutOfMemoryError || (e.message?.contains("Failed to create a model", ignoreCase = true) == true && isLarge) ->
-                        "Vosk大模型(${modelName})加载失败，设备内存不足"
-                    e.message?.contains("Failed to create a model", ignoreCase = true) == true ->
-                        "Vosk模型文件可能损坏或不完整(${modelName})"
-                    else ->
-                        "Vosk模型初始化失败(${e.javaClass.name}: ${e.message})"
-                }
+            // [v2.0.78] Issue 2-4 Fix: UNIFY both paths through processVoskInChunks.
+            // v2.0.77 had a bug: when PCM cache was missing, it created the Model/Recognizer
+            // BEFORE downloading audio (risking OOM for large models on low-memory devices),
+            // then processed audio inline with wrong chunking logic producing garbage single-char output.
+            // Fix: download audio first, save to PCM cache, then call processVoskInChunks (which has
+            // proper memory checks, chunking, and partial-result handling).
+
+            // [v2.0.78] Check model size/memory BEFORE downloading audio for large models.
+            // This prevents the OOM-kill path for vosk-model-cn-0.22 (1.3GB).
+            val modelFile = File(modelPath)
+            val modelSizeMB = calculateDirSize(modelFile) / 1024 / 1024
+            val nameSuggestsLarge = modelFile.name.contains("cn-0.22") && !modelFile.name.contains("small")
+            val isLargeModel = nameSuggestsLarge || modelSizeMB > 200
+            val actManager = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            val memInfo = android.app.ActivityManager.MemoryInfo()
+            actManager?.getMemoryInfo(memInfo)
+            val totalMemMB = memInfo.totalMem / 1024 / 1024
+            val availMemMB = memInfo.availMem / 1024 / 1024
+            val maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024
+            logToFile("generateWithVosk: [v2.0.78] model=${modelSizeMB}MB, isLarge=$isLargeModel, totalMem=${totalMemMB}MB, avail=${availMemMB}MB, maxHeap=${maxHeapMB}MB, lowRam=${memInfo.lowMemory}")
+            if (isLargeModel && totalMemMB < 2048) {
+                val detail = "Vosk大模型(${modelSizeMB}MB)需要2GB以上总内存（当前${totalMemMB}MB）"
                 ctx.lastErrorDetail = detail
-                val errorMsg = "Vosk Recognizer init FAILED [v2.0.76]: $detail"
-                ctx.log(errorMsg)
-                logToFile("generateWithVosk: [v2.0.76] $errorMsg")
-                writeCrashLog("vosk_init_crash", "Vosk Recognizer 初始化崩溃", "模型路径: $modelPath\n", e)
-                callback.onError("$detail。请尝试重新下载模型或在设置中切换模型。")
+                logToFile("generateWithVosk: [v2.0.78] BLOCKING large model (low total RAM): $detail")
+                callback.onError("$detail 请使用小模型(vosk-model-small-cn-0.22)。")
                 return false
             }
-            ctx.log("Vosk recognizer created successfully")
-            // [v2.0.66] Issue 6: Set model name for broadcast
-            currentModelName = File(modelPath).name
-
-            // Enable word-level output for timestamps
-            try {
-                val setWordsMethod = voskRecognizerClass!!.getMethod("setWords", Boolean::class.javaPrimitiveType)
-                setWordsMethod.invoke(recognizer, true)
-                logToFile("generateWithVosk: setWords(true) called")
-            } catch (e: Exception) {
-                logToFile("generateWithVosk: setWords failed: ${e.message}")
-            }
-            // [v2.0.66] Issue 3 Fix: Enable partial word output for dense partial results
-            try {
-                val setPartialWordsMethod = voskRecognizerClass!!.getMethod("setPartialWords", Boolean::class.javaPrimitiveType)
-                setPartialWordsMethod.invoke(recognizer, true)
-                logToFile("generateWithVosk: setPartialWords(true) called")
-            } catch (e: Exception) {
-                logToFile("generateWithVosk: setPartialWords failed: ${e.message}")
-            }
-            // [v2.0.66] Issue 4 Fix: Disable Vosk internal logging to reduce memory
-            try {
-                val setLogLevelMethod = voskRecognizerClass!!.getMethod("setLogLevel", Int::class.javaPrimitiveType)
-                setLogLevelMethod.invoke(recognizer, -1)
-                logToFile("generateWithVosk: setLogLevel(-1) called")
-            } catch (e: Exception) {
-                logToFile("generateWithVosk: setLogLevel failed: ${e.message}")
+            if (isLargeModel && availMemMB < modelSizeMB + 300) {
+                val detail = "Vosk大模型加载需要${modelSizeMB + 300}MB可用内存（当前${availMemMB}MB）"
+                ctx.lastErrorDetail = detail
+                logToFile("generateWithVosk: [v2.0.78] BLOCKING large model (insufficient avail mem): $detail")
+                callback.onError("$detail 请关闭其他应用后重试，或使用小模型。")
+                return false
             }
 
-            // Get audio data - prefer 16kHz PCM cache
-            logToFile("generateWithVosk: calling getAudioDataForProcessing episodeId=$episodeId, audioUrl=$audioUrl")
+            // Get audio data - download/process first, then write to cache, then use chunked path
+            logToFile("generateWithVosk: [v2.0.78] calling getAudioDataForProcessing episodeId=$episodeId")
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
-            logToFile("generateWithVosk: getAudioDataForProcessing returned audioData=${audioData?.size ?: -1} bytes")
-            if (audioData == null) {
-                // Try chunked processing for original PCM cache if it exists
-                val pcmCacheDir2 = File(getExternalFilesDir(null), "pcm_cache")
-                val pcmFile = File(pcmCacheDir2, "${episodeId}_5min.pcm")
-                if (pcmFile.exists() && pcmFile.length() > 1024) {
-                    // Original PCM cache needs resampling - resample to 16kHz temp file first
-                    ctx.log("Original PCM cache exists, attempting resample + chunked processing")
-                    val infoFile = File(pcmCacheDir2, "${episodeId}_5min.info")
-                    var inSampleRate = 44100
-                    var inChannels = 2
-                    if (infoFile.exists()) {
-                        val info = infoFile.readText()
-                        val srMatch = Regex("sampleRate=(\\d+)").find(info)
-                        if (srMatch != null) inSampleRate = srMatch.groupValues[1].toInt()
-                        val chMatch = Regex("channels=(\\d+)").find(info)
-                        if (chMatch != null) inChannels = chMatch.groupValues[1].toInt()
-                    }
-                    // If already 16kHz mono, use chunked directly
-                    if (inSampleRate == 16000 && inChannels == 1) {
-                        try { voskRecognizerClass!!.getMethod("close").invoke(recognizer) } catch (_: Exception) {}
-                        return processVoskInChunks(pcmFile, modelPath, callback, ctx)
-                    }
-                }
-                ctx.log("ERROR: Failed to get audio data")
+            logToFile("generateWithVosk: [v2.0.78] getAudioDataForProcessing returned audioData=${audioData?.size ?: -1} bytes")
+            if (audioData == null || audioData.isEmpty()) {
                 callback.onError("音频处理失败：无法获取音频数据。请检查网络连接后重试")
-                try { voskRecognizerClass!!.getMethod("close").invoke(recognizer) } catch (_: Exception) {}
                 return false
             }
 
-            ctx.log("Processing ${audioData.size} bytes of audio data with Vosk")
-            val totalBytes = audioData.size
-            // [v2.0.74] Issue 3 Fix: Increase chunk size from 8192 (256ms) to 16000 (500ms).
-            // 256ms chunks caused acceptWaveForm to return false ~95% of the time because Vosk
-            // needs enough audio context to detect speech boundaries. 500ms gives better results
-            // while still keeping partial updates frequent enough.
-            val chunkSize = 16000
-            var offset = 0
-            var lastProgress = 0
-            val acceptWaveFormMethod = voskRecognizerClass!!.getMethod("acceptWaveForm", ByteArray::class.java, Int::class.javaPrimitiveType)
-            val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
-            val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
-            val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
-
-            val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
-            var lastPartialText = ""
-            var chunkCount = 0
-            var lastEmitTime = 0L
-            while (offset < audioData.size && !ctx.cancelled.get()) {
-                val end = minOf(offset + chunkSize, audioData.size)
-                val chunk = audioData.copyOfRange(offset, end)
-                val accepted = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
-                chunkCount++
-                // [v2.0.64] Issue 3 Fix: Use getPartialResult() for incremental output.
-                // Radio audio is continuous speech - acceptWaveForm rarely returns true (no silence).
-                // getResult() only returns finalized text at silence boundaries → sparse output.
-                // getPartialResult() returns current recognition state every call → dense output.
-                val currentTimeMs = offset * 1000L / 32000L
-                if (accepted) {
-                    // Silence boundary: get final result
-                    lastPartialText = ""
-                    val result = getResultMethod.invoke(recognizer) as? String ?: ""
-                    if (result.isNotBlank()) {
-                        try {
-                            val json = org.json.JSONObject(result as String)
-                            val text = json.optString("text", "").trim()
-                            if (text.isNotBlank()) {
-                                val offsetMs = 15L * 60 * 1000
-                                var startTime = offsetMs
-                                var endTime = offsetMs
-                                val resultArr = json.optJSONArray("result")
-                                if (resultArr != null && resultArr.length() > 0) {
-                                    val firstWord = resultArr.getJSONObject(0)
-                                    val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
-                                    startTime = offsetMs + (firstWord.optDouble("start", 0.0) * 1000).toLong()
-                                    endTime = offsetMs + (lastWord.optDouble("end", 0.0) * 1000).toLong()
-                                } else {
-                                    startTime = offsetMs + currentTimeMs
-                                    endTime = offsetMs + (end * 1000L / 32000L)
-                                }
-                                val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("generateWithVosk: [v2.0.67] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
-                                lastEmitTime = currentTimeMs
-                            }
-                        } catch (e: Exception) { /* skip */ }
-                    }
+            // Save audio data to PCM cache for future reuse AND for unified chunked processing
+            try {
+                pcmCacheDir.mkdirs()
+                // Write the downloaded PCM data to cache file (should already be 16kHz mono)
+                java.io.FileOutputStream(pcm16kFile).use { fos ->
+                    fos.write(audioData)
+                    fos.flush()
                 }
-                // [v2.0.73] Issue 3 Fix: Improved partial result handling (same fix as chunked path).
-                // Don't rely on length comparison or prefix-diffing - emit partial whenever it changes.
-                val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                if (partial.isNotBlank()) {
-                    try {
-                        val partialJson = org.json.JSONObject(partial as String)
-                        val partialText = partialJson.optString("partial", "").trim()
-                        if (partialText.isNotBlank() && partialText != lastPartialText) {
-                            if (currentTimeMs - lastEmitTime >= 400) {
-                                val offsetMs = 15L * 60 * 1000
-                                val startTime = offsetMs + (currentTimeMs - 400).coerceAtLeast(0)
-                                val endTime = offsetMs + currentTimeMs
-                                val transcript = com.radio.app.models.Transcript(text = partialText, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("generateWithVosk: [v2.0.73] PARTIAL: start=${startTime}ms, end=${endTime}ms, text='${partialText.take(80)}'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
-                                lastEmitTime = currentTimeMs
-                                lastPartialText = partialText
-                            }
-                        }
-                    } catch (e: Exception) { /* skip */ }
-                }
-                offset = end
-                val progress = (offset * 100 / totalBytes)
-                if (progress > lastProgress + 5) {
-                    lastProgress = progress
-                    callback.onProgressUpdate(progress, 100)
-                }
+                logToFile("generateWithVosk: [v2.0.78] Saved PCM cache: ${pcm16kFile.absolutePath}, size=${pcm16kFile.length()} bytes (${audioData.size/32000}s @ 16kHz mono)")
+                ctx.log("Saved ${audioData.size/1024}KB PCM to cache, starting chunked Vosk processing...")
+            } catch (e: Exception) {
+                logToFile("generateWithVosk: [v2.0.78] Failed to write PCM cache: ${e.message}")
+                // Continue anyway - we still have audioData in memory, but chunked path needs file
+                callback.onError("PCM缓存写入失败: ${e.message}")
+                return false
             }
 
-            // Get final result
-            val finalResult = getFinalResultMethod.invoke(recognizer) as? String ?: ""
-            if (finalResult.isNotBlank()) {
-                try {
-                    val json = org.json.JSONObject(finalResult as String)
-                    val text = json.optString("text", "")
-                    if (text.isNotBlank()) {
-                        // [v2.0.67] Parse timestamps from Vosk result with 15-min offset
-                        val offsetMs = 15L * 60 * 1000
-                        var startTime = offsetMs
-                        var endTime = offsetMs
-                        val resultArr = json.optJSONArray("result")
-                        if (resultArr != null && resultArr.length() > 0) {
-                            val firstWord = resultArr.getJSONObject(0)
-                            val lastWord = resultArr.getJSONObject(resultArr.length() - 1)
-                            startTime = offsetMs + (firstWord.optDouble("start", 0.0) * 1000).toLong()
-                            endTime = offsetMs + (lastWord.optDouble("end", 0.0) * 1000).toLong()
-                        } else {
-                            // Fallback: use accumulated byte offset for approximate timestamps
-                            // offset is in bytes, 16000Hz * 2 bytes/sample = 32000 bytes per second
-                            // chunk is out of scope after the loop, use chunkSize for end estimate
-                            startTime = offsetMs + (offset * 1000L / 32000L)
-                            endTime = offsetMs + ((offset + chunkSize) * 1000L / 32000L)
-                        }
-                        val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                        logToFile("generateWithVosk: [v2.0.67] final transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(50)}...'")
-                        allTranscripts.add(transcript)
-                        callback.onSubtitleGenerated(transcript)
-                    }
-                } catch (e: Exception) { /* skip */ }
-            }
-
-            try { voskRecognizerClass!!.getMethod("close").invoke(recognizer) } catch (_: Exception) {}
-            ctx.log("Vosk processing complete, ${allTranscripts.size} transcripts")
-            callback.onComplete(allTranscripts)
-            return true
+            // Now use the unified chunked processing path (proper memory checks, chunking, partial results)
+            return processVoskInChunks(pcm16kFile, modelPath, callback, ctx)
         } catch (e: Exception) {
             logToFile("generateWithVosk: EXCEPTION: ${e.javaClass.name}: ${e.message}")
             e.stackTrace.take(5).forEach { logToFile("generateWithVosk: at $it") }
@@ -2390,7 +2227,26 @@ class SubtitleGeneratorService : Service() {
             val now = System.currentTimeMillis()
             val cooldownMs = 10L * 60 * 1000  // 10-minute cooldown after OOM
             val whisperRecentOOM = lastOomTime > 0 && (now - lastOomTime) < cooldownMs
-            logToFile("processWhisperInChunks: [v2.0.77] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
+            logToFile("processWhisperInChunks: [v2.0.78] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
+            // [v2.0.78] Issue 2 Fix: Also check Java heap free space BEFORE model load.
+            // v2.0.77 only checked system availMem (2154MB passed) but Java freeHeap was only 21MB.
+            // Whisper model init + float[] audio conversion needs ~60-80MB Java heap.
+            // If freeHeap < 100MB before model load, GC first; if still < 80MB after GC, abort.
+            val requiredHeapMB = 100
+            if (freeHeapMB < requiredHeapMB) {
+                logToFile("processWhisperInChunks: [v2.0.78] Low Java heap (${freeHeapMB}MB), running GC before model load")
+                System.gc()
+                Thread.sleep(300)
+                val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
+                logToFile("processWhisperInChunks: [v2.0.78] After GC: freeHeap=${freeHeapAfterGcMB}MB")
+                if (freeHeapAfterGcMB < 80) {
+                    val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB用于音频数据转换）"
+                    ctx.lastErrorDetail = detail
+                    logToFile("processWhisperInChunks: [v2.0.78] INSUFFICIENT JAVA HEAP for Whisper: $detail")
+                    callback.onError("$detail。请关闭其他应用或重启App后重试。")
+                    return false
+                }
+            }
             // [v2.0.77] Issue 2 Fix: Require MORE available memory for Whisper.
             // whisper.cpp needs: model weights (native mmap) + mel spectrogram buffer (~10MB) +
             // attention + KV cache + computation graph. For tiny model (74MB), observed RSS
@@ -2437,6 +2293,26 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
+
+            // [v2.0.78] Issue 2 Fix: Check Java heap AFTER model load (model init consumes heap).
+            // v2.0.77 saw freeHeap drop to 23MB after model load, making float[] conversion impossible.
+            val postInitFreeHeapMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
+            logToFile("processWhisperInChunks: [v2.0.78] After model init: freeHeap=${postInitFreeHeapMB}MB")
+            if (postInitFreeHeapMB < 60) {
+                logToFile("processWhisperInChunks: [v2.0.78] Low heap after model init (${postInitFreeHeapMB}MB), running GC")
+                System.gc()
+                Thread.sleep(300)
+                val afterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
+                logToFile("processWhisperInChunks: [v2.0.78] After post-init GC: freeHeap=${afterGcMB}MB")
+                if (afterGcMB < 50) {
+                    val detail = "Whisper模型加载后Java堆内存不足（GC后仅${afterGcMB}MB）"
+                    ctx.lastErrorDetail = detail
+                    logToFile("processWhisperInChunks: [v2.0.78] ABORT after model init: $detail")
+                    callback.onError("$detail。请关闭其他应用或重启App后重试。")
+                    try { bridge.free(ctxPtr) } catch (_: Exception) {}
+                    return false
+                }
+            }
 
             // [v2.0.74] Issue 2 Fix: PCM may be from different ranges due to fallback decode chain.
             // If PCM is smaller than expected (~9.6MB for 5min @ 16kHz), it's from a fallback range.
