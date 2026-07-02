@@ -894,7 +894,10 @@ class SubtitleGeneratorService : Service() {
         // User confirmed they once saw dense output ("日子再长也要一分钟一分钟的过啊") — that was
         // likely with larger chunks. Vosk's endpoint detector needs ~300-500ms of audio context
         // to reliably detect silence boundaries in continuous radio speech.
-        val chunkSize = 16000
+        // [v2.0.81] Issue 3 Fix: Increased from 16000 (0.5s) to 32000 (1s).
+        // v2.0.80: 0.5s chunks produced 0 PARTIALs (getPartialResult always returned empty).
+        // 1s chunks give Vosk more context to produce partial recognition between endpoints.
+        val chunkSize = 32000
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
@@ -1204,17 +1207,24 @@ class SubtitleGeneratorService : Service() {
 
                 // [v2.0.77] Issue 3 Fix: Partial result handling with 500ms throttle + 1.5s force emit.
                 val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                // [v2.0.81] Issue 3 Fix: Unconditional debug log every 20 chunks to diagnose empty PARTIALs.
+                // v2.0.80 had 0 PARTIALs. This log shows whether getPartialResult returns empty or if
+                // the shouldEmit condition is blocking. Logs even when partial is blank.
+                if (chunkCount % 20 == 0) {
+                    logToFile("processVoskInChunks: [v2.0.81] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$accepted, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                }
                 if (partial.isNotBlank()) {
                     try {
                         val partialJson = org.json.JSONObject(partial)
                         val partialText = partialJson.optString("partial", "").trim()
-                        if (chunkCount % 20 == 0 && partialText.isNotEmpty()) {
-                            logToFile("processVoskInChunks: [v2.0.79] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime")
+                        // [v2.0.81] Also log partialText extraction result
+                        if (chunkCount % 20 == 0) {
+                            logToFile("processVoskInChunks: [v2.0.81] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
                         }
-                        // [v2.0.79] Use lastPartialEmitTime (not lastFinalEmitTime) for PARTIAL throttle
-                        val shouldEmit = (partialText.isNotEmpty() && partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 300) ||
-                                         (partialText.isNotEmpty() && partialText.length > lastPartialText.length + 3 && currentTimeMs - lastPartialEmitTime >= 300) ||
-                                         (partialText.isNotEmpty() && currentTimeMs - lastForceEmitTime >= 1500 && partialText != lastPartialText)
+                        // [v2.0.81] Reduced throttle from 300ms to 200ms for faster PARTIAL emission
+                        val shouldEmit = (partialText.isNotEmpty() && partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 200) ||
+                                         (partialText.isNotEmpty() && partialText.length > lastPartialText.length + 3 && currentTimeMs - lastPartialEmitTime >= 200) ||
+                                         (partialText.isNotEmpty() && currentTimeMs - lastForceEmitTime >= 1000 && partialText != lastPartialText)
                         if (shouldEmit) {
                             val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
                             val partialStartTime = partialOffsetMs + offset * 1000L / 32000L
@@ -2256,8 +2266,10 @@ class SubtitleGeneratorService : Service() {
                 if (freeHeapAfterGcMB < 80) {
                     val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB用于音频数据转换）"
                     ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.78] INSUFFICIENT JAVA HEAP for Whisper: $detail")
+                    logToFile("processWhisperInChunks: [v2.0.81] INSUFFICIENT JAVA HEAP for Whisper: $detail")
                     callback.onError("$detail。请关闭其他应用或重启App后重试。")
+                    // [v2.0.81] Fix resource leak: release model context before returning
+                    try { bridge.free(ctxPtr) } catch (_: Exception) {}
                     return false
                 }
             }
@@ -2423,13 +2435,15 @@ class SubtitleGeneratorService : Service() {
                 val mi = android.app.ActivityManager.MemoryInfo()
                 am?.getMemoryInfo(mi)
                 val availNativeMB = mi.availMem / 1024 / 1024
-                // [v2.0.80] Issue 2 Fix: Raised native memory threshold from 1000MB to 3000MB.
-                // v2.0.79 had availMem=2954MB which passed 1000MB check, but bridge.full() on
-                // 5min audio (4.8M samples) caused native memory to spike beyond available RAM
-                // during attention/KV cache computation → LMKD SIGKILL.
-                // whisper.cpp tiny model inference on 5min audio needs ~2.5-3GB peak native RSS.
-                if (availNativeMB < 3000) {
-                    logToFile("processWhisperInChunks: [v2.0.80] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < 3000MB, aborting to avoid LMKD kill")
+                // [v2.0.81] Issue 2 Fix: Dynamic native memory threshold based on model size.
+                // v2.0.80 used fixed 3000MB which was too aggressive for tiny model (74MB).
+                // Device had availMem=2757MB which is enough for tiny model inference (~1.2GB peak).
+                // Formula: modelSize + 1500MB for tiny, modelSize + 2500MB for base/small.
+                // tiny (74MB): 74 + 1500 = 1574MB threshold (2757MB passes ✓)
+                // base (142MB): 142 + 2000 = 2142MB threshold
+                val whisperNativeThreshold = modelSizeMB + 1500
+                if (availNativeMB < whisperNativeThreshold) {
+                    logToFile("processWhisperInChunks: [v2.0.81] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB (modelSize=${modelSizeMB}MB+1500), aborting to avoid LMKD kill")
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要3000MB+用于attention/KV cache计算）"
                         ctx.lastErrorDetail = detail
