@@ -289,9 +289,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // v2.0.79 allowed 2 skips (30s) before tripping at 45s. Now trip at 30s (after 2 skips)
     // with 15s block (was 10s). Also: when block expires, add 5s grace where consecutive=1
     // (not 0) so a single skip won't immediately re-trip.
-    private val MAX_CONSECUTIVE_SKIPS = 5  // [v2.0.82] trip at 6th consecutive (was 2, too aggressive)
+    private val MAX_CONSECUTIVE_SKIPS = 10  // [v2.0.85] trip at 11th consecutive (was 5, still too aggressive)
     private val SKIP_STORM_WINDOW_MS = 15_000L
-    private val SKIP_CIRCUIT_BREAKER_MS = 5_000L  // [v2.0.82] 5s block (was 15s, too long)
+    private val SKIP_CIRCUIT_BREAKER_MS = 3_000L  // [v2.0.85] 3s block (was 5s, still too long for user)
     private val SKIP_BACKWARD_DISTANCE_CAP_MS = 60_000L  // [v2.0.82] 60s backward = storm (was 30s)
     private val SKIP_DISTANCE_WINDOW_MS = 15_000L
     private val POST_RESUME_BLACKOUT_MS = 2_000L  // [v2.0.83] 2s (was 1s, still too short)
@@ -3197,24 +3197,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isLive) return
         val now = System.currentTimeMillis()
 
-        // [v2.0.82] Circuit breaker
+        // [v2.0.85] Circuit breaker
         if (now < skipCircuitBreakerUntil) {
-            writeServiceLog("playback", "[v2.0.82] skipForward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
+            writeServiceLog("playback", "[v2.0.85] skipForward: BLOCKED by circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)")
             return
         }
         // [v2.0.82] Post-resume blackout - simple 1s block
         if (lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS) {
-            writeServiceLog("playback", "[v2.0.82] skipForward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
+            writeServiceLog("playback", "[v2.0.85] skipForward: BLOCKED by post-resume blackout (${now - lastClientBindTime}ms since bind)")
             return
         }
         // [v2.0.82] Episode-change cooldown
         if (lastEpisodeStartTime > 0 && now - lastEpisodeStartTime < EPISODE_CHANGE_SKIP_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.0.82] skipForward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms since episode start)")
+            writeServiceLog("playback", "[v2.0.85] skipForward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms since episode start)")
             return
         }
-        // [v2.0.82] Debounce: 800ms (reduced from 1000ms)
-        if (now - lastSkipDirectionTime < 800L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.82] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
+        // [v2.0.85] Debounce: 500ms (was 800ms, too aggressive for normal double-click)
+        if (now - lastSkipDirectionTime < 500L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.85] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }
         lastSkipDirectionTime = now
@@ -3224,10 +3224,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             consecutiveSkipCount = 1
             skipStormFirstTime = now
         }
-        // [v2.0.82] Trip at >5 (6th consecutive skip) - was >2, too aggressive
+        // [v2.0.85] Trip at >10 (11th consecutive skip) - was >5, too aggressive for normal use
         if (consecutiveSkipCount > MAX_CONSECUTIVE_SKIPS) {
             skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.82] skipForward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            // [v2.0.85] Reset counter after tripping to prevent immediate re-trip on next skip
+            consecutiveSkipCount = 0
+            skipStormFirstTime = 0L
+            writeServiceLog("playback", "[v2.0.85] skipForward: CIRCUIT BREAKER TRIPPED! blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s (counter reset)")
             return
         }
 
@@ -3271,7 +3274,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.79] Low-position dedup
         if (targetPos == 0L) {
             if (now - lastSeekToZeroTime < LOW_POSITION_SKIP_DEDUP_MS && lastSeekToZeroTime > 0) {
-                writeServiceLog("playback", "[v2.0.82] skipBackward: DROPPED low-pos dedup (targetPos=0, ${now - lastSeekToZeroTime}ms since last seekTo(0))")
+                writeServiceLog("playback", "[v2.0.85] skipBackward: DROPPED low-pos dedup (targetPos=0, ${now - lastSeekToZeroTime}ms since last seekTo(0))")
                 return
             }
             lastSeekToZeroTime = now
@@ -3281,9 +3284,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (lastBackwardSkipTime > 0 && now - lastBackwardSkipTime > SKIP_DISTANCE_WINDOW_MS) {
             backwardSkipDistanceInWindow = 0L
         }
-        // [v2.0.79] Debounce: 1000ms
-        if (now - lastSkipDirectionTime < 1000L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.82] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
+        // [v2.0.85] Debounce: 500ms (was 1000ms, too aggressive for normal double-click)
+        if (now - lastSkipDirectionTime < 500L && lastSkipDirectionTime > 0) {
+            writeServiceLog("playback", "[v2.0.85] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }
         lastSkipDirectionTime = now
@@ -3295,21 +3298,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             skipStormFirstTime = now
             backwardSkipDistanceInWindow = 0L
         }
-        // [v2.0.82] Trip at >5 (6th consecutive skip) - was >2, way too aggressive
+        // [v2.0.85] Trip at >10 (11th consecutive skip) - was >5, too aggressive
         if (consecutiveSkipCount > MAX_CONSECUTIVE_SKIPS) {
             skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.82] skipBackward: CIRCUIT BREAKER TRIPPED! $consecutiveSkipCount skips in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            consecutiveSkipCount = 0
+            skipStormFirstTime = 0L
+            backwardSkipDistanceInWindow = 0L
+            writeServiceLog("playback", "[v2.0.85] skipBackward: CIRCUIT BREAKER TRIPPED! blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s (counter reset)")
             return
         }
-        // [v2.0.79] Distance cap: use >= (fixes 4×15s=60s not triggering)
+        // [v2.0.85] Distance cap: 120s (was 60s, too aggressive for normal seeking)
         backwardSkipDistanceInWindow += skipSeconds * 1000L
-        if (backwardSkipDistanceInWindow >= SKIP_BACKWARD_DISTANCE_CAP_MS) {
+        if (backwardSkipDistanceInWindow >= 120_000L) {
             skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.82] skipBackward: CIRCUIT BREAKER TRIPPED by distance! ${backwardSkipDistanceInWindow/1000}s backward in ${now - skipStormFirstTime}ms, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+            consecutiveSkipCount = 0
+            skipStormFirstTime = 0L
+            backwardSkipDistanceInWindow = 0L
+            writeServiceLog("playback", "[v2.0.85] skipBackward: CIRCUIT BREAKER TRIPPED by distance! blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s (counter reset)")
             return
         }
 
-        writeServiceLog("playback", "[v2.0.82] skipBackward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount, backDist=${backwardSkipDistanceInWindow/1000}s)")
+        writeServiceLog("playback", "[v2.0.85] skipBackward: curPos=$curPos -> targetPos=$targetPos (consec=$consecutiveSkipCount, backDist=${backwardSkipDistanceInWindow/1000}s)")
         seekTo(targetPos)
     }
     fun isPlaying(): Boolean = player?.isPlaying ?: false

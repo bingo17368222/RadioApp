@@ -2361,20 +2361,27 @@ class PlayerActivity : AppCompatActivity() {
         consecutiveBackwardJumps = 0
         writeJitterLog("[v2.0.76] onResume: stabilization STARTED (always), cachedPos=$cachedPos, cachedEpId=$cachedEpId, serviceBound=$serviceBound, svc=${playbackService != null}, curEp=${currentEpisode?.id}")
 
+        // [v2.0.85] Fix: When service is not bound (svcPos=0), do NOT display stale cachedPos.
+        // v2.0.76 would show cachedPos then snap to svcPos when service connects = visible flicker.
+        // Now: only set UI if svcPos is valid. If service not bound yet, wait for onServiceConnected.
         if (cachedPos > 0 && _binding != null) {
-            // Try to get authoritative service position first
             val svcPos = if (serviceBound && playbackService != null) playbackService?.getCurrentPosition() ?: 0L else 0L
             val svcDur = if (serviceBound && playbackService != null) playbackService?.getDuration() ?: 0L else 0L
-            val usePos = if (svcPos > 2000) svcPos else cachedPos
-            val useDur = if (svcDur > 0) svcDur else cachedDur
-            lastDisplayedPositionMs = usePos
-            jitterSyncBaseline = usePos
-            if (useDur > 0 && _binding != null) {
-                binding.seekBar.max = useDur.toInt()
+            if (svcPos > 2000) {
+                // [v2.0.85] Service is bound and has valid position - use it
+                lastDisplayedPositionMs = svcPos
+                jitterSyncBaseline = svcPos
+                if (svcDur > 0 && _binding != null) {
+                    binding.seekBar.max = svcDur.toInt()
+                }
+                binding?.tvCurrentTime?.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
+                binding?.seekBar?.progress = svcPos.toInt()
+                writeJitterLog("[v2.0.85] onResume: UI set to svcPos=$svcPos (cached=$cachedPos), dur=$svcDur")
+            } else {
+                // [v2.0.85] Service not bound or position=0 - do NOT display stale cachedPos.
+                // onServiceConnected will set the UI when service is ready.
+                writeJitterLog("[v2.0.85] onResume: service not ready (svcPos=$svcPos), NOT displaying cached=$cachedPos - waiting for onServiceConnected")
             }
-            binding?.tvCurrentTime?.text = "${formatTime(usePos.toInt())} / ${if (useDur > 0) formatTime(useDur.toInt()) else "--:--"}"
-            binding?.seekBar?.progress = usePos.toInt()
-            writeJitterLog("[v2.0.76] onResume: UI set to pos=$usePos (svcPos=$svcPos, cached=$cachedPos), dur=$useDur")
         }
 
         restoreBackgroundResults()

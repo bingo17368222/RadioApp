@@ -897,12 +897,12 @@ class SubtitleGeneratorService : Service() {
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.84] Issue 3 Fix: Increased from 64000 (2s) to 128000 (4s).
-        // v2.0.83: 2s chunks → acceptRate 32.7% (49/150), 36 transcripts (up from 25).
-        // Still sparse with 67% chunks producing no output. Larger chunks give Vosk's endpoint
-        // detector even more context. The small model (65MB) has limited vocabulary, so
-        // longer audio context helps it recognize more complete phrases.
-        val chunkSize = 128000
+        // [v2.0.85] Reverted to 64000 (2s). v2.0.84 tried 128000 (4s):
+        // accept rate improved 32.7%→48.0%, but transcript count DROPPED 35→24 (-31%)
+        // because larger chunks = fewer chunk boundaries = fewer flush opportunities.
+        // 64000 (2s) is the sweet spot: 36 transcripts with 32.7% accept rate.
+        // The small model (65MB) has limited vocabulary - chunk size can't fix that.
+        val chunkSize = 64000
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
