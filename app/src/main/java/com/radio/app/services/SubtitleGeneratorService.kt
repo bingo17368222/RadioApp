@@ -892,14 +892,13 @@ class SubtitleGeneratorService : Service() {
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.86] Issue 2 Fix: Denser output per user request.
-        // Previous versions:
-        //   - v2.0.85: chunkSize=64000 (2s) → ~36 transcripts/5min, sparse
-        //   - v2.0.84: chunkSize=128000 (4s) → ~24 transcripts/5min, even sparser
-        // Smaller chunks = more frequent acceptWaveForm checks = more silence boundaries detected
-        // = more FINAL results. Also more PARTIAL result opportunities.
-        // Use 16000 (0.5s) chunks for much denser output.
-        val chunkSize = 16000
+        // [v2.0.88] Reverted from 16000 (0.5s) back to 64000 (2s).
+        // v2.0.86 tried 16000 (0.5s) hoping for denser output, but actual results were WORSE:
+        //   - 0.5s chunks: accept rate 9% (54/600), 34 transcripts — too little audio context per chunk
+        //   - 2.0s chunks: accept rate 33% (previously), 36 transcripts — better recognition
+        // Vosk small model needs >=2s of audio context to produce meaningful results.
+        // For denser output, we rely on aggressive PARTIAL emission instead (v2.0.86 partial logic kept).
+        val chunkSize = 64000
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
@@ -1156,9 +1155,9 @@ class SubtitleGeneratorService : Service() {
                 // [v2.0.70] Issue 3 Fix: Define currentTimeMs here (before partial check) for emit throttling
                 // offset is bytes, 32 bytes/ms at 16kHz mono 16-bit
                 val currentTimeMs = offset * 1000L / 32000L
-                // [v2.0.86] Log every 20 chunks = 10s at 0.5s/chunk (was 10 chunks=20s at 2s/chunk)
+                // [v2.0.88] Log every 20 chunks = 40s at 2s/chunk (reverted from 0.5s)
                 if (chunkCount % 20 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.86] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
+                    logToFile("processVoskInChunks: [v2.0.88] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
                 }
 
                 // [v2.0.67] Issue 3 Fix: Only call getResult() when acceptWaveForm=true (silence boundary).
@@ -1212,17 +1211,17 @@ class SubtitleGeneratorService : Service() {
                 // [v2.0.81] Issue 3 Fix: Unconditional debug log every 20 chunks to diagnose empty PARTIALs.
                 // v2.0.80 had 0 PARTIALs. This log shows whether getPartialResult returns empty or if
                 // the shouldEmit condition is blocking. Logs even when partial is blank.
-                // [v2.0.86] Log every 20 chunks = 10s at 0.5s/chunk
+                // [v2.0.88] Log every 20 chunks = 40s at 2s/chunk
                 if (chunkCount % 20 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.86] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                    logToFile("processVoskInChunks: [v2.0.88] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
                 }
                 if (partial.isNotBlank()) {
                     try {
                         val partialJson = org.json.JSONObject(partial)
                         val partialText = partialJson.optString("partial", "").trim()
-                        // [v2.0.86] Log every 20 chunks = 10s
+                        // [v2.0.88] Log every 20 chunks = 40s
                         if (chunkCount % 20 == 0) {
-                            logToFile("processVoskInChunks: [v2.0.86] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
+                            logToFile("processVoskInChunks: [v2.0.88] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
                         }
                         // [v2.0.86] Issue 2 Fix: Much more aggressive PARTIAL emission for denser output.
                         // v2.0.82 had 200ms throttle + 1s force emit, which was too conservative.
@@ -1254,14 +1253,14 @@ class SubtitleGeneratorService : Service() {
                     } catch (_: Exception) { /* skip */ }
                 }
 
-                // [v2.0.86] Log progress every 40 chunks = 20s at 0.5s/chunk
+                // [v2.0.88] Log progress every 40 chunks = 80s at 2s/chunk
                 if (chunkCount % 40 == 0) {
-                    writeVoskLog("processVoskInChunks: [v2.0.86] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
+                    writeVoskLog("processVoskInChunks: [v2.0.88] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
                 }
 
                 offset += bytesRead
                 if (chunkCount % 40 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.86] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
+                    logToFile("processVoskInChunks: [v2.0.88] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
                 }
                 val progress = (offset * 100 / totalSize).toInt()
                 if (progress > lastProgress + 2) {
@@ -2260,21 +2259,30 @@ class SubtitleGeneratorService : Service() {
             val cooldownMs = 10L * 60 * 1000  // 10-minute cooldown after OOM
             val whisperRecentOOM = lastOomTime > 0 && (now - lastOomTime) < cooldownMs
             logToFile("processWhisperInChunks: [v2.0.78] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
-            // [v2.0.78] Issue 2 Fix: Also check Java heap free space BEFORE model load.
-            // v2.0.77 only checked system availMem (2154MB passed) but Java freeHeap was only 21MB.
-            // Whisper model init + float[] audio conversion needs ~60-80MB Java heap.
-            // If freeHeap < 100MB before model load, GC first; if still < 80MB after GC, abort.
-            val requiredHeapMB = 100
+            // [v2.0.88] Issue 5 Fix: Reduced Java heap requirement from 100MB to 20MB.
+            // v2.0.78 required 100MB freeHeap, but the subtitle service process has maxHeap=512MB
+            // and after loading Vosk/Whisper classes + JSON parsing, only 0-11MB was free.
+            // The actual Java heap needed for Whisper processing is much less:
+            // - PCM data: 9.5MB ByteArray (loaded from file, freed after JNI call)
+            // - Float array for 1s chunk: 64KB (16000 samples × 4 bytes)
+            // - JSON result parsing: ~1MB
+            // - Model init uses NATIVE memory (mmap), not Java heap
+            // Total Java heap needed: ~15-20MB, not 100MB.
+            // Also: if freeHeap is very low, try to release references before GC.
+            val requiredHeapMB = 20
             if (freeHeapMB < requiredHeapMB) {
-                logToFile("processWhisperInChunks: [v2.0.78] Low Java heap (${freeHeapMB}MB), running GC before model load")
+                logToFile("processWhisperInChunks: [v2.0.88] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running GC + releasing references")
+                // [v2.0.88] Try to release memory by clearing caches and forcing GC
+                try { System.gc() } catch (_: Exception) {}
+                try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
                 System.gc()
-                Thread.sleep(300)
+                Thread.sleep(500)
                 val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                logToFile("processWhisperInChunks: [v2.0.78] After GC: freeHeap=${freeHeapAfterGcMB}MB")
-                if (freeHeapAfterGcMB < 80) {
-                    val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB用于音频数据转换）"
+                logToFile("processWhisperInChunks: [v2.0.88] After GC+finalization: freeHeap=${freeHeapAfterGcMB}MB")
+                if (freeHeapAfterGcMB < 10) {
+                    val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB）"
                     ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.81] INSUFFICIENT JAVA HEAP for Whisper: $detail")
+                    logToFile("processWhisperInChunks: [v2.0.88] INSUFFICIENT JAVA HEAP for Whisper: $detail")
                     callback.onError("$detail。请关闭其他应用或重启App后重试。")
                     return false
                 }

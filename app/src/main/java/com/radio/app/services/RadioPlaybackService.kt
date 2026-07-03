@@ -257,6 +257,58 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("audiofocus", "[v2.0.83] permanentLossRecovery: DISABLED, waiting for passive GAIN only")
         return@Runnable
     }
+    // [v2.0.88] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
+    // When Pinduoduo/Douyin video takes permanent focus, start polling every 15s.
+    // Check if any other app has an active PLAYING MediaSession. If none found,
+    // try to re-request audio focus. If granted, resume playback.
+    private val SMART_RESUME_POLL_MS = 15_000L
+    private var smartResumeRunning = false
+    private val smartResumeRunnable = Runnable {
+        if (!smartResumeRunning) return@Runnable
+        if (!playbackStarted || userPaused) {
+            writeServiceLog("audiofocus", "[v2.0.88] smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
+            smartResumeRunning = false
+            return@Runnable
+        }
+        try {
+            val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as android.media.session.MediaSessionManager
+            val sessions = mediaSessionManager.getActiveSessions(null)
+            var otherPlaying = false
+            for (session in sessions) {
+                val pkg = session.packageName
+                if (pkg != packageName) {
+                    val isPlaying = session.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING
+                    if (isPlaying) {
+                        otherPlaying = true
+                        writeServiceLog("audiofocus", "[v2.0.88] smartResume: OTHER app playing: $pkg, state=PLAYING, waiting...")
+                        break
+                    }
+                }
+            }
+            if (!otherPlaying) {
+                writeServiceLog("audiofocus", "[v2.0.88] smartResume: no other app playing, attempting to re-request focus")
+                val result = audioManager.requestAudioFocus(audioFocusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+                if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    writeServiceLog("audiofocus", "[v2.0.88] smartResume: FOCUS GRANTED! Resuming playback")
+                    audioFocusLossType = FOCUS_LOSS_NONE
+                    pausedByAudioFocus = false
+                    smartResumeRunning = false
+                    player?.play()
+                    prepared = true
+                    forceNotificationUpdate = true
+                    lastNotificationContentHash = 0
+                    updateNotification()
+                    return@Runnable
+                } else {
+                    writeServiceLog("audiofocus", "[v2.0.88] smartResume: focus request FAILED ($result), will retry in ${SMART_RESUME_POLL_MS/1000}s")
+                }
+            }
+        } catch (e: Exception) {
+            writeServiceLog("audiofocus", "[v2.0.88] smartResume: exception: ${e.message}")
+        }
+        // Schedule next poll
+        audioFocusHandler.postDelayed(smartResumeRunnable, SMART_RESUME_POLL_MS)
+    }
     private val audioFocusPermanentLossTimeoutMs = 10_000L
     // [v2.0.73] Issue 5 Fix: Cache last valid duration to avoid Long.MIN_VALUE from ExoPlayer
     // during episode switches (player.getDuration() returns C.TIME_UNSET = -9223372036854775807
@@ -293,17 +345,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // [v2.0.86] Skip storm protection redesigned per user feedback:
     // - Post-resume blackout: blocks ALL skips for 3s after app resumes
     // - During blackout: count ALL requests (including blocked ones). If >=5 requests in blackout,
-    //   trip circuit breaker for 3s. This is the v2.0.81 approach that prevented flicker because
+    //   trip circuit breaker. This is the v2.0.81 approach that prevented flicker because
     //   0 skips actually executed seekTo during the storm.
-    // - After blackout+breaker expires: NO LIMITS on user clicks (per user requirement #3).
-    //   Removed distance cap, consecutive counter, and all other rate limiting for normal usage.
-    // - Only debounce (500ms) remains to prevent double-click accidents.
+    // - [v2.0.88] Circuit breaker is SELF-EXTENDING: each new request during breaker extends it
+    //   by SKIP_CIRCUIT_BREAKER_MS. This prevents the "breaker expires → storm resumes" bug.
+    // - [v2.0.88] After breaker expires: POST_BREAKER_COOLDOWN (30s) enforces min 2s between
+    //   skip executions. This catches skip storms that continue past the breaker window.
+    // - After cooldown: NO LIMITS on user clicks (per user requirement #3).
     private val POST_RESUME_BLACKOUT_MS = 3_000L
     private val SKIP_CIRCUIT_BREAKER_MS = 3_000L
     private val SKIP_DEBOUNCE_MS = 500L
     private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 3_000L
     private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L
     private val STORM_REQUEST_THRESHOLD = 5  // trip breaker if 5+ requests during blackout
+    private val POST_BREAKER_COOLDOWN_MS = 30_000L  // [v2.0.88] 30s post-resume cooldown
+    private val POST_BREAKER_MIN_INTERVAL_MS = 2_000L  // [v2.0.88] min 2s between skips during cooldown
     private var skipRequestCount = 0
     private var skipRequestWindowStart = 0L
     private var skipCircuitBreakerUntil = 0L
@@ -2718,6 +2774,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Cancel any pending debounced resume and probing
                 audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
                 audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+                smartResumeRunning = false; audioFocusHandler.removeCallbacks(smartResumeRunnable)
                 audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] stop probing
                 focusRecoveryAttempts = 0
 
@@ -2742,6 +2799,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             pausedByAudioFocus = false
                             audioFocusLossType = FOCUS_LOSS_NONE
                             audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+                            smartResumeRunning = false; audioFocusHandler.removeCallbacks(smartResumeRunnable)
                             play()
                         } else {
                             writeServiceLog("audiofocus", "[v2.0.75] AUDIOFOCUS_GAIN: PERMANENT loss ended but not resuming (pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
@@ -2780,16 +2838,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Permanent focus loss (Pinduoduo/Douyin video playing long-form content)
                 audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
                 audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+                smartResumeRunning = false; audioFocusHandler.removeCallbacks(smartResumeRunnable)
                 audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] cancel any prior probe
                 focusRecoveryAttempts = 0
                 pendingAudioFocusResume = false
                 audioFocusLossType = FOCUS_LOSS_PERMANENT
                 if (!userPaused && playbackStarted) {
                     pausedByAudioFocus = true
-                    writeServiceLog("audiofocus", "[v2.0.83] AUDIOFOCUS_LOSS (PERMANENT): pausing, will NOT auto-resume (waiting for passive GAIN when user returns)")
+                    writeServiceLog("audiofocus", "[v2.0.88] AUDIOFOCUS_LOSS (PERMANENT): pausing, starting smart resume polling")
                     pause(userInitiated = false)
-                    // [v2.0.83] Do NOT start focus probing - it steals focus from other apps.
-                    // Only passive AUDIOFOCUS_GAIN callback (system gives focus back) will resume.
+                    // [v2.0.88] Issue 3 Fix: Start smart resume polling.
+                    // Instead of waiting passively for GAIN, actively check every 15s if other
+                    // apps stopped playing, then re-request focus.
+                    smartResumeRunning = true
+                    audioFocusHandler.postDelayed(smartResumeRunnable, SMART_RESUME_POLL_MS)
                 } else {
                     writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
                 }
@@ -3060,6 +3122,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
         // [v2.0.76] Also cancel permanent loss recovery timer
         audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+        smartResumeRunning = false; audioFocusHandler.removeCallbacks(smartResumeRunnable)
         // [v2.0.77] Issue 5 Fix: Also cancel active focus probing
         audioFocusHandler.removeCallbacks(focusProbeRunnable)
         focusRecoveryAttempts = 0
@@ -3138,6 +3201,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.76] Cancel any pending audio focus resume timers when pausing
         audioFocusHandler.removeCallbacks(audioFocusResumeRunnable)
         audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
+        smartResumeRunning = false; audioFocusHandler.removeCallbacks(smartResumeRunnable)
         audioFocusHandler.removeCallbacks(focusProbeRunnable)  // [v2.0.77] cancel probe
         focusRecoveryAttempts = 0
         player?.pause()
@@ -3231,11 +3295,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isLive) return
         val now = System.currentTimeMillis()
 
-        // [v2.0.86] New approach per user requirement:
-        // 1. During post-resume blackout (3s): BLOCK all skips, count requests.
-        //    If 5+ requests in blackout → trip breaker for 3s (v2.0.81 approach: 0 skips execute).
-        // 2. During circuit breaker (3s after blackout): BLOCK all skips.
-        // 3. After protection window: NO LIMITS. User can click freely.
+        // [v2.0.88] Self-extending circuit breaker + post-breaker cooldown (same as skipBackward).
         val inBlackout = lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS
         val inBreaker = now < skipCircuitBreakerUntil
 
@@ -3245,13 +3305,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 skipRequestCount++
                 if (skipRequestCount >= STORM_REQUEST_THRESHOLD && !inBreaker) {
                     skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-                    writeServiceLog("playback", "[v2.0.86] skipForward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests in blackout, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+                    writeServiceLog("playback", "[v2.0.88] skipForward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+                    return
+                }
+                // [v2.0.88] SELF-EXTENDING: extend breaker on each new request during breaker
+                if (inBreaker) {
+                    skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
+                    writeServiceLog("playback", "[v2.0.88] skipForward: BLOCKED by breaker, EXTENDED to +${SKIP_CIRCUIT_BREAKER_MS/1000}s (reqCount=$skipRequestCount)")
                     return
                 }
             }
             val reason = if (inBlackout) "blackout (${now - lastClientBindTime}ms)" else "circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)"
-            writeServiceLog("playback", "[v2.0.86] skipForward: BLOCKED by $reason (reqCount=$skipRequestCount)")
+            writeServiceLog("playback", "[v2.0.88] skipForward: BLOCKED by $reason (reqCount=$skipRequestCount)")
             return
+        }
+
+        // [v2.0.88] Post-breaker cooldown: 30s after resume, enforce min 2s between skips.
+        if (lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
+            if (now - lastSkipDirectionTime < POST_BREAKER_MIN_INTERVAL_MS && lastSkipDirectionTime > 0) {
+                writeServiceLog("playback", "[v2.0.88] skipForward: BLOCKED by post-breaker cooldown (${now - lastSkipDirectionTime}ms < ${POST_BREAKER_MIN_INTERVAL_MS}ms)")
+                return
+            }
         }
 
         // [v2.0.86] After protection window: only basic checks, no rate limiting
@@ -3280,9 +3354,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isLive) return
         val now = System.currentTimeMillis()
 
-        // [v2.0.86] Same approach as skipForward: protect during post-resume window,
-        // no limits after. This follows v2.0.81's proven approach of 0 skips executing
-        // during the storm while not limiting normal user clicks.
+        // [v2.0.88] Self-extending circuit breaker + post-breaker cooldown.
+        // Phase 1: Blackout (3s after resume) - block all, count requests.
+        // Phase 2: Circuit breaker (extends on each new request) - block all.
+        // Phase 3: Post-breaker cooldown (30s after resume) - min 2s between skips.
+        // Phase 4: No limits.
         val inBlackout = lastClientBindTime > 0 && now - lastClientBindTime < POST_RESUME_BLACKOUT_MS
         val inBreaker = now < skipCircuitBreakerUntil
 
@@ -3291,13 +3367,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 skipRequestCount++
                 if (skipRequestCount >= STORM_REQUEST_THRESHOLD && !inBreaker) {
                     skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-                    writeServiceLog("playback", "[v2.0.86] skipBackward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests in blackout, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+                    writeServiceLog("playback", "[v2.0.88] skipBackward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
+                    return
+                }
+                // [v2.0.88] SELF-EXTENDING: if already in breaker and more requests come,
+                // extend the breaker so the storm can't "wait out" the breaker
+                if (inBreaker) {
+                    skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
+                    writeServiceLog("playback", "[v2.0.88] skipBackward: BLOCKED by breaker, EXTENDED to +${SKIP_CIRCUIT_BREAKER_MS/1000}s (reqCount=$skipRequestCount)")
                     return
                 }
             }
             val reason = if (inBlackout) "blackout (${now - lastClientBindTime}ms)" else "circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)"
-            writeServiceLog("playback", "[v2.0.86] skipBackward: BLOCKED by $reason (reqCount=$skipRequestCount)")
+            writeServiceLog("playback", "[v2.0.88] skipBackward: BLOCKED by $reason (reqCount=$skipRequestCount)")
             return
+        }
+
+        // [v2.0.88] Post-breaker cooldown: 30s after resume, enforce min 2s between skips.
+        // This catches skip storms that continue past the breaker window.
+        if (lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
+            if (now - lastSkipDirectionTime < POST_BREAKER_MIN_INTERVAL_MS && lastSkipDirectionTime > 0) {
+                writeServiceLog("playback", "[v2.0.88] skipBackward: BLOCKED by post-breaker cooldown (${now - lastSkipDirectionTime}ms < ${POST_BREAKER_MIN_INTERVAL_MS}ms, ${POST_BREAKER_COOLDOWN_MS/1000 - (now - lastClientBindTime)/1000}s remaining)")
+                return
+            }
         }
 
         // [v2.0.86] After protection window: only basic checks, no rate limiting
