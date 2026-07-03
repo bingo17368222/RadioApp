@@ -600,25 +600,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     addListener(object : Player.Listener {
                         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                             super.onPositionDiscontinuity(oldPosition, newPosition, reason)
-                            // [v2.0.65] Issue 1 Fix: NEVER lower authoritativePosition during discontinuity.
-                            // ExoPlayer reports lower positions during buffer underruns (e.g., when switching
-                            // back to app). This was the root cause of the persistent flickering.
                             val actualPos = player?.currentPosition ?: -1L
-                            Log.d(TAG, "[v2.0.65] onPositionDiscontinuity: reason=$reason, actualPos=$actualPos, authPos=$authoritativePosition, isSeeking=$isSeekingToPosition")
+                            Log.d(TAG, "[v2.0.91] onPositionDiscontinuity: reason=$reason, actualPos=$actualPos, authPos=$authoritativePosition, isSeeking=$isSeekingToPosition, target=$seekTargetPosition")
                             if (isSeekingToPosition) {
-                                isSeekingToPosition = false
-                                // [v2.0.65] Only update if position moved FORWARD, never backward
-                                if (actualPos > authoritativePosition) {
-                                    authoritativePosition = actualPos
-                                    maxKnownPosition = actualPos
+                                // [v2.0.91] Only clear seeking state when position is near target.
+                                // ExoPlayer may fire discontinuity multiple times during a seek, reporting
+                                // intermediate positions (including 0). Prematurely clearing isSeekingToPosition
+                                // causes getCurrentPosition() to report the intermediate/0 position instead of
+                                // the seek target, leading to UI flicker and apparent backtracking.
+                                if (actualPos >= seekTargetPosition - 2000) {
+                                    isSeekingToPosition = false
+                                    if (actualPos > authoritativePosition) {
+                                        authoritativePosition = actualPos
+                                        maxKnownPosition = actualPos
+                                    }
+                                } else {
+                                    Log.d(TAG, "[v2.0.91] onPositionDiscontinuity: still seeking, actualPos=$actualPos < target-2000=${seekTargetPosition-2000}, keeping isSeekingToPosition=true")
                                 }
                                 player?.playWhenReady = true
                                 notifyNotification()
                                 startPositionSaver()
                             } else {
-                                // [v2.0.65] During normal playback, only update if position moved forward
                                 if (actualPos > authoritativePosition) {
                                     authoritativePosition = actualPos
+                                    maxKnownPosition = actualPos
                                 }
                             }
                         }
@@ -3499,6 +3504,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 isSeekingToPosition = false
                 if (rawPos > authoritativePosition) {
                     authoritativePosition = rawPos
+                }
+                if (rawPos > maxKnownPosition) {
+                    maxKnownPosition = rawPos
                 }
             }
         }
