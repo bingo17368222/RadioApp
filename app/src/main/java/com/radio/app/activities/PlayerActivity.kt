@@ -791,11 +791,24 @@ class PlayerActivity : AppCompatActivity() {
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 10 == 0) {
                             writeJitterLog("[v2.0.76] ZERO-BLOCK: keeping $lastDisplayedPositionMs (ignoring near-zero pos=$position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps)")
                         }
-                    } else if (inStabilization) {
+                    } else if (inStabilization && consecutiveBackwardJumps <= 3) {
+                        // [v2.0.84] Only HOLD during stabilization if consec <= 3.
+                        // v2.0.76 held ALL backward jumps during 5s stabilization, even when
+                        // user deliberately pressed skipBackward 3+ times. This caused STAB-HOLD
+                        // to pin uiPos 44s ahead of svcPos, corrupting onPause cache.
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.0.76] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${JITTER_STABILIZE_MS - (now - jitterSyncTimeMs)}ms)")
+                            writeJitterLog("[v2.0.84] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${JITTER_STABILIZE_MS - (now - jitterSyncTimeMs)}ms)")
                         }
+                    } else if (inStabilization && consecutiveBackwardJumps > 3) {
+                        // [v2.0.84] User pressed skipBackward more than 3 times = genuine intent.
+                        // Accept the position and sync uiPos to prevent cache corruption.
+                        writeJitterLog("[v2.0.84] STAB-ACCEPT: allowing backward to $position after $consecutiveBackwardJumps consecutive jumps (delta=${backwardDelta}ms)")
+                        lastDisplayedPositionMs = position
+                        displayPosition = position
+                        jitterSyncTimeMs = now
+                        jitterSyncBaseline = position
+                        consecutiveBackwardJumps = 0
                     } else if (backwardDelta >= 300_000L && !recentPause) {
                         // Genuine large backward jump: episode switch or user seek to earlier position
                         writeJitterLog("[v2.0.76] LEGIT-BACK: accepting $lastDisplayedPositionMs->$position (delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps)")
@@ -2515,16 +2528,15 @@ class PlayerActivity : AppCompatActivity() {
         // [v2.0.73] Issue 1 Fix: Only cache position when player is prepared and position is valid.
         // During episode switches, player reports position=1197ms or 0ms which corrupts the cache,
         // causing resume to seek to beginning instead of last valid position.
-        // [v2.0.83] Fix: Use lastDisplayedPositionMs (UI-stabilized position) instead of service
-        // getCurrentPosition() which may be dragged back by skipBackward storm. STAB-HOLD pins
-        // UI to a stable position, but onPause was caching the storm-dragged service position.
+        // [v2.0.84] Fix: Reverted v2.0.83's change to use lastDisplayedPositionMs.
+        // v2.0.83 cached uiPos, but STAB-HOLD could pin uiPos at a stale forward position
+        // (e.g., 44s ahead of svcPos after skipBackward), corrupting the cache.
+        // Now cache svcPos (actual playback position), which is correct even after skipBackward.
         if (serviceBound && playbackService != null) {
             val isPrepared = playbackService?.isPrepared() ?: false
-            val svcPos = playbackService?.getCurrentPosition() ?: 0L
+            val pos = playbackService?.getCurrentPosition() ?: 0L
             val dur = playbackService?.getDuration() ?: 0L
             val epId = currentEpisode?.id ?: ""
-            // [v2.0.83] Prefer lastDisplayedPositionMs if it's larger (skipBackward storm dragged svcPos back)
-            val pos = if (lastDisplayedPositionMs > svcPos) lastDisplayedPositionMs else svcPos
             // Only cache if: player is prepared, position > 5s (not at beginning), duration valid, episode known
             if (isPrepared && pos > 5000 && dur > 30000 && epId.isNotBlank()) {
                 lastDisplayedPositionMs = pos
@@ -2533,7 +2545,7 @@ class PlayerActivity : AppCompatActivity() {
                     .putLong("cached_duration", dur)
                     .putString("cached_episode_id", epId)
                     .apply()
-                writeJitterLog("onPause: cached position=$pos (svcPos=$svcPos, uiPos=$lastDisplayedPositionMs), duration=$dur, episodeId=$epId (prepared=true)")
+                writeJitterLog("onPause: cached position=$pos (uiPos=$lastDisplayedPositionMs), duration=$dur, episodeId=$epId (prepared=true)")
             } else {
                 writeJitterLog("onPause: SKIPPED position cache (prepared=$isPrepared, pos=$pos, dur=$dur, epId=$epId) - keeping previous cache")
             }
