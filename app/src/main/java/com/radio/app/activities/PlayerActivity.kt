@@ -791,24 +791,15 @@ class PlayerActivity : AppCompatActivity() {
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 10 == 0) {
                             writeJitterLog("[v2.0.76] ZERO-BLOCK: keeping $lastDisplayedPositionMs (ignoring near-zero pos=$position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps)")
                         }
-                    } else if (inStabilization && consecutiveBackwardJumps <= 3) {
-                        // [v2.0.84] Only HOLD during stabilization if consec <= 3.
-                        // v2.0.76 held ALL backward jumps during 5s stabilization, even when
-                        // user deliberately pressed skipBackward 3+ times. This caused STAB-HOLD
-                        // to pin uiPos 44s ahead of svcPos, corrupting onPause cache.
+                    // [v2.0.86] During stabilization: HOLD all backward jumps (v2.0.81 approach).
+                    // v2.0.84 added STAB-ACCEPT for consec>3, but with the new skip protection
+                    // (0 skips execute during blackout+breaker), no backward jumps should be
+                    // reported during stabilization anyway. If any leak through, HOLD them.
+                    } else if (inStabilization) {
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.0.84] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${JITTER_STABILIZE_MS - (now - jitterSyncTimeMs)}ms)")
+                            writeJitterLog("[v2.0.86] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${JITTER_STABILIZE_MS - (now - jitterSyncTimeMs)}ms)")
                         }
-                    } else if (inStabilization && consecutiveBackwardJumps > 3) {
-                        // [v2.0.84] User pressed skipBackward more than 3 times = genuine intent.
-                        // Accept the position and sync uiPos to prevent cache corruption.
-                        writeJitterLog("[v2.0.84] STAB-ACCEPT: allowing backward to $position after $consecutiveBackwardJumps consecutive jumps (delta=${backwardDelta}ms)")
-                        lastDisplayedPositionMs = position
-                        displayPosition = position
-                        jitterSyncTimeMs = now
-                        jitterSyncBaseline = position
-                        consecutiveBackwardJumps = 0
                     } else if (backwardDelta >= 300_000L && !recentPause) {
                         // Genuine large backward jump: episode switch or user seek to earlier position
                         writeJitterLog("[v2.0.76] LEGIT-BACK: accepting $lastDisplayedPositionMs->$position (delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps)")
