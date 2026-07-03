@@ -491,7 +491,7 @@ class SubtitleGeneratorService : Service() {
                             else -> "当前ASR引擎（$asrProvider）"
                         }
                         logToFile("generateSubtitlesForEpisode: [v2.0.91] Unsupported ASR provider '$asrProvider' for subtitle generation. Only Vosk/Whisper local engines are supported.")
-                        wrappedCallback.onError("$providerName不支持离线字幕生成。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
+                        wrappedCallback.onError("${providerName}不支持离线字幕生成。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
                         activeTasks.remove(episodeId)
                         cleanupTask()
                     }
@@ -638,7 +638,7 @@ class SubtitleGeneratorService : Service() {
                             else -> "当前ASR引擎（$asrProvider）"
                         }
                         logToFile("generateSubtitlesForEpisode: [v2.0.91] Unsupported ASR provider '$asrProvider' for segments.")
-                        wrappedCallback.onError("$providerName不支持离线语音分段。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
+                        wrappedCallback.onError("${providerName}不支持离线语音分段。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
                         activeTasks.remove(segKey)
                         cleanupTask()
                     }
