@@ -607,7 +607,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     // prevents audio focus from resuming playback after Pinduoduo
                                     // video ends. Instead, use a separate flag for playback ended state.
                                     prepared = false   // No longer prepared for progress updates
-                                    writeServiceLog("notification", "STATE_ENDED: prepared=false, calling updateNotification() (userPaused NOT set)")
+                                    // [v2.0.87] Fix: Reset authoritativePosition so notification doesn't
+                                    // stay stuck at 100% (pos=dur) after playback ends. Without this,
+                                    // getCurrentPosition() returns the old end position forever, causing
+                                    // the notification and main UI to show "full progress" that never updates.
+                                    authoritativePosition = 0L
+                                    maxKnownPosition = 0L
+                                    lastNotifiedPosition = -1L
+                                    writeServiceLog("notification", "[v2.0.87] STATE_ENDED: prepared=false, reset authoritativePosition=0, calling updateNotification() (userPaused NOT set)")
+                                    forceNotificationUpdate = true
+                                    lastNotificationContentHash = 0
                                     updateNotification()
                                     // 连续播放：播放完成后自动播放下一个节目
                                     if (continuousPlay && !isLive) {
@@ -1978,8 +1987,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // During episode switches (prepared=false), getCurrentPosition() returns authoritative
             // position (never 0), and updateNotificationProgressOnly uses episode duration fallback.
             // This prevents the notification progress bar from disappearing during cross-day switches.
+            // [v2.0.87] Also update MediaSession state during polling so the system MediaStyle
+            // progress bar (used by compact notifications) stays in sync. Without this, the
+            // system progress bar freezes because setPlaybackState is only called on play/pause.
             if (!isLive && player != null && !isPrecaching) {
                 updateNotificationProgressOnly()
+                // [v2.0.87] Update MediaSession PlaybackState with current position for system progress bar
+                updateMediaSessionState()
             }
             notificationHandler?.postDelayed(notificationRunnable!!, 5000)
         }
@@ -2167,12 +2181,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // which returns authoritativePosition), not just when prepared=true.
         // v2.0.74 bug: when prepared=false (during cross-day episode switch), position was 0 in hash,
         // causing deduplication to skip all updates since title/date/playing state didn't change.
+        // [v2.0.87] Fix: Include pausedByAudioFocus and inPauseConfirmWindow in hash to detect
+        // all playing state changes. Previous hash only used playbackStarted && !userPaused,
+        // which missed audio focus changes (e.g., Pinduoduo video pausing playback).
+        val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
+        val effectivePlaying = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
         val contentHash = Objects.hash(
             notificationTitle,
             notificationDate,
             notificationTimeRange,
             buildNotificationSubText(),
-            playbackStarted && !userPaused,
+            effectivePlaying,
             prepared,
             if (!isLive) getCurrentPosition().div(2000) else 0L  // [v2.0.75] always include position for dedup
         )
@@ -2259,20 +2278,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // [v2.0.75] Issue 5 Fix: lastNotifiedPosition<0表示刚重置(跨天切换节目)，必须立即更新
-        // v2.0.74 bug: lastNotifiedPosition=-1, pos=0, abs(0-(-1))=1<2000 → 跳过更新，进度条消失
+        // [v2.0.87] Fix: Removed posDelta < 2000 early return. This was causing the notification
+        // to freeze when position didn't change (e.g., during buffering, at end of audio, or when
+        // player was in a bad state). The content hash dedup in doNotifyNotification() already
+        // prevents redundant updates when nothing has changed, so the posDelta check was redundant
+        // and harmful — it prevented legitimate updates (e.g., play/pause state changes).
         val isReset = lastNotifiedPosition < 0
-        val posDelta = kotlin.math.abs(pos - lastNotifiedPosition)
-        if (!isReset && posDelta < 2000) {
-            // Position hasn't changed enough, skip update (but log occasionally)
-            return
-        }
         lastNotifiedPosition = pos
 
         if (isReset) {
-            writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] RESET detected (lastNotifiedPosition was <0), forcing full notification rebuild. pos=$pos, dur=$dur")
+            writeServiceLog("notification", "[v2.0.87-PROGRESS-POLL] RESET detected (lastNotifiedPosition was <0), forcing full notification rebuild. pos=$pos, dur=$dur")
         } else {
-            writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] posDelta=$posDelta >=2000, updating notification. pos=$pos, dur=$dur")
+            writeServiceLog("notification", "[v2.0.87-PROGRESS-POLL] updating notification. pos=$pos, dur=$dur")
         }
 
         // [v2.0.75] Issue 5 Fix: non-minimal样式必须正确推送通知。
@@ -3051,10 +3068,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         skipCircuitBreakerUntil = 0L
         // [v2.0.78] Issue 5 Fix: Clear pause confirmation window on play
         pauseConfirmedUntil = 0L
+
+        // [v2.0.87] Fix: If player has ended (STATE_ENDED), seek to 0 before playing.
+        // ExoPlayer does NOT restart from beginning when play() is called in STATE_ENDED.
+        // This was the root cause of "notification stuck at 100% progress, pause/play doesn't fix it".
+        val playerState = player?.playbackState ?: Player.STATE_IDLE
+        if (playerState == Player.STATE_ENDED) {
+            writeServiceLog("playback", "[v2.0.87] play(): player in STATE_ENDED, seeking to 0 before play")
+            player?.seekTo(0)
+            authoritativePosition = 0L
+            maxKnownPosition = 0L
+            lastNotifiedPosition = -1L
+            isSeekingToPosition = false
+        }
+
         requestAudioFocus()
         player?.play()
+        prepared = true  // [v2.0.87] Mark as prepared since we're explicitly starting playback
         // [v2.0.76] Issue 6 Fix: Immediately update MediaSession to STATE_PLAYING
-        writeServiceLog("notification", "[v2.0.77] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
+        writeServiceLog("notification", "[v2.0.87] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
         forceNotificationUpdate = true
         lastNotificationContentHash = 0
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
