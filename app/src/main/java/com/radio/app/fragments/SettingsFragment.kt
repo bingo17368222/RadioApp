@@ -1372,8 +1372,14 @@ class SettingsFragment : Fragment() {
                 .putInt("preload_cache_count", settings.preloadCacheCount)
                 .putBoolean("continuous_play", settings.continuousPlay)
                 .putBoolean("wifi_only_precache", settings.wifiOnlyPreCache)
+                // [v2.0.89] Issue 4 Fix: Sync asr_provider and vosk_model_dir to radio_app_settings.
+                // Without this, AppSettings.load() reads the OLD asr_provider from radio_app_settings
+                // (e.g., "whisper-local") even after user changed to "vosk-local" in Settings UI.
+                // This was the root cause of "user selected Vosk but got Whisper prompts".
+                .putString("asr_provider", settings.asrProvider)
+                .putString("vosk_model_dir", settings.voskModelDir)
                 .apply()
-            Log.d("SettingsFragment", "Synced settings to radio_app_settings for hot-switch")
+            Log.d("SettingsFragment", "Synced settings to radio_app_settings for hot-switch (incl. asr_provider=${settings.asrProvider})")
         } catch (e: Exception) {
             Log.e("SettingsFragment", "Failed to sync to radio_app_settings", e)
         }

@@ -264,37 +264,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val SMART_RESUME_POLL_MS = 15_000L
     private var smartResumeRunning = false
     private val smartResumeRunnable = Runnable { smartResumePoll() }
-    // [v2.0.88] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
-    // When Pinduoduo/Douyin video takes permanent focus, start polling every 15s.
-    // Check if any other app has an active PLAYING MediaSession. If none found,
-    // try to re-request audio focus. If granted, resume playback.
+    // [v2.0.89] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
+    // v2.0.88 used MediaSessionManager.getActiveSessions() which requires
+    // MEDIA_CONTENT_CONTROL permission (not available to regular apps).
+    // v2.0.89 uses AudioManager.isMusicActive() instead — no special permission needed.
     private fun smartResumePoll() {
         if (!smartResumeRunning) return
         if (!playbackStarted || userPaused) {
-            writeServiceLog("audiofocus", "[v2.0.88] smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
+            writeServiceLog("audiofocus", "[v2.0.89] smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
             smartResumeRunning = false
             return
         }
         try {
-            val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as android.media.session.MediaSessionManager
-            val sessions = mediaSessionManager.getActiveSessions(null)
-            var otherPlaying = false
-            for (session in sessions) {
-                val pkg = session.packageName
-                if (pkg != packageName) {
-                    val isPlaying = session.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING
-                    if (isPlaying) {
-                        otherPlaying = true
-                        writeServiceLog("audiofocus", "[v2.0.88] smartResume: OTHER app playing: $pkg, state=PLAYING, waiting...")
-                        break
-                    }
-                }
-            }
-            if (!otherPlaying) {
-                writeServiceLog("audiofocus", "[v2.0.88] smartResume: no other app playing, attempting to re-request focus")
+            // [v2.0.89] Use AudioManager.isMusicActive() instead of MediaSessionManager.
+            // isMusicActive() returns true if any app is actively playing music/audio.
+            // No special permission required.
+            val am = audioManager ?: getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val musicActive = am?.isMusicActive ?: false
+            if (musicActive) {
+                writeServiceLog("audiofocus", "[v2.0.89] smartResume: other app still playing music (isMusicActive=true), waiting...")
+            } else {
+                writeServiceLog("audiofocus", "[v2.0.89] smartResume: no other app playing (isMusicActive=false), attempting to re-request focus")
                 val granted = requestAudioFocus()
                 if (granted) {
-                    writeServiceLog("audiofocus", "[v2.0.88] smartResume: FOCUS GRANTED! Resuming playback")
+                    writeServiceLog("audiofocus", "[v2.0.89] smartResume: FOCUS GRANTED! Resuming playback")
                     audioFocusLossType = FOCUS_LOSS_NONE
                     pausedByAudioFocus = false
                     smartResumeRunning = false
@@ -305,11 +298,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     updateNotification()
                     return
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.88] smartResume: focus request FAILED, will retry in ${SMART_RESUME_POLL_MS/1000}s")
+                    writeServiceLog("audiofocus", "[v2.0.89] smartResume: focus request FAILED, will retry in ${SMART_RESUME_POLL_MS/1000}s")
                 }
             }
         } catch (e: Exception) {
-            writeServiceLog("audiofocus", "[v2.0.88] smartResume: exception: ${e.message}")
+            writeServiceLog("audiofocus", "[v2.0.89] smartResume: exception: ${e.message}")
         }
         // Schedule next poll
         audioFocusHandler.postDelayed(smartResumeRunnable, SMART_RESUME_POLL_MS)
@@ -3388,13 +3381,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // [v2.0.88] Post-breaker cooldown: 30s after resume, enforce min 2s between skips.
-        // This catches skip storms that continue past the breaker window.
+        // [v2.0.89] Fix: Changed post-breaker cooldown from "min 2s interval" to "BLOCK ALL backward skips".
+        // v2.0.88's interval check failed because breaker blocked all skips → lastSkipDirectionTime
+        // wasn't updated → breaker expired → first skip passed the interval check → seekTo executed.
+        // This matches v2.0.81 behavior: stabilization period holds ALL backward jumps.
         if (lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
-            if (now - lastSkipDirectionTime < POST_BREAKER_MIN_INTERVAL_MS && lastSkipDirectionTime > 0) {
-                writeServiceLog("playback", "[v2.0.88] skipBackward: BLOCKED by post-breaker cooldown (${now - lastSkipDirectionTime}ms < ${POST_BREAKER_MIN_INTERVAL_MS}ms, ${POST_BREAKER_COOLDOWN_MS/1000 - (now - lastClientBindTime)/1000}s remaining)")
-                return
-            }
+            writeServiceLog("playback", "[v2.0.89] skipBackward: BLOCKED by post-breaker cooldown (BLOCK ALL, ${POST_BREAKER_COOLDOWN_MS/1000 - (now - lastClientBindTime)/1000}s remaining)")
+            return
         }
 
         // [v2.0.86] After protection window: only basic checks, no rate limiting
