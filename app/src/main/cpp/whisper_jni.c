@@ -205,20 +205,22 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
     // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
     params.n_threads       = 1;
-    // [v2.0.90] Critical memory fix: reduce audio_ctx from default 1500 (30s) to 256 (~5.5s).
-    // audio_ctx controls the encoder/decoder KV cache size. Default 1500 allocates buffers
-    // for 30 seconds of audio even when processing 1-second chunks → massive wasted memory.
-    // 256 covers ~5.5s of audio which matches our Kotlin chunk size (5s), reducing KV cache by ~83%.
-    params.audio_ctx       = 256;
-    // [v2.0.90] Limit text context to reduce decoder memory
+    // [v2.0.91] Memory optimization: audio_ctx=384 covers ~7.68s, giving comfortable margin for 5s chunks.
+    // audio_ctx controls encoder/decoder KV cache. Default 1500 = 30s waste.
+    // 256 = 5.12s (too tight, only 0.12s margin for 5s chunks).
+    // 384 = 7.68s provides ~2.7s margin for any padding/window artifacts.
+    // KV cache scales linearly with audio_ctx: 384 vs 256 = 50% larger cache but still 74% smaller than default 1500.
+    params.audio_ctx       = 384;
+    // [v2.0.91] Limit text context to reduce decoder memory
     params.n_max_text_ctx  = 64;
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
     params.single_segment  = true;
-    // [v2.0.90] Reduce max tokens (was 32) — shorter segments use less decoder memory
-    params.max_tokens      = 32;
-    // [v2.0.90] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
+    // [v2.0.91] max_tokens=64 for Chinese: ~1.5 tokens per Chinese character, 5s speech ~20-30 chars = 30-45 tokens.
+    // 32 was too tight and could truncate longer utterances.
+    params.max_tokens      = 64;
+    // [v2.0.91] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;
 

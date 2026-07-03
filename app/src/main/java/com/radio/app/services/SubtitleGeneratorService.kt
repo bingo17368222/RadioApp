@@ -425,34 +425,33 @@ class SubtitleGeneratorService : Service() {
                                 "modelName" to modelLabel,
                                 "engineType" to "whisper"
                             ))
-                            logToFile("generateSubtitlesForEpisode: [v2.0.75] broadcasting model name from start: $modelLabel (Whisper)")
+                            logToFile("generateSubtitlesForEpisode: [v2.0.91] broadcasting model name from start: $modelLabel (Whisper)")
                             ctx.log("Using Whisper model: $whisperModel")
                             val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
-                                // [v2.0.76] Issue 2 Fix: Whisper failed - log detailed reason, NO auto-fallback to Vosk.
-                                // Per user requirement: when selected model fails, report exact cause and stop.
+                                // [v2.0.91] STRICT mode: Whisper failed - NO auto-fallback to Vosk.
                                 val failReason = ctx.lastErrorDetail ?: "Whisper引擎处理失败（无详细错误）"
                                 ctx.log("Whisper subtitle generation FAILED. Reason: $failReason")
-                                logToFile("generateSubtitlesForEpisode: [v2.0.76] Whisper FAILED, reason=$failReason. NO auto-fallback per user requirement.")
+                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper FAILED, reason=$failReason. NO auto-fallback per user requirement.")
                                 wrappedCallback.onError("Whisper字幕生成失败：$failReason。如需切换引擎，请手动在设置中选择Vosk模型后重试。")
                                 activeTasks.remove(episodeId)
                                 cleanupTask()
                             }
                         } else {
-                            // [v2.0.76] Whisper model not found - log detailed reason, NO fallback to Vosk.
+                            // [v2.0.91] Whisper model not found - STRICT mode, NO fallback.
                             val modelsDir = getExternalFilesDir("models")
                             val failReason = "Whisper模型文件未找到（已搜索路径：${modelsDir?.absolutePath}、${filesDir}/engines）"
                             ctx.lastErrorDetail = failReason
                             ctx.log("ERROR: $failReason")
-                            logToFile("generateSubtitlesForEpisode: [v2.0.76] $failReason. NO fallback to Vosk.")
+                            logToFile("generateSubtitlesForEpisode: [v2.0.91] $failReason. NO fallback to Vosk.")
                             wrappedCallback.onError("$failReason。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB），或手动切换到Vosk引擎。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
                         }
                     }
-                    else -> {
-                        // Vosk or default
-                        logToFile("generateSubtitlesForEpisode: entering Vosk/default branch")
+                    asrProvider == AppSettings.ASR_VOSK || asrProvider == "vosk-local" -> {
+                        // [v2.0.91] Explicit Vosk branch - only entered when user selects Vosk
+                        logToFile("generateSubtitlesForEpisode: entering Vosk branch (explicit)")
                         val voskModel = findVoskModel()
                         if (voskModel != null) {
                             // [v2.0.69] Issue 6: Broadcast model name from the very start
@@ -463,7 +462,7 @@ class SubtitleGeneratorService : Service() {
                                 "modelName" to modelLabel,
                                 "engineType" to "vosk"
                             ))
-                            logToFile("generateSubtitlesForEpisode: [v2.0.69] broadcasting model name from start: $modelLabel (Vosk)")
+                            logToFile("generateSubtitlesForEpisode: [v2.0.91] broadcasting model name from start: $modelLabel (Vosk)")
                             ctx.log("Using Vosk model: $voskModel")
                             val pcm16kCache = find16kHzPcmCache(episodeId)
                             if (pcm16kCache != null) {
@@ -472,16 +471,29 @@ class SubtitleGeneratorService : Service() {
                             val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Vosk subtitle generation FAILED (error already reported by generateWithVosk)")
-                                // [v2.0.69] Issue 6: No auto-switch to Whisper per user requirement
+                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk FAILED. NO auto-switch to Whisper per user requirement.")
                             }
                         } else {
-                            // [v2.0.69] Issue 6: No auto-fallback to Whisper. Report error directly.
+                            // [v2.0.91] Vosk model not found - STRICT mode, NO fallback.
                             ctx.log("ERROR: Vosk model not found (no auto-switch to Whisper)")
-                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型")
-                            // Ensure task is cleaned up on error
+                            logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk model not found. NO fallback to Whisper.")
+                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB），或手动切换到Whisper引擎。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
                         }
+                    }
+                    else -> {
+                        // [v2.0.91] Non-local ASR provider selected (baidu/funasr/unknown) - subtitle generation
+                        // only supports offline local engines. Report error and let user choose.
+                        val providerName = when (asrProvider) {
+                            AppSettings.ASR_BAIDU -> "百度在线ASR"
+                            AppSettings.ASR_FUNASR -> "FunASR"
+                            else -> "当前ASR引擎（$asrProvider）"
+                        }
+                        logToFile("generateSubtitlesForEpisode: [v2.0.91] Unsupported ASR provider '$asrProvider' for subtitle generation. Only Vosk/Whisper local engines are supported.")
+                        wrappedCallback.onError("$providerName不支持离线字幕生成。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
+                        activeTasks.remove(episodeId)
+                        cleanupTask()
                     }
                 }
             } catch (e: Exception) {
@@ -580,28 +592,28 @@ class SubtitleGeneratorService : Service() {
 
                 when {
                     asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
-                        logToFile("generateSubtitlesForEpisode: entering Whisper branch (segments)")
+                        logToFile("generateSubtitlesForEpisode: [v2.0.91] entering Whisper branch (segments)")
                         val whisperModel = findWhisperModel()
                         if (whisperModel != null) {
                             ctx.log("Using Whisper model for segments: $whisperModel")
                             val success = generateWithWhisper(episodeId, audioUrl, subtitleCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Whisper segment generation FAILED")
+                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper segments FAILED. NO auto-fallback.")
                             }
                         } else {
                             ctx.log("ERROR: Whisper model selected but not found for segments")
-                            wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）")
-                            // Ensure task is cleaned up on error
+                            logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper model not found for segments. NO fallback.")
+                            wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB），或手动切换到Vosk引擎。")
                             activeTasks.remove(segKey)
                             cleanupTask()
                         }
                     }
-                    else -> {
-                        logToFile("generateSubtitlesForEpisode: entering Vosk/default branch (segments)")
+                    asrProvider == AppSettings.ASR_VOSK || asrProvider == "vosk-local" -> {
+                        logToFile("generateSubtitlesForEpisode: [v2.0.91] entering Vosk branch (segments, explicit)")
                         val voskModel = findVoskModel()
                         if (voskModel != null) {
                             ctx.log("Using Vosk model for segments: $voskModel")
-                            // Check for pre-cached 16kHz PCM file
                             val pcm16kCache = find16kHzPcmCache(episodeId)
                             if (pcm16kCache != null) {
                                 ctx.log("Found 16kHz PCM cache for segments $episodeId: ${pcm16kCache.absolutePath}")
@@ -609,14 +621,26 @@ class SubtitleGeneratorService : Service() {
                             val success = generateWithVosk(episodeId, audioUrl, subtitleCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Vosk segment generation FAILED (error already reported by generateWithVosk)")
+                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk segments FAILED. NO auto-fallback.")
                             }
                         } else {
                             ctx.log("ERROR: No Vosk model for segments")
-                            wrappedCallback.onError("未找到离线识别模型，请在设置→离线引擎管理→下载Vosk或Whisper模型")
-                            // Ensure task is cleaned up on error
+                            logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk model not found for segments. NO fallback.")
+                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB），或手动切换到Whisper引擎。")
                             activeTasks.remove(segKey)
                             cleanupTask()
                         }
+                    }
+                    else -> {
+                        val providerName = when (asrProvider) {
+                            AppSettings.ASR_BAIDU -> "百度在线ASR"
+                            AppSettings.ASR_FUNASR -> "FunASR"
+                            else -> "当前ASR引擎（$asrProvider）"
+                        }
+                        logToFile("generateSubtitlesForEpisode: [v2.0.91] Unsupported ASR provider '$asrProvider' for segments.")
+                        wrappedCallback.onError("$providerName不支持离线语音分段。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
+                        activeTasks.remove(segKey)
+                        cleanupTask()
                     }
                 }
             } catch (e: Exception) {
@@ -892,18 +916,20 @@ class SubtitleGeneratorService : Service() {
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.90] Use SMALL feed chunks (0.25s = 8000 bytes) for DENSE partial output.
-        // Previous attempts:
-        //   - 2.0s (64000): accept rate ~30% but PARTIAL almost always empty — Vosk resets internally
-        //     within the 2s block before getPartialResult() is called, so partial="" always.
-        //   - 0.5s (16000) in v2.0.86: accept rate 9% — that was caused by buggy partial throttle
-        //     (FINALs blocked PARTIALs), which was fixed in v2.0.79.
-        // Root cause of empty partials: with 2s chunks, Vosk detects endpoint+reset INSIDE the chunk,
-        // so when we call getPartialResult() after acceptWaveForm, the recognizer has already reset
-        // and is waiting for new speech → partial="". With 0.25s chunks, getPartialResult is called
-        // every 250ms, before Vosk hits a silence boundary → real partial hypotheses are returned.
-        // Final results (acceptWaveForm=true) will still fire correctly across multiple small chunks.
-        val chunkSize = 8000   // 0.25 seconds = 4000 samples = 8000 bytes
+        // [v2.0.91] Use 1-second chunks (32000 bytes) for balanced output density.
+        // Chunk size history:
+        //   - 2.0s (64000) in v2.0.89: accept rate ~30% but PARTIAL almost always empty.
+        //     Root cause: with 2s chunks, Vosk often detects endpoint+reset INSIDE the chunk,
+        //     so getPartialResult() after the chunk sees a reset recognizer → partial="".
+        //   - 0.25s (8000) in v2.0.90: accept rate dropped to ~6% (T=10/F=150) because chunks
+        //     are too short for Vosk to detect silence boundaries, causing finals to be rare
+        //     and partial to be mostly empty (Vosk doesn't produce partial for <0.5s of speech).
+        //   - 0.5s (16000) in v2.0.86: accept rate 9% but that was caused by the FINAL-blocks-
+        //     PARTIAL bug (fixed in v2.0.79). Should work correctly now.
+        // Strategy: 1s chunks give Vosk enough audio to produce partial hypotheses while still
+        // polling frequently enough to catch them before internal reset. Also skip calling
+        // getPartialResult() after acceptWaveForm=true (it always returns "" after a final).
+        val chunkSize = 32000   // 1.0 second = 16000 samples = 32000 bytes
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
@@ -916,11 +942,11 @@ class SubtitleGeneratorService : Service() {
         // emitted, lastEmitTime was updated, which blocked the next PARTIAL for 500ms. With
         // FINALs every ~1.5s and 500ms chunks, PARTIALs were almost always blocked.
         // Result: 213 FINALs but only 17 PARTIALs in v2.0.78 log. Fix: use separate timers.
-        var lastPartialEmitTime = 0L  // only updated when PARTIAL is emitted
+        var lastPartialEmitTime = -1000L  // [v2.0.91] Initialize to -1000 so first partial emits immediately
         var lastFinalEmitTime = 0L   // only updated when FINAL is emitted (not used to block PARTIAL)
         var lastForceEmitTime = 0L
         // Issue 9: Dedicated Vosk log - log start parameters
-        writeVoskLog("processVoskInChunks START [v2.0.90]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), totalSize=$totalSize, processLimit=$processLimit")
+        writeVoskLog("processVoskInChunks START [v2.0.91]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), totalSize=$totalSize, processLimit=$processLimit")
 
         var recognizer: Any? = null
         var model: Any? = null
@@ -1157,12 +1183,11 @@ class SubtitleGeneratorService : Service() {
                 val acceptResult = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 if (acceptResult) acceptTrueCount++ else acceptFalseCount++
                 chunkCount++
-                // [v2.0.70] Issue 3 Fix: Define currentTimeMs here (before partial check) for emit throttling
-                // offset is bytes, 32 bytes/ms at 16kHz mono 16-bit
-                val currentTimeMs = offset * 1000L / 32000L
-                // [v2.0.90] Log every 80 chunks = 20s at 0.25s/chunk
-                if (chunkCount % 80 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.90] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
+                // [v2.0.91] currentTimeMs uses chunk END position (offset + bytesRead) for accuracy
+                val currentTimeMs = (offset + bytesRead) * 1000L / 32000L
+                // [v2.0.91] Log every 20 chunks = 20s at 1s/chunk
+                if (chunkCount % 20 == 0) {
+                    logToFile("processVoskInChunks: [v2.0.91] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
                 }
 
                 // [v2.0.67] Issue 3 Fix: Only call getResult() when acceptWaveForm=true (silence boundary).
@@ -1170,6 +1195,11 @@ class SubtitleGeneratorService : Service() {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
                     writeVoskLog("processVoskInChunks: [v2.0.77] acceptWaveForm=true at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
+                    // [v2.0.91] ALWAYS reset partial state when acceptWaveForm returns true,
+                    // because Vosk resets its internal buffer regardless of whether result text is empty.
+                    lastPartialText = ""
+                    lastForceEmitTime = currentTimeMs
+                    lastPartialEmitTime = currentTimeMs - 200  // allow new partial to emit immediately
                     if (result.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(result)
@@ -1189,80 +1219,67 @@ class SubtitleGeneratorService : Service() {
                                     endTime = offsetMs + (offset + chunk.size) * 1000L / 32000L
                                 }
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("processVoskInChunks: [v2.0.77] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
+                                logToFile("processVoskInChunks: [v2.0.91] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
                                 allTranscripts.add(transcript)
                                 if (allTranscripts.size == 1) {
                                     val firstResultTime = System.currentTimeMillis() - processingStartTime
                                     logToFile("processVoskInChunks: FIRST transcript at ${firstResultTime}ms from processing start")
                                 }
                                 callback.onSubtitleGenerated(transcript)
-                                // [v2.0.79] Only update FINAL timer, do NOT update lastPartialEmitTime.
-                                // This ensures FINALs don't block PARTIAL emission.
                                 lastFinalEmitTime = currentTimeMs
-                                // [v2.0.75] Issue 3 Fix: Reset lastPartialText after final result.
-                                // After acceptWaveForm returns true, Vosk resets its internal buffer for the
-                                // next utterance. Partial results after this point are for a NEW utterance,
-                                // so we must clear lastPartialText to avoid suppressing new partial text
-                                // that coincidentally starts with the same words as the previous utterance.
-                                lastPartialText = ""
-                                lastForceEmitTime = currentTimeMs
                             }
                         } catch (_: Exception) { /* skip malformed JSON */ }
                     }
-                }
-
-                // [v2.0.77] Issue 3 Fix: Partial result handling with 500ms throttle + 1.5s force emit.
-                val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                // [v2.0.90] Log every 80 chunks = 20s
-                if (chunkCount % 80 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.90] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
-                }
-                if (partial.isNotBlank()) {
-                    try {
-                        val partialJson = org.json.JSONObject(partial)
-                        val partialText = partialJson.optString("partial", "").trim()
-                        // [v2.0.90] Log every 80 chunks = 20s
-                        if (chunkCount % 80 == 0) {
-                            logToFile("processVoskInChunks: [v2.0.90] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
-                        }
-                        // [v2.0.86] Issue 2 Fix: Much more aggressive PARTIAL emission for denser output.
-                        // v2.0.82 had 200ms throttle + 1s force emit, which was too conservative.
-                        // New strategy: emit partial whenever text changes meaningfully, with minimal throttle.
-                        // - 100ms minimum interval (prevents flooding)
-                        // - Force emit every 500ms even if text didn't change (gives user feedback)
-                        // - Emit immediately if text grew by 2+ chars (new words being recognized)
-                        val shouldEmit = (partialText.isNotEmpty() && partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 100) ||
-                                         (partialText.isNotEmpty() && partialText.length > lastPartialText.length + 1 && currentTimeMs - lastPartialEmitTime >= 100) ||
-                                         (partialText.isNotEmpty() && currentTimeMs - lastForceEmitTime >= 500)
-                        if (shouldEmit) {
-                            val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
-                            val partialStartTime = partialOffsetMs + offset * 1000L / 32000L
-                            val partialEndTime = partialOffsetMs + (offset + chunk.size) * 1000L / 32000L
-                            val transcript = com.radio.app.models.Transcript(
-                                text = partialText,
-                                segmentStart = partialStartTime,
-                                segmentEnd = partialEndTime
+                    // [v2.0.91] Skip getPartialResult() after acceptWaveForm=true — Vosk just reset,
+                    // partial will always be "" immediately after a final. Proceed to next chunk.
+                } else {
+                    // [v2.0.91] Only call getPartialResult() when acceptWaveForm=false (still processing)
+                    val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    if (chunkCount % 20 == 0) {
+                        logToFile("processVoskInChunks: [v2.0.91] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                    }
+                    if (partial.isNotBlank()) {
+                        try {
+                            val partialJson = org.json.JSONObject(partial)
+                            val partialText = partialJson.optString("partial", "").trim()
+                            if (chunkCount % 20 == 0) {
+                                logToFile("processVoskInChunks: [v2.0.91] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
+                            }
+                            // [v2.0.91] Simplified partial emit: emit immediately when text changes (min 100ms interval)
+                            // or force emit every 500ms for user feedback. Removed redundant 2nd condition.
+                            val shouldEmit = partialText.isNotEmpty() && (
+                                (partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 100) ||
+                                (currentTimeMs - lastForceEmitTime >= 500)
                             )
-                            logToFile("processVoskInChunks: [v2.0.79] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
-                            writeVoskLog("partial: chunk=$chunkCount, text='${partialText.take(100)}'")
-                            allTranscripts.add(transcript)
-                            callback.onSubtitleGenerated(transcript)
-                            // [v2.0.79] Only update PARTIAL timers, not FINAL timer
-                            lastPartialEmitTime = currentTimeMs
-                            lastForceEmitTime = currentTimeMs
-                            lastPartialText = partialText
-                        }
-                    } catch (_: Exception) { /* skip */ }
+                            if (shouldEmit) {
+                                val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                                val partialStartTime = partialOffsetMs + offset * 1000L / 32000L
+                                val partialEndTime = partialOffsetMs + (offset + bytesRead) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(
+                                    text = partialText,
+                                    segmentStart = partialStartTime,
+                                    segmentEnd = partialEndTime
+                                )
+                                logToFile("processVoskInChunks: [v2.0.91] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
+                                writeVoskLog("partial: chunk=$chunkCount, text='${partialText.take(100)}'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
+                                lastPartialEmitTime = currentTimeMs
+                                lastForceEmitTime = currentTimeMs
+                                lastPartialText = partialText
+                            }
+                        } catch (_: Exception) { /* skip */ }
+                    }
                 }
 
-                // [v2.0.90] Log progress every 160 chunks = 40s at 0.25s/chunk
-                if (chunkCount % 160 == 0) {
-                    writeVoskLog("processVoskInChunks: [v2.0.90] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
+                // [v2.0.91] Log progress every 40 chunks = 40s at 1s/chunk
+                if (chunkCount % 40 == 0) {
+                    writeVoskLog("processVoskInChunks: [v2.0.91] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
                 }
 
                 offset += bytesRead
-                if (chunkCount % 160 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.90] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
+                if (chunkCount % 40 == 0) {
+                    logToFile("processVoskInChunks: [v2.0.91] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
                 }
                 val progress = (offset * 100 / totalSize).toInt()
                 if (progress > lastProgress + 2) {
@@ -2265,56 +2282,51 @@ class SubtitleGeneratorService : Service() {
             val now = System.currentTimeMillis()
             val cooldownMs = 10L * 60 * 1000  // 10-minute cooldown after OOM
             val whisperRecentOOM = lastOomTime > 0 && (now - lastOomTime) < cooldownMs
-            logToFile("processWhisperInChunks: [v2.0.90] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
-            // [v2.0.90] Reduced Java heap requirement to 10MB.
-            // JNI audio_ctx reduced from 1500 to 256 → much smaller native allocations.
-            // Per-chunk Java heap: 5s chunk = 160KB ByteArray + 320KB FloatArray = 480KB total.
-            // JSON parsing ~500KB. Total Java heap needed: ~3-5MB.
-            val requiredHeapMB = 10
+            logToFile("processWhisperInChunks: [v2.0.91] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
+            // [v2.0.91] Very low Java heap requirement — tiny model + 5s chunks need minimal Java heap
+            val requiredHeapMB = 8
             if (freeHeapMB < requiredHeapMB) {
-                logToFile("processWhisperInChunks: [v2.0.90] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running aggressive GC")
-                // [v2.0.90] Aggressive cleanup: multiple GC cycles with sleep
+                logToFile("processWhisperInChunks: [v2.0.91] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running aggressive GC")
+                // [v2.0.91] Aggressive cleanup
                 repeat(3) {
                     try { System.gc() } catch (_: Exception) {}
                     try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
                     Thread.sleep(200)
                 }
                 val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                logToFile("processWhisperInChunks: [v2.0.90] After aggressive GC: freeHeap=${freeHeapAfterGcMB}MB")
-                if (freeHeapAfterGcMB < 3) {
+                logToFile("processWhisperInChunks: [v2.0.91] After aggressive GC: freeHeap=${freeHeapAfterGcMB}MB")
+                if (freeHeapAfterGcMB < 2) {
                     val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB）"
                     ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.90] INSUFFICIENT JAVA HEAP for Whisper: $detail")
+                    logToFile("processWhisperInChunks: [v2.0.91] INSUFFICIENT JAVA HEAP for Whisper: $detail")
                     callback.onError("$detail。请关闭其他应用或重启App后重试。")
                     return false
                 }
             }
-            // [v2.0.90] Dramatically reduced system memory requirement.
-            // With audio_ctx=256 (instead of default 1500), KV cache is ~83% smaller.
-            // Whisper tiny model: 75MB weights (mmap'd) + ~50-100MB runtime buffers = ~150MB total RSS.
-            // Require modelSize+100MB (175MB for tiny) instead of modelSize+200MB (275MB).
-            val requiredMemMB = modelSizeMB + 100
+            // [v2.0.91] Further reduced system memory requirement for tiny model.
+            // With audio_ctx=384 (vs default 1500), KV cache is ~74% smaller than default.
+            // Whisper tiny model: ~75MB weights (mmap'd, may not count in RSS) + ~50-80MB runtime = ~130-150MB total RSS.
+            // Require modelSize+80MB (~155MB for tiny) to allow running on tighter devices.
+            val requiredMemMB = modelSizeMB + 80
             if (whisperRecentOOM) {
                 val cooldownRemaining = (cooldownMs - (now - lastOomTime)) / 1000
                 val detail = "Whisper最近因内存不足被系统终止（${cooldownRemaining}秒前），请${cooldownRemaining/60 + 1}分钟后重试或关闭其他应用"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.77] RECENT OOM - skipping Whisper (cooldown ${cooldownRemaining}s remaining)")
+                logToFile("processWhisperInChunks: [v2.0.91] RECENT OOM - skipping Whisper (cooldown ${cooldownRemaining}s remaining)")
                 callback.onError("$detail。")
                 return false
             }
             if (availMemMB < requiredMemMB) {
                 val detail = "Whisper内存不足（可用${availMemMB}MB，需要${requiredMemMB}MB=模型${modelSizeMB}MB+推理${requiredMemMB - modelSizeMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.77] INSUFFICIENT MEMORY for Whisper: availMem=${availMemMB}MB < required=$requiredMemMB")
+                logToFile("processWhisperInChunks: [v2.0.91] INSUFFICIENT MEMORY for Whisper: availMem=${availMemMB}MB < required=$requiredMemMB")
                 callback.onError("$detail。请关闭其他应用释放内存后重试。")
                 return false
             }
+            // [v2.0.91] Don't hard-block on lowMemory flag — it can be true even when enough mem exists.
+            // Log warning but continue; LMKD will kill us if truly out of memory.
             if (memInfo.lowMemory) {
-                val detail = "系统处于低内存状态(LowMemory=true, avail=${availMemMB}MB)"
-                ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.77] System in LOW MEMORY state, skipping Whisper to avoid LMKD kill.")
-                callback.onError("$detail，Whisper无法运行。请关闭其他应用后重试。")
-                return false
+                logToFile("processWhisperInChunks: [v2.0.91] WARNING: System reports lowMemory=true, but availMem=${availMemMB}MB >= required=${requiredMemMB}MB. Attempting to load anyway...")
             }
             System.gc()
             Thread.sleep(300)
@@ -2390,7 +2402,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.0.90] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=256 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.0.91] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=384 in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
@@ -2417,15 +2429,15 @@ class SubtitleGeneratorService : Service() {
                 val chunkEndSec = (totalSamplesRead + samplesToRead) / 16000
                 logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
 
-                // [v2.0.90] Heap check — with 5s chunks (480KB/chunk) and audio_ctx=256, need very little heap
+                // [v2.0.91] Heap check — lower thresholds
                 val freeBeforeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                if (freeBeforeMB < 3) {
-                    logToFile("processWhisperInChunks: [v2.0.90] Low heap (${freeBeforeMB}MB), running GC before chunk")
+                if (freeBeforeMB < 2) {
+                    logToFile("processWhisperInChunks: [v2.0.91] Low heap (${freeBeforeMB}MB), running GC before chunk")
                     System.gc()
-                    Thread.sleep(300)
+                    Thread.sleep(200)
                     val freeAfterMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
                     if (freeAfterMB < 1) {
-                        logToFile("processWhisperInChunks: [v2.0.90] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
+                        logToFile("processWhisperInChunks: [v2.0.91] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
                         if (allTranscripts.isEmpty()) {
                             val detail = "Whisper处理Java堆内存不足（GC后仅${freeAfterMB}MB）"
                             ctx.lastErrorDetail = detail
@@ -2434,22 +2446,20 @@ class SubtitleGeneratorService : Service() {
                             pcmInput.close()
                             return false
                         } else {
-                            logToFile("processWhisperInChunks: [v2.0.90] Returning ${allTranscripts.size} partial transcripts before OOM")
+                            logToFile("processWhisperInChunks: [v2.0.91] Returning ${allTranscripts.size} partial transcripts before OOM")
                             break
                         }
                     }
                 }
 
-                // [v2.0.90] Check NATIVE available memory before each whisper inference.
-                // With audio_ctx=256 (vs default 1500), tiny model only needs ~150-200MB RSS total.
-                // Reduced threshold from 800MB to 200MB.
+                // [v2.0.91] Check NATIVE available memory — lowered threshold for tiny model
                 val am = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
                 val mi = android.app.ActivityManager.MemoryInfo()
                 am?.getMemoryInfo(mi)
                 val availNativeMB = mi.availMem / 1024 / 1024
-                val whisperNativeThreshold = 200L
+                val whisperNativeThreshold = 120L
                 if (availNativeMB < whisperNativeThreshold) {
-                    logToFile("processWhisperInChunks: [v2.0.90] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
+                    logToFile("processWhisperInChunks: [v2.0.91] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要约${whisperNativeThreshold}MB）"
                         ctx.lastErrorDetail = detail
@@ -2458,7 +2468,7 @@ class SubtitleGeneratorService : Service() {
                         pcmInput.close()
                         return false
                     } else {
-                        logToFile("processWhisperInChunks: [v2.0.90] Returning ${allTranscripts.size} partial transcripts before native OOM")
+                        logToFile("processWhisperInChunks: [v2.0.91] Returning ${allTranscripts.size} partial transcripts before native OOM")
                         break
                     }
                 }
