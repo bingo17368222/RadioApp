@@ -892,13 +892,18 @@ class SubtitleGeneratorService : Service() {
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.88] Reverted from 16000 (0.5s) back to 64000 (2s).
-        // v2.0.86 tried 16000 (0.5s) hoping for denser output, but actual results were WORSE:
-        //   - 0.5s chunks: accept rate 9% (54/600), 34 transcripts — too little audio context per chunk
-        //   - 2.0s chunks: accept rate 33% (previously), 36 transcripts — better recognition
-        // Vosk small model needs >=2s of audio context to produce meaningful results.
-        // For denser output, we rely on aggressive PARTIAL emission instead (v2.0.86 partial logic kept).
-        val chunkSize = 64000
+        // [v2.0.90] Use SMALL feed chunks (0.25s = 8000 bytes) for DENSE partial output.
+        // Previous attempts:
+        //   - 2.0s (64000): accept rate ~30% but PARTIAL almost always empty — Vosk resets internally
+        //     within the 2s block before getPartialResult() is called, so partial="" always.
+        //   - 0.5s (16000) in v2.0.86: accept rate 9% — that was caused by buggy partial throttle
+        //     (FINALs blocked PARTIALs), which was fixed in v2.0.79.
+        // Root cause of empty partials: with 2s chunks, Vosk detects endpoint+reset INSIDE the chunk,
+        // so when we call getPartialResult() after acceptWaveForm, the recognizer has already reset
+        // and is waiting for new speech → partial="". With 0.25s chunks, getPartialResult is called
+        // every 250ms, before Vosk hits a silence boundary → real partial hypotheses are returned.
+        // Final results (acceptWaveForm=true) will still fire correctly across multiple small chunks.
+        val chunkSize = 8000   // 0.25 seconds = 4000 samples = 8000 bytes
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
@@ -915,7 +920,7 @@ class SubtitleGeneratorService : Service() {
         var lastFinalEmitTime = 0L   // only updated when FINAL is emitted (not used to block PARTIAL)
         var lastForceEmitTime = 0L
         // Issue 9: Dedicated Vosk log - log start parameters
-        writeVoskLog("processVoskInChunks START [v2.0.77]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), totalSize=$totalSize, processLimit=$processLimit")
+        writeVoskLog("processVoskInChunks START [v2.0.90]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), totalSize=$totalSize, processLimit=$processLimit")
 
         var recognizer: Any? = null
         var model: Any? = null
@@ -1155,9 +1160,9 @@ class SubtitleGeneratorService : Service() {
                 // [v2.0.70] Issue 3 Fix: Define currentTimeMs here (before partial check) for emit throttling
                 // offset is bytes, 32 bytes/ms at 16kHz mono 16-bit
                 val currentTimeMs = offset * 1000L / 32000L
-                // [v2.0.88] Log every 20 chunks = 40s at 2s/chunk (reverted from 0.5s)
-                if (chunkCount % 20 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.88] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
+                // [v2.0.90] Log every 80 chunks = 20s at 0.25s/chunk
+                if (chunkCount % 80 == 0) {
+                    logToFile("processVoskInChunks: [v2.0.90] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
                 }
 
                 // [v2.0.67] Issue 3 Fix: Only call getResult() when acceptWaveForm=true (silence boundary).
@@ -1208,20 +1213,17 @@ class SubtitleGeneratorService : Service() {
 
                 // [v2.0.77] Issue 3 Fix: Partial result handling with 500ms throttle + 1.5s force emit.
                 val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                // [v2.0.81] Issue 3 Fix: Unconditional debug log every 20 chunks to diagnose empty PARTIALs.
-                // v2.0.80 had 0 PARTIALs. This log shows whether getPartialResult returns empty or if
-                // the shouldEmit condition is blocking. Logs even when partial is blank.
-                // [v2.0.88] Log every 20 chunks = 40s at 2s/chunk
-                if (chunkCount % 20 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.88] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                // [v2.0.90] Log every 80 chunks = 20s
+                if (chunkCount % 80 == 0) {
+                    logToFile("processVoskInChunks: [v2.0.90] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
                 }
                 if (partial.isNotBlank()) {
                     try {
                         val partialJson = org.json.JSONObject(partial)
                         val partialText = partialJson.optString("partial", "").trim()
-                        // [v2.0.88] Log every 20 chunks = 40s
-                        if (chunkCount % 20 == 0) {
-                            logToFile("processVoskInChunks: [v2.0.88] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
+                        // [v2.0.90] Log every 80 chunks = 20s
+                        if (chunkCount % 80 == 0) {
+                            logToFile("processVoskInChunks: [v2.0.90] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
                         }
                         // [v2.0.86] Issue 2 Fix: Much more aggressive PARTIAL emission for denser output.
                         // v2.0.82 had 200ms throttle + 1s force emit, which was too conservative.
@@ -1253,14 +1255,14 @@ class SubtitleGeneratorService : Service() {
                     } catch (_: Exception) { /* skip */ }
                 }
 
-                // [v2.0.88] Log progress every 40 chunks = 80s at 2s/chunk
-                if (chunkCount % 40 == 0) {
-                    writeVoskLog("processVoskInChunks: [v2.0.88] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
+                // [v2.0.90] Log progress every 160 chunks = 40s at 0.25s/chunk
+                if (chunkCount % 160 == 0) {
+                    writeVoskLog("processVoskInChunks: [v2.0.90] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
                 }
 
                 offset += bytesRead
-                if (chunkCount % 40 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.88] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
+                if (chunkCount % 160 == 0) {
+                    logToFile("processVoskInChunks: [v2.0.90] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
                 }
                 val progress = (offset * 100 / totalSize).toInt()
                 if (progress > lastProgress + 2) {
@@ -1363,8 +1365,13 @@ class SubtitleGeneratorService : Service() {
                 "episodeId" to ctx.episodeId, "message" to detail))
             return false
         } finally {
+            // [v2.0.90] Close BOTH recognizer AND model to free native memory before Whisper loads
             try { recognizer?.let { voskRecognizerClass!!.getMethod("close").invoke(it) } } catch (_: Exception) {}
+            try { model?.let { voskModelClass!!.getMethod("close").invoke(it) } } catch (_: Exception) {}
             try { inputStream.close() } catch (_: Exception) {}
+            // [v2.0.90] Force GC after Vosk cleanup to release native memory references before Whisper
+            logToFile("processVoskInChunks: [v2.0.90] Vosk resources closed, forcing GC to free native memory")
+            System.gc()
         }
     }
 
@@ -2258,45 +2265,35 @@ class SubtitleGeneratorService : Service() {
             val now = System.currentTimeMillis()
             val cooldownMs = 10L * 60 * 1000  // 10-minute cooldown after OOM
             val whisperRecentOOM = lastOomTime > 0 && (now - lastOomTime) < cooldownMs
-            logToFile("processWhisperInChunks: [v2.0.78] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
-            // [v2.0.88] Issue 5 Fix: Reduced Java heap requirement from 100MB to 20MB.
-            // v2.0.78 required 100MB freeHeap, but the subtitle service process has maxHeap=512MB
-            // and after loading Vosk/Whisper classes + JSON parsing, only 0-11MB was free.
-            // The actual Java heap needed for Whisper processing is much less:
-            // - PCM data: 9.5MB ByteArray (loaded from file, freed after JNI call)
-            // - Float array for 1s chunk: 64KB (16000 samples × 4 bytes)
-            // - JSON result parsing: ~1MB
-            // - Model init uses NATIVE memory (mmap), not Java heap
-            // Total Java heap needed: ~15-20MB, not 100MB.
-            // Also: if freeHeap is very low, try to release references before GC.
-            val requiredHeapMB = 20
+            logToFile("processWhisperInChunks: [v2.0.90] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
+            // [v2.0.90] Reduced Java heap requirement to 10MB.
+            // JNI audio_ctx reduced from 1500 to 256 → much smaller native allocations.
+            // Per-chunk Java heap: 5s chunk = 160KB ByteArray + 320KB FloatArray = 480KB total.
+            // JSON parsing ~500KB. Total Java heap needed: ~3-5MB.
+            val requiredHeapMB = 10
             if (freeHeapMB < requiredHeapMB) {
-                logToFile("processWhisperInChunks: [v2.0.88] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running GC + releasing references")
-                // [v2.0.88] Try to release memory by clearing caches and forcing GC
-                try { System.gc() } catch (_: Exception) {}
-                try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
-                System.gc()
-                Thread.sleep(500)
+                logToFile("processWhisperInChunks: [v2.0.90] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running aggressive GC")
+                // [v2.0.90] Aggressive cleanup: multiple GC cycles with sleep
+                repeat(3) {
+                    try { System.gc() } catch (_: Exception) {}
+                    try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
+                    Thread.sleep(200)
+                }
                 val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                logToFile("processWhisperInChunks: [v2.0.88] After GC+finalization: freeHeap=${freeHeapAfterGcMB}MB")
-                if (freeHeapAfterGcMB < 10) {
+                logToFile("processWhisperInChunks: [v2.0.90] After aggressive GC: freeHeap=${freeHeapAfterGcMB}MB")
+                if (freeHeapAfterGcMB < 3) {
                     val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB）"
                     ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.88] INSUFFICIENT JAVA HEAP for Whisper: $detail")
+                    logToFile("processWhisperInChunks: [v2.0.90] INSUFFICIENT JAVA HEAP for Whisper: $detail")
                     callback.onError("$detail。请关闭其他应用或重启App后重试。")
                     return false
                 }
             }
-            // [v2.0.86] Issue 5 Fix: Dramatically reduced memory requirements for Whisper tiny.
-            // Previous versions required modelSize+500MB (575MB for tiny) and 3000MB for inference,
-            // which was based on large model measurements. Whisper tiny is MUCH smaller:
-            // - Model weights: 75MB (loaded via mmap, not all in RSS at once)
-            // - 1-second chunks (16000 samples → 64KB float array)
-            // - Encoder/decoder KV cache for 1s audio: ~10-20MB
-            // - Mel spectrogram buffer: ~5MB
-            // - Actual RSS during tiny inference: ~200-400MB total (observed)
-            // Require modelSize+200MB for initial load (275MB for tiny), 800MB for inference chunks.
-            val requiredMemMB = modelSizeMB + 200
+            // [v2.0.90] Dramatically reduced system memory requirement.
+            // With audio_ctx=256 (instead of default 1500), KV cache is ~83% smaller.
+            // Whisper tiny model: 75MB weights (mmap'd) + ~50-100MB runtime buffers = ~150MB total RSS.
+            // Require modelSize+100MB (175MB for tiny) instead of modelSize+200MB (275MB).
+            val requiredMemMB = modelSizeMB + 100
             if (whisperRecentOOM) {
                 val cooldownRemaining = (cooldownMs - (now - lastOomTime)) / 1000
                 val detail = "Whisper最近因内存不足被系统终止（${cooldownRemaining}秒前），请${cooldownRemaining/60 + 1}分钟后重试或关闭其他应用"
@@ -2339,22 +2336,19 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
 
-            // [v2.0.78] Issue 2 Fix: Check Java heap AFTER model load (model init consumes heap).
-            // [v2.0.89] Reduced thresholds from 60/50MB to 5MB — v2.0.88's 20MB was still too high
-            // because the subtitle process maxHeap=512MB but only 1-11MB is actually free.
-            // The actual Java heap needed per chunk: 32KB ByteArray + 64KB FloatArray = 96KB.
+            // [v2.0.90] Check Java heap AFTER model load. With audio_ctx=256, native init uses less memory,
+            // so Java heap pressure is the main concern. Per-chunk heap needs are ~500KB.
             val postInitFreeHeapMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-            logToFile("processWhisperInChunks: [v2.0.89] After model init: freeHeap=${postInitFreeHeapMB}MB")
-            if (postInitFreeHeapMB < 5) {
-                logToFile("processWhisperInChunks: [v2.0.89] Low heap after model init (${postInitFreeHeapMB}MB), running GC")
-                System.gc()
-                Thread.sleep(300)
+            logToFile("processWhisperInChunks: [v2.0.90] After model init: freeHeap=${postInitFreeHeapMB}MB")
+            if (postInitFreeHeapMB < 3) {
+                logToFile("processWhisperInChunks: [v2.0.90] Low heap after model init (${postInitFreeHeapMB}MB), running aggressive GC")
+                repeat(2) { System.gc(); Thread.sleep(200) }
                 val afterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                logToFile("processWhisperInChunks: [v2.0.89] After post-init GC: freeHeap=${afterGcMB}MB")
-                if (afterGcMB < 2) {
+                logToFile("processWhisperInChunks: [v2.0.90] After post-init GC: freeHeap=${afterGcMB}MB")
+                if (afterGcMB < 1) {
                     val detail = "Whisper模型加载后Java堆内存不足（GC后仅${afterGcMB}MB）"
                     ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.89] ABORT after model init: $detail")
+                    logToFile("processWhisperInChunks: [v2.0.90] ABORT after model init: $detail")
                     callback.onError("$detail。请关闭其他应用或重启App后重试。")
                     try { bridge.free(ctxPtr) } catch (_: Exception) {}
                     return false
@@ -2380,9 +2374,12 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.89] Issue 5 Fix: STREAMING PCM processing — do NOT load entire file into memory.
             // v2.0.78 loaded entire PCM as ByteArray(9.6MB) + FloatArray(19.2MB) = 29MB Java heap.
             // With only 1-11MB free heap, this always failed with OOM.
-            // v2.0.89 reads PCM file chunk-by-chunk: 1s = 32000 bytes PCM → 16000 float samples.
-            // Per-chunk Java heap: 32KB ByteArray + 64KB FloatArray = 96KB total.
-            val chunkSize = 1 * 16000  // 1 second per chunk (16000 samples)
+            // [v2.0.90] Use 5-second chunks (80000 samples) instead of 1s:
+            // - Whisper needs >=3s of audio for meaningful recognition (1s chunks were too short)
+            // - JNI audio_ctx=256 covers ~5.5s, matching this chunk size perfectly
+            // - Per-chunk Java heap: 160KB ByteArray + 320KB FloatArray = 480KB total (still tiny)
+            // - Fewer JNI calls → less overhead, less memory fragmentation
+            val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2391,15 +2388,15 @@ class SubtitleGeneratorService : Service() {
             val pcmInput = java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(pcmFile), 65536))
             var totalSamplesRead = 0
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
-            val chunkByteSize = chunkSize * 2  // 32000 bytes per 1s chunk
+            val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.0.89] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks, offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.0.90] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=256 in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
-                if (samplesToRead < 8000) {
-                    logToFile("processWhisperInChunks: [v2.0.89] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
+                if (samplesToRead < 24000) {  // [v2.0.90] Skip chunks <1.5s (too short for whisper)
+                    logToFile("processWhisperInChunks: [v2.0.90] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
@@ -2418,17 +2415,17 @@ class SubtitleGeneratorService : Service() {
 
                 val chunkStartSec = totalSamplesRead / 16000
                 val chunkEndSec = (totalSamplesRead + samplesToRead) / 16000
-                logToFile("processWhisperInChunks: [v2.0.89] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
+                logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
 
-                // [v2.0.89] Reduced heap check from 100/80MB to 5/2MB — streaming uses 96KB/chunk not 29MB
+                // [v2.0.90] Heap check — with 5s chunks (480KB/chunk) and audio_ctx=256, need very little heap
                 val freeBeforeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                if (freeBeforeMB < 5) {
-                    logToFile("processWhisperInChunks: [v2.0.89] Low heap (${freeBeforeMB}MB), running GC before chunk")
+                if (freeBeforeMB < 3) {
+                    logToFile("processWhisperInChunks: [v2.0.90] Low heap (${freeBeforeMB}MB), running GC before chunk")
                     System.gc()
                     Thread.sleep(300)
                     val freeAfterMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                    if (freeAfterMB < 2) {
-                        logToFile("processWhisperInChunks: [v2.0.89] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
+                    if (freeAfterMB < 1) {
+                        logToFile("processWhisperInChunks: [v2.0.90] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
                         if (allTranscripts.isEmpty()) {
                             val detail = "Whisper处理Java堆内存不足（GC后仅${freeAfterMB}MB）"
                             ctx.lastErrorDetail = detail
@@ -2437,38 +2434,40 @@ class SubtitleGeneratorService : Service() {
                             pcmInput.close()
                             return false
                         } else {
-                            logToFile("processWhisperInChunks: [v2.0.89] Returning ${allTranscripts.size} partial transcripts before OOM")
+                            logToFile("processWhisperInChunks: [v2.0.90] Returning ${allTranscripts.size} partial transcripts before OOM")
                             break
                         }
                     }
                 }
 
-                // [v2.0.86] Check NATIVE available memory before each whisper inference.
+                // [v2.0.90] Check NATIVE available memory before each whisper inference.
+                // With audio_ctx=256 (vs default 1500), tiny model only needs ~150-200MB RSS total.
+                // Reduced threshold from 800MB to 200MB.
                 val am = getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
                 val mi = android.app.ActivityManager.MemoryInfo()
                 am?.getMemoryInfo(mi)
                 val availNativeMB = mi.availMem / 1024 / 1024
-                val whisperNativeThreshold = 800L
+                val whisperNativeThreshold = 200L
                 if (availNativeMB < whisperNativeThreshold) {
-                    logToFile("processWhisperInChunks: [v2.0.89] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
+                    logToFile("processWhisperInChunks: [v2.0.90] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
                     if (allTranscripts.isEmpty()) {
-                        val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要约800MB）"
+                        val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要约${whisperNativeThreshold}MB）"
                         ctx.lastErrorDetail = detail
                         callback.onError("$detail。请关闭其他应用释放内存后重试，或使用Vosk引擎。")
                         try { bridge.free(ctxPtr) } catch (_: Exception) {}
                         pcmInput.close()
                         return false
                     } else {
-                        logToFile("processWhisperInChunks: [v2.0.89] Returning ${allTranscripts.size} partial transcripts before native OOM")
+                        logToFile("processWhisperInChunks: [v2.0.90] Returning ${allTranscripts.size} partial transcripts before native OOM")
                         break
                     }
                 }
 
                 var chunkSuccess = false
                 try {
-                    // [v2.0.89] Use chunkSamples directly (already created from streaming PCM read)
+                    // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=256)
                     val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
-                    logToFile("processWhisperInChunks: [v2.0.89] chunk $chunkIdx: bridge.full returned $result")
+                    logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: bridge.full returned $result")
 
                     if (result == 0) {
                         val nSeg = bridge.fullNSegments(ctxPtr)
@@ -2492,20 +2491,20 @@ class SubtitleGeneratorService : Service() {
                         chunkSuccess = true
                         consecutiveCrashes = 0
                     } else {
-                        logToFile("processWhisperInChunks: [v2.0.89] chunk $chunkIdx failed with code $result")
+                        logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx failed with code $result")
                     }
                 } catch (oom: OutOfMemoryError) {
-                    logToFile("processWhisperInChunks: [v2.0.89] chunk $chunkIdx OOM: ${oom.message}")
+                    logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx OOM: ${oom.message}")
                     consecutiveCrashes++
                     System.gc()
                     Thread.sleep(500)
                 } catch (e: Throwable) {
-                    logToFile("processWhisperInChunks: [v2.0.89] chunk $chunkIdx CRASHED: ${e.javaClass.name}: ${e.message}")
+                    logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx CRASHED: ${e.javaClass.name}: ${e.message}")
                     consecutiveCrashes++
                 }
 
                 if (consecutiveCrashes >= 3) {
-                    logToFile("processWhisperInChunks: [v2.0.89] $consecutiveCrashes consecutive crashes, aborting. Transcripts so far: ${allTranscripts.size}")
+                    logToFile("processWhisperInChunks: [v2.0.90] $consecutiveCrashes consecutive crashes, aborting. Transcripts so far: ${allTranscripts.size}")
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper处理连续失败（${consecutiveCrashes}次chunk崩溃）"
                         ctx.lastErrorDetail = detail
@@ -2532,7 +2531,7 @@ class SubtitleGeneratorService : Service() {
             if (allTranscripts.isEmpty()) {
                 val detail = "Whisper处理完成但未识别到任何内容（${chunkIdx}个chunk，0条字幕）"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.89] WARNING: 0 transcripts generated! $detail")
+                logToFile("processWhisperInChunks: [v2.0.90] WARNING: 0 transcripts generated! $detail")
                 callback.onError("$detail 音频可能是音乐/静音，或模型不匹配。")
                 return false
             }

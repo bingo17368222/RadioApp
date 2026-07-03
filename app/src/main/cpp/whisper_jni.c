@@ -203,16 +203,26 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_timestamps = false;
     params.translate       = false;
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
-    // [v2.0.66] Issue 1 Fix: Use single thread to reduce memory pressure.
-    // GREEDY sampling with 1 thread to minimize memory usage and avoid SIGSEGV.
+    // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
     params.n_threads       = 1;
-    // [v2.0.66] Reduce memory: no context, single segment, limit tokens
-    params.n_max_text_ctx = 0;
-    params.offset_ms = 0;
-    params.duration_ms = 0;
-    params.no_context = true;
-    params.single_segment = true;
-    params.max_tokens = 32;  // Limit tokens to prevent OOM on long audio
+    // [v2.0.90] Critical memory fix: reduce audio_ctx from default 1500 (30s) to 256 (~5.5s).
+    // audio_ctx controls the encoder/decoder KV cache size. Default 1500 allocates buffers
+    // for 30 seconds of audio even when processing 1-second chunks → massive wasted memory.
+    // 256 covers ~5.5s of audio which matches our Kotlin chunk size (5s), reducing KV cache by ~83%.
+    params.audio_ctx       = 256;
+    // [v2.0.90] Limit text context to reduce decoder memory
+    params.n_max_text_ctx  = 64;
+    params.offset_ms       = 0;
+    params.duration_ms     = 0;
+    params.no_context      = true;
+    params.single_segment  = true;
+    // [v2.0.90] Reduce max tokens (was 32) — shorter segments use less decoder memory
+    params.max_tokens      = 32;
+    // [v2.0.90] Enable speed-up for faster inference (reduces computation → less peak memory)
+    params.speed_up        = true;
+    // [v2.0.90] Disable temperature fallback to avoid extra computation paths
+    params.temperature     = 0.0f;
+    params.temperature_inc = 0.0f;
 
     // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp - doesn't work on Android ART
     // Just install simple crash logger (writes to file before process dies)
