@@ -263,7 +263,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // try to re-request audio focus. If granted, resume playback.
     private val SMART_RESUME_POLL_MS = 15_000L
     private var smartResumeRunning = false
-    private val smartResumeRunnable = Runnable {
+    private val smartResumeRunnable: Runnable = Runnable {
         if (!smartResumeRunning) return@Runnable
         if (!playbackStarted || userPaused) {
             writeServiceLog("audiofocus", "[v2.0.88] smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
@@ -287,8 +287,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (!otherPlaying) {
                 writeServiceLog("audiofocus", "[v2.0.88] smartResume: no other app playing, attempting to re-request focus")
-                val result = audioManager.requestAudioFocus(audioFocusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
-                if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                val granted = requestAudioFocus()
+                if (granted) {
                     writeServiceLog("audiofocus", "[v2.0.88] smartResume: FOCUS GRANTED! Resuming playback")
                     audioFocusLossType = FOCUS_LOSS_NONE
                     pausedByAudioFocus = false
