@@ -218,9 +218,7 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.single_segment  = true;
     // [v2.0.90] Reduce max tokens (was 32) — shorter segments use less decoder memory
     params.max_tokens      = 32;
-    // [v2.0.90] Enable speed-up for faster inference (reduces computation → less peak memory)
-    params.speed_up        = true;
-    // [v2.0.90] Disable temperature fallback to avoid extra computation paths
+    // [v2.0.90] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;
 
