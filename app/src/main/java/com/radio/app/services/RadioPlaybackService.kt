@@ -263,12 +263,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // try to re-request audio focus. If granted, resume playback.
     private val SMART_RESUME_POLL_MS = 15_000L
     private var smartResumeRunning = false
-    private val smartResumeRunnable: Runnable = Runnable {
-        if (!smartResumeRunning) return@Runnable
+    private val smartResumeRunnable = Runnable { smartResumePoll() }
+    // [v2.0.88] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
+    // When Pinduoduo/Douyin video takes permanent focus, start polling every 15s.
+    // Check if any other app has an active PLAYING MediaSession. If none found,
+    // try to re-request audio focus. If granted, resume playback.
+    private fun smartResumePoll() {
+        if (!smartResumeRunning) return
         if (!playbackStarted || userPaused) {
             writeServiceLog("audiofocus", "[v2.0.88] smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
             smartResumeRunning = false
-            return@Runnable
+            return
         }
         try {
             val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as android.media.session.MediaSessionManager
@@ -298,9 +303,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     forceNotificationUpdate = true
                     lastNotificationContentHash = 0
                     updateNotification()
-                    return@Runnable
+                    return
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.88] smartResume: focus request FAILED ($result), will retry in ${SMART_RESUME_POLL_MS/1000}s")
+                    writeServiceLog("audiofocus", "[v2.0.88] smartResume: focus request FAILED, will retry in ${SMART_RESUME_POLL_MS/1000}s")
                 }
             }
         } catch (e: Exception) {
