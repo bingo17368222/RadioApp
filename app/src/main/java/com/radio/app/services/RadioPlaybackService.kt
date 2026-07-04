@@ -3836,17 +3836,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
 
                     val dateDisplay = if (newDateStr.length >= 8) "${newDateStr.substring(4, 6)}月${newDateStr.substring(6, 8)}日" else ""
-                    val stationName = currentEpisode?.stationName ?: stationPart
+                    // [v2.0.98] Fix: Ensure stationName is never empty
+                    val stationName = currentEpisode?.stationName?.takeIf { it.isNotBlank() } ?: stationPart
                     val timeDisplay = if (targetStart.length >= 4 && targetEnd.length >= 4) {
                         "${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)}"
                     } else ""
-                    // [v2.0.92] Fix: Always construct title with correct date for cross-day episodes.
-                    // Previously used matchEpisodeFallback.title which could be from a different day's
-                    // episode with the same time slot, causing title/date mismatch.
-                    val constructedTitle = buildString {
-                        append(stationName)
-                        if (dateDisplay.isNotBlank()) append(" $dateDisplay")
-                        if (timeDisplay.isNotBlank()) append(" $timeDisplay")
+                    // [v2.0.98] Fix: Use real episode title when available (from matchEpisodeFallback).
+                    // Previously always constructed title from stationName + date + time, which:
+                    // 1. Produced empty stationName when currentEpisode.stationName was ""
+                    // 2. Lost the real program name (e.g., "唱行早高峰" became " 07月10日 17:00-19:00")
+                    val realTitle = matchEpisodeFallback?.title ?: matchEpisode?.title
+                    val constructedTitle = if (realTitle.isNotBlank()) {
+                        realTitle
+                    } else {
+                        buildString {
+                            if (stationName.isNotBlank()) append(stationName)
+                            if (dateDisplay.isNotBlank()) append(" $dateDisplay")
+                            if (timeDisplay.isNotBlank()) append(" $timeDisplay")
+                        }.trim()
                     }
 
                     // [v2.0.43] Issue 1 Fix: Calculate duration from time slot to avoid duration=0
@@ -3870,7 +3877,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         stationId = currentEpisode?.stationId ?: stationPart,
                         // [v2.0.93] Fix: Set stationName to prevent empty string in Episode object.
                         // Previously stationName was not passed, defaulting to "" in Episode data class.
-                        stationName = currentEpisode?.stationName ?: stationPart,
+                        stationName = stationName,  // [v2.0.98] Use non-empty stationName from above
                         audioUrl = newUrl,
                         // [v2.0.92] Fix: Include time part in broadcastAt (length >= 16) so that
                         // playEpisode() can parse notificationDate and notificationTimeRange correctly.
