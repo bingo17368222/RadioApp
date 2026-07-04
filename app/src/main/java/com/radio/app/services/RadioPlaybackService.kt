@@ -4065,7 +4065,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     callback?.onEpisodeChanged(crossDayEp)
                     // [v2.0.93] Fix: Send broadcast for cross-day episode change so main UI updates
                     // even when callback is null (App in background, Activity not bound)
-                    sendEpisodeChangedBroadcast(crossDayEp)
+                    try {
+                        val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
+                        broadcastIntent.putExtra("episode_title", crossDayEp.title)
+                        broadcastIntent.putExtra("episode_id", crossDayEp.id)
+                        broadcastIntent.setPackage(packageName)
+                        LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
+                    } catch (e: Exception) { Log.w(TAG, "Failed to broadcast cross-day episode change", e) }
                     return
                 }
                 writeNotifDetailLog("autoPlayNextEpisode: no cross-day episode found, stopping playback")
@@ -4085,7 +4091,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 通过回调通知 Activity 更新界面
             callback?.onEpisodeChanged(nextEpisode)
             // [v2.0.93] Fix: Send broadcast so main UI updates even when callback is null
-            sendEpisodeChangedBroadcast(nextEpisode)
+            try {
+                val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
+                broadcastIntent.putExtra("episode_title", nextEpisode.title)
+                broadcastIntent.putExtra("episode_id", nextEpisode.id)
+                broadcastIntent.setPackage(packageName)
+                LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
+            } catch (e: Exception) { Log.w(TAG, "Failed to broadcast episode change", e) }
         } catch (e: Exception) {
             Log.e(TAG, "autoPlayNextEpisode failed", e)
             notifyNextEpisode()
