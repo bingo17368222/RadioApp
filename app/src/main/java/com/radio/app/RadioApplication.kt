@@ -114,7 +114,8 @@ class RadioApplication : Application() {
 
     /**
      * v2.1.0: Migrate legacy PCM cache from getExternalFilesDir/pcm_cache/ to /sdcard/RadioApp/pcm_cache/
-     * Also deletes corrupt _5min_16k.pcm files (v2.0.98 bug)
+     * v2.1.3: Don't delete _5min_16k.pcm - it's valid 16kHz data from SubtitleGeneratorService.
+     *         Rename it to _5min.pcm if the new file doesn't exist or is smaller.
      */
     private fun migrateLegacyPcmCache() {
         try {
@@ -123,12 +124,29 @@ class RadioApplication : Application() {
             if (oldDir == null || !oldDir.exists()) return
             val oldFiles = oldDir.listFiles() ?: return
             var migrated = 0
-            var deletedLegacy = 0
+            var renamed = 0
             for (file in oldFiles) {
-                if (file.name.endsWith("_5min_16k.pcm") || file.name.endsWith("_5min_16k.info")) {
-                    // Delete corrupt legacy files from v2.0.98 bug
-                    file.delete()
-                    deletedLegacy++
+                if (file.name.endsWith("_5min_16k.pcm")) {
+                    // [v2.1.3] This is valid 16kHz PCM from v2.0.98 SubtitleGeneratorService.
+                    // Rename to _5min.pcm (unified name) if target doesn't exist or is smaller.
+                    val baseName = file.name.replace("_5min_16k.pcm", "_5min.pcm")
+                    val target = File(newDir, baseName)
+                    if (!target.exists() || target.length() < file.length()) {
+                        target.delete()
+                        file.renameTo(target)
+                        renamed++
+                    } else {
+                        file.delete()  // New file is better, delete old
+                    }
+                } else if (file.name.endsWith("_5min_16k.info")) {
+                    // Rename info file to match
+                    val baseName = file.name.replace("_5min_16k.info", "_5min.info")
+                    val target = File(newDir, baseName)
+                    if (!target.exists()) {
+                        file.renameTo(target)
+                    } else {
+                        file.delete()
+                    }
                 } else if (file.name.endsWith("_5min.pcm") || file.name.endsWith("_5min.info") || file.name.endsWith("_5min.wav")) {
                     // Move valid unified files to new location
                     val target = File(newDir, file.name)
@@ -149,8 +167,8 @@ class RadioApplication : Application() {
             }
             // Clean up empty old dir
             if (oldDir.listFiles()?.isEmpty() == true) oldDir.delete()
-            if (migrated > 0 || deletedLegacy > 0) {
-                android.util.Log.d("RadioApp", "migrateLegacyPcmCache: migrated=$migrated, deletedLegacy=$deletedLegacy")
+            if (migrated > 0 || renamed > 0) {
+                android.util.Log.d("RadioApp", "migrateLegacyPcmCache: migrated=$migrated, renamed_16k=$renamed")
             }
         } catch (_: Exception) {}
     }

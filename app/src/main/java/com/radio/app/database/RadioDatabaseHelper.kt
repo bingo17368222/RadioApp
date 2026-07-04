@@ -111,6 +111,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.delete(TABLE_TRANSCRIPTS, null, null)
     }
 
+    // [v2.1.3] Delete transcripts for a specific episode
+    fun deleteTranscriptsByEpisode(episodeId: String) {
+        val db = writableDatabase
+        db.delete(TABLE_TRANSCRIPTS, "episode_id = ?", arrayOf(episodeId))
+    }
+
     // ===== Disliked Episodes =====
 
     fun addDislikedEpisode(episodeId: String, title: String, stationName: String) {

@@ -4243,11 +4243,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val segments = getSegmentList()
         if (segments.isNotEmpty()) {
             val currentPos = getCurrentPosition()  // [v2.0.62] Use authoritative position
-            var prev: VoiceSegment? = null
+            // [v2.1.3] Find the current segment first
+            var currentSegmentIdx = -1
             for (i in segments.indices) {
-                if (segments[i].end >= currentPos) { if (i > 0) prev = segments[i - 1]; break }
+                if (currentPos >= segments[i].start && currentPos < segments[i].end) {
+                    currentSegmentIdx = i
+                    break
+                }
+                if (segments[i].end > currentPos) {
+                    currentSegmentIdx = i
+                    break
+                }
             }
-            prev?.let { seekTo(it.start); return } ?: segments.firstOrNull()?.let { seekTo(it.start); return }
+            // [v2.1.3] If we found a previous segment, jump to it
+            if (currentSegmentIdx > 0) {
+                seekTo(segments[currentSegmentIdx - 1].start)
+                return
+            }
+            // [v2.1.3] If in first segment or before first segment, jump backward 30s
+            // (previously jumped to segments[0].start which appeared to do nothing)
         }
         // Fallback: skip backward 30 seconds
         val pos = getCurrentPosition() - 30000

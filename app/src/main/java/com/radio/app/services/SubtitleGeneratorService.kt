@@ -2715,13 +2715,25 @@ class SubtitleGeneratorService : Service() {
         try {
             // [v2.1.0] Use centralized cache dir from RadioApplication
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
-            // [v2.1.0] Clean up legacy _5min_16k.pcm files (corrupt, produced by v2.0.98 bug)
+            // [v2.1.3] Rename legacy _5min_16k.pcm to _5min.pcm if it exists and new file doesn't.
+            // v2.0.98 SubtitleGeneratorService generated valid 16kHz data in _5min_16k.pcm.
             val legacyFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
             if (legacyFile.exists()) {
-                logToFile("find16kHzPcmCache: [v2.1.0] deleting legacy _5min_16k.pcm (${legacyFile.length()} bytes)")
-                try { legacyFile.delete() } catch (_: Exception) {}
+                val newFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+                if (!newFile.exists() || newFile.length() < legacyFile.length()) {
+                    newFile.delete()
+                    legacyFile.renameTo(newFile)
+                    logToFile("find16kHzPcmCache: [v2.1.3] renamed _5min_16k.pcm to _5min.pcm (${newFile.length()} bytes)")
+                } else {
+                    legacyFile.delete()
+                    logToFile("find16kHzPcmCache: [v2.1.3] deleted legacy _5min_16k.pcm (new file is better)")
+                }
                 val legacyInfo = File(pcmCacheDir, "${episodeId}_5min_16k.info")
-                if (legacyInfo.exists()) try { legacyInfo.delete() } catch (_: Exception) {}
+                if (legacyInfo.exists()) {
+                    val newInfo = File(pcmCacheDir, "${episodeId}_5min.info")
+                    newInfo.delete()
+                    legacyInfo.renameTo(newInfo)
+                }
             }
             // [v2.1.0] Unified _5min.pcm file (always 16kHz mono)
             val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")

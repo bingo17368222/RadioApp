@@ -445,7 +445,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="拼多多检测间隔"
+                android:text="强制音频焦点恢复检测间隔"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
             <Spinner
