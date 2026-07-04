@@ -1686,6 +1686,84 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
+     * v2.1.1: Continuous resampling with cross-chunk phase preservation.
+     * Solves the "low-pitched and slow" audio bug by:
+     * 1. Maintaining resample phase across MediaCodec chunk boundaries (no periodic clicks)
+     * 2. Using fractional position accumulation (no floor-truncation timing drift)
+     * 3. Carrying last sample from previous chunk for boundary interpolation
+     *
+     * Returns: Triple(outputBytes, newPhase, lastSample)
+     */
+    private fun resampleChunkContinuous(
+        input: ShortArray, inSampleRate: Int, inChannels: Int,
+        outSampleRate: Int, outChannels: Int,
+        prevPhase: Double, prevLastSample: Short
+    ): Triple<ByteArray, Double, Short> {
+        // No resampling needed
+        if (inSampleRate == outSampleRate && inChannels == outChannels) {
+            val bytes = ByteArray(input.size * 2)
+            java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(input)
+            return Triple(bytes, 0.0, if (input.isNotEmpty()) input[input.size - 1] else prevLastSample)
+        }
+
+        val ratio = inSampleRate.toDouble() / outSampleRate
+        val inputFrames = input.size / inChannels
+
+        // Step 1: Downmix to mono (average all channels per frame)
+        val monoInput: ShortArray = if (inChannels > 1) {
+            val arr = ShortArray(inputFrames)
+            for (i in 0 until inputFrames) {
+                var sum = 0
+                for (c in 0 until inChannels) {
+                    sum += input[i * inChannels + c].toInt()
+                }
+                arr[i] = (sum / inChannels).toShort()
+            }
+            arr
+        } else {
+            input
+        }
+
+        if (monoInput.size < 1) {
+            return Triple(ByteArray(0), prevPhase, prevLastSample)
+        }
+
+        // Step 2: Continuous linear interpolation with phase carry-over
+        // prevPhase is the fractional position within the PREVIOUS chunk's last frame.
+        // We prepend prevLastSample to the input to allow interpolation at chunk start.
+        val extendedInput = ShortArray(monoInput.size + 1)
+        extendedInput[0] = prevLastSample
+        System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
+
+        // Calculate how many output samples we can produce
+        // Available input range: [0, extendedInput.size - 1] for interpolation
+        val availableInputRange = extendedInput.size - 1  // need srcIdx+1 < size
+        // Start from prevPhase (carried from previous chunk)
+        var currentPhase = prevPhase
+        val outputSamples = ArrayList<Short>(512)
+
+        while (currentPhase < availableInputRange) {
+            val srcIdx = currentPhase.toInt()
+            val frac = currentPhase - srcIdx
+            if (srcIdx + 1 < extendedInput.size) {
+                val sample = (extendedInput[srcIdx] * (1.0 - frac) + extendedInput[srcIdx + 1] * frac).toInt().toShort()
+                outputSamples.add(sample)
+            }
+            currentPhase += ratio
+        }
+
+        // Carry over the phase (subtract consumed input range)
+        val newPhase = currentPhase - availableInputRange
+        val newLastSample = monoInput[monoInput.size - 1]
+
+        // Step 3: Output is always mono (outChannels=1), no channel duplication needed
+        val outShorts = outputSamples.toShortArray()
+        val outBytes = ByteArray(outShorts.size * 2)
+        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts)
+        return Triple(outBytes, newPhase, newLastSample)
+    }
+
+    /**
      * v2.1.0: Generate WAV file from PCM raw data.
      * WAV header: 44 bytes RIFF header + PCM data.
      */
@@ -1755,11 +1833,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             // [v2.0.97] Force 16kHz mono output to match SubtitleGeneratorService.decodeToPcm.
-            // Previously kept original rate (e.g., 44100) which caused PCM playback to sound
-            // slow/low-pitched when SubtitleGeneratorService overwrote the same file with 16kHz
-            // data but the .info still said 44100 (or vice versa).
             val outSampleRate = 16000
             val outChannels = 1
+            // [v2.1.1] Mutable: will be updated on INFO_OUTPUT_FORMAT_CHANGED
+            var actualInSampleRate = sampleRate
+            var actualInChannels = channelCount
             writePreCacheLog("decodeToPcmForPreCache: [v2.0.97] sampleRate=$sampleRate→${outSampleRate}, channels=$channelCount→${outChannels} (resampling to 16kHz mono)")
 
             // [v2.0.70] Issue 6 Fix: Seek to 15-min offset to match subtitle service's expected range (15-20 min).
@@ -1784,11 +1862,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             var outputDone = false
             var decodedBytes = 0L
             var resampledBytes = 0L
-            // [v2.0.70] Issue 6 Fix: Calculate max bytes based on ACTUAL output sample rate and channels,
-            // not hardcoded 16kHz mono. Previous code used 16000*2 which is 4x too small for 44100Hz stereo.
             val maxPcmBytes = 5L * 60 * outSampleRate * outChannels * 2  // 5min at actual rate
             val decodeStartTime = System.currentTimeMillis()
             val maxDecodeTimeMs = 5 * 60 * 1000L
+
+            // [v2.1.1] Global continuous resampler state - maintains phase across chunks
+            // Previous per-chunk resampling caused periodic clicks (~43Hz buzz) and
+            // floor-truncation timing errors, making audio sound "low-pitched and slow".
+            var resamplePhase = 0.0  // accumulated output position in input-sample units
+            var lastSample: Short = 0  // last sample from previous chunk for interpolation
 
             // [v2.0.70] Track the seek offset for stopping at 20 min
             val stopAtUs = seekTargetUs + 5L * 60 * 1000 * 1000  // 20 min
@@ -1847,8 +1929,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             val chunkShorts = ShortArray(pcmBytes.size / 2)
                             java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
 
-                            // Resample chunk (simple, no leftover)
-                            val resampled = resampleChunkForPreCache(chunkShorts, sampleRate, channelCount, outSampleRate, outChannels)
+                            // [v2.1.1] Global continuous resampling with leftover state
+                            // This prevents periodic clicks at chunk boundaries and timing drift
+                            val resampled = resampleChunkContinuous(
+                                chunkShorts, actualInSampleRate, actualInChannels,
+                                outSampleRate, outChannels, resamplePhase, lastSample
+                            )
+                            resamplePhase = resampled.second  // save phase for next chunk
+                            lastSample = resampled.third      // save last sample for next chunk
                             val outBytes = resampled.first
                             fos.write(outBytes)
                             resampledBytes += outBytes.size
@@ -1859,6 +1947,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                     }
                     outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {}
+                    outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        // [v2.1.1] Re-read actual output format from codec
+                        val newFormat = codec.outputFormat
+                        try {
+                            actualInSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                            actualInChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                            writePreCacheLog("decodeToPcmForPreCache: [v2.1.1] FORMAT_CHANGED: sampleRate=$actualInSampleRate, channels=$actualInChannels")
+                        } catch (e: Exception) {
+                            writePreCacheLog("decodeToPcmForPreCache: [v2.1.1] FORMAT_CHANGED but failed to read format: ${e.message}")
+                        }
+                    }
                     else -> {}
                 }
             }

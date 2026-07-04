@@ -1097,7 +1097,7 @@ class PlayerActivity : AppCompatActivity() {
         if (!isLive) {
             val audioUrl = currentEpisode?.audioUrl ?: ""
             val cacheFileName = extractCacheFileName(audioUrl)
-            binding.tvCacheUrl.text = "本地缓存: ${cacheDir.absolutePath}/episodes/$cacheFileName"
+            binding.tvCacheUrl.text = "本地缓存: ${com.radio.app.RadioApplication.getEpisodesCacheDir(this).absolutePath}/$cacheFileName"
             binding.tvCacheUrl.visibility = View.VISIBLE
             binding.tvCacheProgress.visibility = View.VISIBLE
             binding.seekBarCache.visibility = View.VISIBLE
@@ -1634,7 +1634,7 @@ class PlayerActivity : AppCompatActivity() {
             val cacheFileName = extractCacheFileName(currentEpisode!!.audioUrl ?: "")
             binding.tvNetworkUrl.text = "网络: ${currentEpisode!!.audioUrl}"
             binding.tvNetworkUrl.visibility = View.VISIBLE
-            binding.tvCacheUrl.text = "本地缓存: ${cacheDir.absolutePath}/episodes/$cacheFileName"
+            binding.tvCacheUrl.text = "本地缓存: ${com.radio.app.RadioApplication.getEpisodesCacheDir(this).absolutePath}/$cacheFileName"
             binding.tvCacheUrl.visibility = View.VISIBLE
         }
         // 更新缓存进度

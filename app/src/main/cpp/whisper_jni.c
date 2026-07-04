@@ -209,22 +209,21 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
     // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
     params.n_threads       = 1;
-    // [v2.0.99] Fix SIGSEGV: audio_ctx=256 still causes SIGSEGV on some devices.
+    // [v2.1.1] Fix SIGSEGV: audio_ctx=100 still causes SIGSEGV on this device.
     // The crash happens inside whisper_full during encoder/decoder inference.
-    // Root cause: audio_ctx=256 allocates KV cache for 256*10=2560 tokens, which is
-    // too much memory for the tiny model on low-memory devices.
-    // audio_ctx=100 covers 2s (100*0.02s=2s), sufficient for 5s chunks (Whisper will
-    // process the first 2s of each 5s chunk). KV cache = 100*10 = 1000 tokens.
-    params.audio_ctx       = 100;
+    // Even audio_ctx=100 allocates KV cache for 100*10=1000 tokens, which may still
+    // be too much. Try audio_ctx=50 (1s of audio), KV cache = 50*10 = 500 tokens.
+    // Also set single_segment=false to allow Whisper to manage segments internally,
+    // and suppress_tokens to prevent hallucination tokens from consuming decoder memory.
+    params.audio_ctx       = 50;
     // [v2.0.92] Limit text context to reduce decoder memory
-    params.n_max_text_ctx  = 32;
+    params.n_max_text_ctx  = 0;
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
-    params.single_segment  = true;
-    // [v2.0.99] Increase max_tokens from 32 to 64 to prevent decoder from crashing
-    // when it runs out of token budget mid-sequence.
-    params.max_tokens      = 64;
+    params.single_segment  = false;
+    // [v2.1.1] Reduce max_tokens to 32 (was 64) to minimize decoder memory
+    params.max_tokens      = 32;
     // [v2.0.91] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;

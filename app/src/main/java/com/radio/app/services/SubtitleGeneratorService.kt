@@ -2473,9 +2473,9 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.98] Use 5-second chunks (80000 samples).
             // v2.0.97 used 3s chunks but still crashed with SIGSEGV.
             // Root cause: audio_ctx=0 (auto) defaults to 1500 (30s) which allocates too much
-            // memory. v2.1.0 sets audio_ctx=100 (2s) in JNI to avoid SIGSEGV on low-memory devices.
-            // 5s chunks (80000 samples) produce ~500 mel frames; Whisper processes first 2s per chunk.
-            // single_segment=true prevents multi-segment decoder memory expansion.
+            // memory. v2.1.1 sets audio_ctx=50 (1s) in JNI to avoid SIGSEGV.
+            // 5s chunks (80000 samples) produce ~500 mel frames; Whisper processes first 1s per chunk.
+            // single_segment=false lets Whisper manage segments internally.
             val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
@@ -2487,7 +2487,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.1.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=100, single_segment=true in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.1.1] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=50, single_segment=false in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
@@ -2562,7 +2562,7 @@ class SubtitleGeneratorService : Service() {
 
                 var chunkSuccess = false
                 try {
-                    // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=100)
+                    // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=50)
                     val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
                     logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: bridge.full returned $result")
 
@@ -2768,6 +2768,9 @@ class SubtitleGeneratorService : Service() {
             fos = FileOutputStream(pcmFile)
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            // [v2.1.1] Mutable: will be updated on INFO_OUTPUT_FORMAT_CHANGED
+            var actualInSampleRate = sampleRate
+            var actualInChannels = channelCount
             ctx.log("Decode: sampleRate=$sampleRate, channels=$channelCount")
 
             var inputDone = false
@@ -2776,6 +2779,9 @@ class SubtitleGeneratorService : Service() {
             var lastProgressBytes = 0L
             var lastProgressTime = System.currentTimeMillis()
             var decodeStartTime = System.currentTimeMillis()
+            // [v2.1.1] Global continuous resampler state
+            var resamplePhase = 0.0
+            var lastSample: Short = 0
             // 最大解码时长：5分钟（足够解码30分钟音频）
             val MAX_DECODE_TIME_MS = 5 * 60 * 1000L
             // 无进展超时：30秒没有新输出就认为卡住了
@@ -2863,8 +2869,16 @@ class SubtitleGeneratorService : Service() {
                                 val pcmBytes = ByteArray(bufferInfo.size)
                                 buffer.position(bufferInfo.offset)
                                 buffer.get(pcmBytes)
-                                // [v2.0.72] Use improved stereo-aware resample
-                                val resampled = resamplePcmV2(pcmBytes, sampleRate, channelCount, SAMPLE_RATE, 1)
+                                // [v2.1.1] Use continuous resampling with phase carry-over
+                                val chunkShorts = ShortArray(pcmBytes.size / 2)
+                                java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
+                                val resampledTriple = resampleChunkContinuousSG(
+                                    chunkShorts, actualInSampleRate, actualInChannels,
+                                    SAMPLE_RATE, 1, resamplePhase, lastSample
+                                )
+                                resamplePhase = resampledTriple.second
+                                lastSample = resampledTriple.third
+                                val resampled = resampledTriple.first
                                 fos.write(resampled)
                                 decodedBytes += resampled.size
                                 // [v2.0.72] Progress based on expected bytes, not hardcoded 60MB
@@ -2891,8 +2905,18 @@ class SubtitleGeneratorService : Service() {
                         outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                             outputDrained = true
                         }
+                        outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            // [v2.1.1] Re-read actual output format from codec
+                            val newFormat = codec.outputFormat
+                            try {
+                                actualInSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                                actualInChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                                ctx.log("Decode: [v2.1.1] FORMAT_CHANGED: sampleRate=$actualInSampleRate, channels=$actualInChannels")
+                            } catch (e: Exception) {
+                                ctx.log("Decode: [v2.1.1] FORMAT_CHANGED but failed: ${e.message}")
+                            }
+                        }
                         else -> {
-                            // INFO_OUTPUT_FORMAT_CHANGED etc.
                             outputDrained = true
                         }
                     }
@@ -2924,6 +2948,70 @@ class SubtitleGeneratorService : Service() {
             try { extractor.release() } catch (_: Exception) {}
             throw e
         }
+    }
+
+    /**
+     * v2.1.1: Continuous resampling with cross-chunk phase preservation.
+     * Same algorithm as RadioPlaybackService.resampleChunkContinuous.
+     * Returns: Triple(outputBytes, newPhase, lastSample)
+     */
+    private fun resampleChunkContinuousSG(
+        input: ShortArray, inSampleRate: Int, inChannels: Int,
+        outSampleRate: Int, outChannels: Int,
+        prevPhase: Double, prevLastSample: Short
+    ): Triple<ByteArray, Double, Short> {
+        if (inSampleRate == outSampleRate && inChannels == outChannels) {
+            val bytes = ByteArray(input.size * 2)
+            java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(input)
+            return Triple(bytes, 0.0, if (input.isNotEmpty()) input[input.size - 1] else prevLastSample)
+        }
+
+        val ratio = inSampleRate.toDouble() / outSampleRate
+        val inputFrames = input.size / inChannels
+
+        val monoInput: ShortArray = if (inChannels > 1) {
+            val arr = ShortArray(inputFrames)
+            for (i in 0 until inputFrames) {
+                var sum = 0
+                for (c in 0 until inChannels) {
+                    sum += input[i * inChannels + c].toInt()
+                }
+                arr[i] = (sum / inChannels).toShort()
+            }
+            arr
+        } else {
+            input
+        }
+
+        if (monoInput.size < 1) {
+            return Triple(ByteArray(0), prevPhase, prevLastSample)
+        }
+
+        val extendedInput = ShortArray(monoInput.size + 1)
+        extendedInput[0] = prevLastSample
+        System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
+
+        val availableInputRange = extendedInput.size - 1
+        var currentPhase = prevPhase
+        val outputSamples = ArrayList<Short>(512)
+
+        while (currentPhase < availableInputRange) {
+            val srcIdx = currentPhase.toInt()
+            val frac = currentPhase - srcIdx
+            if (srcIdx + 1 < extendedInput.size) {
+                val sample = (extendedInput[srcIdx] * (1.0 - frac) + extendedInput[srcIdx + 1] * frac).toInt().toShort()
+                outputSamples.add(sample)
+            }
+            currentPhase += ratio
+        }
+
+        val newPhase = currentPhase - availableInputRange
+        val newLastSample = monoInput[monoInput.size - 1]
+
+        val outShorts = outputSamples.toShortArray()
+        val outBytes = ByteArray(outShorts.size * 2)
+        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts)
+        return Triple(outBytes, newPhase, newLastSample)
     }
 
     /**

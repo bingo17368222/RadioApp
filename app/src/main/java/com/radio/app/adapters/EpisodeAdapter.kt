@@ -105,7 +105,8 @@ class EpisodeAdapter(
         } catch (e: Exception) {
             episode.audioUrl.substringAfterLast("/")
         }
-        val cacheFile = java.io.File(ctx.cacheDir, "episodes/$cacheFileName")
+        // [v2.1.1] Use centralized cache dir from RadioApplication
+        val cacheFile = java.io.File(com.radio.app.RadioApplication.getEpisodesCacheDir(ctx), cacheFileName)
         val isCached = cacheFile.exists() && cacheFile.length() > 1024
         if (isCached) {
             holder.tvCachedIndicator.visibility = View.VISIBLE

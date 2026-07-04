@@ -528,9 +528,13 @@ class SettingsFragment : Fragment() {
 
     private fun calculateCacheSize(): Long {
         var size = 0L
+        // [v2.1.1] Include centralized RadioApp cache dir (episodes + pcm_cache)
+        size += calculateAudioDirSize(com.radio.app.RadioApplication.getEpisodesCacheDir(requireContext()))
+        size += calculateAudioDirSize(com.radio.app.RadioApplication.getPcmCacheDir(requireContext()))
+        // Also scan legacy dirs for any remaining files
         size += calculateAudioDirSize(requireContext().cacheDir)
         requireContext().externalCacheDir?.let { size += calculateAudioDirSize(it) }
-        size += calculateAudioDirSize(requireContext().filesDir)
+        requireContext().filesDir?.let { size += calculateAudioDirSize(it) }
         requireContext().getExternalFilesDir(null)?.let { size += calculateAudioDirSize(it) }
         return size
     }
@@ -568,10 +572,13 @@ class SettingsFragment : Fragment() {
 
     private fun showClearCacheDialog() {
         val allFiles = mutableListOf<File>()
-        // 仅扫描音频缓存文件
+        // [v2.1.1] Scan centralized RadioApp cache dirs first
+        scanAudioFilesRecursive(com.radio.app.RadioApplication.getEpisodesCacheDir(requireContext()), allFiles)
+        scanAudioFilesRecursive(com.radio.app.RadioApplication.getPcmCacheDir(requireContext()), allFiles)
+        // Also scan legacy dirs for any remaining files
         scanAudioFilesRecursive(requireContext().cacheDir, allFiles)
         requireContext().externalCacheDir?.let { scanAudioFilesRecursive(it, allFiles) }
-        scanAudioFilesRecursive(requireContext().filesDir, allFiles)
+        requireContext().filesDir?.let { scanAudioFilesRecursive(it, allFiles) }
         requireContext().getExternalFilesDir(null)?.let { scanAudioFilesRecursive(it, allFiles) }
 
         if (allFiles.isEmpty()) {
@@ -580,17 +587,19 @@ class SettingsFragment : Fragment() {
         }
 
         val files = allFiles.toTypedArray()
+        val radioAppPath = com.radio.app.RadioApplication.getCacheRootDir(requireContext()).absolutePath
         val cachePath = requireContext().cacheDir.absolutePath
         val extCachePath = requireContext().externalCacheDir?.absolutePath ?: ""
-        val filesPath = requireContext().filesDir.absolutePath
+        val filesPath = requireContext().filesDir?.absolutePath ?: ""
         val extFilesPath = requireContext().getExternalFilesDir(null)?.absolutePath ?: ""
         val fileNames = Array(files.size) { i ->
             val path = files[i].absolutePath
             val shortPath = when {
+                path.startsWith(radioAppPath) -> "[RadioApp]" + path.replace(radioAppPath, "...")
                 extCachePath.isNotEmpty() && path.startsWith(extCachePath) -> "[外缓存]" + path.replace(extCachePath, "...")
                 path.startsWith(cachePath) -> "[内缓存]" + path.replace(cachePath, "...")
                 extFilesPath.isNotEmpty() && path.startsWith(extFilesPath) -> "[外文件]" + path.replace(extFilesPath, "...")
-                path.startsWith(filesPath) -> "[内文件]" + path.replace(filesPath, "...")
+                filesPath.isNotEmpty() && path.startsWith(filesPath) -> "[内文件]" + path.replace(filesPath, "...")
                 else -> path
             }
             shortPath + " (" + formatSize(files[i].length()) + ")"
