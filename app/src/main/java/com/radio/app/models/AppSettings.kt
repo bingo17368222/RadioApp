@@ -92,10 +92,10 @@ class AppSettings private constructor() {
     fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
 
     /**
-     * [v2.0.97] Reload ASR provider and Vosk model dir from SharedPreferences.
-     * SubtitleGeneratorService runs in :subtitle process, whose AppSettings singleton
-     * is loaded once at process start and never refreshed. When user changes ASR engine
-     * in UI process, the :subtitle process's singleton is stale. This method re-reads
+     * v2.0.97 - Reload ASR provider and Vosk model dir from SharedPreferences.
+     * SubtitleGeneratorService runs in a separate process (:subtitle), whose AppSettings
+     * singleton is loaded once at process start and never refreshed. When user changes ASR
+     * engine in UI process, the subtitle process's singleton is stale. This method re-reads
      * the latest values from SharedPreferences.
      */
     fun reloadAsrSettings(context: Context) {
