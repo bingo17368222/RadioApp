@@ -215,7 +215,7 @@ class SubtitleGeneratorService : Service() {
                 }
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to (lastEpisodeId ?: ""),
-                    "message" to "字幕生成服务因内存不足被系统终止。建议：1)关闭其他应用后重试 2)使用Vosk小模型"
+                    "message" to "字幕生成服务因内存不足被系统终止。Whisper引擎已进入10分钟冷却期。字幕引擎不会自动切换，如需更换请在设置中手动选择ASR引擎后重试。"
                 ))
                 restartPrefs.edit().clear().apply()
             }
@@ -916,20 +916,15 @@ class SubtitleGeneratorService : Service() {
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.91] Use 1-second chunks (32000 bytes) for balanced output density.
+        // [v2.0.92] Use 2-second chunks (64000 bytes) with modified endpoint.conf.
         // Chunk size history:
         //   - 2.0s (64000) in v2.0.89: accept rate ~30% but PARTIAL almost always empty.
-        //     Root cause: with 2s chunks, Vosk often detects endpoint+reset INSIDE the chunk,
-        //     so getPartialResult() after the chunk sees a reset recognizer → partial="".
-        //   - 0.25s (8000) in v2.0.90: accept rate dropped to ~6% (T=10/F=150) because chunks
-        //     are too short for Vosk to detect silence boundaries, causing finals to be rare
-        //     and partial to be mostly empty (Vosk doesn't produce partial for <0.5s of speech).
-        //   - 0.5s (16000) in v2.0.86: accept rate 9% but that was caused by the FINAL-blocks-
-        //     PARTIAL bug (fixed in v2.0.79). Should work correctly now.
-        // Strategy: 1s chunks give Vosk enough audio to produce partial hypotheses while still
-        // polling frequently enough to catch them before internal reset. Also skip calling
-        // getPartialResult() after acceptWaveForm=true (it always returns "" after a final).
-        val chunkSize = 32000   // 1.0 second = 16000 samples = 32000 bytes
+        //     Root cause: DEFAULT endpoint mode triggered reset every ~5s.
+        //   - 0.25s (8000) in v2.0.90: accept rate ~6%, too short for speech detection.
+        //   - 1.0s (32000) in v2.0.91: accept rate ~18.7%, partial still mostly empty.
+        // Strategy: 2s chunks + endpoint.conf t_max=30s prevents premature reset,
+        // allowing Vosk to accumulate longer speech segments and produce denser output.
+        val chunkSize = 64000   // 2.0 seconds = 32000 samples = 64000 bytes
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
@@ -1052,6 +1047,32 @@ class SubtitleGeneratorService : Service() {
                     return false
                 }
                 logToFile("processVoskInChunks: [v2.0.65] Model dir check passed: am=${amDir.exists()}, graph=${graphDir.exists()}, conf=${confFile.exists()}")
+
+                // [v2.0.92] Fix Vosk sparse output: modify endpoint.conf to use LONG endpoint mode.
+                // DEFAULT endpoint mode triggers reset every ~5s of silence, fragmenting speech into
+                // single characters. Increasing t_max to 30s prevents premature endpoint detection
+                // for continuous Chinese broadcast speech.
+                try {
+                    val endpointConf = File(confFile, "endpoint.conf")
+                    if (endpointConf.exists()) {
+                        val originalContent = endpointConf.readText()
+                        logToFile("processVoskInChunks: [v2.0.92] Original endpoint.conf: ${originalContent.take(200)}")
+                        // Replace t_max value (default 5.0) with 30.0 for longer speech segments
+                        val modifiedContent = originalContent
+                            .replace(Regex("t_max\\s+\\S+"), "t_max 30.0")
+                            .replace(Regex("t_min\\s+\\S+"), "t_min 1.0")
+                        if (modifiedContent != originalContent) {
+                            endpointConf.writeText(modifiedContent)
+                            logToFile("processVoskInChunks: [v2.0.92] Modified endpoint.conf: ${modifiedContent.take(200)}")
+                        }
+                    } else {
+                        // Create endpoint.conf with LONG mode settings
+                        endpointConf.writeText("t_max 30.0\nt_min 1.0\nsilence_threshold 0.3\n")
+                        logToFile("processVoskInChunks: [v2.0.92] Created endpoint.conf with t_max=30.0")
+                    }
+                } catch (e: Exception) {
+                    logToFile("processVoskInChunks: [v2.0.92] endpoint.conf modification failed: ${e.message}")
+                }
 
                 try {
                     model = voskModelClass!!.getConstructor(String::class.java).newInstance(modelPath)
@@ -1230,8 +1251,32 @@ class SubtitleGeneratorService : Service() {
                             }
                         } catch (_: Exception) { /* skip malformed JSON */ }
                     }
-                    // [v2.0.91] Skip getPartialResult() after acceptWaveForm=true — Vosk just reset,
-                    // partial will always be "" immediately after a final. Proceed to next chunk.
+                    // [v2.0.92] Also try getPartialResult() after acceptWaveForm=true.
+                    // With endpoint.conf t_max=30s, accept=true is rare (longer speech segments).
+                    // Vosk may still have partial text from the current chunk before reset.
+                    val partialAfterFinal = getPartialResultMethod.invoke(recognizer) as? String ?: ""
+                    if (partialAfterFinal.isNotBlank()) {
+                        try {
+                            val partialJson = org.json.JSONObject(partialAfterFinal)
+                            val partialText = partialJson.optString("partial", "").trim()
+                            if (partialText.isNotEmpty() && partialText != lastPartialText) {
+                                val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
+                                val partialStartTime = partialOffsetMs + offset * 1000L / 32000L
+                                val partialEndTime = partialOffsetMs + (offset + bytesRead) * 1000L / 32000L
+                                val transcript = com.radio.app.models.Transcript(
+                                    text = partialText,
+                                    segmentStart = partialStartTime,
+                                    segmentEnd = partialEndTime
+                                )
+                                logToFile("processVoskInChunks: [v2.0.92] PARTIAL-after-final: chunk=$chunkCount, text='${partialText.take(80)}'")
+                                allTranscripts.add(transcript)
+                                callback.onSubtitleGenerated(transcript)
+                                lastPartialEmitTime = currentTimeMs
+                                lastForceEmitTime = currentTimeMs
+                                lastPartialText = partialText
+                            }
+                        } catch (_: Exception) { }
+                    }
                 } else {
                     // [v2.0.91] Only call getPartialResult() when acceptWaveForm=false (still processing)
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
@@ -2386,12 +2431,13 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.89] Issue 5 Fix: STREAMING PCM processing — do NOT load entire file into memory.
             // v2.0.78 loaded entire PCM as ByteArray(9.6MB) + FloatArray(19.2MB) = 29MB Java heap.
             // With only 1-11MB free heap, this always failed with OOM.
-            // [v2.0.90] Use 5-second chunks (80000 samples) instead of 1s:
-            // - Whisper needs >=3s of audio for meaningful recognition (1s chunks were too short)
-            // - JNI audio_ctx=256 covers ~5.5s, matching this chunk size perfectly
-            // - Per-chunk Java heap: 160KB ByteArray + 320KB FloatArray = 480KB total (still tiny)
-            // - Fewer JNI calls → less overhead, less memory fragmentation
-            val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
+            // [v2.0.92] Use 3-second chunks (48000 samples) instead of 5s:
+            // - 5s chunks (v2.0.90) caused SIGSEGV during whisper_full on devices with limited
+            //   native memory. 3s chunks reduce mel spectrogram and encoder memory by 40%.
+            // - JNI audio_ctx=128 covers ~2.56s, sufficient for 3s chunks (150 tokens).
+            // - Per-chunk Java heap: 96KB ByteArray + 192KB FloatArray = 288KB total
+            // - Whisper needs >=2s of audio for meaningful recognition; 3s is a good balance
+            val chunkSize = 3 * 16000  // 3 seconds per chunk (48000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0

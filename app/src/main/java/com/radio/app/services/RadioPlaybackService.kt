@@ -687,14 +687,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     authoritativePosition = 0L
                                     maxKnownPosition = 0L
                                     lastNotifiedPosition = -1L
-                                    writeServiceLog("notification", "[v2.0.87] STATE_ENDED: prepared=false, reset authoritativePosition=0, calling updateNotification() (userPaused NOT set)")
-                                    forceNotificationUpdate = true
-                                    lastNotificationContentHash = 0
-                                    updateNotification()
-                                    // 连续播放：播放完成后自动播放下一个节目
+                                    writeServiceLog("notification", "[v2.0.87] STATE_ENDED: prepared=false, reset authoritativePosition=0 (userPaused NOT set)")
+                                    // [v2.0.92] Fix: For continuous play, skip updateNotification() here.
+                                    // Calling updateNotification() before autoPlayNextEpisode() causes
+                                    // the notification to show progress=100% (old pos=dur / old dur).
+                                    // autoPlayNextEpisode() will call playEpisode() which resets position
+                                    // and calls updateNotification() with the correct new episode state.
                                     if (continuousPlay && !isLive) {
                                         Log.d(TAG, "Playback ended, auto-playing next episode")
                                         autoPlayNextEpisode()
+                                    } else {
+                                        forceNotificationUpdate = true
+                                        lastNotificationContentHash = 0
+                                        updateNotification()
                                     }
                                 }
                             }
@@ -2984,7 +2989,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!isSameEpisode) {
             authoritativePosition = if (startPositionMs >= 0) startPositionMs else 0L
             maxKnownPosition = authoritativePosition
-            writeServiceLog("notification", "[v2.0.75-PROGRESS] episode switch: reset pos to $authoritativePosition for new ep=${episode.id}")
+            // [v2.0.92] Reset lastValidDurationMs to prevent getSafeDuration() from returning
+            // the old episode's duration during the transition window, which causes the
+            // notification progress bar to show 100% (old pos / old dur).
+            lastValidDurationMs = 0L
+            writeServiceLog("notification", "[v2.0.75-PROGRESS] episode switch: reset pos to $authoritativePosition, lastValidDur=0 for new ep=${episode.id}")
         }
         // [v2.0.72] Issue 5 Fix: Reset notification state on new episode to prevent
         // stale position/title from previous episode showing in notification bar.
@@ -3812,15 +3821,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val timeDisplay = if (targetStart.length >= 4 && targetEnd.length >= 4) {
                         "${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)}"
                     } else ""
-                    val constructedTitle = if (matchEpisodeFallback != null) {
-                        matchEpisodeFallback.title ?: "$stationName $dateDisplay $timeDisplay"
-                    } else {
-                        writeServiceLog("notification", "fetchCrossDayEpisode: no matching episode in list for timeSlot=$targetTimeSlot, constructing generic title")
-                        buildString {
-                            append(stationName)
-                            if (dateDisplay.isNotBlank()) append(" $dateDisplay")
-                            if (timeDisplay.isNotBlank()) append(" $timeDisplay")
-                        }
+                    // [v2.0.92] Fix: Always construct title with correct date for cross-day episodes.
+                    // Previously used matchEpisodeFallback.title which could be from a different day's
+                    // episode with the same time slot, causing title/date mismatch.
+                    val constructedTitle = buildString {
+                        append(stationName)
+                        if (dateDisplay.isNotBlank()) append(" $dateDisplay")
+                        if (timeDisplay.isNotBlank()) append(" $timeDisplay")
                     }
 
                     // [v2.0.43] Issue 1 Fix: Calculate duration from time slot to avoid duration=0
@@ -3843,7 +3850,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         title = constructedTitle,
                         stationId = currentEpisode?.stationId ?: stationPart,
                         audioUrl = newUrl,
-                        broadcastAt = "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}",
+                        // [v2.0.92] Fix: Include time part in broadcastAt (length >= 16) so that
+                        // playEpisode() can parse notificationDate and notificationTimeRange correctly.
+                        // Previously only "2024-07-11" (10 chars) caused fallback to URL regex parsing.
+                        broadcastAt = if (targetStart.length >= 4) {
+                            "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}T${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}"
+                        } else {
+                            "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}"
+                        },
                         duration = calculatedDuration
                     )
                     // Check if the constructed episode's title is disliked

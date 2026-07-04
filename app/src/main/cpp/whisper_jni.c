@@ -129,7 +129,11 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     if (ctx_params_func) {
         cparams = ctx_params_func();
     }
-    LOGI("initFromFile: calling whisper_init_from_file_with_params(\"%s\")", path);
+    // [v2.0.92] Disable GPU to reduce native memory usage. GPU context allocation
+    // can trigger SIGSEGV on devices with limited GPU memory. CPU-only mode is more stable.
+    cparams.use_gpu = false;
+    cparams.flash_attn = false;
+    LOGI("initFromFile: calling whisper_init_from_file_with_params(\"%s\", use_gpu=false)", path);
     struct whisper_context* ctx = init_func(path, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path, path);
     LOGI("initFromFile: result ctx=%p", ctx);
@@ -205,21 +209,20 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
     // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
     params.n_threads       = 1;
-    // [v2.0.91] Memory optimization: audio_ctx=384 covers ~7.68s, giving comfortable margin for 5s chunks.
+    // [v2.0.92] Memory optimization: audio_ctx=128 covers ~2.56s, sufficient for 3s chunks
+    // (150 tokens at 0.02s/token). Reduces KV cache by 67% vs 384 and 91% vs default 1500.
     // audio_ctx controls encoder/decoder KV cache. Default 1500 = 30s waste.
-    // 256 = 5.12s (too tight, only 0.12s margin for 5s chunks).
-    // 384 = 7.68s provides ~2.7s margin for any padding/window artifacts.
-    // KV cache scales linearly with audio_ctx: 384 vs 256 = 50% larger cache but still 74% smaller than default 1500.
-    params.audio_ctx       = 384;
-    // [v2.0.91] Limit text context to reduce decoder memory
-    params.n_max_text_ctx  = 64;
+    // 384 (v2.0.91) caused SIGSEGV on devices with limited native memory.
+    params.audio_ctx       = 128;
+    // [v2.0.92] Limit text context to reduce decoder memory
+    params.n_max_text_ctx  = 32;
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
     params.single_segment  = true;
-    // [v2.0.91] max_tokens=64 for Chinese: ~1.5 tokens per Chinese character, 5s speech ~20-30 chars = 30-45 tokens.
-    // 32 was too tight and could truncate longer utterances.
-    params.max_tokens      = 64;
+    // [v2.0.92] max_tokens=32 for Chinese: 3s speech ~15-20 chars = 22-30 tokens.
+    // 64 (v2.0.91) was too large and contributed to memory pressure.
+    params.max_tokens      = 32;
     // [v2.0.91] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;
