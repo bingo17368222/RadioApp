@@ -209,27 +209,22 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
     // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
     params.n_threads       = 1;
-    // [v2.0.92] Memory optimization: audio_ctx=128 covers ~2.56s, sufficient for 3s chunks
-    // (150 tokens at 0.02s/token). Reduces KV cache by 67% vs 384 and 91% vs default 1500.
-    // audio_ctx controls encoder/decoder KV cache. Default 1500 = 30s waste.
-    // 384 (v2.0.91) caused SIGSEGV on devices with limited native memory.
-    // [v2.0.96] Fix: audio_ctx=0 (auto) - let Whisper decide based on actual audio length.
-    // [v2.0.98] Fix: audio_ctx=0 may default to 1500 (30s) which is too large and causes
-    // SIGSEGV on devices with limited native memory. Set back to 256 which safely covers
-    // 5s chunks (312 tokens at 0.02s/token). This is the sweet spot between memory and coverage.
-    params.audio_ctx       = 256;
+    // [v2.0.99] Fix SIGSEGV: audio_ctx=256 still causes SIGSEGV on some devices.
+    // The crash happens inside whisper_full during encoder/decoder inference.
+    // Root cause: audio_ctx=256 allocates KV cache for 256*10=2560 tokens, which is
+    // too much memory for the tiny model on low-memory devices.
+    // audio_ctx=100 covers 2s (100*0.02s=2s), sufficient for 5s chunks (Whisper will
+    // process the first 2s of each 5s chunk). KV cache = 100*10 = 1000 tokens.
+    params.audio_ctx       = 100;
     // [v2.0.92] Limit text context to reduce decoder memory
     params.n_max_text_ctx  = 32;
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
-    // [v2.0.98] Fix: single_segment=true with audio_ctx=256 is the stable combination.
-    // v2.0.96's single_segment=false caused the decoder to try multiple segments,
-    // increasing memory usage and triggering SIGSEGV.
     params.single_segment  = true;
-    // [v2.0.92] max_tokens=32 for Chinese: 3s speech ~15-20 chars = 22-30 tokens.
-    // 64 (v2.0.91) was too large and contributed to memory pressure.
-    params.max_tokens      = 32;
+    // [v2.0.99] Increase max_tokens from 32 to 64 to prevent decoder from crashing
+    // when it runs out of token budget mid-sequence.
+    params.max_tokens      = 64;
     // [v2.0.91] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;

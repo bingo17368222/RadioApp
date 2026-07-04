@@ -352,6 +352,20 @@ class SettingsFragment : Fragment() {
                 save()
                 val dirInfo = if (providerId == "vosk-local") " (dir=${settings.voskModelDir})" else ""
                 Toast.makeText(requireContext(), "ASR方案已切换: $selected → $providerId$dirInfo", Toast.LENGTH_SHORT).show()
+                // [v2.0.99] Send broadcast to SubtitleGeneratorService to reload ASR settings.
+                // The service runs in :subtitle process and its AppSettings singleton is stale.
+                // reloadAsrSettings() is called at the start of each subtitle generation,
+                // but this broadcast ensures the service picks up the change even if a task
+                // is about to start in the next few seconds.
+                try {
+                    val intent = android.content.Intent("com.radio.app.ASR_PROVIDER_CHANGED")
+                    intent.setPackage(requireContext().packageName)
+                    intent.putExtra("asr_provider", providerId)
+                    if (providerId == "vosk-local") {
+                        intent.putExtra("vosk_model_dir", settings.voskModelDir)
+                    }
+                    requireContext().sendBroadcast(intent)
+                } catch (_: Exception) {}
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
@@ -1161,21 +1175,15 @@ class SettingsFragment : Fragment() {
             }
 
             // Fallback to AudioTrack if WAV not available
-            // Use streaming to avoid OOM on large PCM files
-            val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-            var sampleRate = 16000
-            var channels = 1
-            if (infoFile.exists()) {
-                val info = infoFile.readText()
-                val srMatch = Regex("sampleRate=(\\d+)").find(info)
-                if (srMatch != null) sampleRate = srMatch.groupValues[1].toInt()
-                val chMatch = Regex("channels=(\\d+)").find(info)
-                if (chMatch != null) channels = chMatch.groupValues[1].toInt()
-            }
-            val channelMask = if (channels >= 2) android.media.AudioFormat.CHANNEL_OUT_STEREO else android.media.AudioFormat.CHANNEL_OUT_MONO
-            val bytesPerFrame = channels * 2
+            // [v2.0.99] Force 16kHz mono - all PCM cache files are now 16kHz mono.
+            // Previously read .info file for sample rate, but stale .info files with
+            // wrong rates (e.g., 44100) caused slow/low-pitched playback.
+            val sampleRate = 16000
+            val channels = 1
+            val channelMask = android.media.AudioFormat.CHANNEL_OUT_MONO
+            val bytesPerFrame = 2
             val expectedDurationSec = pcmFile.length() / (sampleRate * bytesPerFrame)
-            android.util.Log.d("SettingsFragment", "playPcmFile: streaming AudioTrack ${pcmFile.name}, size=${pcmFile.length()}, sampleRate=$sampleRate, channels=$channels, expected=${expectedDurationSec}s")
+            android.util.Log.d("SettingsFragment", "playPcmFile: streaming AudioTrack ${pcmFile.name}, size=${pcmFile.length()}, sampleRate=$sampleRate (forced 16kHz), expected=${expectedDurationSec}s")
 
             val bufferSize = maxOf(
                 android.media.AudioTrack.getMinBufferSize(sampleRate, channelMask, android.media.AudioFormat.ENCODING_PCM_16BIT),

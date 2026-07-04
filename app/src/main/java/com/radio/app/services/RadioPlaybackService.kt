@@ -1826,49 +1826,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2 * outChannels)}s")
 
             // After decode loop, write sample rate info
+            // [v2.0.99] _5min.pcm is now always 16kHz mono (outSampleRate=16000, outChannels=1).
+            // No need to generate a separate _16k file - the main file IS the 16kHz file.
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=3")
-            writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile")
+            writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile (sampleRate=$outSampleRate, channels=$outChannels)")
 
-            // Issue 10: WAV file generation removed - PCM is consumed directly by Vosk/Whisper
-            // Also generate 16kHz mono version for Whisper/Vosk
-            try {
-                val pcm16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.pcm")
-                if (sampleRate != 16000 || channelCount != 1) {
-                    writePreCacheLog("decodeToPcmForPreCache: generating 16kHz mono version for Whisper/Vosk")
-                    // Stream resample to avoid OOM
-                    val inBuf = ShortArray(65536)
-                    val pcmInStream = pcmFile.inputStream()
-                    val pcmOutStream = pcm16kFile.outputStream()
-                    val byteBuf = ByteArray(131072)
-                    var remaining = pcmFile.length()
-                    try {
-                        while (remaining > 0) {
-                            val toRead = minOf(byteBuf.size, remaining.toInt())
-                            val read = pcmInStream.read(byteBuf, 0, toRead)
-                            if (read <= 0) break
-                            val shorts = ShortArray(read / 2)
-                            java.nio.ByteBuffer.wrap(byteBuf, 0, read).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-                            val resampled = resampleChunkForPreCache(shorts, sampleRate, channelCount, 16000, 1)
-                            pcmOutStream.write(resampled.first)
-                            remaining -= read
-                        }
-                    } finally {
-                        pcmInStream.close()
-                        pcmOutStream.close()
-                    }
-                    val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
-                    info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
-                    writePreCacheLog("decodeToPcmForPreCache: 16kHz mono PCM size=${pcm16kFile.length()}")
-                } else {
-                    // Already 16kHz mono, just copy
-                    pcmFile.copyTo(pcm16kFile, overwrite = true)
-                    val info16kFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + "_16k.info")
-                    info16kFile.writeText("sampleRate=16000\nchannels=1\nversion=3")
-                }
-            } catch (e: Exception) {
-                writePreCacheLog("decodeToPcmForPreCache: failed to generate 16kHz version: ${e.message}")
-            }
+            // [v2.0.99] Removed: duplicate _16k.pcm generation (lines 1833-1871).
+            // Previously this code created a second PCM file with _16k suffix by re-reading
+            // and re-resampling the already-16kHz _5min.pcm. This was redundant (v2.0.97
+            // already forces 16kHz output) and the resample used wrong source rate (44100
+            // instead of 16000), producing a corrupt 6MB file alongside the correct 9MB file.
         } catch (e: Exception) {
             writePreCacheLog("decodeToPcmForPreCache: error: ${e.message}")
             throw e

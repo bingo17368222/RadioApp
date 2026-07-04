@@ -240,6 +240,21 @@ class SubtitleGeneratorService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(channel)
         }
+
+        // [v2.0.99] Register broadcast receiver for ASR provider changes.
+        // When user changes ASR engine in UI process, this receiver reloads ASR settings
+        // immediately, so the next subtitle generation uses the new engine.
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+                val provider = intent.getStringExtra("asr_provider") ?: return
+                val voskDir = intent.getStringExtra("vosk_model_dir") ?: ""
+                logToFile("[v2.0.99] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir")
+                val settings = AppSettings.getInstance(context)
+                settings.asrProvider = provider
+                settings.voskModelDir = voskDir
+                logToFile("[v2.0.99] ASR settings updated via broadcast: provider=${settings.safeAsrProvider()}")
+            }
+        }, android.content.IntentFilter("com.radio.app.ASR_PROVIDER_CHANGED"))
     }
 
     /**
@@ -812,7 +827,7 @@ class SubtitleGeneratorService : Service() {
 
             // Check for 16kHz PCM cache
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
-            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             val minValidPcmBytes = 1024 * 1024  // [v2.0.67] At least ~30s of audio (was 1024 bytes, too small)
             val pcmValid = pcm16kFile.exists() && pcm16kFile.length() >= minValidPcmBytes
             logToFile("generateWithVosk: PCM file=${pcm16kFile.absolutePath}, size=${pcm16kFile.length()}, valid=${pcmValid}, minRequired=${minValidPcmBytes}")
@@ -1524,64 +1539,33 @@ class SubtitleGeneratorService : Service() {
         // Issue 8: Log each step with timing
         val startTime = System.currentTimeMillis()
         logToFile("getAudioDataForProcessing: START, audioUrl=$audioUrl")
-        // 1) Try 16kHz PCM cache first (should be ~9.6MB for 5min @ 16kHz mono 16-bit)
+        // [v2.0.99] Unified PCM cache: ${episodeId}_5min.pcm is always 16kHz mono.
+        // No more separate _16k file. RadioPlaybackService and SubtitleGeneratorService
+        // both write to the same _5min.pcm file with 16kHz mono data.
         val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
-        val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
+        val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
         val minValidPcmBytes = 1024 * 1024  // [v2.0.67] Require at least ~30s of audio
-        if (pcm16kFile.exists() && pcm16kFile.length() >= minValidPcmBytes) {
-            ctx.log("Using 16kHz PCM cache: ${pcm16kFile.length()} bytes")
-            logToFile("generateSubtitlesForEpisode: PCM converted, size=${pcm16kFile.length()}")
-            // 16kHz PCM is ~60MB, safe to read entirely
-            if (pcm16kFile.length() < 50_000_000) {
-                val data = pcm16kFile.readBytes()
+        if (pcmFile.exists() && pcmFile.length() >= minValidPcmBytes) {
+            ctx.log("Using PCM cache: ${pcmFile.length()} bytes")
+            logToFile("getAudioDataForProcessing: PCM cache hit, size=${pcmFile.length()}")
+            // PCM cache is 16kHz mono, safe to read entirely if < 50MB
+            if (pcmFile.length() < 50_000_000) {
+                val data = pcmFile.readBytes()
                 if (data.isEmpty() || data.size < minValidPcmBytes) {
-                    ctx.log("ERROR: 16kHz PCM cache data is empty or too small (${data.size} bytes), falling through")
+                    ctx.log("ERROR: PCM cache data is empty or too small (${data.size} bytes), falling through")
                 } else {
                     val cacheTime = System.currentTimeMillis() - startTime
-                    logToFile("getAudioDataForProcessing: 16kHz PCM cache hit, time=${cacheTime}ms, size=${data.size}")
+                    logToFile("getAudioDataForProcessing: PCM cache hit, time=${cacheTime}ms, size=${data.size}")
                     return data
                 }
             } else {
                 // File too large for in-memory: signal caller to use chunked processing
-                val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("音频文件过大（${sizeMB}MB），需要分块处理（16kHz PCM cache）")
+                val sizeMB = pcmFile.length() / 1024 / 1024
+                ctx.log("音频文件过大（${sizeMB}MB），需要分块处理")
                 return null
             }
-        } else if (pcm16kFile.exists()) {
-            logToFile("getAudioDataForProcessing: 16kHz PCM cache too small (${pcm16kFile.length()} bytes), will regenerate")
-        }
-        // 2) Try original PCM cache - stream resample to avoid OOM
-        val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-        if (pcmFile.exists() && pcmFile.length() > 1024) {
-            // Safety check: skip PCM cache if file is too large for in-memory processing
-            val pcmFileSize = pcmFile.length()
-            if (pcmFileSize > 200 * 1024 * 1024) {
-                val sizeMB = pcmFileSize / 1024 / 1024
-                ctx.log("音频文件过大（${sizeMB}MB），需要分块处理（original PCM cache）")
-                return null
-            } else {
-            ctx.log("Stream-resampling original PCM to 16kHz (file size=${pcmFile.length()})")
-            // Read .info for sample rate
-            val infoFile = File(pcmCacheDir, "${episodeId}_5min.info")
-            var inSampleRate = 44100
-            var inChannels = 2
-            if (infoFile.exists()) {
-                val info = infoFile.readText()
-                val srMatch = Regex("sampleRate=(\\d+)").find(info)
-                if (srMatch != null) inSampleRate = srMatch.groupValues[1].toInt()
-                val chMatch = Regex("channels=(\\d+)").find(info)
-                if (chMatch != null) inChannels = chMatch.groupValues[1].toInt()
-            }
-            logToFile("generateSubtitlesForEpisode: converting to PCM 16kHz mono")
-            val resampledData = streamResampleTo16kMono(pcmFile, inSampleRate, inChannels, ctx)
-            val conversionTime = System.currentTimeMillis() - startTime
-            logToFile("getAudioDataForProcessing: PCM conversion completed, total time=${conversionTime}ms, pcmSize=${resampledData?.size ?: 0}")
-            logToFile("generateSubtitlesForEpisode: PCM converted, size=${resampledData?.size ?: 0}")
-            if (resampledData != null && resampledData.size >= 1024) {
-                return resampledData
-            }
-            ctx.log("ERROR: streamResampleTo16kMono returned null or too small data (${resampledData?.size ?: 0} bytes), falling through to download")
-            }
+        } else if (pcmFile.exists()) {
+            logToFile("getAudioDataForProcessing: PCM cache too small (${pcmFile.length()} bytes), will regenerate")
         }
         // 3) Download and process
         ctx.log("No PCM cache, downloading from $audioUrl")
@@ -1727,7 +1711,7 @@ class SubtitleGeneratorService : Service() {
             // Decode to 16kHz mono PCM
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
             if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
+            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")  // [v2.0.99] unified file name
             var decodedOk = false
             var fallbackUsed = false
             try {
@@ -2261,19 +2245,17 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // [v2.0.98] Unified PCM cache: always use ${episodeId}_5min_16k.pcm
-            // Previous code created a duplicate ${episodeId}_5min.pcm file (without _16k suffix)
-            // containing the same 16kHz data, causing confusion and sample rate mismatches.
+            // [v2.0.99] Unified PCM cache: always use ${episodeId}_5min.pcm (16kHz mono)
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
-            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("16kHz PCM cache found (${sizeMB}MB), using chunked Whisper processing")
-                logToFile("generateWithWhisper: [v2.0.98] using 16kHz PCM cache (${sizeMB}MB)")
+                ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
+                logToFile("generateWithWhisper: [v2.0.99] using PCM cache (${sizeMB}MB)")
                 return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
             }
 
-            // No 16kHz cache — download and decode to 16kHz PCM
+            // No PCM cache — download and decode to 16kHz PCM
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
             if (audioData == null) {
                 val detail = "音频数据获取失败（PCM缓存不可用，网络可能断开）"
@@ -2284,9 +2266,9 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // [v2.0.98] Save to _16k file (same as Vosk path), no duplicate _5min file
+            // [v2.0.99] Save to unified _5min.pcm file
             pcm16kFile.writeBytes(audioData)
-            logToFile("generateWithWhisper: [v2.0.98] saved audio data to 16kHz PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
+            logToFile("generateWithWhisper: [v2.0.99] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
             return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
@@ -2682,9 +2664,10 @@ class SubtitleGeneratorService : Service() {
         try {
             val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
             if (pcmCacheDir == null || !pcmCacheDir.exists()) return null
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
+            // [v2.0.99] Use unified _5min.pcm file (always 16kHz mono)
+            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             if (pcmFile.exists() && pcmFile.length() > 1024) {
-                logToFile("find16kHzPcmCache: found 16kHz PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
+                logToFile("find16kHzPcmCache: found PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
                 return pcmFile
             }
         } catch (e: Exception) {
