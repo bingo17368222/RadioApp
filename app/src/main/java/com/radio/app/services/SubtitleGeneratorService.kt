@@ -2487,10 +2487,10 @@ class SubtitleGeneratorService : Service() {
             // - JNI audio_ctx=128 covers ~2.56s, sufficient for 3s chunks (150 tokens).
             // - Per-chunk Java heap: 96KB ByteArray + 192KB FloatArray = 288KB total
             // - Whisper needs >=2s of audio for meaningful recognition; 3s is a good balance
-            // [v2.0.94] Use 1-second chunks (16000 samples) instead of 3s.
-            // 3s chunks took 154+ seconds to process on mobile CPU, causing OOM kill before completion.
-            // 1s chunks should process in ~50s, well within the 60s alarm timeout.
-            // audio_ctx=128 in JNI covers 2.56s, more than enough for 1s chunks.
+            // [v2.0.96] Keep 1-second chunks (16000 samples).
+            // v2.0.95 fixed the threshold bug (24000→8000), so 1s chunks now work.
+            // JNI audio_ctx=0 (auto, v2.0.96) and single_segment=false (v2.0.96)
+            // prevent the SIGSEGV crash that occurred with audio_ctx=128 + single_segment=true.
             val chunkSize = 1 * 16000  // 1 second per chunk (16000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
@@ -2902,6 +2902,18 @@ class SubtitleGeneratorService : Service() {
             // 确保进度报告到100%
             onProgress?.invoke(100)
             ctx.log("Decode [v2.0.72] complete: $decodedBytes PCM bytes in ${(System.currentTimeMillis() - decodeStartTime)/1000}s (expected ~${EXPECTED_PCM_BYTES} bytes)")
+            // [v2.0.96] Write .info file so PCM playback uses correct sample rate.
+            // decodeToPcm resamples to 16kHz mono via resamplePcmV2, so the output is always 16kHz mono.
+            // Without this .info file, playPcmFile defaults to 16000 (correct by luck), but if
+            // RadioPlaybackService previously created the .info with a different rate (e.g., 44100),
+            // playback would use the wrong rate.
+            try {
+                val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+                infoFile.writeText("sampleRate=${SAMPLE_RATE}\nchannels=1\nversion=3\nsource=SubtitleGeneratorService")
+                logToFile("decodeToPcm: [v2.0.96] wrote .info file: sampleRate=${SAMPLE_RATE}, channels=1")
+            } catch (e: Exception) {
+                logToFile("decodeToPcm: [v2.0.96] failed to write .info file: ${e.message}")
+            }
             try { codec.stop(); codec.release() } catch (_: Exception) {}
             try { fos.close() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}

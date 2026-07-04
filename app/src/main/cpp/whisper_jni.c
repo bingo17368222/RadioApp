@@ -213,13 +213,19 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     // (150 tokens at 0.02s/token). Reduces KV cache by 67% vs 384 and 91% vs default 1500.
     // audio_ctx controls encoder/decoder KV cache. Default 1500 = 30s waste.
     // 384 (v2.0.91) caused SIGSEGV on devices with limited native memory.
-    params.audio_ctx       = 128;
+    // [v2.0.96] Fix: audio_ctx=0 (auto) - let Whisper decide based on actual audio length.
+    // With 1s chunks, audio_ctx=128 was larger than the actual mel frames (~100),
+    // potentially causing encoder to access uninitialized memory → SIGSEGV.
+    params.audio_ctx       = 0;
     // [v2.0.92] Limit text context to reduce decoder memory
     params.n_max_text_ctx  = 32;
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
-    params.single_segment  = true;
+    // [v2.0.96] Fix: single_segment=false - let Whisper decide segment count.
+    // single_segment=true forced exactly one segment even for 1s audio, causing
+    // decoder to crash with SIGSEGV when audio was too short.
+    params.single_segment  = false;
     // [v2.0.92] max_tokens=32 for Chinese: 3s speech ~15-20 chars = 22-30 tokens.
     // 64 (v2.0.91) was too large and contributed to memory pressure.
     params.max_tokens      = 32;
@@ -234,8 +240,9 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
 
     LOGI("full: calling whisper_full(ctx=%p, processSamples=%d, n_threads=%d)", ctx, processSamples, params.n_threads);
 
-    // Set alarm timeout (60 seconds)
-    alarm(60);
+    // Set alarm timeout (300 seconds - [v2.0.96] increased from 60s)
+    // 1s chunks take ~50s to process on mobile CPU; 60s was too close to the edge.
+    alarm(300);
 
     // [v2.0.56] Issue 2 Fix: Detailed logging right before full_func to diagnose crash
     LOGI("full: alarm set, about to call full_func");

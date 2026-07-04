@@ -814,6 +814,9 @@ class SettingsFragment : Fragment() {
                 }
 
                 val dislikedFileNames = mutableSetOf<String>()
+                // [v2.0.96] Track files whose episodes were resolved by direct ID matching.
+                // Steps 5 and 6 must skip these files to prevent false positives.
+                val resolvedFileNames = mutableSetOf<String>()
 
                 for (file in files) {
                     val fileName = file.name
@@ -930,12 +933,18 @@ class SettingsFragment : Fragment() {
                             }
                         }
                     }
+                    // [v2.0.96] Track resolved files for steps 5/6
+                    if (episodeResolved) {
+                        resolvedFileNames.add(fileName)
+                    }
                 }
 
                 // 5) episode_list_cache: scan ALL episodes (not just matching by episodeId)
+                // [v2.0.96] Skip files whose episodes were already resolved by direct ID matching.
                 try {
                     for (file in files) {
                         if (file.name in dislikedFileNames) continue
+                        if (file.name in resolvedFileNames) continue  // [v2.0.96] Skip resolved files
                         val fileName = file.name
                         val timeRangeMatch = dateRangeRegex.find(fileName)
                         val stationPrefix = stationPrefixRegex.find(fileName)?.groupValues?.get(1) ?: ""
@@ -993,6 +1002,7 @@ class SettingsFragment : Fragment() {
                 // files from ANY station if they contained title keywords. Now uses && (AND) to
                 // require BOTH stationId AND keyword match, preventing liked episodes on other
                 // stations from being selected for deletion.
+                // [v2.0.96] Also skip files whose episodes were already resolved by direct ID matching.
                 try {
                     for ((_, ep) in allEpMap) {
                         if (!isDislikedFast(ep.id, ep.stationId, ep.title)) continue
@@ -1001,6 +1011,7 @@ class SettingsFragment : Fragment() {
                         if (keywords.isEmpty()) continue
                         for (file in files) {
                             if (file.name in dislikedFileNames) continue
+                            if (file.name in resolvedFileNames) continue  // [v2.0.96] Skip resolved files
                             val fname = file.name.lowercase()
                             // [v2.0.94] Require BOTH stationId match AND keyword match
                             if (fname.contains(ep.stationId.lowercase()) &&
