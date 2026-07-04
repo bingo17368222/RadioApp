@@ -2169,7 +2169,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     "${formatTimeNotif(curSec)}/${formatTimeNotif(totalSec)}")
                 writeServiceLog("notification", "[v2.0.73-PROGRESS] progress set: progress=$progress/1000, curTime=${formatTimeNotif(curSec)}, totalTime=${formatTimeNotif(totalSec)}")
             } else {
-                writeServiceLog("notification", "[v2.0.73-PROGRESS] WARNING: dur<=0 after getSafeDuration, progress bar visible but no progress value (rawPlayerDur=$rawPlayerDur, lastValidDur=$lastValidDurationMs, epDur=${currentEpisode?.duration})")
+                // [v2.0.93] Fix: When dur=0 (new episode not yet prepared), explicitly set progress=0
+                // instead of leaving the old progress bar value (which could be 100% from previous episode).
+                remoteViews.setProgressBar(R.id.notification_progress, 1000, 0, false)
+                remoteViews.setTextViewText(R.id.notification_time_text, "00:00/--:--")
+                writeServiceLog("notification", "[v2.0.93-PROGRESS] dur=0, set progress=0 (was keeping old value causing 100% bug)")
             }
         } else {
             remoteViews.setViewVisibility(R.id.notification_progress_area, android.view.View.GONE)
@@ -2474,7 +2478,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     "${formatTimeNotif(curSec)}/${formatTimeNotif(totalSec)}")
                 writeServiceLog("notification", "[v2.0.77-PROGRESS-MEDIA] progress set: progress=$progress/1000, curTime=${formatTimeNotif(curSec)}, totalTime=${formatTimeNotif(totalSec)}")
             } else {
-                writeServiceLog("notification", "[v2.0.73-PROGRESS-MEDIA] WARNING: dur<=0 after getSafeDuration, progress bar visible but no progress value (rawPlayerDur=$rawPlayerDur, lastValidDur=$lastValidDurationMs, epDur=${currentEpisode?.duration})")
+                // [v2.0.93] Fix: dur=0 — set progress=0 instead of keeping old value (100% bug)
+                expandedView.setProgressBar(R.id.notification_progress, 1000, 0, false)
+                expandedView.setTextViewText(R.id.notification_time_text, "00:00/--:--")
+                writeServiceLog("notification", "[v2.0.93-PROGRESS-MEDIA] dur=0, set progress=0")
             }
             applySeekIntents(expandedView)
         } else {
@@ -3849,6 +3856,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         id = "${stationPart}-$newDateStr-cross",
                         title = constructedTitle,
                         stationId = currentEpisode?.stationId ?: stationPart,
+                        // [v2.0.93] Fix: Set stationName to prevent empty string in Episode object.
+                        // Previously stationName was not passed, defaulting to "" in Episode data class.
+                        stationName = currentEpisode?.stationName ?: stationPart,
                         audioUrl = newUrl,
                         // [v2.0.92] Fix: Include time part in broadcastAt (length >= 16) so that
                         // playEpisode() can parse notificationDate and notificationTimeRange correctly.
@@ -4053,6 +4063,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     lastNotificationContentHash = 0
                     updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
                     callback?.onEpisodeChanged(crossDayEp)
+                    // [v2.0.93] Fix: Send broadcast for cross-day episode change so main UI updates
+                    // even when callback is null (App in background, Activity not bound)
+                    sendEpisodeChangedBroadcast(crossDayEp)
                     return
                 }
                 writeNotifDetailLog("autoPlayNextEpisode: no cross-day episode found, stopping playback")
@@ -4071,6 +4084,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
             // 通过回调通知 Activity 更新界面
             callback?.onEpisodeChanged(nextEpisode)
+            // [v2.0.93] Fix: Send broadcast so main UI updates even when callback is null
+            sendEpisodeChangedBroadcast(nextEpisode)
         } catch (e: Exception) {
             Log.e(TAG, "autoPlayNextEpisode failed", e)
             notifyNextEpisode()

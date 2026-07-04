@@ -213,9 +213,21 @@ class SubtitleGeneratorService : Service() {
                         .apply()
                     logToFile("onCreate: [v2.0.77] Recorded Whisper OOM at $now (cooldown 10min)")
                 }
+                // [v2.0.93] Fix: Use engine-specific error message instead of hardcoded Whisper.
+                // Previously, Vosk OOM crashes also showed "Whisper引擎已进入10分钟冷却期" which was misleading.
+                val engineName = when (lastEngine) {
+                    "whisper" -> "Whisper引擎"
+                    "vosk" -> "Vosk引擎"
+                    else -> "字幕引擎"
+                }
+                val cooldownMsg = if (lastEngine == "whisper") {
+                    "Whisper引擎已进入10分钟冷却期，期间无法使用Whisper重试。"
+                } else {
+                    ""
+                }
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to (lastEpisodeId ?: ""),
-                    "message" to "字幕生成服务因内存不足被系统终止。Whisper引擎已进入10分钟冷却期。字幕引擎不会自动切换，如需更换请在设置中手动选择ASR引擎后重试。"
+                    "message" to "字幕生成服务因内存不足被系统终止。${engineName}处理过程中崩溃。${cooldownMsg} 字幕引擎不会自动切换，如需更换请在设置中手动选择ASR引擎后重试。"
                 ))
                 restartPrefs.edit().clear().apply()
             }
@@ -1122,6 +1134,33 @@ class SubtitleGeneratorService : Service() {
                     logToFile("processVoskInChunks: setLogLevel(-1) called")
                 } catch (e: Exception) {
                     logToFile("processVoskInChunks: setLogLevel failed: ${e.message}")
+                }
+                // [v2.0.93] Fix Vosk sparse output: Try setEndpointerMode via reflection.
+                // endpoint.conf modification may not take effect on all Vosk versions/models.
+                // setEndpointerMode(2) = LONG mode (less aggressive endpoint detection).
+                // Vosk Java wrapper exposes this as setEndpointerMode(int) or setEndpointerMode(EndpointerMode).
+                try {
+                    // Try int parameter version first
+                    val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", Int::class.javaPrimitiveType)
+                    setEpMethod.invoke(recognizer, 2)  // 2 = LONG
+                    logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode(2=LONG) called via int param")
+                } catch (e: NoSuchMethodException) {
+                    // Try enum parameter version
+                    try {
+                        val epModeClass = Class.forName("org.vosk.android.EndpointerMode")
+                        val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", epModeClass)
+                        val longMode = epModeClass.enumConstants?.find { it.toString() == "LONG" }
+                        if (longMode != null) {
+                            setEpMethod.invoke(recognizer, longMode)
+                            logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode(LONG) called via enum param")
+                        } else {
+                            logToFile("processVoskInChunks: [v2.0.93] EndpointerMode.LONG not found in enum constants: ${epModeClass.enumConstants?.map { it.toString() }}")
+                        }
+                    } catch (e2: Exception) {
+                        logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode not available (int nor enum), relying on endpoint.conf: ${e2.message}")
+                    }
+                } catch (e: Exception) {
+                    logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode(int) failed: ${e.message}")
                 }
                 // [v2.0.66] Issue 6 Fix: Extract model name for display
                 val modelName = modelDir.name
@@ -2319,17 +2358,18 @@ class SubtitleGeneratorService : Service() {
             val maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024
             val modelFile = java.io.File(modelPath)
             val modelSizeMB = if (modelFile.exists()) modelFile.length() / 1024 / 1024 else 0
-            // [v2.0.77] Issue 2 Fix: Check recent OOM kill (within 10-minute cooldown) instead of
-            // permanent flag. v2.0.76 used a permanent boolean that blocked Whisper forever after
-            // one OOM, even when user explicitly selected Whisper and memory had recovered.
+            // [v2.0.93] Removed 10-minute cooldown per user request. Previously, after a Whisper OOM,
+            // the service would refuse to retry Whisper for 10 minutes. Now we always allow retry.
+            // Only log a warning if there was a recent OOM, but don't block the attempt.
             val oomMarker = getSharedPreferences("subtitle_oom_guard", MODE_PRIVATE)
             val lastOomTime = oomMarker.getLong("whisper_oom_time", 0L)
             val now = System.currentTimeMillis()
-            val cooldownMs = 10L * 60 * 1000  // 10-minute cooldown after OOM
-            val whisperRecentOOM = lastOomTime > 0 && (now - lastOomTime) < cooldownMs
-            logToFile("processWhisperInChunks: [v2.0.91] Memory before model load: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, maxHeap=${maxHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}, recentOOM=$whisperRecentOOM (lastOom=${if (lastOomTime > 0) (now - lastOomTime)/1000 else "never"}s ago)")
-            // [v2.0.91] Very low Java heap requirement — tiny model + 5s chunks need minimal Java heap
-            val requiredHeapMB = 8
+            if (lastOomTime > 0 && (now - lastOomTime) < 10L * 60 * 1000) {
+                logToFile("processWhisperInChunks: [v2.0.93] WARNING: Recent OOM ${((now - lastOomTime) / 1000)}s ago, but proceeding per user request (no cooldown)")
+            }
+            logToFile("processWhisperInChunks: [v2.0.93] Memory: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}")
+            // [v2.0.93] Lowered heap requirement — Whisper tiny with audio_ctx=128 needs minimal Java heap
+            val requiredHeapMB = 4
             if (freeHeapMB < requiredHeapMB) {
                 logToFile("processWhisperInChunks: [v2.0.91] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running aggressive GC")
                 // [v2.0.91] Aggressive cleanup
@@ -2348,23 +2388,15 @@ class SubtitleGeneratorService : Service() {
                     return false
                 }
             }
-            // [v2.0.91] Further reduced system memory requirement for tiny model.
-            // With audio_ctx=384 (vs default 1500), KV cache is ~74% smaller than default.
-            // Whisper tiny model: ~75MB weights (mmap'd, may not count in RSS) + ~50-80MB runtime = ~130-150MB total RSS.
-            // Require modelSize+80MB (~155MB for tiny) to allow running on tighter devices.
-            val requiredMemMB = modelSizeMB + 80
-            if (whisperRecentOOM) {
-                val cooldownRemaining = (cooldownMs - (now - lastOomTime)) / 1000
-                val detail = "Whisper最近因内存不足被系统终止（${cooldownRemaining}秒前），请${cooldownRemaining/60 + 1}分钟后重试或关闭其他应用"
-                ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.91] RECENT OOM - skipping Whisper (cooldown ${cooldownRemaining}s remaining)")
-                callback.onError("$detail。")
-                return false
-            }
+            // [v2.0.93] Lowered system memory requirement.
+            // With audio_ctx=128 (vs default 1500), KV cache is 91% smaller than default.
+            // tiny model: ~75MB weights (mmap'd) + ~30-50MB runtime = ~105-125MB total.
+            val requiredMemMB = modelSizeMB + 50
+            // [v2.0.93] Removed cooldown blocking — always allow retry per user request
             if (availMemMB < requiredMemMB) {
                 val detail = "Whisper内存不足（可用${availMemMB}MB，需要${requiredMemMB}MB=模型${modelSizeMB}MB+推理${requiredMemMB - modelSizeMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.91] INSUFFICIENT MEMORY for Whisper: availMem=${availMemMB}MB < required=$requiredMemMB")
+                logToFile("processWhisperInChunks: [v2.0.93] INSUFFICIENT MEMORY for Whisper: availMem=${availMemMB}MB < required=$requiredMemMB")
                 callback.onError("$detail。请关闭其他应用释放内存后重试。")
                 return false
             }
@@ -2503,9 +2535,11 @@ class SubtitleGeneratorService : Service() {
                 val mi = android.app.ActivityManager.MemoryInfo()
                 am?.getMemoryInfo(mi)
                 val availNativeMB = mi.availMem / 1024 / 1024
-                val whisperNativeThreshold = 120L
+                // [v2.0.93] Lowered native threshold from 120 to 60MB — audio_ctx=128 with 3s chunks
+                // uses far less native memory than previous configurations.
+                val whisperNativeThreshold = 60L
                 if (availNativeMB < whisperNativeThreshold) {
-                    logToFile("processWhisperInChunks: [v2.0.91] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
+                    logToFile("processWhisperInChunks: [v2.0.93] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要约${whisperNativeThreshold}MB）"
                         ctx.lastErrorDetail = detail

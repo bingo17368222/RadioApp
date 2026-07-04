@@ -267,8 +267,17 @@ class PlayerActivity : AppCompatActivity() {
                 val newTitle = intent.getStringExtra("episode_title") ?: return
                 val newId = intent.getStringExtra("episode_id") ?: return
                 writeNotificationLog("episodeChanged broadcast: title=$newTitle, id=$newId")
-                // Update notification title in UI
-                binding.tvStationName.text = newTitle
+                // [v2.0.93] Fix: Update currentEpisode before calling updateUI(), otherwise
+                // updateUI() overwrites tvStationName with old currentEpisode.title.
+                val ep = playbackService?.getCurrentEpisode()
+                if (ep != null) {
+                    currentEpisode = ep
+                    val newIdx = episodeList.indexOfFirst { it.id == ep.id }
+                    if (newIdx >= 0) currentEpisodeIndex = newIdx
+                    clearSubtitles()
+                    voiceSegments = generateSimulatedSegments()
+                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                }
                 updateUI()
             }
         }
