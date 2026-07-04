@@ -1686,7 +1686,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * [v2.1.0] Generate WAV file from PCM raw data.
+     * v2.1.0: Generate WAV file from PCM raw data.
      * WAV header: 44 bytes RIFF header + PCM data.
      */
     private fun generateWavFromPcm(pcmFile: File, sampleRate: Int, channels: Int) {

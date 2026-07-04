@@ -19,7 +19,7 @@ class RadioApplication : Application() {
         @Volatile private var cacheRootDirCache: File? = null
 
         /**
-         * [v2.1.0] External cache root: /sdcard/RadioApp/
+         * v2.1.0: External cache root: /sdcard/RadioApp/
          * 所有缓存文件(pcm_cache, episodes, audio_cache)统一放在此目录下，
          * 与 logs/ 同级，方便用户管理和备份。
          * Fallback: getExternalFilesDir(null)/RadioApp/
@@ -43,7 +43,7 @@ class RadioApplication : Application() {
         }
 
         /**
-         * [v2.1.0] PCM cache dir: /sdcard/RadioApp/pcm_cache/
+         * v2.1.0: PCM cache dir: /sdcard/RadioApp/pcm_cache/
          */
         fun getPcmCacheDir(context: android.content.Context): File {
             val dir = File(getCacheRootDir(context), "pcm_cache")
@@ -52,7 +52,7 @@ class RadioApplication : Application() {
         }
 
         /**
-         * [v2.1.0] Episodes cache dir: /sdcard/RadioApp/episodes/
+         * v2.1.0: Episodes cache dir: /sdcard/RadioApp/episodes/
          */
         fun getEpisodesCacheDir(context: android.content.Context): File {
             val dir = File(getCacheRootDir(context), "episodes")
@@ -113,7 +113,7 @@ class RadioApplication : Application() {
     }
 
     /**
-     * [v2.1.0] Migrate legacy PCM cache from getExternalFilesDir/pcm_cache/ to /sdcard/RadioApp/pcm_cache/
+     * v2.1.0: Migrate legacy PCM cache from getExternalFilesDir/pcm_cache/ to /sdcard/RadioApp/pcm_cache/
      * Also deletes corrupt _5min_16k.pcm files (v2.0.98 bug)
      */
     private fun migrateLegacyPcmCache() {
