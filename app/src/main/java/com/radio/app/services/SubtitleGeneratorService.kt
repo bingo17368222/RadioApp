@@ -2287,7 +2287,7 @@ class SubtitleGeneratorService : Service() {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
                 logToFile("generateWithWhisper: [v2.0.99] using PCM cache (${sizeMB}MB)")
-                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
+                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId)
             }
 
             // No PCM cache — download and decode to 16kHz PCM
@@ -2304,7 +2304,7 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.99] Save to unified _5min.pcm file
             pcm16kFile.writeBytes(audioData)
             logToFile("generateWithWhisper: [v2.0.99] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
-            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
+            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId)
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
             ctx.lastErrorDetail = detail
@@ -2324,7 +2324,8 @@ class SubtitleGeneratorService : Service() {
      * Issue 5: 通过 WhisperBridge JNI 桥接调用 whisper.cpp C API 进行识别。
      */
     private fun processWhisperInChunks(
-        pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext
+        pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext,
+        episodeId: String = ""  // [v2.1.2] For crash marker
     ): Boolean {
         logToFile("processWhisperInChunks: START, pcmFile=${pcmFile.absolutePath}, modelPath=$modelPath")
         // [v2.0.74] Issue 2 Fix: Report initial progress immediately so UI shows progress bar
