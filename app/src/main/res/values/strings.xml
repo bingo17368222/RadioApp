@@ -13,4 +13,13 @@
         <item>30 秒</item>
         <item>60 秒</item>
     </string-array>
+
+    <!-- [v2.1.2] 拼多多检测间隔选项 -->
+    <string-array name="pinduoduo_interval_options">
+        <item>3 秒</item>
+        <item>5 秒（默认）</item>
+        <item>10 秒</item>
+        <item>15 秒</item>
+        <item>30 秒</item>
+    </string-array>
 </resources>

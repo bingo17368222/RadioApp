@@ -263,6 +263,23 @@ class SettingsFragment : Fragment() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
+        // [v2.1.2] Pinduoduo detection interval spinner
+        binding.spinnerPinduoduoInterval.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                settings.pinduoduoDetectionInterval = when (position) {
+                    0 -> 3
+                    1 -> 5
+                    2 -> 10
+                    3 -> 15
+                    4 -> 30
+                    else -> 5
+                }
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
@@ -446,6 +463,13 @@ class SettingsFragment : Fragment() {
             else -> 2
         }
         binding.spinnerSkipSeconds.setSelection(skipSecondsIndex)
+
+        // [v2.1.2] Pinduoduo detection interval
+        val pinduoduoIntervalIndex = when (settings.pinduoduoDetectionInterval) {
+            3 -> 0; 5 -> 1; 10 -> 2; 15 -> 3; 30 -> 4
+            else -> 1
+        }
+        binding.spinnerPinduoduoInterval.setSelection(pinduoduoIntervalIndex)
 
         suppressListeners = true
 
@@ -1502,6 +1526,7 @@ class SettingsFragment : Fragment() {
                 .edit()
                 .putString("notification_style", settings.notificationStyle)
                 .putInt("skip_seconds", settings.skipSeconds)
+                .putInt("pinduoduo_detection_interval", settings.pinduoduoDetectionInterval)  // [v2.1.2]
                 .putBoolean("preload_cache", settings.autoCache)
                 .putBoolean("auto_cache", settings.autoCache)
                 .putBoolean("enable_preprocessing", settings.enablePreprocessing)

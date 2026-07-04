@@ -248,11 +248,23 @@ class SubtitleGeneratorService : Service() {
             override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
                 val provider = intent.getStringExtra("asr_provider") ?: return
                 val voskDir = intent.getStringExtra("vosk_model_dir") ?: ""
-                logToFile("[v2.0.99] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir")
+                logToFile("[v2.1.2] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir")
                 val settings = AppSettings.getInstance(context)
                 settings.asrProvider = provider
                 settings.voskModelDir = voskDir
-                logToFile("[v2.0.99] ASR settings updated via broadcast: provider=${settings.safeAsrProvider()}")
+                logToFile("[v2.1.2] ASR settings updated via broadcast: provider=${settings.safeAsrProvider()}")
+
+                // [v2.1.2] Cancel current running task so the new ASR engine takes effect immediately.
+                // Previously, the running task would continue with the old engine until it finished.
+                try {
+                    var cancelled = 0
+                    activeTasks.values.forEach { it.cancelled.set(true); cancelled++ }
+                    if (cancelled > 0) {
+                        logToFile("[v2.1.2] Cancelled $cancelled active subtitle task(s) due to ASR provider change")
+                    }
+                } catch (e: Exception) {
+                    logToFile("[v2.1.2] Failed to cancel current task: ${e.message}")
+                }
             }
         }, android.content.IntentFilter("com.radio.app.ASR_PROVIDER_CHANGED"))
     }
@@ -2208,7 +2220,30 @@ class SubtitleGeneratorService : Service() {
     private fun generateWithWhisper(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
-        logToFile("generateWithWhisper: START [v2.0.76], episodeId=$episodeId, audioUrl=$audioUrl")
+        logToFile("generateWithWhisper: START [v2.1.2], episodeId=$episodeId, audioUrl=$audioUrl")
+
+        // [v2.1.2] Check if this episode caused a native crash recently.
+        // If so, skip Whisper and return error to prevent infinite crash loop.
+        try {
+            val crashMarker = getSharedPreferences("whisper_crash_marker", MODE_PRIVATE)
+            val crashedEpisode = crashMarker.getString("crashed_episode", null)
+            val crashTime = crashMarker.getLong("crash_time", 0L)
+            val now = System.currentTimeMillis()
+            if (crashedEpisode == episodeId && (now - crashTime) < 5L * 60 * 1000) {
+                // Same episode crashed within 5 minutes - skip to prevent loop
+                crashMarker.edit().clear().apply()  // Clear marker
+                val detail = "Whisper在上次处理此节目时崩溃，已自动跳过以防止循环崩溃。"
+                ctx.lastErrorDetail = detail
+                logToFile("generateWithWhisper: [v2.1.2] SKIPPING episode $episodeId (crashed ${(now-crashTime)/1000}s ago)")
+                callback.onError(detail)
+                return false
+            }
+            // Clear stale marker
+            if (crashedEpisode != null) {
+                crashMarker.edit().clear().apply()
+            }
+        } catch (_: Exception) {}
+
         // [v2.0.76] Mark engine type for OOM kill detection
         try {
             getSharedPreferences("subtitle_restart_guard", MODE_PRIVATE).edit()
@@ -2473,13 +2508,14 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.98] Use 5-second chunks (80000 samples).
             // v2.0.97 used 3s chunks but still crashed with SIGSEGV.
             // Root cause: audio_ctx=0 (auto) defaults to 1500 (30s) which allocates too much
-            // memory. v2.1.1 sets audio_ctx=50 (1s) in JNI to avoid SIGSEGV.
-            // 5s chunks (80000 samples) produce ~500 mel frames; Whisper processes first 1s per chunk.
+            // memory. v2.1.2 reduces chunk size from 5s to 1s (16000 samples) to reduce
+            // encoder memory by 5x. audio_ctx=50 (1s) in JNI.
             // single_segment=false lets Whisper manage segments internally.
-            val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
+            val chunkSize = 1 * 16000  // 1 second per chunk (16000 samples) - [v2.1.2] reduced from 5s
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
+            val maxConsecutiveCrashes = 3  // [v2.1.2] Skip episode after 3 consecutive crashes
 
             // Open PCM file for streaming
             val pcmInput = java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(pcmFile), 65536))
@@ -2487,13 +2523,22 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.1.1] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=50, single_segment=false in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.1.2] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=50, single_segment=false in JNI), offsetMs=$whisperOffsetMs")
+
+            // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
+            // on restart we'll detect this and skip this episode.
+            try {
+                getSharedPreferences("whisper_crash_marker", MODE_PRIVATE).edit()
+                    .putString("crashed_episode", episodeId)
+                    .putLong("crash_time", System.currentTimeMillis())
+                    .apply()
+            } catch (_: Exception) {}
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
                 if (samplesToRead < 8000) {  // [v2.0.95] Fix: threshold lowered from 24000 to 8000 (0.5s) to match v2.0.94's 1s chunkSize
-                    logToFile("processWhisperInChunks: [v2.0.95] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
+                    logToFile("processWhisperInChunks: [v2.1.2] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
@@ -2621,6 +2666,11 @@ class SubtitleGeneratorService : Service() {
 
             // Close PCM input stream
             try { pcmInput.close() } catch (_: Exception) {}
+
+            // [v2.1.2] Clear crash marker - processing completed without crash
+            try {
+                getSharedPreferences("whisper_crash_marker", MODE_PRIVATE).edit().clear().apply()
+            } catch (_: Exception) {}
 
             // Free context
             try { bridge.free(ctxPtr) } catch (_: Exception) {}

@@ -81,6 +81,7 @@ class AppSettings private constructor() {
     var stationPlayCount: MutableMap<String, Int> = mutableMapOf()
     var lastSelectedDate: String = ""
     var lastSelectedStationId: String = ""
+    var pinduoduoDetectionInterval: Int = 5  // [v2.1.2] seconds, default 5
 
     /** Gson 安全访问：确保字段不为 null */
     fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
@@ -102,6 +103,8 @@ class AppSettings private constructor() {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""
+        // [v2.1.2] Also reload pinduoduo detection interval for RadioPlaybackService
+        pinduoduoDetectionInterval = prefs.getInt("pinduoduo_detection_interval", 5)
     }
 
     private fun load(context: Context) {
@@ -139,6 +142,7 @@ class AppSettings private constructor() {
         // 加载上次选择的日期和电台
         lastSelectedDate = prefs.getString("last_selected_date", "") ?: ""
         lastSelectedStationId = prefs.getString("last_selected_station_id", "") ?: ""
+        pinduoduoDetectionInterval = prefs.getInt("pinduoduo_detection_interval", 5)  // [v2.1.2]
 
         // 加载播放次数
         val playCountJson = prefs.getString("station_play_count", "{}") ?: "{}"
@@ -184,6 +188,7 @@ class AppSettings private constructor() {
             putString("station_play_count", playCountObj.toString())
             putString("last_selected_date", lastSelectedDate)
             putString("last_selected_station_id", lastSelectedStationId)
+            putInt("pinduoduo_detection_interval", pinduoduoDetectionInterval)  // [v2.1.2]
             apply()
         }
     }

@@ -270,10 +270,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return@Runnable
     }
     // [v2.0.88] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
-    // When Pinduoduo/Douyin video takes permanent focus, start polling every 15s.
+    // When Pinduoduo/Douyin video takes permanent focus, start polling.
     // Check if any other app has an active PLAYING MediaSession. If none found,
     // try to re-request audio focus. If granted, resume playback.
-    private val SMART_RESUME_POLL_MS = 15_000L
+    // [v2.1.2] Changed from hardcoded 15s to configurable setting (default 5s).
+    private var smartResumePollMs: Long = 5_000L  // Updated from settings when focus loss occurs
     private var smartResumeRunning = false
     private val smartResumeRunnable = Runnable { smartResumePoll() }
     // [v2.0.89] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
@@ -310,14 +311,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     updateNotification()
                     return
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.89] smartResume: focus request FAILED, will retry in ${SMART_RESUME_POLL_MS/1000}s")
+                    writeServiceLog("audiofocus", "[v2.0.89] smartResume: focus request FAILED, will retry in ${smartResumePollMs/1000}s")
                 }
             }
         } catch (e: Exception) {
             writeServiceLog("audiofocus", "[v2.0.89] smartResume: exception: ${e.message}")
         }
         // Schedule next poll
-        audioFocusHandler.postDelayed(smartResumeRunnable, SMART_RESUME_POLL_MS)
+        audioFocusHandler.postDelayed(smartResumeRunnable, smartResumePollMs)
     }
     private val audioFocusPermanentLossTimeoutMs = 10_000L
     // [v2.0.73] Issue 5 Fix: Cache last valid duration to avoid Long.MIN_VALUE from ExoPlayer
@@ -1972,8 +1973,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=3")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile (sampleRate=$outSampleRate, channels=$outChannels)")
 
-            // [v2.1.0] Generate WAV file from PCM for easy playback/preview
-            generateWavFromPcm(pcmFile, outSampleRate, outChannels)
+            // [v2.1.2] WAV generation removed per user request. PCM file is sufficient.
+            // generateWavFromPcm(pcmFile, outSampleRate, outChannels)
 
             // [v2.0.99] Removed: duplicate _16k.pcm generation (lines 1833-1871).
             // Previously this code created a second PCM file with _16k suffix by re-reading
@@ -2993,13 +2994,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 audioFocusLossType = FOCUS_LOSS_PERMANENT
                 if (!userPaused && playbackStarted) {
                     pausedByAudioFocus = true
-                    writeServiceLog("audiofocus", "[v2.0.88] AUDIOFOCUS_LOSS (PERMANENT): pausing, starting smart resume polling")
+                    // [v2.1.2] Read detection interval from settings (default 5s, was hardcoded 15s)
+                    try {
+                        val settings = AppSettings.getInstance(this@RadioPlaybackService)
+                        smartResumePollMs = settings.pinduoduoDetectionInterval.toLong() * 1000
+                    } catch (_: Exception) { smartResumePollMs = 5000L }
+                    writeServiceLog("audiofocus", "[v2.1.2] AUDIOFOCUS_LOSS (PERMANENT): pausing, starting smart resume polling every ${smartResumePollMs/1000}s")
                     pause(userInitiated = false)
                     // [v2.0.88] Issue 3 Fix: Start smart resume polling.
-                    // Instead of waiting passively for GAIN, actively check every 15s if other
+                    // Instead of waiting passively for GAIN, actively check if other
                     // apps stopped playing, then re-request focus.
                     smartResumeRunning = true
-                    audioFocusHandler.postDelayed(smartResumeRunnable, SMART_RESUME_POLL_MS)
+                    audioFocusHandler.postDelayed(smartResumeRunnable, smartResumePollMs)
                 } else {
                     writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
                 }
