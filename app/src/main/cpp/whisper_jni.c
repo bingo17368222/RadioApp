@@ -214,18 +214,19 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     // audio_ctx controls encoder/decoder KV cache. Default 1500 = 30s waste.
     // 384 (v2.0.91) caused SIGSEGV on devices with limited native memory.
     // [v2.0.96] Fix: audio_ctx=0 (auto) - let Whisper decide based on actual audio length.
-    // With 1s chunks, audio_ctx=128 was larger than the actual mel frames (~100),
-    // potentially causing encoder to access uninitialized memory → SIGSEGV.
-    params.audio_ctx       = 0;
+    // [v2.0.98] Fix: audio_ctx=0 may default to 1500 (30s) which is too large and causes
+    // SIGSEGV on devices with limited native memory. Set back to 256 which safely covers
+    // 5s chunks (312 tokens at 0.02s/token). This is the sweet spot between memory and coverage.
+    params.audio_ctx       = 256;
     // [v2.0.92] Limit text context to reduce decoder memory
     params.n_max_text_ctx  = 32;
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
-    // [v2.0.96] Fix: single_segment=false - let Whisper decide segment count.
-    // single_segment=true forced exactly one segment even for 1s audio, causing
-    // decoder to crash with SIGSEGV when audio was too short.
-    params.single_segment  = false;
+    // [v2.0.98] Fix: single_segment=true with audio_ctx=256 is the stable combination.
+    // v2.0.96's single_segment=false caused the decoder to try multiple segments,
+    // increasing memory usage and triggering SIGSEGV.
+    params.single_segment  = true;
     // [v2.0.92] max_tokens=32 for Chinese: 3s speech ~15-20 chars = 22-30 tokens.
     // 64 (v2.0.91) was too large and contributed to memory pressure.
     params.max_tokens      = 32;

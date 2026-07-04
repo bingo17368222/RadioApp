@@ -2261,26 +2261,21 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // Check for 16kHz PCM cache that's too large for in-memory: use chunked processing
+            // [v2.0.98] Unified PCM cache: always use ${episodeId}_5min_16k.pcm
+            // Previous code created a duplicate ${episodeId}_5min.pcm file (without _16k suffix)
+            // containing the same 16kHz data, causing confusion and sample rate mismatches.
             val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
-            if (pcm16kFile.exists() && pcm16kFile.length() > 50_000_000) {
+            if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("16kHz PCM cache too large (${sizeMB}MB), using chunked Whisper processing")
-                logToFile("generateWithWhisper: using chunked processing for large 16kHz PCM cache (${sizeMB}MB)")
+                ctx.log("16kHz PCM cache found (${sizeMB}MB), using chunked Whisper processing")
+                logToFile("generateWithWhisper: [v2.0.98] using 16kHz PCM cache (${sizeMB}MB)")
                 return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
             }
 
-            // 获取音频数据
+            // No 16kHz cache — download and decode to 16kHz PCM
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
             if (audioData == null) {
-                // Try chunked processing for original PCM cache if it exists
-                val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-                if (pcmFile.exists() && pcmFile.length() > 1024) {
-                    ctx.log("Original PCM cache exists, attempting chunked Whisper processing")
-                    logToFile("generateWithWhisper: using chunked processing for original PCM cache")
-                    return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
-                }
                 val detail = "音频数据获取失败（PCM缓存不可用，网络可能断开）"
                 ctx.lastErrorDetail = detail
                 ctx.log("ERROR: $detail")
@@ -2289,11 +2284,10 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // Save audio data to PCM cache for chunked processing
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            pcmFile.writeBytes(audioData)
-            logToFile("generateWithWhisper: saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
-            return processWhisperInChunks(pcmFile, whisperModel, callback, ctx)
+            // [v2.0.98] Save to _16k file (same as Vosk path), no duplicate _5min file
+            pcm16kFile.writeBytes(audioData)
+            logToFile("generateWithWhisper: [v2.0.98] saved audio data to 16kHz PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
+            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx)
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
             ctx.lastErrorDetail = detail
@@ -2494,14 +2488,13 @@ class SubtitleGeneratorService : Service() {
             // - JNI audio_ctx=128 covers ~2.56s, sufficient for 3s chunks (150 tokens).
             // - Per-chunk Java heap: 96KB ByteArray + 192KB FloatArray = 288KB total
             // - Whisper needs >=2s of audio for meaningful recognition; 3s is a good balance
-            // [v2.0.97] Use 3-second chunks (48000 samples).
-            // v2.0.95-v2.0.96 used 1-second chunks (16000 samples) but whisper_full crashed
-            // with SIGSEGV on 1s audio. The encoder produces too few mel frames for 1s audio
-            // (~100 frames), causing memory access violations in the decoder.
-            // 3-second chunks produce ~300 mel frames, which is safe for whisper_full.
-            // Previous concern about 3s chunks taking 154s was due to audio_ctx=128 forcing
-            // large KV cache; with audio_ctx=0 (auto, v2.0.96), the cache is right-sized.
-            val chunkSize = 3 * 16000  // 3 seconds per chunk (48000 samples)
+            // [v2.0.98] Use 5-second chunks (80000 samples).
+            // v2.0.97 used 3s chunks but still crashed with SIGSEGV.
+            // Root cause: audio_ctx=0 (auto) defaults to 1500 (30s) which allocates too much
+            // memory. v2.0.98 sets audio_ctx=256 (5.12s) in JNI. 5s chunks (80000 samples)
+            // produce ~500 mel frames, safely within audio_ctx=256 (512 frames at 0.02s/frame).
+            // single_segment=true prevents multi-segment decoder memory expansion.
+            val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2512,7 +2505,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.0.97] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=0 auto in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.0.98] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=256, single_segment=true in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file

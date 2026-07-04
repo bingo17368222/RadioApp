@@ -585,16 +585,17 @@ class SettingsFragment : Fragment() {
         showClearCacheDialogWithButtons(files, fileNames, checked)
     }
 
-    // Issue 10: 自定义多选列表适配器，允许文件名换行显示两行并省略结尾，
+    // Issue 10: 自定义多选列表适配器，允许文件名换行显示多行并省略结尾，
     // 避免长缓存文件名被系统默认布局单行截断而看不全。
+    // [v2.0.98] Increased maxLines from 2 to 4 to show full file name + size.
     private fun createMultiChoiceAdapter(fileNames: Array<String>): ArrayAdapter<String> {
         return object : ArrayAdapter<String>(requireContext(), android.R.layout.simple_list_item_multiple_choice, fileNames) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
                 view.findViewById<TextView>(android.R.id.text1)?.apply {
-                    maxLines = 2
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    textSize = 12f
+                    maxLines = 4
+                    ellipsize = null
+                    textSize = 11f
                 }
                 return view
             }
