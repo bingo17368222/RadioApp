@@ -819,91 +819,117 @@ class SettingsFragment : Fragment() {
                     val fileName = file.name
                     val episodeId = fileName.replace(suffixRegex, "").replace(minRegex, "")
                     var found = false
+                    // [v2.0.95] Track if file's episode was resolved by direct ID matching.
+                    // If resolved (even if NOT disliked), skip time-slot matching to prevent
+                    // false positives where a disliked show at the same hour on a different date
+                    // causes liked episodes to be selected.
+                    var episodeResolved = false
 
                     // 1) cache_episode_mapping (direct mapping)
                     for (key in listOf(fileName, "$episodeId.mp4", "$episodeId.m4a", "$episodeId.aac")) {
                         val ep = cacheEpisodeMap[key]
-                        if (ep != null && isDislikedFast(ep.id, ep.stationId, ep.title)) {
-                            dislikedFileNames.add(fileName)
-                            found = true
-                            break
-                        }
-                    }
-                    if (found) continue
-
-                    // 1.5) Time-slot matching from episode_list_cache (works across different dates)
-                    val hourMatch = hourRegex.find(fileName)
-                    val stationPrefix = fileName.substringBefore("_")
-                    if (hourMatch != null && stationPrefix.isNotBlank()) {
-                        val hourStr = hourMatch.groupValues[1]
-                        val ep = timeSlotToEpisode["$stationPrefix:$hourStr"]
-                        if (ep != null && isDislikedFast(null, ep.second, ep.first)) {
-                            dislikedFileNames.add(fileName)
-                            found = true
-                        }
-                    }
-
-                    // Fallback: try matching by time RANGE
-                    if (!found && hourMatch != null && stationPrefix.isNotBlank()) {
-                        val timeRangeMatch = hourRangeRegex.find(fileName)
-                        if (timeRangeMatch != null) {
-                            val startHour = timeRangeMatch.groupValues[1].toIntOrNull() ?: -1
-                            val endHour = timeRangeMatch.groupValues[2].toIntOrNull() ?: -1
-                            for (h in startHour until endHour) {
-                                val slotKey = "$stationPrefix:${String.format("%02d", h)}"
-                                val ep = timeSlotToEpisode[slotKey]
-                                if (ep != null && isDislikedFast(null, ep.second, ep.first)) {
-                                    dislikedFileNames.add(fileName)
-                                    found = true
-                                    break
-                                }
+                        if (ep != null) {
+                            episodeResolved = true
+                            if (isDislikedFast(ep.id, ep.stationId, ep.title)) {
+                                dislikedFileNames.add(fileName)
+                                found = true
+                                break
                             }
                         }
                     }
                     if (found) continue
 
+                    // [v2.0.95] MOVED: Time-slot matching moved to AFTER direct ID matching (step 4).
+                    // Previously at step 1.5, it matched by hour only, ignoring the date.
+                    // This caused false positives: a disliked show at 7:00 on date A
+                    // would select ALL files at 7:00 on ANY date, even liked episodes.
+
                     // 2) all_episodes (by episodeId in audioUrl)
                     for ((audioUrl, ep) in allEpMap) {
-                        if (audioUrl.contains(episodeId) && isDislikedFast(ep.id, ep.stationId, ep.title)) {
-                            dislikedFileNames.add(fileName)
-                            found = true
-                            break
+                        if (audioUrl.contains(episodeId)) {
+                            episodeResolved = true
+                            if (isDislikedFast(ep.id, ep.stationId, ep.title)) {
+                                dislikedFileNames.add(fileName)
+                                found = true
+                                break
+                            }
                         }
                     }
                     if (found) continue
 
                     // 3) precache_list (by episodeId)
                     for ((key, ep) in precacheMap) {
-                        if (key.contains(episodeId) && isDislikedFast(ep.id, ep.stationId, ep.title)) {
-                            dislikedFileNames.add(fileName)
-                            found = true
-                            break
+                        if (key.contains(episodeId)) {
+                            episodeResolved = true
+                            if (isDislikedFast(ep.id, ep.stationId, ep.title)) {
+                                dislikedFileNames.add(fileName)
+                                found = true
+                                break
+                            }
                         }
                     }
                     if (found) continue
 
                     // 4) episode_list_cache (by episodeId in JSON)
                     val idObj = episodeListById[episodeId]
-                    if (idObj != null && isDislikedFast(
-                            idObj.optString("id", ""),
-                            idObj.optString("station_id", ""),
-                            idObj.optString("title", "")
+                    if (idObj != null) {
+                        episodeResolved = true
+                        if (isDislikedFast(
+                                idObj.optString("id", ""),
+                                idObj.optString("station_id", ""),
+                                idObj.optString("title", "")
                         )) {
-                        dislikedFileNames.add(fileName)
-                        continue
+                            dislikedFileNames.add(fileName)
+                            continue
+                        }
                     }
                     for ((audioUrl, obj) in episodeListByAudioUrl) {
-                        if (audioUrl.contains(episodeId) && isDislikedFast(
-                                obj.optString("id", ""),
-                                obj.optString("station_id", ""),
-                                obj.optString("title", "")
+                        if (audioUrl.contains(episodeId)) {
+                            episodeResolved = true
+                            if (isDislikedFast(
+                                    obj.optString("id", ""),
+                                    obj.optString("station_id", ""),
+                                    obj.optString("title", "")
                             )) {
-                            dislikedFileNames.add(fileName)
-                            found = true
-                            break
+                                dislikedFileNames.add(fileName)
+                                found = true
+                                break
+                            }
                         }
                     }
                     if (found) continue
+
+                    // [v2.0.95] Time-slot matching — only if episode was NOT resolved by direct ID matching.
+                    // This prevents false positives where a disliked show at the same hour on a different date
+                    // causes liked episodes to be selected.
+                    if (!episodeResolved) {
+                        val hourMatch = hourRegex.find(fileName)
+                        val stationPrefix = fileName.substringBefore("_")
+                        if (hourMatch != null && stationPrefix.isNotBlank()) {
+                            val hourStr = hourMatch.groupValues[1]
+                            val ep = timeSlotToEpisode["$stationPrefix:$hourStr"]
+                            if (ep != null && isDislikedFast(null, ep.second, ep.first)) {
+                                dislikedFileNames.add(fileName)
+                                found = true
+                            }
+                        }
+                        if (!found) {
+                            val timeRangeMatch = hourRangeRegex.find(fileName)
+                            if (timeRangeMatch != null) {
+                                val startHour = timeRangeMatch.groupValues[1].toIntOrNull() ?: -1
+                                val endHour = timeRangeMatch.groupValues[2].toIntOrNull() ?: -1
+                                for (h in startHour until endHour) {
+                                    val slotKey = "$stationPrefix:${String.format("%02d", h)}"
+                                    val ep = timeSlotToEpisode[slotKey]
+                                    if (ep != null && isDislikedFast(null, ep.second, ep.first)) {
+                                        dislikedFileNames.add(fileName)
+                                        found = true
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 5) episode_list_cache: scan ALL episodes (not just matching by episodeId)
@@ -983,6 +1009,81 @@ class SettingsFragment : Fragment() {
                             }
                         }
                     }
+                } catch (_: Exception) { /* skip */ }
+
+                // [v2.0.95] Detailed per-file analysis log for debugging dislike filter
+                try {
+                    val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "dislike")
+                    if (!logDir.exists()) logDir.mkdirs()
+                    val logFile = java.io.File(logDir, "dislike.log")
+                    val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+                    val elapsed = System.currentTimeMillis() - startTime
+                    val sb = StringBuilder()
+                    sb.append("[$ts] === DISLIKE FILTER REPORT [v2.0.95] ===\n")
+                    sb.append("  Total files: ${files.size}, Selected: ${dislikedFileNames.size}, elapsedMs=$elapsed\n")
+                    sb.append("  Disliked episodes: ${settings.dislikedEpisodes}\n")
+                    sb.append("--- PER-FILE ANALYSIS ---\n")
+                    for (file in files) {
+                        val fname = file.name
+                        val isSelected = fname in dislikedFileNames
+                        val episodeId = fname.replace(suffixRegex, "").replace(minRegex, "")
+                        var titleFound = ""
+                        var stationIdFound = ""
+                        var epIdFound = ""
+                        var isDislikedResult = false
+                        var matchSource = ""
+
+                        // Check cache_episode_mapping
+                        for (key in listOf(fname, "$episodeId.mp4", "$episodeId.m4a", "$episodeId.aac")) {
+                            val ep = cacheEpisodeMap[key]
+                            if (ep != null) {
+                                titleFound = ep.title ?: ""
+                                stationIdFound = ep.stationId ?: ""
+                                epIdFound = ep.id ?: ""
+                                isDislikedResult = isDislikedFast(ep.id, ep.stationId, ep.title)
+                                matchSource = "cache_episode_mapping"
+                                break
+                            }
+                        }
+                        // Check all_episodes
+                        if (matchSource.isEmpty()) {
+                            for ((audioUrl, ep) in allEpMap) {
+                                if (audioUrl.contains(episodeId)) {
+                                    titleFound = ep.title ?: ""
+                                    stationIdFound = ep.stationId ?: ""
+                                    epIdFound = ep.id ?: ""
+                                    isDislikedResult = isDislikedFast(ep.id, ep.stationId, ep.title)
+                                    matchSource = "all_episodes"
+                                    break
+                                }
+                            }
+                        }
+                        // Check episode_list_cache by id
+                        if (matchSource.isEmpty()) {
+                            val idObj = episodeListById[episodeId]
+                            if (idObj != null) {
+                                titleFound = idObj.optString("title", "")
+                                stationIdFound = idObj.optString("station_id", "")
+                                epIdFound = idObj.optString("id", "")
+                                isDislikedResult = isDislikedFast(epIdFound, stationIdFound, titleFound)
+                                matchSource = "episode_list_cache"
+                            }
+                        }
+
+                        sb.append("  FILE: $fname (${if (isSelected) "SELECTED" else "NOT SELECTED"})\n")
+                        if (matchSource.isNotEmpty()) {
+                            sb.append("    Source: $matchSource, Title: '$titleFound', StationId: $stationIdFound, ID: $epIdFound\n")
+                            sb.append("    isDislikedFast: $isDislikedResult\n")
+                        } else {
+                            sb.append("    Title: NOT FOUND in any source\n")
+                        }
+                        if (isSelected && !isDislikedResult && matchSource.isNotEmpty()) {
+                            sb.append("    WARNING: SELECTED but isDislikedFast=false! Matched by Final fallback or keyword\n")
+                        }
+                        sb.append("\n")
+                    }
+                    sb.append("--- END REPORT: ${dislikedFileNames.size}/${files.size} files selected ---\n")
+                    java.io.FileWriter(logFile, true).use { it.append(sb.toString()) }
                 } catch (_: Exception) { /* skip */ }
 
                 // One-line summary log

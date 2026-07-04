@@ -445,7 +445,7 @@ class SubtitleGeneratorService : Service() {
                                 val failReason = ctx.lastErrorDetail ?: "Whisper引擎处理失败（无详细错误）"
                                 ctx.log("Whisper subtitle generation FAILED. Reason: $failReason")
                                 logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper FAILED, reason=$failReason. NO auto-fallback per user requirement.")
-                                wrappedCallback.onError("Whisper字幕生成失败：$failReason。如需切换引擎，请手动在设置中选择Vosk模型后重试。")
+                                wrappedCallback.onError("Whisper字幕生成失败：$failReason。请在设置中检查Whisper引擎配置后重试。")
                                 activeTasks.remove(episodeId)
                                 cleanupTask()
                             }
@@ -456,7 +456,7 @@ class SubtitleGeneratorService : Service() {
                             ctx.lastErrorDetail = failReason
                             ctx.log("ERROR: $failReason")
                             logToFile("generateSubtitlesForEpisode: [v2.0.91] $failReason. NO fallback to Vosk.")
-                            wrappedCallback.onError("$failReason。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB），或手动切换到Vosk引擎。")
+                            wrappedCallback.onError("$failReason。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
                         }
@@ -489,7 +489,7 @@ class SubtitleGeneratorService : Service() {
                             // [v2.0.91] Vosk model not found - STRICT mode, NO fallback.
                             ctx.log("ERROR: Vosk model not found (no auto-switch to Whisper)")
                             logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk model not found. NO fallback to Whisper.")
-                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB），或手动切换到Whisper引擎。")
+                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB）。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
                         }
@@ -616,7 +616,7 @@ class SubtitleGeneratorService : Service() {
                         } else {
                             ctx.log("ERROR: Whisper model selected but not found for segments")
                             logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper model not found for segments. NO fallback.")
-                            wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB），或手动切换到Vosk引擎。")
+                            wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）。")
                             activeTasks.remove(segKey)
                             cleanupTask()
                         }
@@ -638,7 +638,7 @@ class SubtitleGeneratorService : Service() {
                         } else {
                             ctx.log("ERROR: No Vosk model for segments")
                             logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk model not found for segments. NO fallback.")
-                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB），或手动切换到Whisper引擎。")
+                            wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB）。")
                             activeTasks.remove(segKey)
                             cleanupTask()
                         }
@@ -1060,37 +1060,44 @@ class SubtitleGeneratorService : Service() {
                 }
                 logToFile("processVoskInChunks: [v2.0.65] Model dir check passed: am=${amDir.exists()}, graph=${graphDir.exists()}, conf=${confFile.exists()}")
 
-                // [v2.0.94] Fix Vosk sparse output: modify conf/model.conf (NOT endpoint.conf).
-                // Vosk only reads conf/model.conf via ParseOptions::ReadConfigFile in Model::ConfigureV2().
-                // endpoint.conf is NEVER read by Vosk — previous v2.0.92/v2.0.93 fixes were ineffective.
-                // Add endpoint rules with long trailing silence (30s) to prevent premature reset.
+                // [v2.0.95] Fix Vosk sparse output: modify conf/model.conf including rule1.
+                // v2.0.94 only modified rule2/3/4 but rule1 uses Kaldi defaults (~0.5-1s trailing silence),
+                // causing frequent endpoint detection and reset() calls that clear decoder context.
+                // v2.0.95 adds rule1.min-trailing-silence=30.0 to prevent premature endpoint detection.
                 try {
                     val modelConf = File(confFile, "model.conf")
                     val originalContent = if (modelConf.exists()) modelConf.readText() else ""
-                    logToFile("processVoskInChunks: [v2.0.94] Original model.conf: ${originalContent.take(300)}")
-                    // Append endpoint configuration with long silence thresholds
+                    logToFile("processVoskInChunks: [v2.0.95] Original model.conf: ${originalContent.take(300)}")
+                    // Append endpoint configuration with long silence thresholds for ALL rules
                     val endpointRules = """
+                        --endpoint.rule1.min-trailing-silence=30.0
                         --endpoint.rule2.min-trailing-silence=30.0
                         --endpoint.rule3.min-trailing-silence=30.0
                         --endpoint.rule4.min-trailing-silence=30.0
                     """.trimIndent()
                     val modifiedContent = if (originalContent.isBlank()) {
                         endpointRules
-                    } else if (!originalContent.contains("endpoint.rule2.min-trailing-silence")) {
-                        originalContent.trimEnd() + "\n" + endpointRules
+                    } else if (!originalContent.contains("endpoint.rule1.min-trailing-silence")) {
+                        // Add rule1 + replace existing rule2/3/4
+                        val withRule1 = originalContent.trimEnd() + "\n--endpoint.rule1.min-trailing-silence=30.0"
+                        withRule1
+                            .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=30.0")
+                            .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=30.0")
+                            .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=30.0")
                     } else {
-                        // Replace existing endpoint rules
+                        // All rules already present, just replace values
                         originalContent
+                            .replace(Regex("--endpoint\\.rule1\\.min-trailing-silence=\\S+"), "--endpoint.rule1.min-trailing-silence=30.0")
                             .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=30.0")
                             .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=30.0")
                             .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=30.0")
                     }
                     if (modifiedContent != originalContent) {
                         modelConf.writeText(modifiedContent)
-                        logToFile("processVoskInChunks: [v2.0.94] Modified model.conf: ${modifiedContent.take(300)}")
+                        logToFile("processVoskInChunks: [v2.0.95] Modified model.conf: ${modifiedContent.take(300)}")
                     }
                 } catch (e: Exception) {
-                    logToFile("processVoskInChunks: [v2.0.94] model.conf modification failed: ${e.message}")
+                    logToFile("processVoskInChunks: [v2.0.95] model.conf modification failed: ${e.message}")
                 }
 
                 try {
@@ -2426,7 +2433,7 @@ class SubtitleGeneratorService : Service() {
                 ctxPtr = bridge.initFromFile(modelPath)
             } catch (oom: OutOfMemoryError) {
                 logToFile("processWhisperInChunks: [v2.0.75] OOM during whisper_init_from_file: ${oom.message}")
-                callback.onError("Whisper模型加载内存不足。请切换到Vosk引擎或使用tiny模型。")
+                callback.onError("Whisper模型加载内存不足。请使用tiny模型或减少同时运行的应用。")
                 return false
             }
             if (ctxPtr == 0L) {
@@ -2500,8 +2507,8 @@ class SubtitleGeneratorService : Service() {
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
-                if (samplesToRead < 24000) {  // [v2.0.90] Skip chunks <1.5s (too short for whisper)
-                    logToFile("processWhisperInChunks: [v2.0.90] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
+                if (samplesToRead < 8000) {  // [v2.0.95] Fix: threshold lowered from 24000 to 8000 (0.5s) to match v2.0.94's 1s chunkSize
+                    logToFile("processWhisperInChunks: [v2.0.95] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
@@ -2613,7 +2620,7 @@ class SubtitleGeneratorService : Service() {
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper处理连续失败（${consecutiveCrashes}次chunk崩溃）"
                         ctx.lastErrorDetail = detail
-                        callback.onError("$detail 请检查模型文件完整性或切换引擎。")
+                        callback.onError("$detail 请检查模型文件完整性后在设置中重试。")
                         try { bridge.free(ctxPtr) } catch (_: Exception) {}
                         pcmInput.close()
                         return false
