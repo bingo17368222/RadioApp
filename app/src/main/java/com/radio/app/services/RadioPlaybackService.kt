@@ -204,6 +204,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var continuousPlay = true
     private var bufferPercent = 0
     private var prepared = false
+    // [v2.0.94] Flag to prevent getSafeDuration() from using stale player.duration during episode switch.
+    // Set to true in playEpisode() when switching to a different episode, cleared in STATE_READY.
+    private var episodeSwitching = false
     private var currentStreamUrl = ""
     private var progressHandler: Handler? = null
     private var progressRunnable: Runnable? = null
@@ -631,6 +634,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             when (state) {
                                 Player.STATE_READY -> {
                                     prepared = true
+                                    // [v2.0.94] Clear episode switching flag — player is now ready with new media
+                                    episodeSwitching = false
                                     val curPos = player?.currentPosition ?: 0L
                                     if (isSeekingToPosition && seekTargetPosition > 0) {
                                         // [v2.0.65] Issue 1 Fix: Only clear seeking state if position is NEAR target.
@@ -2068,7 +2073,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // [v2.0.87] Also update MediaSession state during polling so the system MediaStyle
             // progress bar (used by compact notifications) stays in sync. Without this, the
             // system progress bar freezes because setPlaybackState is only called on play/pause.
-            if (!isLive && player != null && !isPrecaching) {
+            // [v2.0.94] Removed !isPrecaching guard — notification must update during episode switch
+            if (!isLive && player != null) {
                 updateNotificationProgressOnly()
                 // [v2.0.87] Update MediaSession PlaybackState with current position for system progress bar
                 updateMediaSessionState()
@@ -2989,6 +2995,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
+        // [v2.0.94] Set episodeSwitching flag to prevent getSafeDuration() from using stale player.duration
+        episodeSwitching = !isSameEpisode
         // [v2.0.75] Issue 5 Fix: When switching to a DIFFERENT episode (cross-day), reset
         // authoritativePosition to startPositionMs (or 0) so notification doesn't show old episode's
         // position (1028s) on the new episode. v2.0.74 logs showed pos=1028118 from old episode
@@ -3559,7 +3567,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // When player briefly reports dur=1000ms during reset, we must NOT cache that as lastValidDurationMs
     // or subsequent pos=22min/dur=1s shows as 100% progress.
     private fun getSafeDuration(): Long {
-        val rawDur = player?.duration ?: 0L
+        // [v2.0.94] During episode switch, player.duration may return the OLD episode's duration.
+        // Ignore player.duration until STATE_READY clears episodeSwitching flag.
+        val rawDur = if (episodeSwitching) 0L else (player?.duration ?: 0L)
         // [v2.0.77] Valid: positive, >=60s, <24h. Reject tiny durations (player reset artifacts).
         if (rawDur >= 60_000L && rawDur < 24L * 60 * 60 * 1000) {
             lastValidDurationMs = rawDur

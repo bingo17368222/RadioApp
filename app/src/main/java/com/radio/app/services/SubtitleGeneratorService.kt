@@ -1060,30 +1060,37 @@ class SubtitleGeneratorService : Service() {
                 }
                 logToFile("processVoskInChunks: [v2.0.65] Model dir check passed: am=${amDir.exists()}, graph=${graphDir.exists()}, conf=${confFile.exists()}")
 
-                // [v2.0.92] Fix Vosk sparse output: modify endpoint.conf to use LONG endpoint mode.
-                // DEFAULT endpoint mode triggers reset every ~5s of silence, fragmenting speech into
-                // single characters. Increasing t_max to 30s prevents premature endpoint detection
-                // for continuous Chinese broadcast speech.
+                // [v2.0.94] Fix Vosk sparse output: modify conf/model.conf (NOT endpoint.conf).
+                // Vosk only reads conf/model.conf via ParseOptions::ReadConfigFile in Model::ConfigureV2().
+                // endpoint.conf is NEVER read by Vosk — previous v2.0.92/v2.0.93 fixes were ineffective.
+                // Add endpoint rules with long trailing silence (30s) to prevent premature reset.
                 try {
-                    val endpointConf = File(confFile, "endpoint.conf")
-                    if (endpointConf.exists()) {
-                        val originalContent = endpointConf.readText()
-                        logToFile("processVoskInChunks: [v2.0.92] Original endpoint.conf: ${originalContent.take(200)}")
-                        // Replace t_max value (default 5.0) with 30.0 for longer speech segments
-                        val modifiedContent = originalContent
-                            .replace(Regex("t_max\\s+\\S+"), "t_max 30.0")
-                            .replace(Regex("t_min\\s+\\S+"), "t_min 1.0")
-                        if (modifiedContent != originalContent) {
-                            endpointConf.writeText(modifiedContent)
-                            logToFile("processVoskInChunks: [v2.0.92] Modified endpoint.conf: ${modifiedContent.take(200)}")
-                        }
+                    val modelConf = File(confFile, "model.conf")
+                    val originalContent = if (modelConf.exists()) modelConf.readText() else ""
+                    logToFile("processVoskInChunks: [v2.0.94] Original model.conf: ${originalContent.take(300)}")
+                    // Append endpoint configuration with long silence thresholds
+                    val endpointRules = """
+                        --endpoint.rule2.min-trailing-silence=30.0
+                        --endpoint.rule3.min-trailing-silence=30.0
+                        --endpoint.rule4.min-trailing-silence=30.0
+                    """.trimIndent()
+                    val modifiedContent = if (originalContent.isBlank()) {
+                        endpointRules
+                    } else if (!originalContent.contains("endpoint.rule2.min-trailing-silence")) {
+                        originalContent.trimEnd() + "\n" + endpointRules
                     } else {
-                        // Create endpoint.conf with LONG mode settings
-                        endpointConf.writeText("t_max 30.0\nt_min 1.0\nsilence_threshold 0.3\n")
-                        logToFile("processVoskInChunks: [v2.0.92] Created endpoint.conf with t_max=30.0")
+                        // Replace existing endpoint rules
+                        originalContent
+                            .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=30.0")
+                            .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=30.0")
+                            .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=30.0")
+                    }
+                    if (modifiedContent != originalContent) {
+                        modelConf.writeText(modifiedContent)
+                        logToFile("processVoskInChunks: [v2.0.94] Modified model.conf: ${modifiedContent.take(300)}")
                     }
                 } catch (e: Exception) {
-                    logToFile("processVoskInChunks: [v2.0.92] endpoint.conf modification failed: ${e.message}")
+                    logToFile("processVoskInChunks: [v2.0.94] model.conf modification failed: ${e.message}")
                 }
 
                 try {
@@ -1204,6 +1211,8 @@ class SubtitleGeneratorService : Service() {
             val getResultMethod = voskRecognizerClass!!.getMethod("getResult")
             val getPartialResultMethod = voskRecognizerClass!!.getMethod("getPartialResult")
             val getFinalResultMethod = voskRecognizerClass!!.getMethod("getFinalResult")
+            // [v2.0.94] Get reset() method for explicit state clearing after endpoint detection
+            val resetMethod = voskRecognizerClass!!.getMethod("reset")
 
             // Issue 7: Verify PCM format - read first bytes for debug, then continue from current position
             logToFile("processVoskInChunks: PCM file size=${totalSize} bytes, expected duration=${totalSize / (16000 * 2)}s, sampleRate=16000, channels=1, bitsPerSample=16")
@@ -1316,6 +1325,8 @@ class SubtitleGeneratorService : Service() {
                             }
                         } catch (_: Exception) { }
                     }
+                    // [v2.0.94] Explicitly call reset() after endpoint detection to clear internal state
+                    try { resetMethod.invoke(recognizer) } catch (_: Exception) { }
                 } else {
                     // [v2.0.91] Only call getPartialResult() when acceptWaveForm=false (still processing)
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
@@ -2469,7 +2480,11 @@ class SubtitleGeneratorService : Service() {
             // - JNI audio_ctx=128 covers ~2.56s, sufficient for 3s chunks (150 tokens).
             // - Per-chunk Java heap: 96KB ByteArray + 192KB FloatArray = 288KB total
             // - Whisper needs >=2s of audio for meaningful recognition; 3s is a good balance
-            val chunkSize = 3 * 16000  // 3 seconds per chunk (48000 samples)
+            // [v2.0.94] Use 1-second chunks (16000 samples) instead of 3s.
+            // 3s chunks took 154+ seconds to process on mobile CPU, causing OOM kill before completion.
+            // 1s chunks should process in ~50s, well within the 60s alarm timeout.
+            // audio_ctx=128 in JNI covers 2.56s, more than enough for 1s chunks.
+            val chunkSize = 1 * 16000  // 1 second per chunk (16000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2480,7 +2495,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.0.91] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=384 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.0.94] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=128 in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file

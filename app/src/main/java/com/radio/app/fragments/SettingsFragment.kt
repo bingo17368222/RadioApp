@@ -962,7 +962,11 @@ class SettingsFragment : Fragment() {
                     }
                 } catch (_: Exception) { /* skip */ }
 
-                // Final fallback: scan all_episodes for any disliked title, match by file name keywords
+                // Final fallback: scan all_episodes for any disliked title, match by stationId + file name keywords
+                // [v2.0.94] Fix cross-station false positive: previously used || (OR) which matched
+                // files from ANY station if they contained title keywords. Now uses && (AND) to
+                // require BOTH stationId AND keyword match, preventing liked episodes on other
+                // stations from being selected for deletion.
                 try {
                     for ((_, ep) in allEpMap) {
                         if (!isDislikedFast(ep.id, ep.stationId, ep.title)) continue
@@ -972,8 +976,9 @@ class SettingsFragment : Fragment() {
                         for (file in files) {
                             if (file.name in dislikedFileNames) continue
                             val fname = file.name.lowercase()
-                            if (keywords.any { fname.contains(it.lowercase()) } ||
-                                fname.contains(ep.stationId.lowercase())) {
+                            // [v2.0.94] Require BOTH stationId match AND keyword match
+                            if (fname.contains(ep.stationId.lowercase()) &&
+                                keywords.any { fname.contains(it.lowercase()) }) {
                                 dislikedFileNames.add(file.name)
                             }
                         }
