@@ -1244,7 +1244,8 @@ class SettingsFragment : Fragment() {
 
     private fun showPcmCacheDialog() {
         val allFiles = mutableListOf<File>()
-        val pcmCacheDir = requireContext().getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
+        // [v2.1.0] Use centralized cache dir from RadioApplication
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(requireContext())
         scanFilesRecursive(pcmCacheDir, allFiles)
 
         if (allFiles.isEmpty()) {

@@ -825,8 +825,8 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // Check for 16kHz PCM cache
-            val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+            // [v2.1.0] Use centralized cache dir
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             val minValidPcmBytes = 1024 * 1024  // [v2.0.67] At least ~30s of audio (was 1024 bytes, too small)
             val pcmValid = pcm16kFile.exists() && pcm16kFile.length() >= minValidPcmBytes
@@ -1539,10 +1539,10 @@ class SubtitleGeneratorService : Service() {
         // Issue 8: Log each step with timing
         val startTime = System.currentTimeMillis()
         logToFile("getAudioDataForProcessing: START, audioUrl=$audioUrl")
-        // [v2.0.99] Unified PCM cache: ${episodeId}_5min.pcm is always 16kHz mono.
+        // [v2.1.0] Unified PCM cache: ${episodeId}_5min.pcm is always 16kHz mono.
         // No more separate _16k file. RadioPlaybackService and SubtitleGeneratorService
         // both write to the same _5min.pcm file with 16kHz mono data.
-        val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
         val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
         val minValidPcmBytes = 1024 * 1024  // [v2.0.67] Require at least ~30s of audio
         if (pcmFile.exists() && pcmFile.length() >= minValidPcmBytes) {
@@ -1708,8 +1708,8 @@ class SubtitleGeneratorService : Service() {
             ctx.log("Downloaded ${tempAudioFile.length()} bytes, decoding to PCM...")
             logToFile("downloadAndProcessAudio: downloaded ${tempAudioFile.length()} bytes to ${tempAudioFile.absolutePath}")
 
-            // Decode to 16kHz mono PCM
-            val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+            // [v2.1.0] Decode to 16kHz mono PCM, save to centralized cache dir
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
             val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")  // [v2.0.99] unified file name
             var decodedOk = false
@@ -2245,10 +2245,10 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // [v2.0.99] Unified PCM cache: always use ${episodeId}_5min.pcm (16kHz mono)
-            val pcmCacheDir = File(getExternalFilesDir(null), "pcm_cache")
+            // [v2.1.0] Unified PCM cache: always use ${episodeId}_5min.pcm (16kHz mono)
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcm16kFile.exists() && pcm16kFile.length() > 1024) {
+            if (pcm16kFile.exists() && pcm16kFile.length() > 1024 * 500) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
                 logToFile("generateWithWhisper: [v2.0.99] using PCM cache (${sizeMB}MB)")
@@ -2426,7 +2426,7 @@ class SubtitleGeneratorService : Service() {
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
 
-            // [v2.0.90] Check Java heap AFTER model load. With audio_ctx=256, native init uses less memory,
+            // [v2.0.90] Check Java heap AFTER model load. With audio_ctx=100, native init uses less memory,
             // so Java heap pressure is the main concern. Per-chunk heap needs are ~500KB.
             val postInitFreeHeapMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
             logToFile("processWhisperInChunks: [v2.0.90] After model init: freeHeap=${postInitFreeHeapMB}MB")
@@ -2473,8 +2473,8 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.98] Use 5-second chunks (80000 samples).
             // v2.0.97 used 3s chunks but still crashed with SIGSEGV.
             // Root cause: audio_ctx=0 (auto) defaults to 1500 (30s) which allocates too much
-            // memory. v2.0.98 sets audio_ctx=256 (5.12s) in JNI. 5s chunks (80000 samples)
-            // produce ~500 mel frames, safely within audio_ctx=256 (512 frames at 0.02s/frame).
+            // memory. v2.1.0 sets audio_ctx=100 (2s) in JNI to avoid SIGSEGV on low-memory devices.
+            // 5s chunks (80000 samples) produce ~500 mel frames; Whisper processes first 2s per chunk.
             // single_segment=true prevents multi-segment decoder memory expansion.
             val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
@@ -2487,7 +2487,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.0.98] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=256, single_segment=true in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.1.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=100, single_segment=true in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
@@ -2562,7 +2562,7 @@ class SubtitleGeneratorService : Service() {
 
                 var chunkSuccess = false
                 try {
-                    // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=256)
+                    // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=100)
                     val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
                     logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: bridge.full returned $result")
 
@@ -2662,13 +2662,26 @@ class SubtitleGeneratorService : Service() {
      */
     private fun find16kHzPcmCache(episodeId: String): File? {
         try {
-            val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
-            if (pcmCacheDir == null || !pcmCacheDir.exists()) return null
-            // [v2.0.99] Use unified _5min.pcm file (always 16kHz mono)
+            // [v2.1.0] Use centralized cache dir from RadioApplication
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
+            // [v2.1.0] Clean up legacy _5min_16k.pcm files (corrupt, produced by v2.0.98 bug)
+            val legacyFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
+            if (legacyFile.exists()) {
+                logToFile("find16kHzPcmCache: [v2.1.0] deleting legacy _5min_16k.pcm (${legacyFile.length()} bytes)")
+                try { legacyFile.delete() } catch (_: Exception) {}
+                val legacyInfo = File(pcmCacheDir, "${episodeId}_5min_16k.info")
+                if (legacyInfo.exists()) try { legacyInfo.delete() } catch (_: Exception) {}
+            }
+            // [v2.1.0] Unified _5min.pcm file (always 16kHz mono)
             val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcmFile.exists() && pcmFile.length() > 1024) {
+            // [v2.1.0] Raised minimum from 1024 to 500KB to reject corrupt tiny files
+            val minValid = 500 * 1024  // ~15s of 16kHz mono audio
+            if (pcmFile.exists() && pcmFile.length() >= minValid) {
                 logToFile("find16kHzPcmCache: found PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
                 return pcmFile
+            } else if (pcmFile.exists()) {
+                logToFile("find16kHzPcmCache: [v2.1.0] PCM too small (${pcmFile.length()} bytes < ${minValid}), deleting")
+                try { pcmFile.delete() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             logToFile("find16kHzPcmCache: error: ${e.message}")

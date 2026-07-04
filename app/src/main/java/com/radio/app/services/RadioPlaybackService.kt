@@ -757,7 +757,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (url.isBlank() || !url.startsWith("http")) return
         if (downloadActive.get()) return  // 已有下载任务进行中
         val fileName = extractCacheFileName(url)
-        val episodesDir = File(cacheDir, "episodes")
+        // [v2.1.0] Use centralized cache dir
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         // 已存在则直接标记完成
@@ -923,7 +924,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         getSharedPreferences("precache_list", MODE_PRIVATE).edit().putInt("days_fetched", 0).apply()
         writeServiceLog("notification", "triggerPreCache: starting pre-cache loop, isPrecaching=true")
 
-        val episodesDir = File(cacheDir, "episodes")
+        // [v2.1.0] Use centralized cache dir
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedNames = cachedFiles.map { it.name }.toSet()
@@ -1064,7 +1066,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // files. Counting all files is wrong because it includes old episodes and the
         // currently playing one, so the guard passed even when no future episodes were
         // actually cached (causing this function to be reached with precacheCompletedCount=0).
-        val episodesDir = File(cacheDir, "episodes")
+        // [v2.1.0] Use centralized cache dir
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedNames = cachedFiles.map { it.name }.toSet()
         val preCacheList = loadPreCacheList()
@@ -1380,7 +1383,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
         val fileName = extractCacheFileName(url)
-        val episodesDir = File(cacheDir, "episodes")
+        // [v2.1.0] Use centralized cache dir
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         if (targetFile.exists() && targetFile.length() > 1024) {
@@ -1466,11 +1470,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writePreCacheLog("startPcmPreDecode: launching PCM pre-decode for $episodeTitle ($episodeId)")
         serviceScope.launch {
             try {
-                val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
-                if (pcmCacheDir == null) {
-                    writePreCacheLog("startPcmPreDecode: failed to create pcm_cache dir")
-                    return@launch
-                }
+                // [v2.1.0] Use centralized cache dir from RadioApplication
+                val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
                 val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
@@ -1548,29 +1549,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
         val fileName = extractCacheFileName(url)
-        val episodesDir = File(cacheDir, "episodes")
+        // [v2.1.0] Use centralized cache dir
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
         val audioFile = File(episodesDir, fileName)
         if (!audioFile.exists() || audioFile.length() <= 1024) {
             writePreCacheLog("startPcmPreDecodeIfNeeded: audio file not cached yet for ${episode.title} ($fileName)")
             return
         }
         // 检查PCM是否已解码
-        val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
-        if (pcmCacheDir != null) {
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcmFile.exists() && pcmFile.length() > 1024) {
-                // Check if existing PCM needs regeneration (format changed in v2.0.5: original rate, version=3)
-                val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
-                if (infoFile.exists() && infoFile.readText().contains("version=3")) {
-                    writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
-                    return
-                }
-                writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated, regenerating")
-                writeServiceLog("notification", "DELETING file: ${pcmFile.absolutePath}, size=${pcmFile.length()} (PCM format outdated, pre-decode-if-needed)")
-                pcmFile.delete()
-                writeServiceLog("notification", "DELETING file: ${infoFile.absolutePath}, size=${infoFile.length()} (PCM info outdated, pre-decode-if-needed)")
-                infoFile.delete()
+        // [v2.1.0] Use centralized cache dir from RadioApplication
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
+        val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+        if (pcmFile.exists() && pcmFile.length() > 1024) {
+            // Check if existing PCM needs regeneration (format changed in v2.0.5: original rate, version=3)
+            val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+            if (infoFile.exists() && infoFile.readText().contains("version=3")) {
+                writePreCacheLog("startPcmPreDecodeIfNeeded: PCM already exists for ${episode.title}, skipping")
+                return
             }
+            writePreCacheLog("startPcmPreDecodeIfNeeded: PCM format outdated, regenerating")
+            writeServiceLog("notification", "DELETING file: ${pcmFile.absolutePath}, size=${pcmFile.length()} (PCM format outdated, pre-decode-if-needed)")
+            pcmFile.delete()
+            writeServiceLog("notification", "DELETING file: ${infoFile.absolutePath}, size=${infoFile.length()} (PCM info outdated, pre-decode-if-needed)")
+            infoFile.delete()
         }
         writePreCacheLog("startPcmPreDecodeIfNeeded: triggering PCM pre-decode from normal cache for ${episode.title}")
         startPcmPreDecode(episodeId, audioFile, episode.title ?: "unknown")
@@ -1590,13 +1591,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val episodesDir = File(cacheDir, "episodes")
-                val pcmCacheDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
-                if (!episodesDir.exists() || pcmCacheDir == null) {
-                    writePreCacheLog("patrolPcm: directories missing (episodes=${episodesDir.exists()}, pcm=$pcmCacheDir)")
+                // [v2.1.0] Use centralized cache dirs from RadioApplication
+                val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+                val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
+                if (!episodesDir.exists() || !pcmCacheDir.exists()) {
+                    writePreCacheLog("patrolPcm: directories missing (episodes=${episodesDir.exists()}, pcm=${pcmCacheDir.exists()})")
                     return@launch
                 }
-                if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
 
                 // Use preCacheList + current episode to find episodes with cached audio but missing PCM
                 val episodesToCheck = mutableListOf<Episode>()
@@ -1626,10 +1627,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val infoFile = File(pcmCacheDir, "${ep.id}_5min.info")
 
                         val pcmValid = pcmFile.exists() && pcmFile.length() > minValidPcmBytes
-                        val pcm16kValid = pcm16kFile.exists() && pcm16kFile.length() > minValidPcmBytes
+                        // [v2.1.0] Always delete legacy _5min_16k.pcm (corrupt from v2.0.98 bug)
+                        if (pcm16kFile.exists()) {
+                            writePreCacheLog("patrolPcm: [v2.1.0] deleting legacy _5min_16k.pcm: ${pcm16kFile.name} (${pcm16kFile.length()} bytes)")
+                            pcm16kFile.delete()
+                            val legacyInfo = File(pcmCacheDir, "${ep.id}_5min_16k.info")
+                            if (legacyInfo.exists()) legacyInfo.delete()
+                        }
                         val infoValid = infoFile.exists() && infoFile.readText().contains("version=3")
 
-                        if (pcmValid && pcm16kValid && infoValid) {
+                        if (pcmValid && infoValid) {
                             alreadyOk++
                             continue
                         }
@@ -1638,10 +1645,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         if (pcmFile.exists() && pcmFile.length() <= minValidPcmBytes) {
                             writePreCacheLog("patrolPcm: deleting invalid PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
                             pcmFile.delete()
-                        }
-                        if (pcm16kFile.exists() && pcm16kFile.length() <= minValidPcmBytes) {
-                            writePreCacheLog("patrolPcm: deleting invalid 16k PCM: ${pcm16kFile.name} (${pcm16kFile.length()} bytes)")
-                            pcm16kFile.delete()
                         }
                         if (infoFile.exists() && !infoFile.readText().contains("version=3")) {
                             infoFile.delete()
@@ -1679,6 +1682,44 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } catch (e: Exception) {
                 writePreCacheLog("patrolPcm: patrol failed: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * [v2.1.0] Generate WAV file from PCM raw data.
+     * WAV header: 44 bytes RIFF header + PCM data.
+     */
+    private fun generateWavFromPcm(pcmFile: File, sampleRate: Int, channels: Int) {
+        try {
+            val wavFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav")
+            val pcmData = pcmFile.readBytes()
+            if (pcmData.isEmpty()) {
+                writePreCacheLog("generateWavFromPcm: PCM empty, skipping WAV generation")
+                return
+            }
+            val dataLen = pcmData.size
+            val wavHeader = java.io.ByteArrayOutputStream(44)
+            val bb = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            bb.put("RIFF".toByteArray())                         // ChunkID
+            bb.putInt(36 + dataLen)                              // ChunkSize
+            bb.put("WAVE".toByteArray())                         // Format
+            bb.put("fmt ".toByteArray())                         // Subchunk1ID
+            bb.putInt(16)                                       // Subchunk1Size (PCM)
+            bb.putShort(1)                                      // AudioFormat (PCM=1)
+            bb.putShort(channels.toShort())                     // NumChannels
+            bb.putInt(sampleRate)                                // SampleRate
+            bb.putInt(sampleRate * channels * 2)                 // ByteRate
+            bb.putShort((channels * 2).toShort())               // BlockAlign
+            bb.putShort(16)                                     // BitsPerSample
+            bb.put("data".toByteArray())                        // Subchunk2ID
+            bb.putInt(dataLen)                                  // Subchunk2Size
+            wavFile.outputStream().use { out ->
+                out.write(bb.array())
+                out.write(pcmData)
+            }
+            writePreCacheLog("generateWavFromPcm: created ${wavFile.name} (${wavFile.length()} bytes, ${sampleRate}Hz, ${channels}ch)")
+        } catch (e: Exception) {
+            writePreCacheLog("generateWavFromPcm: error: ${e.message}")
         }
     }
 
@@ -1831,6 +1872,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=3")
             writePreCacheLog("decodeToPcmForPreCache: wrote info file: $infoFile (sampleRate=$outSampleRate, channels=$outChannels)")
+
+            // [v2.1.0] Generate WAV file from PCM for easy playback/preview
+            generateWavFromPcm(pcmFile, outSampleRate, outChannels)
 
             // [v2.0.99] Removed: duplicate _16k.pcm generation (lines 1833-1871).
             // Previously this code created a second PCM file with _16k suffix by re-reading

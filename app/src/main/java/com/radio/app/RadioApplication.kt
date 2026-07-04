@@ -16,6 +16,49 @@ class RadioApplication : Application() {
         const val NOTIFICATION_ID = 1
         @Volatile private var logDirCache: File? = null
         @Volatile private var crashLogDirCache: File? = null
+        @Volatile private var cacheRootDirCache: File? = null
+
+        /**
+         * [v2.1.0] 获取外置缓存根目录: /sdcard/RadioApp/
+         * 所有缓存文件（pcm_cache, episodes, audio_cache）统一放在此目录下，
+         * 与 logs/ 同级，方便用户管理和备份。
+         * 回退: getExternalFilesDir(null)/RadioApp/
+         */
+        fun getCacheRootDir(context: android.content.Context): File {
+            cacheRootDirCache?.let { return it }
+            val sdcardDir = File(Environment.getExternalStorageDirectory(), "RadioApp")
+            try {
+                if (!sdcardDir.exists()) sdcardDir.mkdirs()
+                val testFile = File(sdcardDir, ".write_test")
+                testFile.writeText("test")
+                testFile.delete()
+                cacheRootDirCache = sdcardDir
+                return sdcardDir
+            } catch (_: Exception) {
+                val fallback = File(context.getExternalFilesDir(null), "RadioApp")
+                if (!fallback.exists()) fallback.mkdirs()
+                cacheRootDirCache = fallback
+                return fallback
+            }
+        }
+
+        /**
+         * [v2.1.0] PCM缓存目录: /sdcard/RadioApp/pcm_cache/
+         */
+        fun getPcmCacheDir(context: android.content.Context): File {
+            val dir = File(getCacheRootDir(context), "pcm_cache")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
+
+        /**
+         * [v2.1.0] 音频缓存目录: /sdcard/RadioApp/episodes/
+         */
+        fun getEpisodesCacheDir(context: android.content.Context): File {
+            val dir = File(getCacheRootDir(context), "episodes")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
 
         fun getLogDir(context: android.content.Context): File {
             logDirCache?.let { return it }
@@ -65,6 +108,51 @@ class RadioApplication : Application() {
         createNotificationChannel()
         // 预热日志目录
         getLogDir(this)
+        // [v2.1.0] 预热缓存目录 + 迁移旧PCM缓存
+        migrateLegacyPcmCache()
+    }
+
+    /**
+     * [v2.1.0] 迁移旧版PCM缓存从 getExternalFilesDir/pcm_cache/ 到 /sdcard/RadioApp/pcm_cache/
+     * 同时删除损坏的 _5min_16k.pcm 文件（v2.0.98 bug产物）
+     */
+    private fun migrateLegacyPcmCache() {
+        try {
+            val newDir = getPcmCacheDir(this)
+            val oldDir = getExternalFilesDir(null)?.let { File(it, "pcm_cache") }
+            if (oldDir == null || !oldDir.exists()) return
+            val oldFiles = oldDir.listFiles() ?: return
+            var migrated = 0
+            var deletedLegacy = 0
+            for (file in oldFiles) {
+                if (file.name.endsWith("_5min_16k.pcm") || file.name.endsWith("_5min_16k.info")) {
+                    // Delete corrupt legacy files from v2.0.98 bug
+                    file.delete()
+                    deletedLegacy++
+                } else if (file.name.endsWith("_5min.pcm") || file.name.endsWith("_5min.info") || file.name.endsWith("_5min.wav")) {
+                    // Move valid unified files to new location
+                    val target = File(newDir, file.name)
+                    if (!target.exists()) {
+                        file.renameTo(target)
+                        migrated++
+                    } else {
+                        file.delete()  // Duplicate, keep new one
+                    }
+                } else if (file.name.endsWith(".pcm") || file.name.endsWith(".info") || file.name.endsWith(".wav")) {
+                    // Move other PCM-related files
+                    val target = File(newDir, file.name)
+                    if (!target.exists()) {
+                        file.renameTo(target)
+                        migrated++
+                    }
+                }
+            }
+            // Clean up empty old dir
+            if (oldDir.listFiles()?.isEmpty() == true) oldDir.delete()
+            if (migrated > 0 || deletedLegacy > 0) {
+                android.util.Log.d("RadioApp", "migrateLegacyPcmCache: migrated=$migrated, deletedLegacy=$deletedLegacy")
+            }
+        } catch (_: Exception) {}
     }
 
     private fun applyTheme() {
