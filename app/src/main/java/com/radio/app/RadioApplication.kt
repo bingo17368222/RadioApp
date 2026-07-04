@@ -19,10 +19,10 @@ class RadioApplication : Application() {
         @Volatile private var cacheRootDirCache: File? = null
 
         /**
-         * [v2.1.0] 获取外置缓存根目录: /sdcard/RadioApp/
-         * 所有缓存文件（pcm_cache, episodes, audio_cache）统一放在此目录下，
+         * [v2.1.0] External cache root: /sdcard/RadioApp/
+         * 所有缓存文件(pcm_cache, episodes, audio_cache)统一放在此目录下，
          * 与 logs/ 同级，方便用户管理和备份。
-         * 回退: getExternalFilesDir(null)/RadioApp/
+         * Fallback: getExternalFilesDir(null)/RadioApp/
          */
         fun getCacheRootDir(context: android.content.Context): File {
             cacheRootDirCache?.let { return it }
@@ -43,7 +43,7 @@ class RadioApplication : Application() {
         }
 
         /**
-         * [v2.1.0] PCM缓存目录: /sdcard/RadioApp/pcm_cache/
+         * [v2.1.0] PCM cache dir: /sdcard/RadioApp/pcm_cache/
          */
         fun getPcmCacheDir(context: android.content.Context): File {
             val dir = File(getCacheRootDir(context), "pcm_cache")
@@ -52,7 +52,7 @@ class RadioApplication : Application() {
         }
 
         /**
-         * [v2.1.0] 音频缓存目录: /sdcard/RadioApp/episodes/
+         * [v2.1.0] Episodes cache dir: /sdcard/RadioApp/episodes/
          */
         fun getEpisodesCacheDir(context: android.content.Context): File {
             val dir = File(getCacheRootDir(context), "episodes")
@@ -62,7 +62,7 @@ class RadioApplication : Application() {
 
         fun getLogDir(context: android.content.Context): File {
             logDirCache?.let { return it }
-            // 优先使用 /sdcard/RadioApp/logs/（用户易于访问）
+            // Prefer /sdcard/RadioApp/logs/ (user-accessible)
             val sdcardDir = File(Environment.getExternalStorageDirectory(), "RadioApp/logs")
             try {
                 if (!sdcardDir.exists()) sdcardDir.mkdirs()
@@ -82,7 +82,7 @@ class RadioApplication : Application() {
 
         fun getCrashLogDir(): File {
             crashLogDirCache?.let { return it }
-            // 使用 /sdcard/RadioApp/logs/crash/（用户易于访问崩溃日志）
+            // Use /sdcard/RadioApp/logs/crash/ (user-accessible)
             val crashDir = File(Environment.getExternalStorageDirectory(), "RadioApp/logs/crash")
             try {
                 if (!crashDir.exists()) crashDir.mkdirs()
@@ -103,18 +103,18 @@ class RadioApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // 初始化崩溃日志收集（必须在最前面）
+        // Init crash handler first
         com.radio.app.utils.CrashHandler.getInstance().init(this)
         createNotificationChannel()
-        // 预热日志目录
+        // Warm up log dir
         getLogDir(this)
-        // [v2.1.0] 预热缓存目录 + 迁移旧PCM缓存
+        // [v2.1.0] Warm up cache dir + migrate legacy PCM cache
         migrateLegacyPcmCache()
     }
 
     /**
-     * [v2.1.0] 迁移旧版PCM缓存从 getExternalFilesDir/pcm_cache/ 到 /sdcard/RadioApp/pcm_cache/
-     * 同时删除损坏的 _5min_16k.pcm 文件（v2.0.98 bug产物）
+     * [v2.1.0] Migrate legacy PCM cache from getExternalFilesDir/pcm_cache/ to /sdcard/RadioApp/pcm_cache/
+     * Also deletes corrupt _5min_16k.pcm files (v2.0.98 bug)
      */
     private fun migrateLegacyPcmCache() {
         try {

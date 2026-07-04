@@ -758,7 +758,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (downloadActive.get()) return  // 已有下载任务进行中
         val fileName = extractCacheFileName(url)
         // [v2.1.0] Use centralized cache dir
-        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         // 已存在则直接标记完成
@@ -925,7 +925,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "triggerPreCache: starting pre-cache loop, isPrecaching=true")
 
         // [v2.1.0] Use centralized cache dir
-        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedNames = cachedFiles.map { it.name }.toSet()
@@ -1067,7 +1067,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // currently playing one, so the guard passed even when no future episodes were
         // actually cached (causing this function to be reached with precacheCompletedCount=0).
         // [v2.1.0] Use centralized cache dir
-        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedNames = cachedFiles.map { it.name }.toSet()
         val preCacheList = loadPreCacheList()
@@ -1384,7 +1384,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         val fileName = extractCacheFileName(url)
         // [v2.1.0] Use centralized cache dir
-        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
         val targetFile = File(episodesDir, fileName)
         if (targetFile.exists() && targetFile.length() > 1024) {
@@ -1471,7 +1471,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         serviceScope.launch {
             try {
                 // [v2.1.0] Use centralized cache dir from RadioApplication
-                val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
+                val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
                 val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
@@ -1550,7 +1550,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         val fileName = extractCacheFileName(url)
         // [v2.1.0] Use centralized cache dir
-        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         val audioFile = File(episodesDir, fileName)
         if (!audioFile.exists() || audioFile.length() <= 1024) {
             writePreCacheLog("startPcmPreDecodeIfNeeded: audio file not cached yet for ${episode.title} ($fileName)")
@@ -1558,7 +1558,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // 检查PCM是否已解码
         // [v2.1.0] Use centralized cache dir from RadioApplication
-        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
         val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
         if (pcmFile.exists() && pcmFile.length() > 1024) {
             // Check if existing PCM needs regeneration (format changed in v2.0.5: original rate, version=3)
