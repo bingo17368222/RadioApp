@@ -3846,8 +3846,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // 1. Produced empty stationName when currentEpisode.stationName was ""
                     // 2. Lost the real program name (e.g., "唱行早高峰" became " 07月10日 17:00-19:00")
                     val realTitle = matchEpisodeFallback?.title ?: matchEpisode?.title
-                    val constructedTitle = if (realTitle.isNotBlank()) {
-                        realTitle
+                    val constructedTitle: String = if (!realTitle.isNullOrBlank()) {
+                        realTitle!!
                     } else {
                         buildString {
                             if (stationName.isNotBlank()) append(stationName)
