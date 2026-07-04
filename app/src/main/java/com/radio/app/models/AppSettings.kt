@@ -91,6 +91,19 @@ class AppSettings private constructor() {
     fun safeAsrProvider(): String = asrProvider ?: ASR_BAIDU
     fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
 
+    /**
+     * [v2.0.97] Reload ASR provider and Vosk model dir from SharedPreferences.
+     * SubtitleGeneratorService runs in :subtitle process, whose AppSettings singleton
+     * is loaded once at process start and never refreshed. When user changes ASR engine
+     * in UI process, the :subtitle process's singleton is stale. This method re-reads
+     * the latest values from SharedPreferences.
+     */
+    fun reloadAsrSettings(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
+        voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""
+    }
+
     private fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN

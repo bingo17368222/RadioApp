@@ -418,6 +418,11 @@ class SubtitleGeneratorService : Service() {
                 // If user selected Whisper and Whisper fails, report error and let user manually switch.
                 // If user selected Vosk and Vosk fails, report error and let user manually switch.
                 val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
+                // [v2.0.97] Reload ASR settings from SharedPreferences to get latest user selection.
+                // This service runs in :subtitle process, whose AppSettings singleton is loaded once
+                // at process start and never refreshed. Without this, ASR engine changes in UI
+                // process don't take effect until the :subtitle process is restarted.
+                settings.reloadAsrSettings(this@SubtitleGeneratorService)
                 val asrProvider = settings.safeAsrProvider()
                 val savedVoskDir = settings.voskModelDir
                 ctx.log("ASR provider: $asrProvider (strict mode - NO auto-switch), savedVoskDir=$savedVoskDir")
@@ -598,7 +603,9 @@ class SubtitleGeneratorService : Service() {
 
                 // 根据ASR引擎设置选择模型
                 val settings = AppSettings.getInstance(this@SubtitleGeneratorService)
+                settings.reloadAsrSettings(this@SubtitleGeneratorService)  // [v2.0.97] Reload to get latest user selection
                 val asrProvider = settings.safeAsrProvider()
+                val savedVoskDir = settings.voskModelDir
                 ctx.log("Segment ASR provider: $asrProvider")
                 logToFile("generateSubtitlesForEpisode: ASR engine selected = $asrProvider, episodeId=$episodeId (segments)")
 
@@ -2487,11 +2494,14 @@ class SubtitleGeneratorService : Service() {
             // - JNI audio_ctx=128 covers ~2.56s, sufficient for 3s chunks (150 tokens).
             // - Per-chunk Java heap: 96KB ByteArray + 192KB FloatArray = 288KB total
             // - Whisper needs >=2s of audio for meaningful recognition; 3s is a good balance
-            // [v2.0.96] Keep 1-second chunks (16000 samples).
-            // v2.0.95 fixed the threshold bug (24000→8000), so 1s chunks now work.
-            // JNI audio_ctx=0 (auto, v2.0.96) and single_segment=false (v2.0.96)
-            // prevent the SIGSEGV crash that occurred with audio_ctx=128 + single_segment=true.
-            val chunkSize = 1 * 16000  // 1 second per chunk (16000 samples)
+            // [v2.0.97] Use 3-second chunks (48000 samples).
+            // v2.0.95-v2.0.96 used 1-second chunks (16000 samples) but whisper_full crashed
+            // with SIGSEGV on 1s audio. The encoder produces too few mel frames for 1s audio
+            // (~100 frames), causing memory access violations in the decoder.
+            // 3-second chunks produce ~300 mel frames, which is safe for whisper_full.
+            // Previous concern about 3s chunks taking 154s was due to audio_ctx=128 forcing
+            // large KV cache; with audio_ctx=0 (auto, v2.0.96), the cache is right-sized.
+            val chunkSize = 3 * 16000  // 3 seconds per chunk (48000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2502,7 +2512,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.0.94] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=128 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.0.97] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=0 auto in JNI), offsetMs=$whisperOffsetMs")
 
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file

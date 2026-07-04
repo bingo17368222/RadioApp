@@ -1713,11 +1713,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            // 保持原始采样率和声道数，避免重采样导致音质下降/速度异常
-            // Vosk如需16kHz可在Vosk端自行重采样
-            val outSampleRate = sampleRate
-            val outChannels = channelCount
-            writePreCacheLog("decodeToPcmForPreCache: sampleRate=$sampleRate, channels=$channelCount, keeping original (no resampling)")
+            // [v2.0.97] Force 16kHz mono output to match SubtitleGeneratorService.decodeToPcm.
+            // Previously kept original rate (e.g., 44100) which caused PCM playback to sound
+            // slow/low-pitched when SubtitleGeneratorService overwrote the same file with 16kHz
+            // data but the .info still said 44100 (or vice versa).
+            val outSampleRate = 16000
+            val outChannels = 1
+            writePreCacheLog("decodeToPcmForPreCache: [v2.0.97] sampleRate=$sampleRate→${outSampleRate}, channels=$channelCount→${outChannels} (resampling to 16kHz mono)")
 
             // [v2.0.70] Issue 6 Fix: Seek to 15-min offset to match subtitle service's expected range (15-20 min).
             // Previously decoded from 0 min, but subtitle service adds 15-min offset to timestamps,
