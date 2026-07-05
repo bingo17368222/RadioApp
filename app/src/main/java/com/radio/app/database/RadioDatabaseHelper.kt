@@ -8,6 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import com.radio.app.models.PlayProgress
 import com.radio.app.models.Transcript
 import com.radio.app.models.VoiceSegment
+import com.radio.app.models.Episode
 
 class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelper(
     context, DATABASE_NAME, null, DATABASE_VERSION
@@ -15,12 +16,13 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 4
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
         private const val TABLE_VOICE_SEGMENTS_MANUAL = "voice_segments_manual"
         private const val TABLE_VOICE_SEGMENTS_AI = "voice_segments_ai"
+        private const val TABLE_EPISODE_INFO = "episode_info"
 
         private var instance: RadioDatabaseHelper? = null
 
@@ -37,6 +39,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE $TABLE_DISLIKED_EPISODES (episode_id TEXT PRIMARY KEY, title TEXT, station_name TEXT, created_at INTEGER)")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
+        // [v2.2.4] Episode metadata cache table
+        db.execSQL("CREATE TABLE $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -46,6 +51,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
         if (oldVersion < 3) {
             db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
+        }
+        if (oldVersion < 4) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
         }
     }
 
@@ -284,5 +293,86 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     fun clearVoiceSegments(episodeId: String) {
         val db = writableDatabase
         db.delete(TABLE_VOICE_SEGMENTS_AI, "episode_id = ?", arrayOf(episodeId))
+    }
+
+    // ===== Episode Info (v2.2.4) =====
+
+    fun saveEpisodeInfo(episode: Episode) {
+        try {
+            val db = writableDatabase
+            val values = ContentValues().apply {
+                put("episode_id", episode.id)
+                put("date", episode.broadcastAt.substringBefore("T").take(10))
+                put("title", episode.title)
+                put("broadcast_at", episode.broadcastAt)
+                put("duration", episode.duration)
+                put("audio_url", episode.audioUrl)
+                put("station_id", episode.stationId)
+                put("station_name", episode.stationName)
+                put("updated_at", System.currentTimeMillis())
+            }
+            db.replace(TABLE_EPISODE_INFO, null, values)
+        } catch (_: Exception) {}
+    }
+
+    fun saveEpisodeInfos(episodes: List<Episode>) {
+        try {
+            val db = writableDatabase
+            db.beginTransaction()
+            try {
+                for (episode in episodes) {
+                    val values = ContentValues().apply {
+                        put("episode_id", episode.id)
+                        put("date", episode.broadcastAt.substringBefore("T").take(10))
+                        put("title", episode.title)
+                        put("broadcast_at", episode.broadcastAt)
+                        put("duration", episode.duration)
+                        put("audio_url", episode.audioUrl)
+                        put("station_id", episode.stationId)
+                        put("station_name", episode.stationName)
+                        put("updated_at", System.currentTimeMillis())
+                    }
+                    db.replace(TABLE_EPISODE_INFO, null, values)
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        } catch (_: Exception) {}
+    }
+
+    fun getEpisodeInfo(episodeId: String): Episode? {
+        try {
+            val db = readableDatabase
+            val cursor = db.query(TABLE_EPISODE_INFO, null, "episode_id = ?", arrayOf(episodeId), null, null, null)
+            var ep: Episode? = null
+            if (cursor.moveToFirst()) ep = cursorToEpisode(cursor)
+            cursor.close()
+            return ep
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
+    fun getEpisodesByDateAndStation(stationId: String, date: String): List<Episode> {
+        val list = mutableListOf<Episode>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(TABLE_EPISODE_INFO, null, "station_id = ? AND date = ?",
+                arrayOf(stationId, date), null, null, "broadcast_at ASC")
+            while (cursor.moveToNext()) list.add(cursorToEpisode(cursor))
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    private fun cursorToEpisode(c: Cursor): Episode = Episode().apply {
+        id = c.getString(c.getColumnIndexOrThrow("episode_id"))
+        title = c.getString(c.getColumnIndexOrThrow("title"))
+        broadcastAt = c.getString(c.getColumnIndexOrThrow("broadcast_at"))
+        duration = c.getLong(c.getColumnIndexOrThrow("duration"))
+        audioUrl = c.getString(c.getColumnIndexOrThrow("audio_url"))
+        stationId = c.getString(c.getColumnIndexOrThrow("station_id"))
+        stationName = c.getString(c.getColumnIndexOrThrow("station_name"))
     }
 }

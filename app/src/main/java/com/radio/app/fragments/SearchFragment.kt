@@ -99,20 +99,32 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return EpisodeIdInfo(stationId, date, index)
     }
 
-    // [v2.2.3] Fetch episode from API by episodeId (synchronous, runs in background thread)
-    // This replaces the broken hardcoded URL construction
+    // [v2.2.4] Fetch episode: DB first -> API fallback -> cache result to DB
     private fun fetchEpisodeFromApi(epId: String): Episode? {
-        // Check cache first
+        // 1) Memory cache
         episodeCacheMap[epId]?.let { return it }
 
+        // 2) DB first (v2.2.4)
+        try {
+            val dbHelper = RadioDatabaseHelper.getInstance(requireContext())
+            dbHelper.getEpisodeInfo(epId)?.let { ep ->
+                episodeCacheMap[epId] = ep
+                return ep
+            }
+        } catch (_: Exception) {}
+
+        // 3) DB miss -> fetch from API
         val info = parseEpisodeId(epId) ?: return null
         try {
             val episodes = EpisodeApiService.getInstance().fetchEpisodesByDateSync(info.stationId, info.date)
             if (episodes != null) {
-                // Save to cache for future lookups
+                // 4) Save to DB for future lookups (v2.2.4)
+                try {
+                    RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(episodes)
+                } catch (_: Exception) {}
                 for (e in episodes) {
                     val id = e.id
-                    if (id != null && id.isNotEmpty()) {
+                    if (!id.isNullOrEmpty()) {
                         episodeCacheMap[id] = e
                     }
                 }

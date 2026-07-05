@@ -359,6 +359,22 @@ class SubtitleGeneratorService : Service() {
     }
 
     /**
+     * [v2.2.4] New overload that accepts full Episode object.
+     * Saves episode metadata to DB before processing, so it's available
+     * even if ASR fails or process crashes.
+     */
+    fun generateSubtitlesForEpisode(episode: com.radio.app.models.Episode, callback: SubtitleCallback) {
+        // Save episode info to DB first
+        try {
+            dbHelper?.saveEpisodeInfo(episode)
+            logToFile("generateSubtitlesForEpisode: [v2.2.4] saved episode_info to DB, id=${episode.id}, title=${episode.title}")
+        } catch (e: Exception) {
+            logToFile("generateSubtitlesForEpisode: [v2.2.4] failed to save episode_info: ${e.message}")
+        }
+        generateSubtitlesForEpisode(episode.id, episode.audioUrl, callback)
+    }
+
+    /**
      * Generate subtitles with independent per-task progress
      */
     fun generateSubtitlesForEpisode(episodeId: String, audioUrl: String, callback: SubtitleCallback) {

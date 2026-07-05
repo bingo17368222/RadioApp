@@ -26,6 +26,7 @@ import com.radio.app.models.AppSettings
 import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
 import com.radio.app.network.EpisodeApiService
+import com.radio.app.database.RadioDatabaseHelper
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -73,7 +74,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         }
 
         v.findViewById<Button>(R.id.btn_refresh)?.setOnClickListener {
-            selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time)) }
+            // [v2.2.4] Force refresh from API and update DB
+            selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time), forceRefresh = true) }
         }
 
         // 先恢复上次保存的日期和电台
@@ -310,7 +312,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         }
     }
 
-    private fun loadEpisodes(stationId: String, dateStr: String) {
+    private fun loadEpisodes(stationId: String, dateStr: String, forceRefresh: Boolean = false) {
         // 保存用户选择
         val settings = AppSettings.getInstance(requireContext())
         settings.lastSelectedDate = dateStr
@@ -322,24 +324,63 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         adapter = EpisodeAdapter(requireContext(), episodes, this)
         recyclerView?.adapter = adapter
 
-        EpisodeApiService.getInstance().getEpisodesByDate(stationId, dateStr,
-            object : EpisodeApiService.ApiCallback<List<Episode>> {
-                override fun onSuccess(result: List<Episode>) {
-                    mainHandler.post {
-                        progressBar?.visibility = View.GONE
-                        episodes.clear()
-                        episodes.addAll(result)
-                        adapter?.notifyDataSetChanged()
+        // [v2.2.4] DB first: show cached episodes immediately, then fetch from API if needed
+        Thread {
+            // 1) Try DB first
+            if (!forceRefresh) {
+                try {
+                    val cached = RadioDatabaseHelper.getInstance(requireContext())
+                        .getEpisodesByDateAndStation(stationId, dateStr)
+                    if (cached.isNotEmpty()) {
+                        mainHandler.post {
+                            episodes.clear()
+                            episodes.addAll(cached)
+                            adapter?.notifyDataSetChanged()
+                            progressBar?.visibility = View.GONE
+                        }
+                        // DB hit, no need to fetch from API
+                        return@Thread
                     }
-                }
+                } catch (_: Exception) {}
+            }
 
-                override fun onError(error: String) {
-                    mainHandler.post {
-                        progressBar?.visibility = View.GONE
-                        Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+            // 2) Fetch from API (always for forceRefresh, or when DB is empty)
+            EpisodeApiService.getInstance().getEpisodesByDate(stationId, dateStr,
+                object : EpisodeApiService.ApiCallback<List<Episode>> {
+                    override fun onSuccess(result: List<Episode>) {
+                        // [v2.2.4] Save to DB for future lookups
+                        try {
+                            RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(result)
+                        } catch (_: Exception) {}
+                        mainHandler.post {
+                            progressBar?.visibility = View.GONE
+                            episodes.clear()
+                            episodes.addAll(result)
+                            adapter?.notifyDataSetChanged()
+                        }
                     }
-                }
-            })
+
+                    override fun onError(error: String) {
+                        mainHandler.post {
+                            progressBar?.visibility = View.GONE
+                            // [v2.2.4] Try DB as fallback on API error
+                            try {
+                                val cached = RadioDatabaseHelper.getInstance(requireContext())
+                                    .getEpisodesByDateAndStation(stationId, dateStr)
+                                if (cached.isNotEmpty()) {
+                                    episodes.clear()
+                                    episodes.addAll(cached)
+                                    adapter?.notifyDataSetChanged()
+                                } else {
+                                    Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                                }
+                            } catch (_: Exception) {
+                                Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                })
+        }.start()
     }
 
     override fun onEpisodeClick(episode: Episode) {

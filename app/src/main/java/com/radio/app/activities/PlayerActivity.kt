@@ -1426,7 +1426,7 @@ class PlayerActivity : AppCompatActivity() {
                 )
             } else {
                 subtitleService?.generateSubtitlesForEpisode(
-                    episode.id, episode.audioUrl,
+                    episode,  // [v2.2.4] Pass full Episode to save metadata to DB
                     object : SubtitleGeneratorService.SubtitleCallback {
                         private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
                         override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
@@ -1542,7 +1542,7 @@ class PlayerActivity : AppCompatActivity() {
                 )
             } else {
                 subtitleService?.generateSubtitlesForEpisode(
-                    episode.id, episode.audioUrl,
+                    episode,  // [v2.2.4] Pass full Episode to save metadata to DB
                     object : SubtitleGeneratorService.SubtitleCallback {
                         private val subtitleList = mutableListOf<com.radio.app.models.Transcript>()
                         override fun onSubtitleGenerated(transcript: com.radio.app.models.Transcript) {
