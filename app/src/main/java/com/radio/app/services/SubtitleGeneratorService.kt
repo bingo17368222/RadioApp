@@ -358,11 +358,9 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
-    /**
-     * [v2.2.4] New overload that accepts full Episode object.
-     * Saves episode metadata to DB before processing, so it's available
-     * even if ASR fails or process crashes.
-     */
+    // v2.2.4 New overload that accepts full Episode object.
+    // Saves episode metadata to DB before processing, so it's available
+    // even if ASR fails or process crashes.
     fun generateSubtitlesForEpisode(episode: com.radio.app.models.Episode, callback: SubtitleCallback) {
         // Save episode info to DB first
         try {
