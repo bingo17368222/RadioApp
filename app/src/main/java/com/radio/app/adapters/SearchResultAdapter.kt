@@ -26,7 +26,12 @@ class SearchResultAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val r = results[position]
-        holder.tvType.text = r.type ?: "节目"
+        // [v2.2.0] Show "字幕" instead of raw type string like "transcript"
+        holder.tvType.text = when (r.type) {
+            "transcript" -> "字幕"
+            "episode" -> "节目"
+            else -> r.type ?: "节目"
+        }
         holder.tvTitle.text = r.title ?: ""
         holder.tvStation.text = r.stationName ?: ""
         if (r.matchedText != null) {

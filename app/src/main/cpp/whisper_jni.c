@@ -207,23 +207,24 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.print_timestamps = false;
     params.translate       = false;
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
-    // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
+    // [v2.2.0] Conservative parameters to avoid SIGSEGV in whisper_full
+    // Root cause: 1s chunks (16000 samples) with audio_ctx=128 caused crash.
+    // audio_ctx=128 expects 1.28s of audio but we only pass 1s -> buffer overread.
+    // Fix: use audio_ctx=0 (auto, let whisper calculate from input length)
+    //      single_segment=true (simpler processing)
+    //      n_threads=1 (single thread, safest for Android)
+    //      n_max_text_ctx=512 (default, avoid NULL buffer)
+    //      max_tokens=64 (default)
     params.n_threads       = 1;
-    // [v2.1.8] Try: single_segment=true, audio_ctx=128, n_threads=2
-    // single_segment simplifies processing by avoiding segment detection
     params.single_segment  = true;
-    params.audio_ctx       = 128;   // explicit, ~1.28s of audio
-    params.n_threads       = 2;     // try 2 threads (1 thread might have a bug)
-    params.n_max_text_ctx  = 256;   // smaller than 512 to reduce memory
-    params.max_tokens      = 32;    // smaller to reduce decoder work
+    params.audio_ctx       = 0;     // auto - let whisper decide based on actual input length
+    params.n_max_text_ctx  = 512;   // default - must not be 0 (causes NULL dereference)
+    params.max_tokens      = 64;    // default
     params.no_context      = true;
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;
-    // [v2.1.8] Suppress hallucination thresholds
-    params.thold_pt        = 0.01f;
-    params.thold_ptsum     = 0.01f;
-    params.max_len         = 0;
-    params.token_timestamps = false;
+    params.offset_ms       = 0;
+    params.duration_ms     = 0;
 
     // [v2.1.8] Removed alarm() - it sends SIGALRM which can kill the process
     // on some Android devices. The crash timeout is handled by the Kotlin layer.

@@ -618,7 +618,13 @@ class PlayerActivity : AppCompatActivity() {
                             playbackService?.playEpisode(episode, false, startPos)
                             pendingSeekMs = -1L  // [v2.1.9] Clear after use
                         } else {
-                            var savedPosition = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
+                            // [v2.2.0] If pendingSeekMs from search, use it instead of savedPosition
+                            var savedPosition = if (pendingSeekMs > 0) {
+                                writeJitterLog("onServiceConnected: using pendingSeekMs=$pendingSeekMs instead of savedPosition")
+                                pendingSeekMs
+                            } else {
+                                playbackService?.getSavedPositionForEpisode(episode) ?: -1L
+                            }
                             // [v2.0.76] Issue 1 Fix: When restoring from killed service, prefer Activity's cached
                             // position if it's valid and significantly different from service's saved position.
                             val activityCachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)

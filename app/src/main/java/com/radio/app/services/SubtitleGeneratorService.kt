@@ -2522,7 +2522,12 @@ class SubtitleGeneratorService : Service() {
             // memory. v2.1.2 reduces chunk size from 5s to 1s (16000 samples) to reduce
             // encoder memory by 5x. audio_ctx=50 (1s) in JNI.
             // single_segment=false lets Whisper manage segments internally.
-            val chunkSize = 1 * 16000  // 1 second per chunk (16000 samples) - [v2.1.2] reduced from 5s
+            // [v2.2.0] Use 5-second chunks (80000 samples).
+            // v2.1.2 used 1s chunks which caused whisper_full SIGSEGV (audio_ctx=128
+            // expects 1.28s but only 1s was provided -> buffer overread).
+            // 5s chunks provide enough audio for whisper to work correctly.
+            // audio_ctx=0 (auto) will calculate ~500 for 5s, which is safe.
+            val chunkSize = 5 * 16000  // 5 seconds per chunk (80000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2534,7 +2539,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.1.9] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=128, single_segment=true, n_threads=2, n_max_text_ctx=256 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.2.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=auto, single_segment=true, n_threads=1, n_max_text_ctx=512 in JNI), offsetMs=$whisperOffsetMs")
 
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.
