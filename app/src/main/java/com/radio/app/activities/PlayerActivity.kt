@@ -616,7 +616,7 @@ class PlayerActivity : AppCompatActivity() {
                             val startPos = if (pendingSeekMs > 0) pendingSeekMs else -1L
                             writeJitterLog("onServiceConnected: isFreshStart, playEpisode with startPos=$startPos (pendingSeekMs=$pendingSeekMs)")
                             playbackService?.playEpisode(episode, false, startPos)
-                            if (pendingSeekMs > 0) pendingSeekMs = -1L  // Clear after use
+                            if (pendingSeekMs > 0) { pendingSeekMs = -1L }  // Clear after use
                         } else {
                             var savedPosition = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
                             // [v2.0.76] Issue 1 Fix: When restoring from killed service, prefer Activity's cached
