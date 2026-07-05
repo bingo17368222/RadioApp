@@ -153,9 +153,14 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return diffMin * 60 * 1000L
     }
 
+    // [v2.2.2] Look up episode from cache by ID - returns actual audioUrl and title
+    private fun findEpisodeInCache(epId: String): Episode? {
+        return episodeCache.firstOrNull { it.id == epId }
+    }
+
     // [v2.2.1] Look up episode title from cache
     private fun findEpisodeTitle(epId: String): String? {
-        return episodeCache.firstOrNull { it.id == epId }?.title
+        return findEpisodeInCache(epId)?.title
     }
 
     private fun search(q: String) {
@@ -247,6 +252,21 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         val t = r.transcript ?: return
         val epId = t.episodeId ?: return
 
+        // [v2.2.2] Try to find the actual episode from cache first
+        val cachedEpisode = findEpisodeInCache(epId)
+        if (cachedEpisode != null && cachedEpisode.audioUrl.isNotBlank()) {
+            // Use the real episode with actual audioUrl from API
+            val intent = Intent(context, PlayerActivity::class.java).apply {
+                putExtra("episode", cachedEpisode)
+                putExtra("seek_position_ms", t.segmentStart)
+                putExtra("force_episode_switch", true)
+                putExtra("target_episode_id", epId)
+            }
+            startActivity(intent)
+            return
+        }
+
+        // [v2.2.2] Fallback: construct episode from episodeId
         val info = parseEpisodeId(epId)
         if (info == null) {
             Toast.makeText(requireContext(), "无法解析节目信息: $epId", Toast.LENGTH_SHORT).show()
@@ -255,7 +275,7 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
         val stationName = EpisodeApiService.getStationName(info.stationId)
         val audioUrl = constructAudioUrl(info)
-        val episodeTitle = findEpisodeTitle(epId) ?: "$stationName ${info.date}"
+        val episodeTitle = "$stationName ${info.date}"
 
         val e = Episode().apply {
             id = epId

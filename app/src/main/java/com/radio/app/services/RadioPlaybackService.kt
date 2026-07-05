@@ -3255,7 +3255,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             player?.let {
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
-                    it.playWhenReady = false  // Don't start playing until seek completes
+                    // [v2.2.2] Set playWhenReady=true so playback starts after seek
+                    // v2.0.53 set playWhenReady=false which prevented playback from starting
+                    it.playWhenReady = true
                     // [v2.0.53] Issue 1 Fix: Seek BEFORE first STATE_READY
                     // This avoids the STATE_READY→seek→STATE_BUFFERING→STATE_READY cycle
                     it.prepare()
@@ -3263,7 +3265,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     it.seekTo(startPositionMs)
                     // [v2.0.54] Clear positionRestoreRequested so STATE_READY doesn't seek again
                     positionRestoreRequested = false
-                    writeServiceLog("playback", "[v2.0.54] playEpisode: prepared + seekTo($startPositionMs), positionRestoreRequested=false")
+                    writeServiceLog("playback", "[v2.2.2] playEpisode: prepared + seekTo($startPositionMs), playWhenReady=true")
                 } else {
                     it.playWhenReady = true
                     it.prepare()
