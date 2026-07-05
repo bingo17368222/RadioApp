@@ -74,8 +74,13 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         }
 
         v.findViewById<Button>(R.id.btn_refresh)?.setOnClickListener {
-            // [v2.2.4] Force refresh from API and update DB
-            selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time), forceRefresh = true) }
+            // [v2.2.5] Force refresh from API and update DB
+            if (selectedStationId == null) {
+                Toast.makeText(context, "请先选择电台", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            Toast.makeText(context, "正在刷新节目单...", Toast.LENGTH_SHORT).show()
+            loadEpisodes(selectedStationId!!, dateFormat.format(selectedDate.time), forceRefresh = true)
         }
 
         // 先恢复上次保存的日期和电台

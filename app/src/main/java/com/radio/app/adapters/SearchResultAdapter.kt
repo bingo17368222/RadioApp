@@ -41,8 +41,15 @@ class SearchResultAdapter(
             holder.tvMatch.visibility = View.GONE
         }
         if (r.transcript != null) {
-            holder.tvTime.text = "时间: ${String.format("%02d:%02d",
-                r.transcript!!.segmentStart / 60, r.transcript!!.segmentStart % 60)}"
+            // [v2.2.5] FIXED: segmentStart is in milliseconds, convert properly for display
+            val ms = r.transcript!!.segmentStart
+            val totalSec = ms / 1000
+            val h = totalSec / 3600
+            val m = (totalSec % 3600) / 60
+            val s = totalSec % 60
+            val timeStr = if (h > 0) String.format("%d:%02d:%02d", h, m, s)
+                          else String.format("%02d:%02d", m, s)
+            holder.tvTime.text = "时间: $timeStr"
             holder.tvTime.visibility = View.VISIBLE
         } else {
             holder.tvTime.visibility = View.GONE

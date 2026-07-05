@@ -2537,23 +2537,22 @@ class SubtitleGeneratorService : Service() {
             // encoder memory by 5x. audio_ctx=50 (1s) in JNI.
             // single_segment=false lets Whisper manage segments internally.
             // [v2.2.3] Use 4-second chunks (64000 samples).
-            // 1s/2s -> SIGSEGV in whisper_full (too short for encoder)
-            // 3s -> crash after 221s
-            // 5s -> crash after 144s
-            // 4s is compromise: enough audio for encoder, less memory than 5s
-            val chunkSize = 4 * 16000  // 4 seconds per chunk (64000 samples)
+            // [v2.2.5] Use 10-second chunks (Whisper's preferred chunk size) with 1-second overlap
+            // Previous attempts: 1s/2s/3s -> SIGSEGV (too short for encoder); 4s -> crash/no output
+            // Whisper's internal CHUNK_SIZE is 30s, but 10s balances memory vs quality on mobile.
+            // With single_segment=false (set in JNI), Whisper can create multiple segments per chunk.
+            val chunkSize = 10 * 16000  // 10 seconds per chunk (160000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
-            val maxConsecutiveCrashes = 3  // [v2.1.2] Skip episode after 3 consecutive crashes
+            val maxConsecutiveCrashes = 3
 
             // Open PCM file for streaming
             val pcmInput = java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(pcmFile), 65536))
             var totalSamplesRead = 0
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
-            val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.2.3] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=auto, single_segment=true, n_threads=1, n_max_text_ctx=512 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.2.5] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (single_segment=false, n_threads=2 in JNI), offsetMs=$whisperOffsetMs")
 
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.
@@ -2567,8 +2566,8 @@ class SubtitleGeneratorService : Service() {
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
-                if (samplesToRead < 8000) {  // [v2.0.95] Fix: threshold lowered from 24000 to 8000 (0.5s) to match v2.0.94's 1s chunkSize
-                    logToFile("processWhisperInChunks: [v2.1.2] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
+                if (samplesToRead < 32000) {  // [v2.2.5] Threshold: 2 seconds (32000 samples) for Whisper
+                    logToFile("processWhisperInChunks: [v2.2.5] last chunk too small ($samplesToRead samples = ${samplesToRead/16000}s), skipping")
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
@@ -2617,9 +2616,8 @@ class SubtitleGeneratorService : Service() {
                 val mi = android.app.ActivityManager.MemoryInfo()
                 am?.getMemoryInfo(mi)
                 val availNativeMB = mi.availMem / 1024 / 1024
-                // [v2.0.93] Lowered native threshold from 120 to 60MB — audio_ctx=128 with 3s chunks
-                // uses far less native memory than previous configurations.
-                val whisperNativeThreshold = 60L
+                // [v2.2.5] Adjusted native threshold for 10s chunks with tiny model
+                val whisperNativeThreshold = 100L
                 if (availNativeMB < whisperNativeThreshold) {
                     logToFile("processWhisperInChunks: [v2.0.93] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
                     if (allTranscripts.isEmpty()) {

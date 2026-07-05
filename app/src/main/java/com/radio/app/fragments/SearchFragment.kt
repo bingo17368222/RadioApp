@@ -144,20 +144,34 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
     }
 
-    // [v2.2.3] Format time slot from broadcast_at field (format: "2024-07-15T10:00:00")
+    // [v2.2.5] Format date from broadcast_at field (format: "2024-07-15T10:00:00") -> "7月15日"
+    private fun formatDateFromBroadcastAt(bat: String): String {
+        if (bat.isBlank()) return ""
+        return try {
+            val datePart = bat.substringBefore("T") // "2024-07-15"
+            val parts = datePart.split("-")
+            if (parts.size == 3) {
+                val month = parts[1].toIntOrNull() ?: return ""
+                val day = parts[2].toIntOrNull() ?: return ""
+                "${month}月${day}日"
+            } else ""
+        } catch (_: Exception) { "" }
+    }
+
+    // [v2.2.5] Format time slot from broadcast_at field (format: "2024-07-15T10:00:00")
+    // FIXED: ep.duration is in SECONDS, not milliseconds
     private fun formatTimeSlotFromEpisode(ep: Episode): String {
         val bat = ep.broadcastAt
         if (bat.isBlank()) return ""
         try {
-            // Parse "2024-07-15T10:00:00" -> extract time part
             val timePart = bat.substringAfter("T") // "10:00:00"
             val startH = timePart.substring(0, 2).toIntOrNull() ?: return ""
             val startM = timePart.substring(3, 5).toIntOrNull() ?: return ""
-            // Calculate end time from duration
-            val durMs = ep.duration
-            val durHours = if (durMs > 0) durMs / 3600000.0 else 2.0
+            // duration is in SECONDS -> convert to minutes correctly
+            val durSec = ep.duration
+            val durMin = if (durSec > 0) durSec / 60 else 120  // default 2 hours = 120 min
             val startTotalMin = startH * 60 + startM
-            val endTotalMin = startTotalMin + (durHours * 60).toInt()
+            val endTotalMin = startTotalMin + durMin.toInt()
             val endH = (endTotalMin / 60) % 24
             val endM = endTotalMin % 60
             return String.format("%02d:%02d-%02d:%02d", startH, startM, endH, endM)
@@ -199,15 +213,24 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
-                    // [v2.2.3] Build display info from real episode data
+                    // [v2.2.5] Build display info from real episode data with correct units
+                    // FIXED: duration is in seconds, convert to ms for formatTime(); add date display
+                    val dateDisplay = episode?.let { formatDateFromBroadcastAt(it.broadcastAt) }
+                        ?: parseEpisodeId(epId)?.date?.let { d ->
+                            val parts = d.split("-")
+                            if (parts.size == 3) "${parts[1].toIntOrNull() ?: 0}月${parts[2].toIntOrNull() ?: 0}日" else d
+                        } ?: ""
                     val timeSlotDisplay = if (episode != null) formatTimeSlotFromEpisode(episode) else ""
-                    val totalDurationMs = episode?.duration ?: 0L
-                    val totalDurationStr = if (totalDurationMs > 0) formatTime(totalDurationMs) else "未知"
+                    val totalDurationSec = episode?.duration ?: 0L
+                    val totalDurationMs = totalDurationSec * 1000  // seconds -> ms for formatTime()
+                    val totalDurationStr = if (totalDurationSec > 0) formatTime(totalDurationMs) else "未知"
                     val playPosStr = formatTime(t.segmentStart)
-                    val displayStation = if (timeSlotDisplay.isNotEmpty()) {
-                        "$stationName | $timeSlotDisplay | 总时长: $totalDurationStr | 位置: $playPosStr"
-                    } else {
-                        "$stationName | 总时长: $totalDurationStr | 位置: $playPosStr"
+                    val displayStation = buildString {
+                        append(stationName)
+                        if (dateDisplay.isNotEmpty()) append(" | ").append(dateDisplay)
+                        if (timeSlotDisplay.isNotEmpty()) append(" | ").append(timeSlotDisplay)
+                        append(" | 总时长: ").append(totalDurationStr)
+                        append(" | 位置: ").append(playPosStr)
                     }
 
                     val r = SearchResult().apply {
