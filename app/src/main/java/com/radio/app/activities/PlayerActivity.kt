@@ -2537,29 +2537,36 @@ class PlayerActivity : AppCompatActivity() {
             if (idx >= 0) currentEpisodeIndex = idx
         }
         writeJitterLog("onNewIntent: updated currentEpisode to ${newEpisode.title}")
-        // [v2.1.6] Check if seek_position_ms was passed from search
+        // [v2.1.8] Check if seek_position_ms was passed from search
         val seekMs = intent.getLongExtra("seek_position_ms", -1L)
         if (seekMs > 0) {
             pendingSeekMs = seekMs
             writeJitterLog("onNewIntent: will seek to $seekMs ms after playback starts")
         }
-        // Check if same episode is already playing
+        // [v2.1.8] Compare by episode ID, not URL.
+        // The old code used isSameEpisodePlaying(audioUrl) which compares URLs,
+        // but the search-constructed URL might differ from the actual playing URL
+        // even for the same episode, or match for different episodes.
+        val targetEpisodeId = intent.getStringExtra("target_episode_id") ?: newEpisode.id
+        val currentPlayingId = playbackService?.currentEpisode?.id ?: ""
+        val sameEpisode = targetEpisodeId == currentPlayingId
+        writeJitterLog("onNewIntent: targetEpisodeId=$targetEpisodeId, currentPlayingId=$currentPlayingId, sameEpisode=$sameEpisode")
         if (serviceBound && playbackService != null) {
-            val sameEpisode = playbackService?.isSameEpisodePlaying(newEpisode.audioUrl) ?: false
             if (sameEpisode) {
                 writeJitterLog("onNewIntent: same episode already playing, skip restart")
                 restoreBackgroundResults()
-                // [v2.1.6] If same episode, seek immediately
+                // [v2.1.8] If same episode, seek immediately
                 if (pendingSeekMs > 0) {
                     playbackService?.seekTo(pendingSeekMs)
                     writeJitterLog("onNewIntent: same episode, executing seek to $pendingSeekMs ms")
                     pendingSeekMs = -1L
                 }
             } else {
-                // [v2.1.6] If seek requested, use it as start position
+                // [v2.1.8] Different episode - MUST call playEpisode to switch
+                // Pass seekMs as startPositionMs so player seeks immediately after prepare
                 val startPos = if (seekMs > 0) seekMs else getSavedPositionForEpisode(this, newEpisode.id)
+                writeJitterLog("onNewIntent: DIFFERENT episode, calling playEpisode with startPos=$startPos")
                 playbackService?.playEpisode(newEpisode, false, startPos)
-                writeJitterLog("onNewIntent: starting playback for ${newEpisode.title} at pos=$startPos")
             }
         } else {
             // Service not bound yet - episode will be played when service connects

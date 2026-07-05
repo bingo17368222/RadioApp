@@ -59,30 +59,26 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         debounceHandler.postDelayed(debounceRunnable!!, 300)
     }
 
-    // [v2.1.6] Parse episodeId to extract stationId, date, and index
-    // episodeId format: henan-private-car-2024-07-12-2
-    // stationId = "henan-private-car", date = "2024-07-12", index = 2
-    private data class EpisodeIdInfo(val stationId: String, val date: String, val index: Int, val timeSlot: String)
+    // [v2.1.8] Parse episodeId: henan-private-car-2024-07-12-2
+    private data class EpisodeIdInfo(
+        val stationId: String, val date: String, val index: Int, val timeSlot: String
+    )
 
     private fun parseEpisodeId(epId: String): EpisodeIdInfo? {
-        // Use regex to find the date pattern YYYY-MM-DD in the episodeId
         val dateRegex = Regex("(\\d{4})-(\\d{2})-(\\d{2})")
         val dateMatch = dateRegex.find(epId) ?: return null
-        val date = dateMatch.value  // "2024-07-12"
-        val stationId = epId.substring(0, dateMatch.range.first).trimEnd('-')  // "henan-private-car"
-        val afterDate = epId.substring(dateMatch.range.last + 1).trimStart('-')  // "2" or "0700" or "cross"
+        val date = dateMatch.value
+        val stationId = epId.substring(0, dateMatch.range.first).trimEnd('-')
+        val afterDate = epId.substring(dateMatch.range.last + 1).trimStart('-')
         val index = afterDate.toIntOrNull() ?: -1
-
-        // Determine time slot from index
-        val timeSlots = listOf("0700_0900", "0900_1000", "1000_1200", "1200_1400", "1400_1600", "1600_1800", "1700_1900", "1900_2100", "2100_2300", "2300_0100")
+        val timeSlots = listOf("0700_0900", "0900_1000", "1000_1200", "1200_1400",
+            "1400_1600", "1600_1800", "1700_1900", "1900_2100", "2100_2300", "2300_0100")
         val timeSlot = if (index in timeSlots.indices) timeSlots[index] else "0700_0900"
-
         return EpisodeIdInfo(stationId, date, index, timeSlot)
     }
 
-    // [v2.1.6] Construct audio URL from episodeId info
     private fun constructAudioUrl(info: EpisodeIdInfo): String {
-        val urlDate = info.date.replace("-", "")  // "20240712"
+        val urlDate = info.date.replace("-", "")
         val stationPart = when (info.stationId) {
             "henan-news" -> "xinwen"
             "henan-economy" -> "jingji"
@@ -100,7 +96,6 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return "https://new-file.hntv.tv/bdmz/data/new_record/jmd_$urlDate/${stationPart}_${urlDate}_${info.timeSlot}.mp4"
     }
 
-    // [v2.1.6] Format time from milliseconds to HH:MM
     private fun formatTime(ms: Long): String {
         val totalSec = ms / 1000
         val h = totalSec / 3600
@@ -109,7 +104,15 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
     }
 
-    // [v2.1.6] Search local transcripts database
+    // [v2.1.8] Format time slot for display: "0700_0900" -> "07:00-09:00"
+    private fun formatTimeSlot(slot: String): String {
+        val parts = slot.split("_")
+        if (parts.size != 2) return slot
+        val start = parts[0]
+        val end = parts[1]
+        return "${start.take(2)}:${start.drop(2)}-${end.take(2)}:${end.drop(2)}"
+    }
+
     private fun search(q: String) {
         if (q.isEmpty()) {
             results.clear()
@@ -122,11 +125,13 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                 val transcripts = dbHelper.searchTranscripts(q)
                 val searchResults = mutableListOf<SearchResult>()
 
+                // [v2.1.8] Cache episode info to avoid repeated DB queries
+                val episodeInfoCache = mutableMapOf<String, Pair<Long, Long>?>()
+
                 for (t in transcripts) {
                     val epId = t.episodeId ?: continue
                     val info = parseEpisodeId(epId)
                     if (info == null) {
-                        // Can't parse episodeId, show as-is
                         val r = SearchResult().apply {
                             id = epId
                             title = epId
@@ -141,10 +146,18 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
                     val stationName = EpisodeApiService.getStationName(info.stationId)
 
-                    // [v2.1.7] Build informative title: station name + date
+                    // [v2.1.8] Get episode transcript duration info
+                    val episodeDuration = episodeInfoCache.getOrPut(epId) {
+                        dbHelper.getEpisodeTranscriptInfo(epId)
+                    }
+                    val firstMs = episodeDuration?.first ?: 0L
+                    val lastMs = episodeDuration?.second ?: 0L
+                    val totalDurationMs = if (lastMs > firstMs) lastMs - firstMs else 0L
+
+                    // [v2.1.8] Build comprehensive title: station name + date
                     val title = "$stationName ${info.date}"
 
-                    // [v2.1.7] Extract the matched text snippet with context
+                    // [v2.1.8] Extract matched text snippet
                     val fullText = t.text ?: ""
                     val queryIdx = fullText.indexOf(q, ignoreCase = true)
                     val matchedText = if (queryIdx >= 0) {
@@ -155,10 +168,11 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
-                    // [v2.1.7] Build display info: station name, time slot, playback position
-                    val timeStr = formatTime(t.segmentStart)
-                    val timeSlotDisplay = info.timeSlot.replace("_", "-")
-                    val displayStation = "$stationName | ${timeSlotDisplay} | 播放位置: $timeStr"
+                    // [v2.1.8] Build display: station | time slot | total duration | playback position
+                    val timeSlotDisplay = formatTimeSlot(info.timeSlot)
+                    val totalDurationStr = if (totalDurationMs > 0) formatTime(totalDurationMs) else "未知"
+                    val playPosStr = formatTime(t.segmentStart)
+                    val displayStation = "$stationName | $timeSlotDisplay | 总时长: $totalDurationStr | 位置: $playPosStr"
 
                     val r = SearchResult().apply {
                         id = epId
@@ -171,7 +185,6 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                     searchResults.add(r)
                 }
 
-                // Update UI on main thread
                 if (activity == null) return@Thread
                 requireActivity().runOnUiThread {
                     results.clear()
@@ -191,7 +204,7 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         }.start()
     }
 
-    // [v2.1.6] Click search result to play the episode at the transcript's timestamp
+    // [v2.1.8] Click search result: switch to the target episode and seek
     override fun onSearchResultClick(r: SearchResult) {
         val t = r.transcript ?: return
         val epId = t.episodeId ?: return
@@ -214,10 +227,15 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
             isLive = false
         }
 
-        // [v2.1.6] Start PlayerActivity with seek position
+        // [v2.1.8] Pass episode_id AND audio_url for proper episode switching.
+        // PlayerActivity will compare episode_id with current playing episode.
+        // If different, it will call playEpisode to switch; if same, just seek.
         val intent = Intent(context, PlayerActivity::class.java).apply {
             putExtra("episode", e)
             putExtra("seek_position_ms", t.segmentStart)
+            // [v2.1.8] Flag to force episode switch even if URL doesn't match exactly
+            putExtra("force_episode_switch", true)
+            putExtra("target_episode_id", epId)
         }
         startActivity(intent)
     }

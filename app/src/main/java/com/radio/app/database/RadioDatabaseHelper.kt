@@ -118,6 +118,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     // [v2.1.5] Search transcripts by text content
+    // [v2.1.8] Also return episode duration info
     fun searchTranscripts(query: String): List<Transcript> {
         val results = mutableListOf<Transcript>()
         val db = readableDatabase
@@ -141,6 +142,23 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
         cursor.close()
         return results
+    }
+
+    // [v2.1.8] Get episode info: first/last transcript timestamps for duration
+    fun getEpisodeTranscriptInfo(episodeId: String): Pair<Long, Long>? {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT MIN(segment_start), MAX(segment_end) FROM $TABLE_TRANSCRIPTS WHERE episode_id = ?",
+            arrayOf(episodeId)
+        )
+        var result: Pair<Long, Long>? = null
+        if (cursor.moveToFirst()) {
+            val first = cursor.getLong(0)
+            val last = cursor.getLong(1)
+            if (first > 0 || last > 0) result = Pair(first, last)
+        }
+        cursor.close()
+        return result
     }
 
     // ===== Disliked Episodes =====
