@@ -107,11 +107,14 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
         val info = parseEpisodeId(epId) ?: return null
         try {
-            val episodes = EpisodeApiService.fetchEpisodesByDateSync(info.stationId, info.date)
+            val episodes = EpisodeApiService.getInstance().fetchEpisodesByDateSync(info.stationId, info.date)
             if (episodes != null) {
                 // Save to cache for future lookups
-                episodes.forEach { e ->
-                    e.id?.let { id -> episodeCacheMap[id] = e }
+                for (e in episodes) {
+                    val id = e.id
+                    if (id != null && id.isNotEmpty()) {
+                        episodeCacheMap[id] = e
+                    }
                 }
                 return episodes.firstOrNull { it.id == epId }
             }
