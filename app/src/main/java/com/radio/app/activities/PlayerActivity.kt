@@ -473,7 +473,9 @@ class PlayerActivity : AppCompatActivity() {
             // 绝不同步到service的旧节目。用户的选择优先于service的当前状态。
             // 之前的bug：即使用户选择了"下班路上"，JITTER-GUARD也会强制同步回service正在播放的"旅行大玩家"，
             // 导致"无论点击哪个节目，当前播放的节目都不变"。
-            if (svcStarted && !sameEpisode && !isFreshStart) {
+            // [v2.2.1] 当 pendingSeekMs > 0（来自搜索跳转）时，跳过JITTER-GUARD，
+            // 强制切换到搜索结果中的节目。
+            if (svcStarted && !sameEpisode && !isFreshStart && pendingSeekMs <= 0) {
                 // Try to find the service's current episode by URL
                 val svcMatch = episodeList.firstOrNull { it.audioUrl == svcUrl }
                 if (svcMatch != null) {

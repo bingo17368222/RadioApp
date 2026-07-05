@@ -22,6 +22,8 @@ import com.radio.app.models.Episode
 import com.radio.app.models.SearchResult
 import com.radio.app.models.Transcript
 import com.radio.app.network.EpisodeApiService
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 
 class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListener {
 
@@ -31,6 +33,9 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
     private val results = mutableListOf<SearchResult>()
     private val debounceHandler = Handler(Looper.getMainLooper())
     private var debounceRunnable: Runnable? = null
+
+    // [v2.2.1] Cache episode list from SharedPreferences for title lookup
+    private var episodeCache: List<Episode> = emptyList()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -50,7 +55,26 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
             }
             override fun afterTextChanged(s: Editable?) {}
         })
+        loadEpisodeCache()
         return view
+    }
+
+    override fun onResume() {
+        super.onResume()
+        loadEpisodeCache()
+    }
+
+    // [v2.2.1] Load episode list from cache for title lookup
+    private fun loadEpisodeCache() {
+        try {
+            val json = requireContext().getSharedPreferences("episode_list_cache", android.content.Context.MODE_PRIVATE)
+                .getString("episodes", "") ?: ""
+            if (json.isNotEmpty()) {
+                val gson = Gson()
+                val type = object : TypeToken<List<Episode>>() {}.type
+                episodeCache = gson.fromJson(json, type) ?: emptyList()
+            }
+        } catch (_: Exception) {}
     }
 
     private fun debounceSearch(query: String) {
@@ -104,13 +128,31 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
     }
 
-    // [v2.1.8] Format time slot for display: "0700_0900" -> "07:00-09:00"
+    // [v2.2.1] Format time slot for display: "0700_0900" -> "07:00-09:00"
     private fun formatTimeSlot(slot: String): String {
         val parts = slot.split("_")
         if (parts.size != 2) return slot
         val start = parts[0]
         val end = parts[1]
         return "${start.take(2)}:${start.drop(2)}-${end.take(2)}:${end.drop(2)}"
+    }
+
+    // [v2.2.1] Calculate episode duration from time slot
+    // "0700_0900" -> 2 hours = 7200000 ms
+    private fun calculateEpisodeDurationMs(timeSlot: String): Long {
+        val parts = timeSlot.split("_")
+        if (parts.size != 2) return 0L
+        val startMin = parts[0].take(2).toIntOrNull() * 60 + parts[0].drop(2).toIntOrNull()
+        val endMin = parts[1].take(2).toIntOrNull() * 60 + parts[1].drop(2).toIntOrNull()
+        if (startMin == null || endMin == null) return 0L
+        // Handle cross-midnight: 2300_0100
+        val diffMin = if (endMin > startMin) endMin - startMin else (24 * 60 - startMin) + endMin
+        return diffMin * 60 * 1000L
+    }
+
+    // [v2.2.1] Look up episode title from cache
+    private fun findEpisodeTitle(epId: String): String? {
+        return episodeCache.firstOrNull { it.id == epId }?.title
     }
 
     private fun search(q: String) {
@@ -124,9 +166,6 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                 val dbHelper = RadioDatabaseHelper.getInstance(requireContext())
                 val transcripts = dbHelper.searchTranscripts(q)
                 val searchResults = mutableListOf<SearchResult>()
-
-                // [v2.1.8] Cache episode info to avoid repeated DB queries
-                val episodeInfoCache = mutableMapOf<String, Pair<Long, Long>?>()
 
                 for (t in transcripts) {
                     val epId = t.episodeId ?: continue
@@ -146,18 +185,12 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
                     val stationName = EpisodeApiService.getStationName(info.stationId)
 
-                    // [v2.1.8] Get episode transcript duration info
-                    val episodeDuration = episodeInfoCache.getOrPut(epId) {
-                        dbHelper.getEpisodeTranscriptInfo(epId)
-                    }
-                    val firstMs = episodeDuration?.first ?: 0L
-                    val lastMs = episodeDuration?.second ?: 0L
-                    val totalDurationMs = if (lastMs > firstMs) lastMs - firstMs else 0L
+                    // [v2.2.1] Try to find actual episode title from cache
+                    val episodeTitle = findEpisodeTitle(epId)
+                    // [v2.2.1] Build title: episode title if found, otherwise station name + date
+                    val title = episodeTitle ?: "$stationName ${info.date}"
 
-                    // [v2.1.8] Build comprehensive title: station name + date
-                    val title = "$stationName ${info.date}"
-
-                    // [v2.1.8] Extract matched text snippet
+                    // [v2.2.1] Extract matched text snippet
                     val fullText = t.text ?: ""
                     val queryIdx = fullText.indexOf(q, ignoreCase = true)
                     val matchedText = if (queryIdx >= 0) {
@@ -168,10 +201,12 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
-                    // [v2.1.8] Build display: station | time slot | total duration | playback position
-                    val timeSlotDisplay = formatTimeSlot(info.timeSlot)
-                    val totalDurationStr = if (totalDurationMs > 0) formatTime(totalDurationMs) else "未知"
+                    // [v2.2.1] Calculate episode duration from time slot (not PCM 5-min duration)
+                    val episodeDurationMs = calculateEpisodeDurationMs(info.timeSlot)
+                    val totalDurationStr = if (episodeDurationMs > 0) formatTime(episodeDurationMs) else "未知"
                     val playPosStr = formatTime(t.segmentStart)
+                    val timeSlotDisplay = formatTimeSlot(info.timeSlot)
+                    // [v2.2.1] Display: station | time slot | episode duration | playback position
                     val displayStation = "$stationName | $timeSlotDisplay | 总时长: $totalDurationStr | 位置: $playPosStr"
 
                     val r = SearchResult().apply {
@@ -204,7 +239,7 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         }.start()
     }
 
-    // [v2.1.8] Click search result: switch to the target episode and seek
+    // [v2.2.1] Click search result: switch to the target episode and seek
     override fun onSearchResultClick(r: SearchResult) {
         val t = r.transcript ?: return
         val epId = t.episodeId ?: return
@@ -217,23 +252,20 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
         val stationName = EpisodeApiService.getStationName(info.stationId)
         val audioUrl = constructAudioUrl(info)
+        val episodeTitle = findEpisodeTitle(epId) ?: "$stationName ${info.date}"
 
         val e = Episode().apply {
             id = epId
-            title = "$stationName ${info.date}"
+            title = episodeTitle
             this.stationId = info.stationId
             this.stationName = stationName
             this.audioUrl = audioUrl
             isLive = false
         }
 
-        // [v2.1.8] Pass episode_id AND audio_url for proper episode switching.
-        // PlayerActivity will compare episode_id with current playing episode.
-        // If different, it will call playEpisode to switch; if same, just seek.
         val intent = Intent(context, PlayerActivity::class.java).apply {
             putExtra("episode", e)
             putExtra("seek_position_ms", t.segmentStart)
-            // [v2.1.8] Flag to force episode switch even if URL doesn't match exactly
             putExtra("force_episode_switch", true)
             putExtra("target_episode_id", epId)
         }
