@@ -142,11 +142,14 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
     private fun calculateEpisodeDurationMs(timeSlot: String): Long {
         val parts = timeSlot.split("_")
         if (parts.size != 2) return 0L
-        val startMin = parts[0].take(2).toIntOrNull() * 60 + parts[0].drop(2).toIntOrNull()
-        val endMin = parts[1].take(2).toIntOrNull() * 60 + parts[1].drop(2).toIntOrNull()
-        if (startMin == null || endMin == null) return 0L
+        val startHour = parts[0].take(2).toIntOrNull() ?: return 0L
+        val startMin = parts[0].drop(2).toIntOrNull() ?: return 0L
+        val endHour = parts[1].take(2).toIntOrNull() ?: return 0L
+        val endMin = parts[1].drop(2).toIntOrNull() ?: return 0L
+        val startTotalMin = startHour * 60 + startMin
+        val endTotalMin = endHour * 60 + endMin
         // Handle cross-midnight: 2300_0100
-        val diffMin = if (endMin > startMin) endMin - startMin else (24 * 60 - startMin) + endMin
+        val diffMin = if (endTotalMin > startTotalMin) endTotalMin - startTotalMin else (24 * 60 - startTotalMin) + endTotalMin
         return diffMin * 60 * 1000L
     }
 
