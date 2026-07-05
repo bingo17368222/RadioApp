@@ -248,11 +248,21 @@ class SubtitleGeneratorService : Service() {
             override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
                 val provider = intent.getStringExtra("asr_provider") ?: return
                 val voskDir = intent.getStringExtra("vosk_model_dir") ?: ""
-                logToFile("[v2.1.2] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir")
+                logToFile("[v2.1.6] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir")
                 val settings = AppSettings.getInstance(context)
                 settings.asrProvider = provider
                 settings.voskModelDir = voskDir
-                logToFile("[v2.1.2] ASR settings updated via broadcast: provider=${settings.safeAsrProvider()}")
+                // [v2.1.6] Also write to this process's SharedPreferences.
+                // SubtitleGeneratorService runs in :subtitle process. SharedPreferences
+                // with MODE_PRIVATE does NOT sync across processes. Without this write,
+                // reloadAsrSettings() would read stale data from this process's prefs.
+                try {
+                    context.getSharedPreferences("radio_app_settings", android.content.Context.MODE_PRIVATE).edit()
+                        .putString("asr_provider", provider)
+                        .putString("vosk_model_dir", voskDir)
+                        .apply()
+                } catch (_: Exception) {}
+                logToFile("[v2.1.6] ASR settings updated via broadcast + persisted to prefs: provider=${settings.safeAsrProvider()}")
 
                 // [v2.1.2] Cancel current running task so the new ASR engine takes effect immediately.
                 // Previously, the running task would continue with the old engine until it finished.
@@ -260,7 +270,7 @@ class SubtitleGeneratorService : Service() {
                     var cancelled = 0
                     activeTasks.values.forEach { it.cancelled.set(true); cancelled++ }
                     if (cancelled > 0) {
-                        logToFile("[v2.1.2] Cancelled $cancelled active subtitle task(s) due to ASR provider change")
+                        logToFile("[v2.1.6] Cancelled $cancelled active subtitle task(s) due to ASR provider change")
                     }
                 } catch (e: Exception) {
                     logToFile("[v2.1.2] Failed to cancel current task: ${e.message}")

@@ -1025,6 +1025,13 @@ class PlayerActivity : AppCompatActivity() {
         @Suppress("UNCHECKED_CAST")
         voiceSegments = (intent.getSerializableExtra("voice_segments") as? ArrayList<VoiceSegment>) ?: emptyList()
 
+        // [v2.1.6] Check for seek_position_ms from search
+        val seekMsOnCreate = intent.getLongExtra("seek_position_ms", -1L)
+        if (seekMsOnCreate > 0) {
+            pendingSeekMs = seekMsOnCreate
+            writeJitterLog("onCreate: pending seek to $seekMsOnCreate ms from search")
+        }
+
         @Suppress("UNCHECKED_CAST")
         episodeList = (intent.getSerializableExtra("episode_list") as? ArrayList<Episode>) ?: ArrayList()
         saveEpisodeListToPrefs()
@@ -2530,25 +2537,29 @@ class PlayerActivity : AppCompatActivity() {
             if (idx >= 0) currentEpisodeIndex = idx
         }
         writeJitterLog("onNewIntent: updated currentEpisode to ${newEpisode.title}")
+        // [v2.1.6] Check if seek_position_ms was passed from search
+        val seekMs = intent.getLongExtra("seek_position_ms", -1L)
+        if (seekMs > 0) {
+            pendingSeekMs = seekMs
+            writeJitterLog("onNewIntent: will seek to $seekMs ms after playback starts")
+        }
         // Check if same episode is already playing
         if (serviceBound && playbackService != null) {
             val sameEpisode = playbackService?.isSameEpisodePlaying(newEpisode.audioUrl) ?: false
             if (sameEpisode) {
                 writeJitterLog("onNewIntent: same episode already playing, skip restart")
-                // Issue 10 Fix 2: subtitles were cleared above; since this is the SAME
-                // episode (not a switch), reload this episode's own subtitles/segments
-                // so they are not lost.
                 restoreBackgroundResults()
+                // [v2.1.6] If same episode, seek immediately
+                if (pendingSeekMs > 0) {
+                    playbackService?.seekTo(pendingSeekMs)
+                    writeJitterLog("onNewIntent: same episode, executing seek to $pendingSeekMs ms")
+                    pendingSeekMs = -1L
+                }
             } else {
-                val savedPos = getSavedPositionForEpisode(this, newEpisode.id)
-                playbackService?.playEpisode(newEpisode, false, savedPos)
-                writeJitterLog("onNewIntent: starting playback for ${newEpisode.title}")
-            }
-            // [v2.1.5] If seek_position_ms was passed from search, seek to that position after playback starts
-            val seekMs = intent.getLongExtra("seek_position_ms", -1L)
-            if (seekMs > 0) {
-                writeJitterLog("onNewIntent: will seek to $seekMs ms after playback starts")
-                pendingSeekMs = seekMs
+                // [v2.1.6] If seek requested, use it as start position
+                val startPos = if (seekMs > 0) seekMs else getSavedPositionForEpisode(this, newEpisode.id)
+                playbackService?.playEpisode(newEpisode, false, startPos)
+                writeJitterLog("onNewIntent: starting playback for ${newEpisode.title} at pos=$startPos")
             }
         } else {
             // Service not bound yet - episode will be played when service connects

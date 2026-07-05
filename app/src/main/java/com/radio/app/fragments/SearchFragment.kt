@@ -15,7 +15,6 @@ import androidx.fragment.app.Fragment
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
-import com.radio.app.activities.MainActivity
 import com.radio.app.activities.PlayerActivity
 import com.radio.app.adapters.SearchResultAdapter
 import com.radio.app.database.RadioDatabaseHelper
@@ -60,7 +59,57 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         debounceHandler.postDelayed(debounceRunnable!!, 300)
     }
 
-    // [v2.1.5] Search local transcripts database instead of mock API data
+    // [v2.1.6] Parse episodeId to extract stationId, date, and index
+    // episodeId format: henan-private-car-2024-07-12-2
+    // stationId = "henan-private-car", date = "2024-07-12", index = 2
+    private data class EpisodeIdInfo(val stationId: String, val date: String, val index: Int, val timeSlot: String)
+
+    private fun parseEpisodeId(epId: String): EpisodeIdInfo? {
+        // Use regex to find the date pattern YYYY-MM-DD in the episodeId
+        val dateRegex = Regex("(\\d{4})-(\\d{2})-(\\d{2})")
+        val dateMatch = dateRegex.find(epId) ?: return null
+        val date = dateMatch.value  // "2024-07-12"
+        val stationId = epId.substring(0, dateMatch.range.first).trimEnd('-')  // "henan-private-car"
+        val afterDate = epId.substring(dateMatch.range.last + 1).trimStart('-')  // "2" or "0700" or "cross"
+        val index = afterDate.toIntOrNull() ?: -1
+
+        // Determine time slot from index
+        val timeSlots = listOf("0700_0900", "0900_1000", "1000_1200", "1200_1400", "1400_1600", "1600_1800", "1700_1900", "1900_2100", "2100_2300", "2300_0100")
+        val timeSlot = if (index in timeSlots.indices) timeSlots[index] else "0700_0900"
+
+        return EpisodeIdInfo(stationId, date, index, timeSlot)
+    }
+
+    // [v2.1.6] Construct audio URL from episodeId info
+    private fun constructAudioUrl(info: EpisodeIdInfo): String {
+        val urlDate = info.date.replace("-", "")  // "20240712"
+        val stationPart = when (info.stationId) {
+            "henan-news" -> "xinwen"
+            "henan-economy" -> "jingji"
+            "henan-traffic" -> "jiaotong"
+            "henan-opera" -> "xiqu"
+            "henan-music" -> "yinyue"
+            "henan-rural" -> "xinwen"
+            "henan-myradio" -> "myradio"
+            "henan-private-car" -> "sijiache"
+            "henan-edu" -> "jiaoyu"
+            "henan-info" -> "xinxi"
+            "henan-bigradio" -> "bigradio"
+            else -> "sijiache"
+        }
+        return "https://new-file.hntv.tv/bdmz/data/new_record/jmd_$urlDate/${stationPart}_${urlDate}_${info.timeSlot}.mp4"
+    }
+
+    // [v2.1.6] Format time from milliseconds to HH:MM
+    private fun formatTime(ms: Long): String {
+        val totalSec = ms / 1000
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
+    }
+
+    // [v2.1.6] Search local transcripts database
     private fun search(q: String) {
         if (q.isEmpty()) {
             results.clear()
@@ -75,26 +124,27 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
                 for (t in transcripts) {
                     val epId = t.episodeId ?: continue
-                    // Extract stationId from episodeId (format: henan-private-car-2024-07-11-2)
-                    val parts = epId.split("-")
-                    val stationId = if (parts.size >= 3) {
-                        parts.subList(0, parts.size - 3).joinToString("-")
-                    } else {
-                        epId
+                    val info = parseEpisodeId(epId)
+                    if (info == null) {
+                        // Can't parse episodeId, show as-is
+                        val r = SearchResult().apply {
+                            id = epId
+                            title = epId
+                            type = "transcript"
+                            stationName = "未知电台"
+                            this.matchedText = t.text?.take(60) ?: ""
+                            this.transcript = t
+                        }
+                        searchResults.add(r)
+                        continue
                     }
-                    val stationName = EpisodeApiService.getStationName(stationId)
 
-                    // Extract date from episodeId
-                    val dateStr = if (parts.size >= 3) {
-                        "${parts[parts.size - 3]}-${parts[parts.size - 2]}-${parts[parts.size - 1]}"
-                    } else {
-                        ""
-                    }
+                    val stationName = EpisodeApiService.getStationName(info.stationId)
 
-                    // Build episode title from station name and date
-                    val title = "$stationName $dateStr"
+                    // [v2.1.6] Build informative title: station name + date + time
+                    val title = "$stationName ${info.date}"
 
-                    // Extract the matched text snippet (surrounding context)
+                    // [v2.1.6] Extract the matched text snippet with context
                     val fullText = t.text ?: ""
                     val queryIdx = fullText.indexOf(q, ignoreCase = true)
                     val matchedText = if (queryIdx >= 0) {
@@ -105,11 +155,15 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
+                    // [v2.1.6] Build display info with time
+                    val timeStr = formatTime(t.segmentStart)
+                    val displayStation = "$stationName | ${info.date} | $timeStr"
+
                     val r = SearchResult().apply {
                         id = epId
                         this.title = title
                         type = "transcript"
-                        this.stationName = stationName
+                        this.stationName = displayStation
                         this.matchedText = matchedText
                         this.transcript = t
                     }
@@ -136,58 +190,30 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         }.start()
     }
 
-    // [v2.1.5] Click search result to play the episode at the transcript's timestamp
+    // [v2.1.6] Click search result to play the episode at the transcript's timestamp
     override fun onSearchResultClick(r: SearchResult) {
         val t = r.transcript ?: return
         val epId = t.episodeId ?: return
 
-        // Build Episode object from episodeId
-        val parts = epId.split("-")
-        val stationId = if (parts.size >= 3) {
-            parts.subList(0, parts.size - 3).joinToString("-")
-        } else {
-            epId
+        val info = parseEpisodeId(epId)
+        if (info == null) {
+            Toast.makeText(requireContext(), "无法解析节目信息: $epId", Toast.LENGTH_SHORT).show()
+            return
         }
-        val dateStr = if (parts.size >= 3) {
-            "${parts[parts.size - 3]}-${parts[parts.size - 2]}-${parts[parts.size - 1]}"
-        } else {
-            ""
-        }
-        val stationName = EpisodeApiService.getStationName(stationId)
 
-        // Construct audio URL from episodeId pattern
-        // episodeId format: henan-private-car-2024-07-11-2
-        // URL pattern: https://new-file.hntv.tv/bdmz/data/new_record/jmd_YYYYMMDD/sijiache_YYYYMMDD_HH00_HH00.mp4
-        val urlDateStr = dateStr.replace("-", "")
-        val timeSlots = listOf("0700_0900", "0900_1000", "1000_1200", "1200_1400", "1400_1600", "1600_1800", "1700_1900", "1900_2100", "2100_2300", "2300_0100")
-        val idx = parts.lastOrNull()?.toIntOrNull() ?: 0
-        val timeSlot = if (idx < timeSlots.size) timeSlots[idx] else "0700_0900"
-        val stationPart = when (stationId) {
-            "henan-news" -> "xinwen"
-            "henan-economy" -> "jingji"
-            "henan-traffic" -> "jiaotong"
-            "henan-opera" -> "xiqu"
-            "henan-music" -> "yinyue"
-            "henan-rural" -> "xinwen"
-            "henan-myradio" -> "myradio"
-            "henan-private-car" -> "sijiache"
-            "henan-edu" -> "jiaoyu"
-            "henan-info" -> "xinxi"
-            "henan-bigradio" -> "bigradio"
-            else -> "sijiache"
-        }
-        val audioUrl = "https://new-file.hntv.tv/bdmz/data/new_record/jmd_$urlDateStr/${stationPart}_$urlDateStr _$timeSlot.mp4".replace(" ", "")
+        val stationName = EpisodeApiService.getStationName(info.stationId)
+        val audioUrl = constructAudioUrl(info)
 
         val e = Episode().apply {
             id = epId
-            title = "$stationName $dateStr"
-            this.stationId = stationId
+            title = "$stationName ${info.date}"
+            this.stationId = info.stationId
             this.stationName = stationName
             this.audioUrl = audioUrl
             isLive = false
         }
 
-        // Start PlayerActivity with seek position
+        // [v2.1.6] Start PlayerActivity with seek position
         val intent = Intent(context, PlayerActivity::class.java).apply {
             putExtra("episode", e)
             putExtra("seek_position_ms", t.segmentStart)

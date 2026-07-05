@@ -1212,11 +1212,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val sampleUrl = savedList.firstOrNull { !it.audioUrl.isNullOrBlank() }?.audioUrl ?: ""
                     val pathPrefix = if (sampleUrl.isNotBlank()) sampleUrl.substringBeforeLast("/").substringBeforeLast("/") else "https://new-file.hntv.tv/bdmz/data/new_record"
                     val stationPart = savedList.firstOrNull { !it.audioUrl.isNullOrBlank() }?.audioUrl?.substringAfterLast("/")?.substringBefore("_") ?: stationId
-                    for (slot in timeSlots) {
+                    for ((slotIdx, slot) in timeSlots.withIndex()) {
                         val constructedUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$slot.mp4"
                         if (constructedUrl !in existingUrls) {
+                            // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
+                            // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
                             val constructedEp = Episode(
-                                id = "${stationPart}-$newDateStr-${slot.substringBefore("_")}",
+                                id = "$stationId-$targetDate-$slotIdx",
                                 title = savedList.firstOrNull {
                                     val parts = it.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
                                     parts.size >= 4 && "${parts[2]}_${parts[3]}" == slot
@@ -4033,7 +4035,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
 
                     val newEpisode = Episode(
-                        id = "${stationPart}-$newDateStr-cross",
+                        id = "${stationId}-$targetDate-cross",  // [v2.1.6] Use stationId not stationPart
                         title = constructedTitle,
                         stationId = currentEpisode?.stationId ?: stationPart,
                         // [v2.0.93] Fix: Set stationName to prevent empty string in Episode object.
@@ -4298,7 +4300,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
         if (segments.isNotEmpty()) {
             val currentPos = getCurrentPosition()
-            // [v2.1.4] Find the current segment
+            // [v2.1.6] Find the current segment
             var currentSegmentIdx = -1
             for (i in segments.indices) {
                 if (currentPos >= segments[i].start && currentPos < segments[i].end) {
@@ -4310,15 +4312,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     break
                 }
             }
-            writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx")
-            // [v2.1.4] If we found a previous segment in current episode, jump to it
+            writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx, currentPos=$currentPos")
+            // [v2.1.6] If we found a previous segment in current episode, jump to it
             if (currentSegmentIdx > 0) {
                 val targetPos = segments[currentSegmentIdx - 1].start
                 writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev segment start)")
                 seekTo(targetPos)
                 return
             }
-            // [v2.1.4] If in first segment or before first segment, cross to previous episode
+            // [v2.1.6] If in first segment or before first segment, cross to previous episode
             if (currentSegmentIdx <= 0) {
                 writeServiceLog("notification", "jumpToPrevSegment: at first segment, crossing to previous episode")
                 crossToPrevEpisodeLastSegment()
