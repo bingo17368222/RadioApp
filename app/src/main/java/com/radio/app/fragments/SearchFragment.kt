@@ -213,14 +213,18 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
-                    // [v2.2.5] Build display info from real episode data with correct units
+                    // [v2.2.7] Build display info from real episode data with correct units
                     // FIXED: duration is in seconds, convert to ms for formatTime(); add date display
+                    // [v2.2.7] Fix: when episode exists but broadcastAt is empty, fall back to epId parsing
+                    val parsedInfo = parseEpisodeId(epId)
                     val dateDisplay = episode?.let { formatDateFromBroadcastAt(it.broadcastAt) }
-                        ?: parseEpisodeId(epId)?.date?.let { d ->
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: parsedInfo?.date?.let { d ->
                             val parts = d.split("-")
                             if (parts.size == 3) "${parts[1].toIntOrNull() ?: 0}月${parts[2].toIntOrNull() ?: 0}日" else d
                         } ?: ""
                     val timeSlotDisplay = if (episode != null) formatTimeSlotFromEpisode(episode) else ""
+                    // [v2.2.7] If timeSlot is empty but we have parsed date, show at least the date as fallback
                     val totalDurationSec = episode?.duration ?: 0L
                     val totalDurationMs = totalDurationSec * 1000  // seconds -> ms for formatTime()
                     val totalDurationStr = if (totalDurationSec > 0) formatTime(totalDurationMs) else "未知"

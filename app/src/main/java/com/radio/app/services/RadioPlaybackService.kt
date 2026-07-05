@@ -133,6 +133,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         lastClientBindTime = now
         skipRequestCount = 0
         skipRequestWindowStart = now
+        breakerWasTripped = false  // [v2.2.7] Reset on new resume
         // [v2.0.91] Don't reset breaker if it's still active — preserve protection
         if (now >= skipCircuitBreakerUntil) {
             skipCircuitBreakerUntil = 0L
@@ -383,6 +384,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var skipRequestWindowStart = 0L
     private var skipCircuitBreakerUntil = 0L
     private var inPostResumeProtection = false  // true during blackout+breaker window
+    private var breakerWasTripped = false  // [v2.2.7] true only when breaker actually triggered (not on every resume)
     private var lastBackwardSkipTime = 0L
     private var lastClientBindTime = 0L
     private var lastEpisodeStartTime = 0L  // set when playEpisode starts new episode
@@ -3189,7 +3191,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         lastNotificationContentHash = 0  // Force notification update on episode change
         forceNotificationUpdate = true  // Issue 3: bypass content hash check for next notification update
         precacheNotificationShown = false  // Reset for new episode
-        lastPreCacheCheckTime = 0  // Allow immediate pre-cache check for new episode
+        // [v2.2.7] Don't reset lastPreCacheCheckTime to 0 on episode change.
+        // This caused pre-cache to be re-triggered every time user switches episodes,
+        // even within the 2-minute throttle window. The throttle will naturally allow
+        // the next check after the window expires.
         if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
             notificationDate = episode.broadcastAt.substring(0, 10) // "2024-06-04"
             val timePart = episode.broadcastAt.substring(11, 16) // "07:00"
@@ -3507,10 +3512,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // [v2.0.88] Post-breaker cooldown: 30s after resume, enforce min 2s between skips.
-        if (lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
+        // [v2.2.7] Post-breaker cooldown: ONLY enforce min interval if breaker was actually tripped.
+        if (breakerWasTripped && lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
             if (now - lastSkipDirectionTime < POST_BREAKER_MIN_INTERVAL_MS && lastSkipDirectionTime > 0) {
-                writeServiceLog("playback", "[v2.0.88] skipForward: BLOCKED by post-breaker cooldown (${now - lastSkipDirectionTime}ms < ${POST_BREAKER_MIN_INTERVAL_MS}ms)")
+                writeServiceLog("playback", "[v2.2.7] skipForward: BLOCKED by post-breaker cooldown (${now - lastSkipDirectionTime}ms < ${POST_BREAKER_MIN_INTERVAL_MS}ms)")
                 return
             }
         }
@@ -3554,6 +3559,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 skipRequestCount++
                 if (skipRequestCount >= STORM_REQUEST_THRESHOLD && !inBreaker) {
                     skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
+                    breakerWasTripped = true  // [v2.2.7] Mark that breaker was actually triggered
                     writeServiceLog("playback", "[v2.0.91] skipBackward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
                     return
                 }
@@ -3568,9 +3574,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // [v2.0.89] Post-breaker cooldown: BLOCK ALL backward skips for 30s after resume.
-        if (lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.0.91] skipBackward: BLOCKED by post-breaker cooldown (BLOCK ALL, ${POST_BREAKER_COOLDOWN_MS/1000 - (now - lastClientBindTime)/1000}s remaining)")
+        // [v2.2.7] Post-breaker cooldown: ONLY block if breaker was actually tripped.
+        // Previous code blocked ALL skips for POST_BREAKER_COOLDOWN_MS after every resume,
+        // even when no storm occurred. Now only applies after a real breaker trip.
+        if (breakerWasTripped && lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
+            writeServiceLog("playback", "[v2.2.7] skipBackward: BLOCKED by post-breaker cooldown (BLOCK ALL, ${POST_BREAKER_COOLDOWN_MS/1000 - (now - lastClientBindTime)/1000}s remaining)")
             return
         }
 
@@ -4467,6 +4475,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val now = System.currentTimeMillis()
         lastClientBindTime = now
         skipRequestCount = 0
+        breakerWasTripped = false  // [v2.2.7] Reset on new bind
         if (now >= skipCircuitBreakerUntil) {
             skipCircuitBreakerUntil = 0L
         }
@@ -4485,6 +4494,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val now = System.currentTimeMillis()
         lastClientBindTime = now
         skipRequestCount = 0
+        breakerWasTripped = false  // [v2.2.7] Reset on rebind
         if (now >= skipCircuitBreakerUntil) {
             skipCircuitBreakerUntil = 0L
         }
