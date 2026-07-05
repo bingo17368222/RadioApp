@@ -367,9 +367,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // - After cooldown: NO LIMITS on user clicks (per user requirement #3).
     // [v2.2.6] Relaxed skip protection parameters to prevent false-positive blocking of legitimate skips.
     // Previous values were too aggressive: 3s blackout + 5 requests + 30s cooldown blocked normal usage.
-    private val POST_RESUME_BLACKOUT_MS = 1_000L       // [v2.2.6] 1s blackout (was 3s)
-    private val SKIP_CIRCUIT_BREAKER_MS = 2_000L       // [v2.2.6] 2s breaker (was 3s)
-    private val SKIP_DEBOUNCE_MS = 300L                 // [v2.2.6] 300ms debounce (was 500ms)
+    private val POST_RESUME_BLACKOUT_MS = 0L           // [v2.2.8] DISABLED blackout (was 1s) - it blocked the first legitimate skip after resume
+    private val SKIP_CIRCUIT_BREAKER_MS = 2_000L       // [v2.2.6] 2s breaker
+    private val SKIP_DEBOUNCE_MS = 200L                 // [v2.2.8] 200ms debounce (was 300ms)
     private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 2_000L // [v2.2.6] 2s (was 3s)
     private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L
     private val STORM_REQUEST_THRESHOLD = 10            // [v2.2.6] 10 requests to trip (was 5)

@@ -56,6 +56,7 @@ class AppSettings private constructor() {
     var voskModelDir: String = ""  // [v2.0.61] Issue 6 Fix: Save selected Vosk model directory name
     // [v2.0.50] Issue 3 Fix: Track Whisper crash count to permanently disable after 2 crashes
     var whisperCrashCount: Int = 0
+    var forceVoskUntil: Long = 0  // [v2.2.8] Force Vosk after Whisper crashes (timestamp until which to skip Whisper)
     var uiTheme: String = THEME_DARK
     var subtitleSize: String = SUBTITLE_MEDIUM
     var subtitleLanguage: String = LANG_CN
@@ -113,6 +114,7 @@ class AppSettings private constructor() {
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""  // [v2.0.61] Issue 6
         whisperCrashCount = prefs.getInt("whisper_crash_count", 0)  // [v2.0.50]
+        forceVoskUntil = prefs.getLong("force_vosk_until", 0)  // [v2.2.8]
         uiTheme = prefs.getString("ui_theme", THEME_DARK) ?: THEME_DARK
         preloadCache = prefs.getBoolean("preload_cache", false)
         preloadCacheCount = prefs.getInt("preload_cache_count", 1)
@@ -166,6 +168,7 @@ class AppSettings private constructor() {
             putString("asr_provider", asrProvider)
             putString("vosk_model_dir", voskModelDir)  // [v2.0.61] Issue 6
             putInt("whisper_crash_count", whisperCrashCount)  // [v2.0.50]
+            putLong("force_vosk_until", forceVoskUntil)  // [v2.2.8]
             putString("ui_theme", uiTheme)
             putBoolean("preload_cache", preloadCache)
             putInt("preload_cache_count", preloadCacheCount)
