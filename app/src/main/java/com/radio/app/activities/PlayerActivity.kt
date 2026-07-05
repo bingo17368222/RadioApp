@@ -2548,7 +2548,7 @@ class PlayerActivity : AppCompatActivity() {
         // but the search-constructed URL might differ from the actual playing URL
         // even for the same episode, or match for different episodes.
         val targetEpisodeId = intent.getStringExtra("target_episode_id") ?: newEpisode.id
-        val currentPlayingId = playbackService?.currentEpisode?.id ?: ""
+        val currentPlayingId = playbackService?.getCurrentEpisode()?.id ?: ""
         val sameEpisode = targetEpisodeId == currentPlayingId
         writeJitterLog("onNewIntent: targetEpisodeId=$targetEpisodeId, currentPlayingId=$currentPlayingId, sameEpisode=$sameEpisode")
         if (serviceBound && playbackService != null) {

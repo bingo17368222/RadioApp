@@ -194,6 +194,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var player: ExoPlayer? = null
     private val binder = LocalBinder()
     private var currentEpisode: Episode? = null
+    // [v2.1.8] Public getter for episode ID comparison in PlayerActivity
+    fun getCurrentEpisode(): Episode? = currentEpisode
     private var currentStation: RadioStation? = null
     private var isLive = false
     private var callback: Callback? = null
