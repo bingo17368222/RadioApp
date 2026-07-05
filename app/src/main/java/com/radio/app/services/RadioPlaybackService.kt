@@ -3269,6 +3269,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             requestAudioFocus()
             updateMediaSessionState()
             startAutoSkipCheck()
+            // [v2.1.4] If this was a cross-episode segment jump, seek to target segment
+            onCrossEpisodeSwitchComplete()
         } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
         // Force immediate notification update
         lastNotificationContentHash = 0
@@ -3747,14 +3749,56 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     fun jumpToNextSegment() {
         val segments = getSegmentList()
+        writeServiceLog("notification", "jumpToNextSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
         if (segments.isNotEmpty()) {
-            val currentPos = getCurrentPosition()  // [v2.0.62] Use authoritative position
-            for (seg in segments) { if (seg.start > currentPos) { seekTo(seg.start); return } }
+            val currentPos = getCurrentPosition()
+            // [v2.1.4] Find the next segment after current position
+            for (i in segments.indices) {
+                if (segments[i].start > currentPos) {
+                    writeServiceLog("notification", "jumpToNextSegment: seeking to ${segments[i].start} (next segment)")
+                    seekTo(segments[i].start)
+                    return
+                }
+            }
+            // [v2.1.4] No more segments in current episode, cross to next episode
+            writeServiceLog("notification", "jumpToNextSegment: at last segment, crossing to next episode")
+            crossToNextEpisodeFirstSegment()
+            return
         }
         // Fallback: skip forward 30 seconds
         val pos = getCurrentPosition() + 30000
         val dur = player?.duration ?: 0L
         if (dur > 0 && pos < dur) seekTo(pos)
+    }
+
+    // [v2.1.4] Cross to previous episode and jump to its last segment
+    private fun crossToPrevEpisodeLastSegment() {
+        writeServiceLog("notification", "crossToPrevEpisodeLastSegment: START")
+        // Use the existing notifyPrevEpisode logic but with a flag to seek to last segment
+        crossEpisodeTargetSegment = Pair(false, true)  // (isNext, seekLast)
+        notifyPrevEpisode()
+    }
+
+    // [v2.1.4] Cross to next episode and jump to its first segment
+    private fun crossToNextEpisodeFirstSegment() {
+        writeServiceLog("notification", "crossToNextEpisodeFirstSegment: START")
+        crossEpisodeTargetSegment = Pair(true, false)  // (isNext, seekLast)
+        notifyNextEpisode()
+    }
+
+    // [v2.1.4] Called after cross-episode switch to seek to the target segment
+    private var crossEpisodeTargetSegment: Pair<Boolean, Boolean>? = null  // (isNext, seekLastSegment)
+    fun onCrossEpisodeSwitchComplete() {
+        crossEpisodeTargetSegment?.let { (_, seekLast) ->
+            val segments = getSegmentList()
+            if (segments.isNotEmpty()) {
+                val targetIdx = if (seekLast) segments.size - 1 else 0
+                val targetPos = segments[targetIdx].start
+                writeServiceLog("notification", "onCrossEpisodeSwitchComplete: seeking to segment $targetIdx pos=$targetPos (seekLast=$seekLast)")
+                seekTo(targetPos)
+            }
+            crossEpisodeTargetSegment = null
+        }
     }
 
     private fun fetchCrossDayEpisode(nextDate: Boolean): Episode? {
@@ -4241,27 +4285,35 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
     fun jumpToPrevSegment() {
         val segments = getSegmentList()
+        writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
         if (segments.isNotEmpty()) {
-            val currentPos = getCurrentPosition()  // [v2.0.62] Use authoritative position
-            // [v2.1.3] Find the current segment first
+            val currentPos = getCurrentPosition()
+            // [v2.1.4] Find the current segment
             var currentSegmentIdx = -1
             for (i in segments.indices) {
                 if (currentPos >= segments[i].start && currentPos < segments[i].end) {
                     currentSegmentIdx = i
                     break
                 }
-                if (segments[i].end > currentPos) {
+                if (segments[i].start > currentPos) {
                     currentSegmentIdx = i
                     break
                 }
             }
-            // [v2.1.3] If we found a previous segment, jump to it
+            writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx")
+            // [v2.1.4] If we found a previous segment in current episode, jump to it
             if (currentSegmentIdx > 0) {
-                seekTo(segments[currentSegmentIdx - 1].start)
+                val targetPos = segments[currentSegmentIdx - 1].start
+                writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev segment start)")
+                seekTo(targetPos)
                 return
             }
-            // [v2.1.3] If in first segment or before first segment, jump backward 30s
-            // (previously jumped to segments[0].start which appeared to do nothing)
+            // [v2.1.4] If in first segment or before first segment, cross to previous episode
+            if (currentSegmentIdx <= 0) {
+                writeServiceLog("notification", "jumpToPrevSegment: at first segment, crossing to previous episode")
+                crossToPrevEpisodeLastSegment()
+                return
+            }
         }
         // Fallback: skip backward 30 seconds
         val pos = getCurrentPosition() - 30000

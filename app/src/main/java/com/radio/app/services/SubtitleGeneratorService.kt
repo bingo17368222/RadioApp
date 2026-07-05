@@ -2524,7 +2524,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.1.2] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=50, single_segment=false in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.1.4] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=auto, n_max_text_ctx=512, max_tokens=64 in JNI), offsetMs=$whisperOffsetMs")
 
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.

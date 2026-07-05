@@ -209,49 +209,43 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     params.language        = (const char*)"zh";  // Force Chinese for Chinese radio
     // [v2.0.90] Memory optimization: single thread minimizes memory & avoids multi-thread bugs on Android
     params.n_threads       = 1;
-    // [v2.1.1] Fix SIGSEGV: audio_ctx=100 still causes SIGSEGV on this device.
-    // The crash happens inside whisper_full during encoder/decoder inference.
-    // Even audio_ctx=100 allocates KV cache for 100*10=1000 tokens, which may still
-    // be too much. Try audio_ctx=50 (1s of audio), KV cache = 50*10 = 500 tokens.
-    // Also set single_segment=false to allow Whisper to manage segments internally,
-    // and suppress_tokens to prevent hallucination tokens from consuming decoder memory.
-    params.audio_ctx       = 50;
-    // [v2.0.92] Limit text context to reduce decoder memory
-    params.n_max_text_ctx  = 0;
+    // [v2.1.4] Fix SIGSEGV: audio_ctx=50 + n_max_text_ctx=0 caused decoder crash after 17s.
+    // Root cause: n_max_text_ctx=0 makes decoder allocate NULL text context buffer.
+    // When decoder tries to access it during text generation, SIGSEGV occurs.
+    // Fix: Use whisper.cpp defaults (audio_ctx=0=auto, n_max_text_ctx=512, max_tokens=64).
+    // With 1s chunks (16000 samples), auto audio_ctx=~100 (1s/10ms=100), manageable.
+    params.audio_ctx       = 0;     // auto (let whisper decide based on input length)
+    params.n_max_text_ctx  = 512;   // default - was 0, caused NULL dereference in decoder
     params.offset_ms       = 0;
     params.duration_ms     = 0;
     params.no_context      = true;
     params.single_segment  = false;
-    // [v2.1.1] Reduce max_tokens to 32 (was 64) to minimize decoder memory
-    params.max_tokens      = 32;
+    params.max_tokens      = 64;    // default - was 32, too small caused premature termination
     // [v2.0.91] Disable temperature fallback (temperature_inc=0 prevents re-decoding on failure)
     params.temperature     = 0.0f;
     params.temperature_inc = 0.0f;
 
-    // [v2.0.52] Issue 2 Fix: Remove sigsetjmp/siglongjmp - doesn't work on Android ART
-    // Just install simple crash logger (writes to file before process dies)
-    signal(SIGSEGV, whisper_crash_handler);
-    signal(SIGABRT, whisper_crash_handler);
+    // [v2.1.4] Remove signal() handlers - they are dangerous on Android ART.
+    // Android's debuggerd/libc handles SIGSEGV natively. Custom signal handlers
+    // interfere with crash reporting and can cause secondary crashes (file I/O
+    // in signal handler is async-signal-unsafe). The crash log is written by
+    // Kotlin layer's onCreate detection instead.
 
     LOGI("full: calling whisper_full(ctx=%p, processSamples=%d, n_threads=%d)", ctx, processSamples, params.n_threads);
 
-    // Set alarm timeout (300 seconds - [v2.0.96] increased from 60s)
-    // 1s chunks take ~50s to process on mobile CPU; 60s was too close to the edge.
+    // Set alarm timeout (300 seconds)
     alarm(300);
 
-    // [v2.0.56] Issue 2 Fix: Detailed logging right before full_func to diagnose crash
     LOGI("full: alarm set, about to call full_func");
     LOGI("full: BEFORE whisper_full, processSamples=%d, ctx=%p, sample_data=%p", processSamples, ctx, sample_data);
-    LOGI("full: params: n_threads=%d, n_max_text_ctx=%d, offset_ms=%d", params.n_threads, params.n_max_text_ctx, params.offset_ms);
+    LOGI("full: params: n_threads=%d, n_max_text_ctx=%d, audio_ctx=%d, max_tokens=%d", params.n_threads, params.n_max_text_ctx, params.audio_ctx, params.max_tokens);
 
     int result = full_func(ctx, params, sample_data, processSamples);
 
     // Cancel alarm
     alarm(0);
 
-    // Restore default signal handlers
-    signal(SIGSEGV, SIG_DFL);
-    signal(SIGABRT, SIG_DFL);
+    // [v2.1.4] No signal handler restoration needed (we no longer install custom handlers)
 
     // [v2.0.61] Issue 2 Fix: Free the C-allocated buffer (not ReleaseFloatArrayElements)
     free(sample_data);
