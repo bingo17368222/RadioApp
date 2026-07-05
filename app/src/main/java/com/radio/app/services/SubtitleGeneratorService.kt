@@ -2522,12 +2522,12 @@ class SubtitleGeneratorService : Service() {
             // memory. v2.1.2 reduces chunk size from 5s to 1s (16000 samples) to reduce
             // encoder memory by 5x. audio_ctx=50 (1s) in JNI.
             // single_segment=false lets Whisper manage segments internally.
-            // [v2.2.2] Use 2-second chunks (32000 samples).
-            // 1s -> SIGSEGV (audio_ctx overread)
-            // 3s -> killed after 221s (OOM or LMKD)
-            // 5s -> killed after 144s (OOM or LMKD)
-            // 2s is minimum viable for whisper recognition
-            val chunkSize = 2 * 16000  // 2 seconds per chunk (32000 samples)
+            // [v2.2.3] Use 4-second chunks (64000 samples).
+            // 1s/2s -> SIGSEGV in whisper_full (too short for encoder)
+            // 3s -> crash after 221s
+            // 5s -> crash after 144s
+            // 4s is compromise: enough audio for encoder, less memory than 5s
+            val chunkSize = 4 * 16000  // 4 seconds per chunk (64000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2539,7 +2539,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.2.2] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=auto, single_segment=true, n_threads=1, n_max_text_ctx=512 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.2.3] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=auto, single_segment=true, n_threads=1, n_max_text_ctx=512 in JNI), offsetMs=$whisperOffsetMs")
 
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.

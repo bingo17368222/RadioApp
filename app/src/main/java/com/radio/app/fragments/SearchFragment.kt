@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -34,8 +35,8 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
     private val debounceHandler = Handler(Looper.getMainLooper())
     private var debounceRunnable: Runnable? = null
 
-    // [v2.2.1] Cache episode list from SharedPreferences for title lookup
-    private var episodeCache: List<Episode> = emptyList()
+    // [v2.2.3] Cache: episodeId -> Episode (for title + audioUrl lookup)
+    private val episodeCacheMap = mutableMapOf<String, Episode>()
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -64,7 +65,6 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         loadEpisodeCache()
     }
 
-    // [v2.2.1] Load episode list from cache for title lookup
     private fun loadEpisodeCache() {
         try {
             val json = requireContext().getSharedPreferences("episode_list_cache", android.content.Context.MODE_PRIVATE)
@@ -72,7 +72,9 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
             if (json.isNotEmpty()) {
                 val gson = Gson()
                 val type = object : TypeToken<List<Episode>>() {}.type
-                episodeCache = gson.fromJson(json, type) ?: emptyList()
+                val list: List<Episode> = gson.fromJson(json, type) ?: emptyList()
+                episodeCacheMap.clear()
+                list.forEach { episodeCacheMap[it.id ?: ""] = it }
             }
         } catch (_: Exception) {}
     }
@@ -83,9 +85,8 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         debounceHandler.postDelayed(debounceRunnable!!, 300)
     }
 
-    // [v2.1.8] Parse episodeId: henan-private-car-2024-07-12-2
     private data class EpisodeIdInfo(
-        val stationId: String, val date: String, val index: Int, val timeSlot: String
+        val stationId: String, val date: String, val index: Int
     )
 
     private fun parseEpisodeId(epId: String): EpisodeIdInfo? {
@@ -95,29 +96,29 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         val stationId = epId.substring(0, dateMatch.range.first).trimEnd('-')
         val afterDate = epId.substring(dateMatch.range.last + 1).trimStart('-')
         val index = afterDate.toIntOrNull() ?: -1
-        val timeSlots = listOf("0700_0900", "0900_1000", "1000_1200", "1200_1400",
-            "1400_1600", "1600_1800", "1700_1900", "1900_2100", "2100_2300", "2300_0100")
-        val timeSlot = if (index in timeSlots.indices) timeSlots[index] else "0700_0900"
-        return EpisodeIdInfo(stationId, date, index, timeSlot)
+        return EpisodeIdInfo(stationId, date, index)
     }
 
-    private fun constructAudioUrl(info: EpisodeIdInfo): String {
-        val urlDate = info.date.replace("-", "")
-        val stationPart = when (info.stationId) {
-            "henan-news" -> "xinwen"
-            "henan-economy" -> "jingji"
-            "henan-traffic" -> "jiaotong"
-            "henan-opera" -> "xiqu"
-            "henan-music" -> "yinyue"
-            "henan-rural" -> "xinwen"
-            "henan-myradio" -> "myradio"
-            "henan-private-car" -> "sijiache"
-            "henan-edu" -> "jiaoyu"
-            "henan-info" -> "xinxi"
-            "henan-bigradio" -> "bigradio"
-            else -> "sijiache"
+    // [v2.2.3] Fetch episode from API by episodeId (synchronous, runs in background thread)
+    // This replaces the broken hardcoded URL construction
+    private fun fetchEpisodeFromApi(epId: String): Episode? {
+        // Check cache first
+        episodeCacheMap[epId]?.let { return it }
+
+        val info = parseEpisodeId(epId) ?: return null
+        try {
+            val episodes = EpisodeApiService.fetchEpisodesByDateSync(info.stationId, info.date)
+            if (episodes != null) {
+                // Save to cache for future lookups
+                episodes.forEach { e ->
+                    e.id?.let { id -> episodeCacheMap[id] = e }
+                }
+                return episodes.firstOrNull { it.id == epId }
+            }
+        } catch (e: Exception) {
+            Log.e("SearchFragment", "fetchEpisodeFromApi failed for $epId", e)
         }
-        return "https://new-file.hntv.tv/bdmz/data/new_record/jmd_$urlDate/${stationPart}_${urlDate}_${info.timeSlot}.mp4"
+        return null
     }
 
     private fun formatTime(ms: Long): String {
@@ -128,39 +129,26 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
     }
 
-    // [v2.2.1] Format time slot for display: "0700_0900" -> "07:00-09:00"
-    private fun formatTimeSlot(slot: String): String {
-        val parts = slot.split("_")
-        if (parts.size != 2) return slot
-        val start = parts[0]
-        val end = parts[1]
-        return "${start.take(2)}:${start.drop(2)}-${end.take(2)}:${end.drop(2)}"
-    }
-
-    // [v2.2.1] Calculate episode duration from time slot
-    // "0700_0900" -> 2 hours = 7200000 ms
-    private fun calculateEpisodeDurationMs(timeSlot: String): Long {
-        val parts = timeSlot.split("_")
-        if (parts.size != 2) return 0L
-        val startHour = parts[0].take(2).toIntOrNull() ?: return 0L
-        val startMin = parts[0].drop(2).toIntOrNull() ?: return 0L
-        val endHour = parts[1].take(2).toIntOrNull() ?: return 0L
-        val endMin = parts[1].drop(2).toIntOrNull() ?: return 0L
-        val startTotalMin = startHour * 60 + startMin
-        val endTotalMin = endHour * 60 + endMin
-        // Handle cross-midnight: 2300_0100
-        val diffMin = if (endTotalMin > startTotalMin) endTotalMin - startTotalMin else (24 * 60 - startTotalMin) + endTotalMin
-        return diffMin * 60 * 1000L
-    }
-
-    // [v2.2.2] Look up episode from cache by ID - returns actual audioUrl and title
-    private fun findEpisodeInCache(epId: String): Episode? {
-        return episodeCache.firstOrNull { it.id == epId }
-    }
-
-    // [v2.2.1] Look up episode title from cache
-    private fun findEpisodeTitle(epId: String): String? {
-        return findEpisodeInCache(epId)?.title
+    // [v2.2.3] Format time slot from broadcast_at field (format: "2024-07-15T10:00:00")
+    private fun formatTimeSlotFromEpisode(ep: Episode): String {
+        val bat = ep.broadcastAt
+        if (bat.isBlank()) return ""
+        try {
+            // Parse "2024-07-15T10:00:00" -> extract time part
+            val timePart = bat.substringAfter("T") // "10:00:00"
+            val startH = timePart.substring(0, 2).toIntOrNull() ?: return ""
+            val startM = timePart.substring(3, 5).toIntOrNull() ?: return ""
+            // Calculate end time from duration
+            val durMs = ep.duration
+            val durHours = if (durMs > 0) durMs / 3600000.0 else 2.0
+            val startTotalMin = startH * 60 + startM
+            val endTotalMin = startTotalMin + (durHours * 60).toInt()
+            val endH = (endTotalMin / 60) % 24
+            val endM = endTotalMin % 60
+            return String.format("%02d:%02d-%02d:%02d", startH, startM, endH, endM)
+        } catch (_: Exception) {
+            return ""
+        }
     }
 
     private fun search(q: String) {
@@ -177,28 +165,15 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
                 for (t in transcripts) {
                     val epId = t.episodeId ?: continue
-                    val info = parseEpisodeId(epId)
-                    if (info == null) {
-                        val r = SearchResult().apply {
-                            id = epId
-                            title = epId
-                            type = "transcript"
-                            stationName = "未知电台"
-                            this.matchedText = t.text?.take(60) ?: ""
-                            this.transcript = t
-                        }
-                        searchResults.add(r)
-                        continue
-                    }
 
-                    val stationName = EpisodeApiService.getStationName(info.stationId)
+                    // [v2.2.3] Fetch real episode from API (with cache)
+                    val episode = fetchEpisodeFromApi(epId)
+                    val stationName = episode?.stationName
+                        ?: EpisodeApiService.getStationName(parseEpisodeId(epId)?.stationId ?: "")
+                    val title = episode?.title ?: "$stationName ${parseEpisodeId(epId)?.date ?: ""}"
+                    val audioUrl = episode?.audioUrl ?: ""
 
-                    // [v2.2.1] Try to find actual episode title from cache
-                    val episodeTitle = findEpisodeTitle(epId)
-                    // [v2.2.1] Build title: episode title if found, otherwise station name + date
-                    val title = episodeTitle ?: "$stationName ${info.date}"
-
-                    // [v2.2.1] Extract matched text snippet
+                    // [v2.2.3] Extract matched text snippet
                     val fullText = t.text ?: ""
                     val queryIdx = fullText.indexOf(q, ignoreCase = true)
                     val matchedText = if (queryIdx >= 0) {
@@ -209,13 +184,16 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
-                    // [v2.2.1] Calculate episode duration from time slot (not PCM 5-min duration)
-                    val episodeDurationMs = calculateEpisodeDurationMs(info.timeSlot)
-                    val totalDurationStr = if (episodeDurationMs > 0) formatTime(episodeDurationMs) else "未知"
+                    // [v2.2.3] Build display info from real episode data
+                    val timeSlotDisplay = if (episode != null) formatTimeSlotFromEpisode(episode) else ""
+                    val totalDurationMs = episode?.duration ?: 0L
+                    val totalDurationStr = if (totalDurationMs > 0) formatTime(totalDurationMs) else "未知"
                     val playPosStr = formatTime(t.segmentStart)
-                    val timeSlotDisplay = formatTimeSlot(info.timeSlot)
-                    // [v2.2.1] Display: station | time slot | episode duration | playback position
-                    val displayStation = "$stationName | $timeSlotDisplay | 总时长: $totalDurationStr | 位置: $playPosStr"
+                    val displayStation = if (timeSlotDisplay.isNotEmpty()) {
+                        "$stationName | $timeSlotDisplay | 总时长: $totalDurationStr | 位置: $playPosStr"
+                    } else {
+                        "$stationName | 总时长: $totalDurationStr | 位置: $playPosStr"
+                    }
 
                     val r = SearchResult().apply {
                         id = epId
@@ -247,47 +225,20 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
         }.start()
     }
 
-    // [v2.2.1] Click search result: switch to the target episode and seek
+    // [v2.2.3] Click search result: switch to the target episode and seek
     override fun onSearchResultClick(r: SearchResult) {
         val t = r.transcript ?: return
         val epId = t.episodeId ?: return
 
-        // [v2.2.2] Try to find the actual episode from cache first
-        val cachedEpisode = findEpisodeInCache(epId)
-        if (cachedEpisode != null && cachedEpisode.audioUrl.isNotBlank()) {
-            // Use the real episode with actual audioUrl from API
-            val intent = Intent(context, PlayerActivity::class.java).apply {
-                putExtra("episode", cachedEpisode)
-                putExtra("seek_position_ms", t.segmentStart)
-                putExtra("force_episode_switch", true)
-                putExtra("target_episode_id", epId)
-            }
-            startActivity(intent)
+        // [v2.2.3] Fetch real episode from API to get correct audioUrl
+        val episode = fetchEpisodeFromApi(epId)
+        if (episode == null || episode.audioUrl.isBlank()) {
+            Toast.makeText(requireContext(), "无法获取节目信息: $epId", Toast.LENGTH_SHORT).show()
             return
-        }
-
-        // [v2.2.2] Fallback: construct episode from episodeId
-        val info = parseEpisodeId(epId)
-        if (info == null) {
-            Toast.makeText(requireContext(), "无法解析节目信息: $epId", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val stationName = EpisodeApiService.getStationName(info.stationId)
-        val audioUrl = constructAudioUrl(info)
-        val episodeTitle = "$stationName ${info.date}"
-
-        val e = Episode().apply {
-            id = epId
-            title = episodeTitle
-            this.stationId = info.stationId
-            this.stationName = stationName
-            this.audioUrl = audioUrl
-            isLive = false
         }
 
         val intent = Intent(context, PlayerActivity::class.java).apply {
-            putExtra("episode", e)
+            putExtra("episode", episode)
             putExtra("seek_position_ms", t.segmentStart)
             putExtra("force_episode_switch", true)
             putExtra("target_episode_id", epId)
