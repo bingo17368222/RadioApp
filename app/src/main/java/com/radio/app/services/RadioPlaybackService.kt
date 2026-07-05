@@ -4091,6 +4091,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (prevEpisode == null) {
             prevEpisode = findPrevInList(savedList, curId, settings)
         }
+        // [v2.1.5] Anti-loop: if prevEpisode is the same as current, don't switch
+        if (prevEpisode != null && prevEpisode.id == curId) {
+            writeServiceLog("notification", "notifyPrevEpisode: [ANTI-LOOP] prevEpisode.id == curId ($curId), skipping to cross-day")
+            prevEpisode = null
+        }
 
         if (prevEpisode != null) {
             val episodeKey = "${prevEpisode.stationId}::${prevEpisode.title}"
@@ -4158,6 +4163,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Fallback to saved episode list
         if (nextEpisode == null) {
             nextEpisode = findNextInList(savedList, curId, settings)
+        }
+        // [v2.1.5] Anti-loop: if nextEpisode is the same as current, don't switch
+        if (nextEpisode != null && nextEpisode.id == curId) {
+            writeServiceLog("notification", "notifyNextEpisode: [ANTI-LOOP] nextEpisode.id == curId ($curId), skipping to cross-day")
+            nextEpisode = null
         }
 
         if (nextEpisode != null) {

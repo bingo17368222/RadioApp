@@ -117,6 +117,32 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.delete(TABLE_TRANSCRIPTS, "episode_id = ?", arrayOf(episodeId))
     }
 
+    // [v2.1.5] Search transcripts by text content
+    fun searchTranscripts(query: String): List<Transcript> {
+        val results = mutableListOf<Transcript>()
+        val db = readableDatabase
+        val cursor = db.query(
+            TABLE_TRANSCRIPTS,
+            null,
+            "text LIKE ?",
+            arrayOf("%$query%"),
+            null, null,
+            "segment_start ASC",
+            "100"  // limit to 100 results
+        )
+        while (cursor.moveToNext()) {
+            val t = Transcript().apply {
+                this.episodeId = cursor.getString(1)
+                segmentStart = cursor.getLong(2)
+                segmentEnd = cursor.getLong(3)
+                text = cursor.getString(4)
+            }
+            results.add(t)
+        }
+        cursor.close()
+        return results
+    }
+
     // ===== Disliked Episodes =====
 
     fun addDislikedEpisode(episodeId: String, title: String, stationName: String) {

@@ -62,6 +62,7 @@ class PlayerActivity : AppCompatActivity() {
     private var cacheProgressRunnable: Runnable? = null
     private var subtitleProcessing = false
     private var segmentProcessing = false
+    private var pendingSeekMs: Long = -1L  // [v2.1.5] For search-to-seek
     private var isFreshStart = false // true if user explicitly clicked an episode from the list
     private var pendingAiTaskType: String? = null
     private var isActivityRecreated = false // true if system is recreating this activity (config change, etc.)
@@ -1253,8 +1254,24 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
-        binding.btnPrevSegment.setOnClickListener { playbackService?.jumpToPrevSegment() }
-        binding.btnNextSegment.setOnClickListener { playbackService?.jumpToNextSegment() }
+        binding.btnPrevSegment.setOnClickListener {
+            if (playbackService == null) {
+                writeEpisodeLog("btnPrevSegment: playbackService is null, cannot jump")
+                Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            writeEpisodeLog("btnPrevSegment: calling jumpToPrevSegment")
+            playbackService?.jumpToPrevSegment()
+        }
+        binding.btnNextSegment.setOnClickListener {
+            if (playbackService == null) {
+                writeEpisodeLog("btnNextSegment: playbackService is null, cannot jump")
+                Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            writeEpisodeLog("btnNextSegment: calling jumpToNextSegment")
+            playbackService?.jumpToNextSegment()
+        }
         binding.btnSkipForward.setOnClickListener { playbackService?.skipForward() }
         binding.btnSkipBackward.setOnClickListener { playbackService?.skipBackward() }
         binding.btnClose.setOnClickListener {
@@ -1605,6 +1622,12 @@ class PlayerActivity : AppCompatActivity() {
         }
         // 更新播放/暂停按钮
         playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
+        // [v2.1.5] Execute pending seek from search result
+        if (pendingSeekMs > 0 && playbackService?.isPrepared() == true) {
+            writeJitterLog("updateUI: executing pending seek to $pendingSeekMs ms")
+            playbackService?.seekTo(pendingSeekMs)
+            pendingSeekMs = -1L
+        }
         // 同步seekbar位置
         if (playbackService?.isPrepared() == true) {
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
@@ -2520,6 +2543,12 @@ class PlayerActivity : AppCompatActivity() {
                 val savedPos = getSavedPositionForEpisode(this, newEpisode.id)
                 playbackService?.playEpisode(newEpisode, false, savedPos)
                 writeJitterLog("onNewIntent: starting playback for ${newEpisode.title}")
+            }
+            // [v2.1.5] If seek_position_ms was passed from search, seek to that position after playback starts
+            val seekMs = intent.getLongExtra("seek_position_ms", -1L)
+            if (seekMs > 0) {
+                writeJitterLog("onNewIntent: will seek to $seekMs ms after playback starts")
+                pendingSeekMs = seekMs
             }
         } else {
             // Service not bound yet - episode will be played when service connects
