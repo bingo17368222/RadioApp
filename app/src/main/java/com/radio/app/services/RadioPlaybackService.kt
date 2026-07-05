@@ -364,17 +364,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // - [v2.0.88] After breaker expires: POST_BREAKER_COOLDOWN (30s) enforces min 2s between
     //   skip executions. This catches skip storms that continue past the breaker window.
     // - After cooldown: NO LIMITS on user clicks (per user requirement #3).
-    private val POST_RESUME_BLACKOUT_MS = 3_000L
-    private val SKIP_CIRCUIT_BREAKER_MS = 3_000L
-    private val SKIP_DEBOUNCE_MS = 500L
-    private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 3_000L
+    // [v2.2.6] Relaxed skip protection parameters to prevent false-positive blocking of legitimate skips.
+    // Previous values were too aggressive: 3s blackout + 5 requests + 30s cooldown blocked normal usage.
+    private val POST_RESUME_BLACKOUT_MS = 1_000L       // [v2.2.6] 1s blackout (was 3s)
+    private val SKIP_CIRCUIT_BREAKER_MS = 2_000L       // [v2.2.6] 2s breaker (was 3s)
+    private val SKIP_DEBOUNCE_MS = 300L                 // [v2.2.6] 300ms debounce (was 500ms)
+    private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 2_000L // [v2.2.6] 2s (was 3s)
     private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L
-    private val STORM_REQUEST_THRESHOLD = 5  // trip breaker if 5+ requests during blackout
-    private val POST_BREAKER_COOLDOWN_MS = 30_000L  // [v2.0.88] 30s post-resume cooldown
-    private val POST_BREAKER_MIN_INTERVAL_MS = 2_000L  // [v2.0.88] min 2s between skips during cooldown
+    private val STORM_REQUEST_THRESHOLD = 10            // [v2.2.6] 10 requests to trip (was 5)
+    private val POST_BREAKER_COOLDOWN_MS = 10_000L      // [v2.2.6] 10s cooldown (was 30s)
+    private val POST_BREAKER_MIN_INTERVAL_MS = 1_000L   // [v2.2.6] 1s min interval (was 2s)
     // [v2.0.91] Consecutive backward skip protection: prevent "frog-boiling" step-down to 0
-    private val MAX_CONSECUTIVE_BACKWARD_SKIPS = 6
-    private val CONSECUTIVE_BACKWARD_WINDOW_MS = 10_000L  // >6 backward skips within 10s = storm (was 3, too aggressive for legitimate use)
+    private val MAX_CONSECUTIVE_BACKWARD_SKIPS = 10     // [v2.2.6] 10 (was 6)
+    private val CONSECUTIVE_BACKWARD_WINDOW_MS = 10_000L
     private var consecutiveBackwardSkips = 0
     private var firstBackwardSkipWindowStart = 0L
     private var skipRequestCount = 0
@@ -891,8 +893,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun triggerPreCache() {
         val now = System.currentTimeMillis()
-        if (now - lastPreCacheCheckTime < 30_000) {
-            // Throttle: don't re-check within 30 seconds
+        if (now - lastPreCacheCheckTime < 120_000) {
+            // [v2.2.6] Throttle: don't re-check within 2 minutes (was 30s, too frequent)
             return
         }
         lastPreCacheCheckTime = now
@@ -912,9 +914,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // Re-entrancy guard: prevent infinite recursion / concurrent pre-cache chains
+        // [v2.2.6] Re-entrancy guard: prevent infinite recursion / concurrent pre-cache chains
+        // Also prevent resetting precacheCompletedCount when already running
         if (isPrecaching) {
             Log.d(TAG, "Pre-cache: already running, skipping duplicate trigger")
+            writeServiceLog("notification", "triggerPreCache: SKIP (already running, currentCount=$precacheCompletedCount)")
             return
         }
 

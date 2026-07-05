@@ -1311,14 +1311,10 @@ class PlayerActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             if (subtitleProcessing) return@setOnClickListener
-            // [v2.1.3] Clear old subtitles before regenerating
-            try {
-                RadioDatabaseHelper.getInstance(this).deleteTranscriptsByEpisode(episode.id)
-                clearSubtitles()
-                writeEpisodeLog("btnGenerateSubtitle: cleared old subtitles for ${episode.id}")
-            } catch (e: Exception) {
-                writeEpisodeLog("btnGenerateSubtitle: failed to clear old subtitles: ${e.message}")
-            }
+            // [v2.2.6] DO NOT clear old subtitles before generating.
+            // If generation fails or produces 0 subtitles, old subtitles are preserved.
+            // Subtitles are replaced only when new ones are successfully generated (in onComplete).
+            writeEpisodeLog("btnGenerateSubtitle: starting generation for ${episode.id} (old subtitles preserved until new ones complete)")
             startAiProcessing("subtitle")
             bindSubtitleService(episode, "subtitle")
         }
