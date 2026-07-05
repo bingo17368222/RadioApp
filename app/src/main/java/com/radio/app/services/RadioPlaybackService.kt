@@ -3430,34 +3430,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun seekTo(pos: Long) {
         if (isLive) return
         val now = System.currentTimeMillis()
-        // [v2.0.91] Strengthened anti-seek-storm protection:
-        // 1) Ignore duplicate seeks to the same position within 500ms
-        // 2) Use maxKnownPosition (monotonic, never decreases) for zeroStorm detection —
-        //    prevents "frog-boiling" where each small backward skip lowers authoritativePosition
-        //    until the 30s threshold is bypassed
-        // 3) Large backward jump detection: block seeks backward >45s (3x skipSeconds) unless
-        //    it's a legitimate position restore (within 5s of last restore)
-        // 4) Rate-limit: max 1 seek per 200ms
+        // [v2.1.7] Removed largeBackward and zeroStorm anti-seek-storm protections.
+        // These protections blocked ALL legitimate backward seeks >45s, including:
+        // - Previous segment button (segment jumps are typically 15min = 900s apart)
+        // - Progress bar drag to earlier position
+        // - Search result jump to a specific timestamp
+        // Only keep rate-limiting (200ms) and duplicate detection (500ms same pos).
         val dupSamePos = (pos == lastSeekTargetPos) && (now - lastSeekCallTime < 500L)
-        // [v2.0.91] Use maxKnownPosition (monotonic) instead of authoritativePosition
-        val zeroStorm = (pos < 2000L) && (maxKnownPosition > 30000L) && (now - lastPositionRestoreTime > 5000L)
         val rateLimited = (now - lastSeekCallTime < 200L) && lastSeekCallTime > 0
-        // [v2.0.91] Large backward jump: >45s backward jump when we know position >60s
-        val largeBackward = (authoritativePosition - pos > 45000L) && (maxKnownPosition > 60000L) && (now - lastPositionRestoreTime > 5000L)
         if (dupSamePos) {
-            writeServiceLog("playback", "[v2.0.91] seekTo: DROPPED duplicate seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
-            return
-        }
-        if (zeroStorm) {
-            writeServiceLog("playback", "[v2.0.91] seekTo: DROPPED seekTo($pos) zeroStorm - maxKnown=$maxKnownPosition >30s, ignoring (likely misfire)")
-            return
-        }
-        if (largeBackward) {
-            writeServiceLog("playback", "[v2.0.91] seekTo: DROPPED large backward jump: authPos=$authoritativePosition -> $pos (maxKnown=$maxKnownPosition)")
+            writeServiceLog("playback", "[v2.1.7] seekTo: DROPPED duplicate seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
             return
         }
         if (rateLimited) {
-            writeServiceLog("playback", "[v2.0.91] seekTo: DROPPED rate-limited seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
+            writeServiceLog("playback", "[v2.1.7] seekTo: DROPPED rate-limited seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
             return
         }
         lastSeekCallTime = now

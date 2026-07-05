@@ -141,10 +141,10 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
 
                     val stationName = EpisodeApiService.getStationName(info.stationId)
 
-                    // [v2.1.6] Build informative title: station name + date + time
+                    // [v2.1.7] Build informative title: station name + date
                     val title = "$stationName ${info.date}"
 
-                    // [v2.1.6] Extract the matched text snippet with context
+                    // [v2.1.7] Extract the matched text snippet with context
                     val fullText = t.text ?: ""
                     val queryIdx = fullText.indexOf(q, ignoreCase = true)
                     val matchedText = if (queryIdx >= 0) {
@@ -155,9 +155,10 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         fullText.take(60) + if (fullText.length > 60) "..." else ""
                     }
 
-                    // [v2.1.6] Build display info with time
+                    // [v2.1.7] Build display info: station name, time slot, playback position
                     val timeStr = formatTime(t.segmentStart)
-                    val displayStation = "$stationName | ${info.date} | $timeStr"
+                    val timeSlotDisplay = info.timeSlot.replace("_", "-")
+                    val displayStation = "$stationName | ${timeSlotDisplay} | 播放位置: $timeStr"
 
                     val r = SearchResult().apply {
                         id = epId
