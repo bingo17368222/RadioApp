@@ -2534,7 +2534,7 @@ class SubtitleGeneratorService : Service() {
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
             val chunkByteSize = chunkSize * 2  // 160000 bytes per 5s chunk
 
-            logToFile("processWhisperInChunks: [v2.1.4] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=auto, n_max_text_ctx=512, max_tokens=64 in JNI), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.1.9] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (audio_ctx=128, single_segment=true, n_threads=2, n_max_text_ctx=256 in JNI), offsetMs=$whisperOffsetMs")
 
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.
@@ -2618,9 +2618,11 @@ class SubtitleGeneratorService : Service() {
 
                 var chunkSuccess = false
                 try {
+                    // [v2.1.9] Add logging right before JNI call to pinpoint crash location
+                    logToFile("processWhisperInChunks: [v2.1.9] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
                     // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=50)
                     val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
-                    logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: bridge.full returned $result")
+                    logToFile("processWhisperInChunks: [v2.1.9] chunk $chunkIdx: AFTER bridge.full returned $result")
 
                     if (result == 0) {
                         val nSeg = bridge.fullNSegments(ctxPtr)

@@ -612,7 +612,11 @@ class PlayerActivity : AppCompatActivity() {
                 if (!audioUrl.isNullOrBlank()) {
                     currentEpisode?.let { episode ->
                         if (isFreshStart) {
-                            playbackService?.playEpisode(episode, false)
+                            // [v2.1.9] If pendingSeekMs from search, use it as start position
+                            val startPos = if (pendingSeekMs > 0) pendingSeekMs else -1L
+                            writeJitterLog("onServiceConnected: isFreshStart, playEpisode with startPos=$startPos (pendingSeekMs=$pendingSeekMs)")
+                            playbackService?.playEpisode(episode, false, startPos)
+                            if (pendingSeekMs > 0) pendingSeekMs = -1L  // Clear after use
                         } else {
                             var savedPosition = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
                             // [v2.0.76] Issue 1 Fix: When restoring from killed service, prefer Activity's cached
