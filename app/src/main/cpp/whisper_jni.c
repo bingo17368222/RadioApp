@@ -264,21 +264,26 @@ static void setup_params(struct whisper_full_params* params) {
          (int)params->strategy, sizeof(struct whisper_full_params));
 
     // Override core early fields for Chinese streaming ASR.
-    // These fields are at the beginning of the struct and have been stable since
-    // the earliest whisper.cpp versions. The defaults came from the library, so
-    // field offsets are guaranteed correct for this library version.
+    // [v2.3.2] Key parameter fixes for "0 segments" issue:
+    // - single_segment=false: let Whisper manage segments naturally (true forces 1 segment
+    //   which can cause 0 output when audio doesn't fit a single segment cleanly)
+    // - no_context=false: allow Whisper to use internal context between calls (important
+    //   for streaming; we reset context at episode boundaries by recreating ctx)
+    // - audio_ctx=768: limit audio context tokens to prevent excessive memory allocation
+    //   (0 = default which is 1500 tokens = 30s, way too much for 10s chunks)
+    // - n_threads=2: safe for mobile
     params->strategy         = WHISPER_SAMPLING_GREEDY;
     params->n_threads        = 2;
     params->translate        = false;
-    params->no_context       = true;        // Streaming chunks are independent
-    params->single_segment   = true;        // Force single segment per chunk (streaming)
+    params->no_context       = false;       // [v2.3.2] Allow context for better recognition
+    params->single_segment   = false;       // [v2.3.2] Don't force single segment
     params->print_special    = false;
     params->print_progress   = false;
     params->print_realtime   = false;
     params->print_timestamps = false;
     params->token_timestamps = false;
     params->debug_mode       = false;
-    params->audio_ctx        = 0;           // Use default audio context
+    params->audio_ctx        = 768;         // [v2.3.2] Limit audio context (~15s) instead of 0=auto(30s)
 
     params->language         = "zh";
     params->detect_language  = false;
@@ -373,6 +378,10 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     int result = full_func(ctx, params, sample_data, n_samples);
 
     NLOGI("full: whisper_full returned %d", result);
+    if (result == 0 && nseg_func) {
+        int n = nseg_func(ctx);
+        NLOGI("full: whisper_full_n_segments = %d", n);
+    }
     if (result != 0) {
         NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f, lang=%s)",
              result, n_samples, abs_max, params.language ? params.language : "(null)");

@@ -370,7 +370,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // - After cooldown: NO LIMITS on user clicks (per user requirement #3).
     // [v2.2.6] Relaxed skip protection parameters to prevent false-positive blocking of legitimate skips.
     // Previous values were too aggressive: 3s blackout + 5 requests + 30s cooldown blocked normal usage.
-    private val POST_RESUME_BLACKOUT_MS = 0L           // [v2.2.8] DISABLED blackout (was 1s) - it blocked the first legitimate skip after resume
+    private val POST_RESUME_BLACKOUT_MS = 2000L        // [v2.3.2] Re-enabled 2s blackout: blocks spurious media button replays after app resume that caused 15s back-seeks
     private val SKIP_CIRCUIT_BREAKER_MS = 2_000L       // [v2.2.6] 2s breaker
     private val SKIP_DEBOUNCE_MS = 200L                 // [v2.2.8] 200ms debounce (was 300ms)
     private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 2_000L // [v2.2.6] 2s (was 3s)
@@ -719,66 +719,76 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             }
                         }
                         override fun onPlayerError(error: PlaybackException) {
-                            Log.e(TAG, "ExoPlayer error: ${error.message}")
-                            writeServiceLog("playback", "onPlayerError: ${error.message}, retryCount=$errorRetryCount")
-                            prepared = false
-                            errorRetryCount++
-                            // [v2.3.1] Cancel any previous pending retry (null-safe)
-                            retryRunnable?.let { retryHandler?.removeCallbacks(it) }
-                            retryRunnable = null
-                            if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
-                                isRetrying = true
-                                val retryDelay = errorRetryCount * 3000L
-                                writeServiceLog("playback", "onPlayerError: scheduling retry #$errorRetryCount in ${retryDelay}ms")
-                                retryHandler = Handler(Looper.getMainLooper())
-                                val runnable = Runnable {
-                                    retryRunnable = null
-                                    if (isRetrying) {  // Don't retry if user already switched
-                                        try {
-                                            player?.let {
-                                                it.stop()
-                                                it.clearMediaItems()
-                                                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                                                it.playWhenReady = true
-                                                it.prepare()
-                                                it.play()
+                            try {
+                                val errMsg = try { error.message ?: "unknown error" } catch (_: Exception) { "unknown error" }
+                                Log.e(TAG, "ExoPlayer error: $errMsg")
+                                writeServiceLog("playback", "onPlayerError: $errMsg, retryCount=$errorRetryCount")
+                                prepared = false
+                                errorRetryCount++
+
+                                // Cancel any previous pending retry (fully null-safe)
+                                try {
+                                    retryRunnable?.let { r ->
+                                        retryHandler?.removeCallbacks(r)
+                                    }
+                                } catch (_: Exception) {}
+                                retryRunnable = null
+
+                                if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
+                                    isRetrying = true
+                                    val retryDelay = errorRetryCount * 3000L
+                                    writeServiceLog("playback", "onPlayerError: scheduling retry #$errorRetryCount in ${retryDelay}ms")
+                                    try {
+                                        retryHandler = Handler(Looper.getMainLooper())
+                                    } catch (_: Exception) {}
+                                    val runnable = Runnable {
+                                        retryRunnable = null
+                                        if (isRetrying) {
+                                            try {
+                                                player?.let {
+                                                    it.stop()
+                                                    it.clearMediaItems()
+                                                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                                                    it.playWhenReady = true
+                                                    it.prepare()
+                                                    it.play()
+                                                }
+                                                writeServiceLog("playback", "onPlayerError: retry #${errorRetryCount} executed")
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Retry failed", e)
+                                                writeServiceLog("playback", "onPlayerError: retry exception: ${e.message}")
+                                                isRetrying = false
+                                                playbackInitializing = false
+                                                episodeSwitching = false
+                                                try { callback?.onError("播放重试失败: ${e.message ?: "未知错误"}") } catch (_: Exception) {}
                                             }
-                                            writeServiceLog("playback", "onPlayerError: retry #${errorRetryCount} executed")
-                                        } catch (e: Exception) {
-                                            Log.e(TAG, "Retry failed", e)
-                                            writeServiceLog("playback", "onPlayerError: retry exception: ${e.message}")
-                                            // [v2.3.1] On retry exception, stop retrying and report error.
-                                            // Don't leave player in a stuck state with isRetrying=true.
-                                            isRetrying = false
-                                            playbackInitializing = false
-                                            episodeSwitching = false
-                                            callback?.onError("播放重试失败: ${e.message ?: "未知错误"}")
                                         }
                                     }
+                                    retryRunnable = runnable
+                                    try {
+                                        retryHandler?.postDelayed(runnable, retryDelay)
+                                    } catch (_: Exception) {}
+                                } else {
+                                    writeServiceLog("playback", "onPlayerError: max retries reached, releasing player for clean recovery")
+                                    isRetrying = false
+                                    playbackInitializing = false
+                                    episodeSwitching = false
+                                    // Release player safely - post to avoid doing dangerous ops inside error callback
+                                    val brokenPlayer = player
+                                    player = null
+                                    try {
+                                        brokenPlayer?.stop()
+                                        brokenPlayer?.clearMediaItems()
+                                    } catch (_: Exception) {}
+                                    try {
+                                        brokenPlayer?.release()
+                                    } catch (_: Exception) {}
+                                    try { callback?.onError("播放失败: $errMsg") } catch (_: Exception) {}
                                 }
-                                retryRunnable = runnable
-                                retryHandler?.postDelayed(runnable, retryDelay)
-                            } else {
-                                // [v2.3.1] Final failure: reset ALL state, stop player, and release
-                                // so next playEpisode() creates a fresh player instance.
-                                writeServiceLog("playback", "onPlayerError: max retries reached, releasing player for clean recovery")
-                                isRetrying = false
-                                playbackInitializing = false
-                                episodeSwitching = false
-                                try {
-                                    player?.stop()
-                                    player?.clearMediaItems()
-                                } catch (_: Exception) {}
-                                // [v2.3.1] Release the broken player instance.
-                                // ensurePlayerInitialized() will create a fresh one on next playEpisode().
-                                try {
-                                    player?.removeListener(this)
-                                } catch (_: Exception) {}
-                                try {
-                                    player?.release()
-                                } catch (_: Exception) {}
-                                player = null
-                                callback?.onError("播放失败: ${error.message ?: "未知错误"}")
+                            } catch (e: Exception) {
+                                // Ultimate safety: never let onPlayerError crash the app
+                                Log.e(TAG, "onPlayerError internal error", e)
+                                try { player = null } catch (_: Exception) {}
                             }
                         }
                         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -3140,8 +3150,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) { Log.e(TAG, "playStation failed", e) }
     }
 
-    fun playEpisode(episode: Episode, live: Boolean, startPositionMs: Long = -1L) {
-        Log.d(TAG, "playEpisode called: ${episode.title}, playbackStarted before: $playbackStarted, prepared=$prepared, url=${episode.audioUrl}, startPositionMs=$startPositionMs")
+    fun playEpisode(episode: Episode?, live: Boolean, startPositionMs: Long = -1L) {
+        // [v2.3.2] Null-safety: episode can be null in rare race conditions
+        if (episode == null) {
+            Log.e(TAG, "playEpisode: episode is NULL, ignoring")
+            writeServiceLog("playback", "playEpisode: episode is NULL, ignoring")
+            return
+        }
+        val epTitle = try { episode.title ?: "unknown" } catch (_: Exception) { "unknown" }
+        val epAudioUrl = try { episode.audioUrl ?: "" } catch (_: Exception) { "" }
+        Log.d(TAG, "playEpisode called: $epTitle, playbackStarted before: $playbackStarted, prepared=$prepared, url=$epAudioUrl, startPositionMs=$startPositionMs")
+        if (epAudioUrl.isEmpty()) {
+            Log.e(TAG, "playEpisode: episode audioUrl is empty, ignoring")
+            writeServiceLog("playback", "playEpisode: audioUrl is empty for $epTitle")
+            try { callback?.onError("节目音频URL为空") } catch (_: Exception) {}
+            return
+        }
 
         // [v2.0.73] Issue 1 Fix: Debounce rapid playEpisode calls for the SAME episode within 500ms.
         // When PlayerActivity reconnects or user taps quickly, duplicate calls cause player reset/prepare
@@ -3157,8 +3181,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         firstBackwardSkipWindowStart = now
         val epId = episode.id ?: ""
         if (epId == lastPlayEpisodeEpisodeId && now - lastPlayEpisodeTime < 500) {
-            Log.d(TAG, "playEpisode: [v2.0.73] debounced duplicate call for ${episode.title} (${now - lastPlayEpisodeTime}ms ago), skipping")
-            writeServiceLog("playback", "playEpisode: [v2.0.73] DEBOUNCED duplicate for ${episode.id}")
+            Log.d(TAG, "playEpisode: [v2.0.73] debounced duplicate call for $epTitle (${now - lastPlayEpisodeTime}ms ago), skipping")
+            writeServiceLog("playback", "playEpisode: [v2.0.73] DEBOUNCED duplicate for $epId")
             return
         }
         lastPlayEpisodeEpisodeId = epId

@@ -116,6 +116,13 @@ class SubtitleGeneratorService : Service() {
     private val activeTasks = ConcurrentHashMap<String, TaskContext>()
     private val globalCancelled = AtomicBoolean(false)
 
+    // [v2.3.2] Global Whisper lock to prevent concurrent Whisper instances.
+    // Whisper model (base ~140MB, tiny ~40MB) consumes massive native+Java memory.
+    // Running two instances simultaneously (subtitle + segment tasks) causes OOM
+    // where heap drops to 0-1MB and whisper_full() silently returns 0 segments.
+    private val whisperLock = Object()
+    @Volatile private var whisperInUse = false
+
     override fun onCreate() {
         super.onCreate()
         // [v2.0.43] Issue 7: Use unified log directory for all crash logs
@@ -2595,8 +2602,13 @@ class SubtitleGeneratorService : Service() {
             // single_segment=false lets Whisper manage segments internally.
             // [v2.2.3] Use 4-second chunks (64000 samples).
             // [v2.3.0-fix] STRICT mode: consecutive failures abort with error (no engine switching).
-            // 4s = 64000 samples = 256KB float buffer, manageable memory footprint.
-            val chunkSize = 4 * 16000  // 4 seconds per chunk (64000 samples)
+            // [v2.3.2] Use 10-second chunks (160000 samples). Root cause of "0 segments" issue:
+            // 4s chunks were too short for Whisper's internal VAD to detect Chinese speech reliably.
+            // Additionally, two concurrent Whisper instances (subtitle task + segment task) were
+            // running simultaneously, exhausting Java heap to 0-1MB, causing silent failures where
+            // whisper_full() returned 0 but produced 0 segments due to OOM.
+            // 10s chunks provide better speech context, and we also add concurrency guard below.
+            val chunkSize = 10 * 16000  // 10 seconds per chunk (160000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2621,8 +2633,8 @@ class SubtitleGeneratorService : Service() {
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
-                if (samplesToRead < 8000) {  // [v2.2.6] 0.5s threshold for 4s chunks
-                    logToFile("processWhisperInChunks: [v2.2.6] last chunk too small ($samplesToRead samples), skipping")
+                if (samplesToRead < 32000) {  // [v2.3.2] 2s threshold for 10s chunks
+                    logToFile("processWhisperInChunks: [v2.3.2] last chunk too small ($samplesToRead samples), skipping")
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
