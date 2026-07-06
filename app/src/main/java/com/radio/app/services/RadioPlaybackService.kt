@@ -220,6 +220,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var skipSeconds = 15
     private var errorRetryCount = 0
     private var isRetrying = false
+    // [v2.3.0-fix] Cancel pending retry when switching episodes to prevent old retry from interrupting new playback
+    private var retryHandler: Handler? = null
+    private var retryRunnable: Runnable? = null
     private var savePlaybackPosition = true
     private var notificationPlaying = false
     private var userPaused = false // Track whether USER paused (vs buffering pause)
@@ -717,20 +720,42 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                         override fun onPlayerError(error: PlaybackException) {
                             Log.e(TAG, "ExoPlayer error: ${error.message}")
+                            writeServiceLog("playback", "onPlayerError: ${error.message}, retryCount=$errorRetryCount")
                             prepared = false
                             errorRetryCount++
+                            // [v2.3.0-fix] Cancel any previous pending retry
+                            retryHandler?.removeCallbacks(retryRunnable!!)
+                            retryRunnable = null
                             if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
                                 isRetrying = true
-                                Handler(Looper.getMainLooper()).postDelayed({
-                                    try {
-                                        player?.let {
-                                            it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                                            it.prepare()
-                                            it.play()
+                                val retryDelay = errorRetryCount * 3000L
+                                writeServiceLog("playback", "onPlayerError: scheduling retry #$errorRetryCount in ${retryDelay}ms")
+                                retryHandler = Handler(Looper.getMainLooper())
+                                val runnable = Runnable {
+                                    retryRunnable = null
+                                    if (isRetrying) {  // Don't retry if user already switched
+                                        try {
+                                            player?.let {
+                                                it.stop()
+                                                it.clearMediaItems()
+                                                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                                                it.prepare()
+                                                it.play()
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Retry failed", e)
+                                            writeServiceLog("playback", "onPlayerError: retry exception: ${e.message}")
                                         }
-                                    } catch (e: Exception) { Log.e(TAG, "Retry failed", e) }
-                                }, errorRetryCount * 3000L)
+                                    }
+                                }
+                                retryRunnable = runnable
+                                retryHandler?.postDelayed(runnable, retryDelay)
                             } else {
+                                // [v2.3.0-fix] Reset all state flags on final failure
+                                writeServiceLog("playback", "onPlayerError: max retries reached, reporting error")
+                                isRetrying = false
+                                playbackInitializing = false
+                                episodeSwitching = false
                                 callback?.onError("播放失败: ${error.message ?: "未知错误"}")
                             }
                         }
@@ -3068,11 +3093,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         playbackStarted = true
         userPaused = false // Starting new playback, not user-paused
         errorRetryCount = 0; isRetrying = false; stopAutoSkipCheck()
+        // [v2.3.0-fix] Cancel pending retry from previous failed playback
+        retryHandler?.removeCallbacks(retryRunnable!!)
+        retryRunnable = null
+        playbackInitializing = false
+        episodeSwitching = false
         positionRestoreRequested = false
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         ensurePlayerInitialized()
         try {
             player?.let {
+                // [v2.3.0-fix] Stop and clear previous media before setting new one.
+                // This ensures ExoPlayer exits any error state from a previous failed episode,
+                // preventing cascading playback failures.
+                try { it.stop() } catch (_: Exception) {}
+                it.clearMediaItems()
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 it.prepare(); it.playWhenReady = true
             }
@@ -3123,7 +3158,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
-        // [v2.0.94] Set episodeSwitching flag to prevent getSafeDuration() from using stale player.duration
+        // [v2.3.0-fix] Cancel any pending retry from previous failed episode
+        retryHandler?.removeCallbacks(retryRunnable!!)
+        retryRunnable = null
+        // [v2.3.0-fix] Reset all state flags that could block new playback
+        playbackInitializing = false
         episodeSwitching = !isSameEpisode
         // [v2.0.75] Issue 5 Fix: When switching to a DIFFERENT episode (cross-day), reset
         // authoritativePosition to startPositionMs (or 0) so notification doesn't show old episode's
@@ -3262,6 +3301,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         ensurePlayerInitialized()
         try {
             player?.let {
+                // [v2.3.0-fix] Stop and clear previous media before setting new one.
+                // This ensures ExoPlayer exits any error state from a previous failed episode,
+                // preventing cascading playback failures.
+                try { it.stop() } catch (_: Exception) {}
+                it.clearMediaItems()
                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                 if (startPositionMs >= 0) {
                     // [v2.2.2] Set playWhenReady=true so playback starts after seek

@@ -108,18 +108,22 @@ static void whisper_log_cb(ggml_log_level level, const char* text, void* user_da
 }
 
 // Function pointer types for dynamically loaded libwhisper.so
+// [v2.3.0-fix] CRITICAL ABI FIX: whisper_full() takes whisper_full_params BY VALUE.
+// On ARM64 AAPCS, structs >16 bytes are passed by reference (pointer to caller copy).
+// To avoid sizeof(struct whisper_full_params) mismatch between our stub header and the
+// precompiled libwhisper.so, we declare the 2nd parameter as `void*` and pass a pointer
+// to the library-allocated params buffer (from whisper_full_default_params_by_ref).
+// This guarantees the memory layout exactly matches what the library expects.
 typedef struct whisper_context* (*whisper_init_from_file_with_params_t)(
     const char* path_model, struct whisper_context_params params);
 typedef int (*whisper_full_t)(
-    struct whisper_context* ctx, struct whisper_full_params params,
+    struct whisper_context* ctx, void* params,
     const float* samples, int n_samples);
 typedef int (*whisper_full_n_segments_t)(struct whisper_context* ctx);
 typedef const char* (*whisper_full_get_segment_text_t)(struct whisper_context* ctx, int i_segment);
 typedef int64_t (*whisper_full_get_segment_t0_t)(struct whisper_context* ctx, int i_segment);
 typedef int64_t (*whisper_full_get_segment_t1_t)(struct whisper_context* ctx, int i_segment);
 typedef void (*whisper_free_t)(struct whisper_context* ctx);
-typedef struct whisper_full_params (*whisper_full_default_params_t)(
-    enum whisper_sampling_strategy strategy);
 typedef struct whisper_full_params* (*whisper_full_default_params_by_ref_t)(
     enum whisper_sampling_strategy strategy);
 typedef void (*whisper_free_params_t)(struct whisper_full_params* params);
@@ -135,7 +139,6 @@ static whisper_full_get_segment_text_t text_func = NULL;
 static whisper_full_get_segment_t0_t t0_func = NULL;
 static whisper_full_get_segment_t1_t t1_func = NULL;
 static whisper_free_t free_func = NULL;
-static whisper_full_default_params_t params_func = NULL;
 static whisper_full_default_params_by_ref_t params_by_ref_func = NULL;
 static whisper_free_params_t free_params_func = NULL;
 static whisper_context_default_params_t ctx_params_func = NULL;
@@ -171,24 +174,23 @@ static int load_whisper_funcs() {
     t0_func             = (whisper_full_get_segment_t0_t)         dlsym(whisper_lib, "whisper_full_get_segment_t0");
     t1_func             = (whisper_full_get_segment_t1_t)         dlsym(whisper_lib, "whisper_full_get_segment_t1");
     free_func           = (whisper_free_t)                        dlsym(whisper_lib, "whisper_free");
-    params_func         = (whisper_full_default_params_t)         dlsym(whisper_lib, "whisper_full_default_params");
     params_by_ref_func  = (whisper_full_default_params_by_ref_t)  dlsym(whisper_lib, "whisper_full_default_params_by_ref");
     free_params_func    = (whisper_free_params_t)                 dlsym(whisper_lib, "whisper_free_params");
     ctx_params_func     = (whisper_context_default_params_t)      dlsym(whisper_lib, "whisper_context_default_params");
     system_info_func    = (whisper_print_system_info_t)           dlsym(whisper_lib, "whisper_print_system_info");
     log_set_func        = (whisper_log_set_t)                     dlsym(whisper_lib, "whisper_log_set");
 
-    NLOGI("load_whisper_funcs: init=%p full=%p nseg=%p text=%p free=%p params=%p params_by_ref=%p free_params=%p sysinfo=%p log_set=%p",
+    NLOGI("load_whisper_funcs: init=%p full=%p nseg=%p text=%p free=%p params_by_ref=%p free_params=%p sysinfo=%p log_set=%p",
          (void*)init_func, (void*)full_func, (void*)nseg_func, (void*)text_func, (void*)free_func,
-         (void*)params_func, (void*)params_by_ref_func, (void*)free_params_func, (void*)system_info_func, (void*)log_set_func);
+         (void*)params_by_ref_func, (void*)free_params_func, (void*)system_info_func, (void*)log_set_func);
 
     if (!init_func || !full_func || !nseg_func || !text_func || !free_func) {
         NLOGE("load_whisper_funcs: one or more required symbols not found");
         return 0;
     }
-    // Need either params_func or params_by_ref_func to get defaults
-    if (!params_func && !params_by_ref_func) {
-        NLOGE("load_whisper_funcs: neither whisper_full_default_params nor whisper_full_default_params_by_ref found");
+    // [v2.3.0-fix] We ONLY use by_ref to avoid ABI mismatch with by-value params
+    if (!params_by_ref_func) {
+        NLOGE("load_whisper_funcs: whisper_full_default_params_by_ref not found - required for ABI-safe calls");
         return 0;
     }
 
@@ -245,209 +247,75 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.3.0] Build params safely with manual field-by-field assignment
-// This avoids ABI mismatch issues from memcpy between different-sized structs.
-// We only set fields that exist in the earliest whisper.cpp versions.
-// Strategy: start with zero-init, get defaults from library (if available), then
-// override only the core fields we care about using known-stable offsets.
-static void build_safe_params(struct whisper_full_params* params) {
-    // Start with all zeros
-    memset(params, 0, sizeof(struct whisper_full_params));
-
-    // [v2.3.0] Try to get defaults from the library to ensure version-specific
-    // defaults are correct. We copy ONLY the fields we know about, not the entire struct.
-    if (params_by_ref_func) {
-        NLOGI("build_safe_params: getting defaults via by_ref");
-        struct whisper_full_params* ref = params_by_ref_func(WHISPER_SAMPLING_GREEDY);
-        if (ref) {
-            // Copy ONLY early stable fields (up to and including beam_search.patience).
-            // We know these fields exist in all whisper.cpp versions that have by_ref.
-            // Offsets are determined by our header, but since by_ref returns a pointer
-            // from the library, its layout matches the library's binary interface.
-            // We copy field by field to be safe.
-            params->strategy = ref->strategy;
-            params->n_threads = ref->n_threads;
-            params->n_max_text_ctx = ref->n_max_text_ctx;
-            params->offset_ms = ref->offset_ms;
-            params->duration_ms = ref->duration_ms;
-            params->translate = ref->translate;
-            params->no_context = ref->no_context;
-            params->no_timestamps = ref->no_timestamps;
-            params->single_segment = ref->single_segment;
-            params->print_special = ref->print_special;
-            params->print_progress = ref->print_progress;
-            params->print_realtime = ref->print_realtime;
-            params->print_timestamps = ref->print_timestamps;
-            params->token_timestamps = ref->token_timestamps;
-            params->thold_pt = ref->thold_pt;
-            params->thold_ptsum = ref->thold_ptsum;
-            params->max_len = ref->max_len;
-            params->split_on_word = ref->split_on_word;
-            params->max_tokens = ref->max_tokens;
-            params->debug_mode = ref->debug_mode;
-            params->audio_ctx = ref->audio_ctx;
-            // tdrz_enable may not exist in older libs - if the lib doesn't have it,
-            // this offset is wrong, but we set it to 0/false explicitly below anyway
-            params->suppress_regex = NULL;  // Always NULL for safety
-            params->initial_prompt = NULL;
-            params->prompt_tokens = NULL;
-            params->prompt_n_tokens = 0;
-            params->language = ref->language;
-            params->detect_language = ref->detect_language;
-            params->suppress_blank = ref->suppress_blank;
-            params->suppress_non_speech_tokens = ref->suppress_non_speech_tokens;
-            params->temperature = ref->temperature;
-            params->max_initial_ts = ref->max_initial_ts;
-            params->length_penalty = ref->length_penalty;
-            params->temperature_inc = ref->temperature_inc;
-            params->entropy_thold = ref->entropy_thold;
-            params->logprob_thold = ref->logprob_thold;
-            params->no_speech_thold = ref->no_speech_thold;
-            params->greedy.best_of = ref->greedy.best_of;
-            params->beam_search.beam_size = ref->beam_search.beam_size;
-            params->beam_search.patience = ref->beam_search.patience;
-            // Free the library-allocated params
-            if (free_params_func) {
-                free_params_func(ref);
-            }
-            NLOGI("build_safe_params: copied defaults from by_ref, strategy=%d", (int)params->strategy);
-        } else {
-            NLOGE("build_safe_params: by_ref returned NULL");
-        }
-    } else if (params_func) {
-        NLOGI("build_safe_params: getting defaults via by-value");
-        struct whisper_full_params defaults = params_func(WHISPER_SAMPLING_GREEDY);
-        // Copy field by field
-        params->strategy = defaults.strategy;
-        params->n_threads = defaults.n_threads;
-        params->n_max_text_ctx = defaults.n_max_text_ctx;
-        params->offset_ms = defaults.offset_ms;
-        params->duration_ms = defaults.duration_ms;
-        params->translate = defaults.translate;
-        params->no_context = defaults.no_context;
-        params->no_timestamps = defaults.no_timestamps;
-        params->single_segment = defaults.single_segment;
-        params->print_special = defaults.print_special;
-        params->print_progress = defaults.print_progress;
-        params->print_realtime = defaults.print_realtime;
-        params->print_timestamps = defaults.print_timestamps;
-        params->token_timestamps = defaults.token_timestamps;
-        params->thold_pt = defaults.thold_pt;
-        params->thold_ptsum = defaults.thold_ptsum;
-        params->max_len = defaults.max_len;
-        params->split_on_word = defaults.split_on_word;
-        params->max_tokens = defaults.max_tokens;
-        params->debug_mode = defaults.debug_mode;
-        params->audio_ctx = defaults.audio_ctx;
-        params->suppress_regex = NULL;
-        params->initial_prompt = NULL;
-        params->prompt_tokens = NULL;
-        params->prompt_n_tokens = 0;
-        params->language = defaults.language;
-        params->detect_language = defaults.detect_language;
-        params->suppress_blank = defaults.suppress_blank;
-        params->suppress_non_speech_tokens = defaults.suppress_non_speech_tokens;
-        params->temperature = defaults.temperature;
-        params->max_initial_ts = defaults.max_initial_ts;
-        params->length_penalty = defaults.length_penalty;
-        params->temperature_inc = defaults.temperature_inc;
-        params->entropy_thold = defaults.entropy_thold;
-        params->logprob_thold = defaults.logprob_thold;
-        params->no_speech_thold = defaults.no_speech_thold;
-        params->greedy.best_of = defaults.greedy.best_of;
-        params->beam_search.beam_size = defaults.beam_search.beam_size;
-        params->beam_search.patience = defaults.beam_search.patience;
-        NLOGI("build_safe_params: copied defaults by value, strategy=%d", (int)params->strategy);
-    } else {
-        // No defaults available - set hardcoded safe defaults
-        NLOGE("build_safe_params: no params function available, using hardcoded defaults");
-        params->strategy = WHISPER_SAMPLING_GREEDY;
-        params->n_threads = 2;
-        params->n_max_text_ctx = 16384;
-        params->offset_ms = 0;
-        params->duration_ms = 0;
-        params->translate = false;
-        params->no_context = true;
-        params->no_timestamps = false;
-        params->single_segment = false;
-        params->print_special = false;
-        params->print_progress = false;
-        params->print_realtime = false;
-        params->print_timestamps = false;
-        params->token_timestamps = false;
-        params->thold_pt = 0.01f;
-        params->thold_ptsum = 0.01f;
-        params->max_len = 0;
-        params->split_on_word = false;
-        params->max_tokens = 0;
-        params->debug_mode = false;
-        params->audio_ctx = 0;
-        params->suppress_blank = true;
-        params->suppress_non_speech_tokens = true;
-        params->temperature = 0.0f;
-        params->max_initial_ts = 1.0f;
-        params->length_penalty = -1.0f;
-        params->temperature_inc = 0.2f;
-        params->entropy_thold = 2.4f;
-        params->logprob_thold = -1.0f;
-        params->no_speech_thold = 0.6f;
-        params->greedy.best_of = 1;
-        params->beam_search.beam_size = 1;
-        params->beam_search.patience = -1.0f;
+// [v2.3.0-fix] ABI-SAFE params builder.
+// Strategy:
+//   1. Call whisper_full_default_params_by_ref() to get a pointer to library-owned params
+//      (this memory is allocated by the library itself with the correct size/layout).
+//   2. Override only the early, stable fields we care about directly on that pointer.
+//      Since the pointer belongs to the library, field offsets match the library exactly.
+//   3. Return the pointer to caller; caller passes it DIRECTLY to whisper_full()
+//      (which, per ARM64 AAPCS for structs >16 bytes passed by value, receives a pointer).
+//   4. Caller MUST call whisper_free_params() after whisper_full() returns.
+// Returns NULL on failure.
+static struct whisper_full_params* prepare_params(void) {
+    struct whisper_full_params* ref = NULL;
+    if (!params_by_ref_func) {
+        NLOGE("prepare_params: params_by_ref_func is NULL");
+        return NULL;
     }
+    ref = params_by_ref_func(WHISPER_SAMPLING_GREEDY);
+    if (!ref) {
+        NLOGE("prepare_params: by_ref returned NULL");
+        return NULL;
+    }
+    NLOGI("prepare_params: got default params from by_ref, overriding for Chinese streaming ASR");
 
-    // [v2.3.0] Override with our desired settings for streaming Chinese ASR
-    params->strategy         = WHISPER_SAMPLING_GREEDY;
-    params->n_threads        = 2;
-    params->translate        = false;
-    params->no_context       = true;      // Streaming: chunks independent
-    params->no_timestamps    = false;
-    params->single_segment   = true;      // [v2.3.0] Force single segment for streaming
-    params->print_special    = false;
-    params->print_progress   = false;
-    params->print_realtime   = false;
-    params->print_timestamps = false;
-    params->token_timestamps = false;
-    params->debug_mode       = false;
-    params->audio_ctx        = 0;         // Use default
+    // Override core early fields (these offsets are stable across all whisper.cpp versions
+    // that have whisper_full_default_params_by_ref, as they were present from the start).
+    ref->strategy         = WHISPER_SAMPLING_GREEDY;
+    ref->n_threads        = 2;
+    ref->translate        = false;
+    ref->no_context       = true;        // Streaming chunks are independent
+    ref->single_segment   = true;        // Force single segment per call (streaming)
+    ref->print_special    = false;
+    ref->print_progress   = false;
+    ref->print_realtime   = false;
+    ref->print_timestamps = false;
+    ref->token_timestamps = false;
+    ref->debug_mode       = false;
+    ref->audio_ctx        = 0;           // Use default audio context
 
-    // Language: force Chinese. [v2.3.0] Use auto-detect if "zh" fails, but first try "zh"
-    params->language         = "zh";
-    params->detect_language  = false;
+    ref->language         = "zh";
+    ref->detect_language  = false;
 
-    params->suppress_blank              = true;
-    params->suppress_non_speech_tokens  = true;
-    params->temperature      = 0.0f;
-    params->greedy.best_of   = 1;
-    params->beam_search.beam_size = 1;
+    ref->suppress_blank             = true;
+    ref->suppress_non_speech_tokens = true;
+    ref->temperature                = 0.0f;
+    ref->greedy.best_of             = 1;
+    ref->beam_search.beam_size      = 1;
 
-    // Ensure all pointers are NULL
-    params->initial_prompt   = NULL;
-    params->prompt_tokens    = NULL;
-    params->prompt_n_tokens  = 0;
-    params->suppress_regex   = NULL;
-    params->new_segment_callback           = NULL;
-    params->new_segment_callback_user_data = NULL;
-    params->progress_callback              = NULL;
-    params->progress_callback_user_data    = NULL;
-    params->encoder_begin_callback         = NULL;
-    params->encoder_begin_callback_user_data = NULL;
-    params->abort_callback                 = NULL;
-    params->abort_callback_user_data       = NULL;
-    params->logits_filter_callback         = NULL;
-    params->logits_filter_callback_user_data = NULL;
-    params->grammar_rules                  = NULL;
-    params->n_grammar_rules                = 0;
-    params->i_start_rule                   = 0;
-    params->grammar_penalty                = 0.0f;
+    // NULL out callback/pointer fields to prevent library from calling into stale memory
+    ref->initial_prompt   = NULL;
+    ref->prompt_tokens    = NULL;
+    ref->prompt_n_tokens  = 0;
+    ref->suppress_regex   = NULL;
+    ref->new_segment_callback           = NULL;
+    ref->new_segment_callback_user_data = NULL;
+    ref->progress_callback              = NULL;
+    ref->progress_callback_user_data    = NULL;
+    ref->encoder_begin_callback         = NULL;
+    ref->encoder_begin_callback_user_data = NULL;
+    ref->abort_callback                 = NULL;
+    ref->abort_callback_user_data       = NULL;
+    ref->logits_filter_callback         = NULL;
+    ref->logits_filter_callback_user_data = NULL;
 
-    NLOGI("build_safe_params: n_threads=%d language=%s detect_lang=%d no_context=%d single_segment=%d strategy=%d",
-         params->n_threads,
-         params->language ? params->language : "(null)",
-         (int)params->detect_language,
-         (int)params->no_context,
-         (int)params->single_segment,
-         (int)params->strategy);
+    NLOGI("prepare_params: ready n_threads=%d lang=%s no_context=%d single_segment=%d",
+         ref->n_threads,
+         ref->language ? ref->language : "(null)",
+         (int)ref->no_context,
+         (int)ref->single_segment);
+    return ref;
 }
 
 JNIEXPORT jint JNICALL
@@ -494,19 +362,31 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         return 0;  // Return success with 0 segments - not an error
     }
 
-    // [v2.3.0] Build params safely
-    struct whisper_full_params params;
-    build_safe_params(&params);
+    // [v2.3.0-fix] ABI-SAFE: get params directly from library (no local struct copy)
+    struct whisper_full_params* params = prepare_params();
+    if (!params) {
+        NLOGE("full: prepare_params failed");
+        free(sample_data);
+        return -2;
+    }
 
     NLOGI("full: calling whisper_full, ctx=%p n_samples=%d n_threads=%d lang=%s",
-         (void*)ctx, n_samples, params.n_threads, params.language ? params.language : "(null)");
+         (void*)ctx, n_samples, params->n_threads, params->language ? params->language : "(null)");
 
+    // [v2.3.0-fix] Pass the library-allocated params pointer directly.
+    // On ARM64 AAPCS, large structs passed by value are actually passed via pointer,
+    // so passing `params` (a pointer) matches the calling convention exactly.
     int result = full_func(ctx, params, sample_data, n_samples);
 
     NLOGI("full: whisper_full returned %d", result);
     if (result != 0) {
         NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f, lang=%s)",
-             result, n_samples, abs_max, params.language ? params.language : "(null)");
+             result, n_samples, abs_max, params->language ? params->language : "(null)");
+    }
+
+    // Free the library-allocated params
+    if (free_params_func) {
+        free_params_func(params);
     }
 
     free(sample_data);

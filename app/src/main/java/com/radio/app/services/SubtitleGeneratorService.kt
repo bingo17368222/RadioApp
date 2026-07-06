@@ -569,61 +569,25 @@ class SubtitleGeneratorService : Service() {
                             ctx.log("Using Whisper model: $whisperModel")
                             val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
-                                // [v2.2.6] Whisper failed - auto-fallback to Vosk to ensure subtitles are generated
+                                // [v2.3.0-fix] STRICT mode: NO auto-fallback to other engines.
+                                // Per user requirement: "字幕生成失败时不允许跳转其他模型"
                                 val failReason = ctx.lastErrorDetail ?: "Whisper引擎处理失败（无详细错误）"
                                 ctx.log("Whisper subtitle generation FAILED. Reason: $failReason")
-                                logToFile("generateSubtitlesForEpisode: [v2.2.6] Whisper FAILED, reason=$failReason. Auto-fallback to Vosk.")
-                                // Try Vosk fallback
-                                val voskModel = findVoskModel()
-                                if (voskModel != null) {
-                                    ctx.log("Falling back to Vosk engine...")
-                                    val modelLabel = File(voskModel).name
-                                    currentModelName = modelLabel
-                                    sendSubtitleBroadcast("com.radio.app.SUBTITLE_MODEL_INFO", mapOf(
-                                        "episodeId" to episodeId,
-                                        "modelName" to modelLabel,
-                                        "engineType" to "vosk"
-                                    ))
-                                    val voskSuccess = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
-                                    if (!voskSuccess && !ctx.cancelled.get()) {
-                                        wrappedCallback.onError("Whisper和Vosk均失败。Whisper: $failReason")
-                                        activeTasks.remove(episodeId)
-                                        cleanupTask()
-                                    }
-                                } else {
-                                    wrappedCallback.onError("Whisper字幕生成失败：$failReason。且未找到Vosk模型用于回退。")
-                                    activeTasks.remove(episodeId)
-                                    cleanupTask()
-                                }
+                                logToFile("generateSubtitlesForEpisode: [v2.3.0] Whisper FAILED, reason=$failReason. STRICT mode, NO fallback.")
+                                wrappedCallback.onError("Whisper字幕生成失败：$failReason。请检查模型文件完整性，或在设置中手动切换ASR引擎后重试。")
+                                activeTasks.remove(episodeId)
+                                cleanupTask()
                             }
                         } else {
-                            // [v2.2.6] Whisper model not found - auto-fallback to Vosk
+                            // [v2.3.0-fix] Whisper model not found - STRICT mode, NO fallback
                             val modelsDir = getExternalFilesDir("models")
                             val failReason = "Whisper模型文件未找到（已搜索路径：${modelsDir?.absolutePath}、${filesDir}/engines）"
                             ctx.lastErrorDetail = failReason
                             ctx.log("ERROR: $failReason")
-                            logToFile("generateSubtitlesForEpisode: [v2.2.6] $failReason. Auto-fallback to Vosk.")
-                            val voskModel = findVoskModel()
-                            if (voskModel != null) {
-                                ctx.log("Falling back to Vosk engine (model not found)...")
-                                val modelLabel = File(voskModel).name
-                                currentModelName = modelLabel
-                                sendSubtitleBroadcast("com.radio.app.SUBTITLE_MODEL_INFO", mapOf(
-                                    "episodeId" to episodeId,
-                                    "modelName" to modelLabel,
-                                    "engineType" to "vosk"
-                                ))
-                                val voskSuccess = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
-                                if (!voskSuccess && !ctx.cancelled.get()) {
-                                    wrappedCallback.onError("$failReason。且Vosk也失败。")
-                                    activeTasks.remove(episodeId)
-                                    cleanupTask()
-                                }
-                            } else {
-                                wrappedCallback.onError("$failReason。请在设置→离线引擎管理→下载Whisper引擎或Vosk模型。")
-                                activeTasks.remove(episodeId)
-                                cleanupTask()
-                            }
+                            logToFile("generateSubtitlesForEpisode: [v2.3.0] $failReason. STRICT mode, NO fallback.")
+                            wrappedCallback.onError("$failReason。请在设置→离线引擎管理中下载Whisper模型，或手动切换到其他ASR引擎。")
+                            activeTasks.remove(episodeId)
+                            cleanupTask()
                         }
                         }  // [v2.2.8] end of else (not forceVosk) block
                     }
@@ -2659,9 +2623,8 @@ class SubtitleGeneratorService : Service() {
             // encoder memory by 5x. audio_ctx=50 (1s) in JNI.
             // single_segment=false lets Whisper manage segments internally.
             // [v2.2.3] Use 4-second chunks (64000 samples).
-            // [v2.2.6] Reverted to 4s chunks. 10s chunks caused OOM on devices with <2GB free RAM.
+            // [v2.3.0-fix] STRICT mode: consecutive failures abort with error (no engine switching).
             // 4s = 64000 samples = 256KB float buffer, manageable memory footprint.
-            // Whisper crashes are now handled by auto-fallback to Vosk.
             val chunkSize = 4 * 16000  // 4 seconds per chunk (64000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
@@ -2673,7 +2636,7 @@ class SubtitleGeneratorService : Service() {
             var totalSamplesRead = 0
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
 
-            logToFile("processWhisperInChunks: [v2.2.6] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (auto-fallback to Vosk on crash), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.3.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (STRICT mode, no engine switching), offsetMs=$whisperOffsetMs")
 
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.
@@ -2816,8 +2779,8 @@ class SubtitleGeneratorService : Service() {
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper引擎推理失败（连续${consecutiveCrashes}次chunk返回错误码$chunkErrorCode）"
                         ctx.lastErrorDetail = detail
-                        logToFile("processWhisperInChunks: [v2.3.0] $detail - will auto-fallback to Vosk")
-                        callback.onError("$detail 正在自动切换到Vosk引擎...")
+                        logToFile("processWhisperInChunks: [v2.3.0] $detail - aborting (STRICT mode, no fallback)")
+                        callback.onError("$detail")
                         try { bridge.free(ctxPtr) } catch (_: Exception) {}
                         pcmInput.close()
                         return false
