@@ -1096,15 +1096,13 @@ class SubtitleGeneratorService : Service() {
 
         val fileInputStream = java.io.FileInputStream(pcmFile)
         val inputStream = java.io.DataInputStream(fileInputStream)
-        // [v2.0.92] Use 2-second chunks (64000 bytes) with modified endpoint.conf.
+        // [v2.3.0] Optimize Vosk for accuracy (allowing slower speed): increase chunk to 5s for more context,
+        // reduce partial query frequency to lower CPU, use very conservative endpoint rules.
         // Chunk size history:
-        //   - 2.0s (64000) in v2.0.89: accept rate ~30% but PARTIAL almost always empty.
-        //     Root cause: DEFAULT endpoint mode triggered reset every ~5s.
-        //   - 0.25s (8000) in v2.0.90: accept rate ~6%, too short for speech detection.
-        //   - 1.0s (32000) in v2.0.91: accept rate ~18.7%, partial still mostly empty.
-        // Strategy: 2s chunks + endpoint.conf t_max=30s prevents premature reset,
-        // allowing Vosk to accumulate longer speech segments and produce denser output.
-        val chunkSize = 64000   // 2.0 seconds = 32000 samples = 64000 bytes
+        //   - 2.0s (64000) in v2.0.89-v2.2.9: decent speed but partials unstable, high CPU from frequent JSON parsing
+        //   - 5.0s (160000) in v2.3.0: more audio context per call = better decoding accuracy,
+        //     fewer JNI/JSON calls = lower CPU overhead per second, acceptable for offline processing.
+        val chunkSize = 160000   // 5.0 seconds = 80000 samples = 160000 bytes
         val buffer = ByteArray(chunkSize)
         var offset = 0L  // [v2.0.54] offset relative to the 15-min mark
         var lastProgress = 0
@@ -1112,16 +1110,14 @@ class SubtitleGeneratorService : Service() {
         var acceptTrueCount = 0
         var acceptFalseCount = 0
         var lastPartialText = ""
-        // [v2.0.79] Issue 3 Fix: SEPARATE timers for FINAL and PARTIAL emission.
-        // v2.0.77-78 bug: lastEmitTime was shared between FINAL and PARTIAL. When a FINAL was
-        // emitted, lastEmitTime was updated, which blocked the next PARTIAL for 500ms. With
-        // FINALs every ~1.5s and 500ms chunks, PARTIALs were almost always blocked.
-        // Result: 213 FINALs but only 17 PARTIALs in v2.0.78 log. Fix: use separate timers.
-        var lastPartialEmitTime = -1000L  // [v2.0.91] Initialize to -1000 so first partial emits immediately
-        var lastFinalEmitTime = 0L   // only updated when FINAL is emitted (not used to block PARTIAL)
+        // [v2.3.0] For accuracy: only query partial every N chunks (reduces CPU, avoids unstable intermediate results)
+        val partialQueryInterval = 2  // query getPartialResult() every 2 chunks = every 10s
+        // [v2.3.0] More conservative partial emission for stability
+        var lastPartialEmitTime = -3000L  // Initialize to allow first partial after warmup
+        var lastFinalEmitTime = 0L
         var lastForceEmitTime = 0L
         // Issue 9: Dedicated Vosk log - log start parameters
-        writeVoskLog("processVoskInChunks START [v2.0.91]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), totalSize=$totalSize, processLimit=$processLimit")
+        writeVoskLog("processVoskInChunks START [v2.3.0-accuracy]: modelPath=$modelPath, chunkSize=$chunkSize (${chunkSize/32}ms), partialQueryInterval=$partialQueryInterval, totalSize=$totalSize, processLimit=$processLimit")
 
         var recognizer: Any? = null
         var model: Any? = null
@@ -1228,44 +1224,44 @@ class SubtitleGeneratorService : Service() {
                 }
                 logToFile("processVoskInChunks: [v2.0.65] Model dir check passed: am=${amDir.exists()}, graph=${graphDir.exists()}, conf=${confFile.exists()}")
 
-                // [v2.0.95] Fix Vosk sparse output: modify conf/model.conf including rule1.
-                // v2.0.94 only modified rule2/3/4 but rule1 uses Kaldi defaults (~0.5-1s trailing silence),
-                // causing frequent endpoint detection and reset() calls that clear decoder context.
-                // v2.0.95 adds rule1.min-trailing-silence=30.0 to prevent premature endpoint detection.
+                // [v2.3.0] Optimize for accuracy: use 60s trailing silence for ALL endpoint rules.
+                // This allows Vosk to accumulate very long speech segments (sentences/paragraphs)
+                // before committing a final result, dramatically improving context for the
+                // language model and reducing word errors from premature segmentation.
                 try {
                     val modelConf = File(confFile, "model.conf")
                     val originalContent = if (modelConf.exists()) modelConf.readText() else ""
-                    logToFile("processVoskInChunks: [v2.0.95] Original model.conf: ${originalContent.take(300)}")
-                    // Append endpoint configuration with long silence thresholds for ALL rules
+                    logToFile("processVoskInChunks: [v2.3.0] Original model.conf: ${originalContent.take(300)}")
+                    // Append endpoint configuration with very long silence thresholds for ALL rules
                     val endpointRules = """
-                        --endpoint.rule1.min-trailing-silence=30.0
-                        --endpoint.rule2.min-trailing-silence=30.0
-                        --endpoint.rule3.min-trailing-silence=30.0
-                        --endpoint.rule4.min-trailing-silence=30.0
+                        --endpoint.rule1.min-trailing-silence=60.0
+                        --endpoint.rule2.min-trailing-silence=60.0
+                        --endpoint.rule3.min-trailing-silence=60.0
+                        --endpoint.rule4.min-trailing-silence=60.0
                     """.trimIndent()
                     val modifiedContent = if (originalContent.isBlank()) {
                         endpointRules
                     } else if (!originalContent.contains("endpoint.rule1.min-trailing-silence")) {
                         // Add rule1 + replace existing rule2/3/4
-                        val withRule1 = originalContent.trimEnd() + "\n--endpoint.rule1.min-trailing-silence=30.0"
+                        val withRule1 = originalContent.trimEnd() + "\n--endpoint.rule1.min-trailing-silence=60.0"
                         withRule1
-                            .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=30.0")
-                            .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=30.0")
-                            .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=30.0")
+                            .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=60.0")
+                            .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=60.0")
+                            .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=60.0")
                     } else {
                         // All rules already present, just replace values
                         originalContent
-                            .replace(Regex("--endpoint\\.rule1\\.min-trailing-silence=\\S+"), "--endpoint.rule1.min-trailing-silence=30.0")
-                            .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=30.0")
-                            .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=30.0")
-                            .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=30.0")
+                            .replace(Regex("--endpoint\\.rule1\\.min-trailing-silence=\\S+"), "--endpoint.rule1.min-trailing-silence=60.0")
+                            .replace(Regex("--endpoint\\.rule2\\.min-trailing-silence=\\S+"), "--endpoint.rule2.min-trailing-silence=60.0")
+                            .replace(Regex("--endpoint\\.rule3\\.min-trailing-silence=\\S+"), "--endpoint.rule3.min-trailing-silence=60.0")
+                            .replace(Regex("--endpoint\\.rule4\\.min-trailing-silence=\\S+"), "--endpoint.rule4.min-trailing-silence=60.0")
                     }
                     if (modifiedContent != originalContent) {
                         modelConf.writeText(modifiedContent)
-                        logToFile("processVoskInChunks: [v2.0.95] Modified model.conf: ${modifiedContent.take(300)}")
+                        logToFile("processVoskInChunks: [v2.3.0] Modified model.conf: ${modifiedContent.take(300)}")
                     }
                 } catch (e: Exception) {
-                    logToFile("processVoskInChunks: [v2.0.95] model.conf modification failed: ${e.message}")
+                    logToFile("processVoskInChunks: [v2.3.0] model.conf modification failed: ${e.message}")
                 }
 
                 try {
@@ -1317,32 +1313,39 @@ class SubtitleGeneratorService : Service() {
                 } catch (e: Exception) {
                     logToFile("processVoskInChunks: setLogLevel failed: ${e.message}")
                 }
-                // [v2.0.93] Fix Vosk sparse output: Try setEndpointerMode via reflection.
-                // endpoint.conf modification may not take effect on all Vosk versions/models.
-                // setEndpointerMode(2) = LONG mode (less aggressive endpoint detection).
-                // Vosk Java wrapper exposes this as setEndpointerMode(int) or setEndpointerMode(EndpointerMode).
+                // [v2.3.0] Optimize for accuracy: Try setEndpointerMode to VERY_LONG (3) first,
+                // falling back to LONG (2). VERY_LONG mode maximizes context before endpoint detection,
+                // giving the decoder more speech history to disambiguate words.
                 try {
-                    // Try int parameter version first
+                    // Try int parameter version first - VERY_LONG=3
                     val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", Int::class.javaPrimitiveType)
-                    setEpMethod.invoke(recognizer, 2)  // 2 = LONG
-                    logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode(2=LONG) called via int param")
+                    setEpMethod.invoke(recognizer, 3)  // 3 = VERY_LONG
+                    logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode(3=VERY_LONG) called via int param")
                 } catch (e: NoSuchMethodException) {
                     // Try enum parameter version
                     try {
                         val epModeClass = Class.forName("org.vosk.android.EndpointerMode")
                         val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", epModeClass)
-                        val longMode = epModeClass.enumConstants?.find { it.toString() == "LONG" }
-                        if (longMode != null) {
-                            setEpMethod.invoke(recognizer, longMode)
-                            logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode(LONG) called via enum param")
+                        val veryLongMode = epModeClass.enumConstants?.find { it.toString() == "VERY_LONG" }
+                            ?: epModeClass.enumConstants?.find { it.toString() == "LONG" }
+                        if (veryLongMode != null) {
+                            setEpMethod.invoke(recognizer, veryLongMode)
+                            logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode(${veryLongMode}) called via enum param")
                         } else {
-                            logToFile("processVoskInChunks: [v2.0.93] EndpointerMode.LONG not found in enum constants: ${epModeClass.enumConstants?.map { it.toString() }}")
+                            logToFile("processVoskInChunks: [v2.3.0] EndpointerMode.VERY_LONG/LONG not found in enum: ${epModeClass.enumConstants?.map { it.toString() }}")
                         }
                     } catch (e2: Exception) {
-                        logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode not available (int nor enum), relying on endpoint.conf: ${e2.message}")
+                        logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode not available (int nor enum), relying on endpoint.conf: ${e2.message}")
                     }
                 } catch (e: Exception) {
-                    logToFile("processVoskInChunks: [v2.0.93] setEndpointerMode(int) failed: ${e.message}")
+                    // If VERY_LONG (3) fails, try LONG (2)
+                    try {
+                        val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", Int::class.javaPrimitiveType)
+                        setEpMethod.invoke(recognizer, 2)  // 2 = LONG fallback
+                        logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode(3) failed, fell back to 2=LONG: ${e.message}")
+                    } catch (e2: Exception) {
+                        logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode failed entirely: ${e2.message}")
+                    }
                 }
                 // [v2.0.66] Issue 6 Fix: Extract model name for display
                 val modelName = modelDir.name
@@ -1427,23 +1430,23 @@ class SubtitleGeneratorService : Service() {
                 val acceptResult = acceptWaveFormMethod.invoke(recognizer, chunk, chunk.size) as? Boolean ?: false
                 if (acceptResult) acceptTrueCount++ else acceptFalseCount++
                 chunkCount++
-                // [v2.0.91] currentTimeMs uses chunk END position (offset + bytesRead) for accuracy
+                // [v2.3.0] currentTimeMs uses chunk END position (offset + bytesRead) for accuracy
                 val currentTimeMs = (offset + bytesRead) * 1000L / 32000L
-                // [v2.0.91] Log every 20 chunks = 20s at 1s/chunk
-                if (chunkCount % 20 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.91] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
+                // [v2.3.0] Log every 10 chunks = 50s at 5s/chunk
+                if (chunkCount % 10 == 0) {
+                    logToFile("processVoskInChunks: [v2.3.0] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
                 }
 
                 // [v2.0.67] Issue 3 Fix: Only call getResult() when acceptWaveForm=true (silence boundary).
                 if (acceptResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
-                    writeVoskLog("processVoskInChunks: [v2.0.77] acceptWaveForm=true at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
+                    writeVoskLog("processVoskInChunks: [v2.3.0] acceptWaveForm=true at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
-                    // [v2.0.91] ALWAYS reset partial state when acceptWaveForm returns true,
+                    // ALWAYS reset partial state when acceptWaveForm returns true,
                     // because Vosk resets its internal buffer regardless of whether result text is empty.
                     lastPartialText = ""
                     lastForceEmitTime = currentTimeMs
-                    lastPartialEmitTime = currentTimeMs - 200  // allow new partial to emit immediately
+                    lastPartialEmitTime = currentTimeMs - 1000  // allow new partial after 1s cooldown
                     if (result.isNotBlank()) {
                         try {
                             val json = org.json.JSONObject(result)
@@ -1463,7 +1466,7 @@ class SubtitleGeneratorService : Service() {
                                     endTime = offsetMs + (offset + chunk.size) * 1000L / 32000L
                                 }
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("processVoskInChunks: [v2.0.91] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
+                                logToFile("processVoskInChunks: [v2.3.0] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
                                 allTranscripts.add(transcript)
                                 if (allTranscripts.size == 1) {
                                     val firstResultTime = System.currentTimeMillis() - processingStartTime
@@ -1474,52 +1477,32 @@ class SubtitleGeneratorService : Service() {
                             }
                         } catch (_: Exception) { /* skip malformed JSON */ }
                     }
-                    // [v2.0.92] Also try getPartialResult() after acceptWaveForm=true.
-                    // With endpoint.conf t_max=30s, accept=true is rare (longer speech segments).
-                    // Vosk may still have partial text from the current chunk before reset.
-                    val partialAfterFinal = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                    if (partialAfterFinal.isNotBlank()) {
-                        try {
-                            val partialJson = org.json.JSONObject(partialAfterFinal)
-                            val partialText = partialJson.optString("partial", "").trim()
-                            if (partialText.isNotEmpty() && partialText != lastPartialText) {
-                                val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
-                                val partialStartTime = partialOffsetMs + offset * 1000L / 32000L
-                                val partialEndTime = partialOffsetMs + (offset + bytesRead) * 1000L / 32000L
-                                val transcript = com.radio.app.models.Transcript(
-                                    text = partialText,
-                                    segmentStart = partialStartTime,
-                                    segmentEnd = partialEndTime
-                                )
-                                logToFile("processVoskInChunks: [v2.0.92] PARTIAL-after-final: chunk=$chunkCount, text='${partialText.take(80)}'")
-                                allTranscripts.add(transcript)
-                                callback.onSubtitleGenerated(transcript)
-                                lastPartialEmitTime = currentTimeMs
-                                lastForceEmitTime = currentTimeMs
-                                lastPartialText = partialText
-                            }
-                        } catch (_: Exception) { }
-                    }
+                    // [v2.3.0] Remove partial-after-final emission: it was often inaccurate (e.g. "九九" instead of "就像")
+                    // and duplicated the just-emitted final result with errors. Final results from getResult() are
+                    // the authoritative output; partial-after-final adds noise without value.
                     // [v2.0.94] Explicitly call reset() after endpoint detection to clear internal state
                     try { resetMethod.invoke(recognizer) } catch (_: Exception) { }
-                } else {
-                    // [v2.0.91] Only call getPartialResult() when acceptWaveForm=false (still processing)
+                } else if (chunkCount % partialQueryInterval == 0) {
+                    // [v2.3.0] CPU optimization: only query partial every N chunks to reduce JSON parsing overhead.
+                    // With 5s chunks and interval=2, this means one partial query every 10s instead of every 5s.
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
-                    if (chunkCount % 20 == 0) {
-                        logToFile("processVoskInChunks: [v2.0.91] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                    if (chunkCount % 10 == 0) {
+                        logToFile("processVoskInChunks: [v2.3.0] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
                     }
                     if (partial.isNotBlank()) {
                         try {
                             val partialJson = org.json.JSONObject(partial)
                             val partialText = partialJson.optString("partial", "").trim()
-                            if (chunkCount % 20 == 0) {
-                                logToFile("processVoskInChunks: [v2.0.91] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
+                            if (chunkCount % 10 == 0) {
+                                logToFile("processVoskInChunks: [v2.3.0] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
                             }
-                            // [v2.0.91] Simplified partial emit: emit immediately when text changes (min 100ms interval)
-                            // or force emit every 500ms for user feedback. Removed redundant 2nd condition.
-                            val shouldEmit = partialText.isNotEmpty() && (
-                                (partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 100) ||
-                                (currentTimeMs - lastForceEmitTime >= 500)
+                            // [v2.3.0] More conservative partial emit rules for accuracy:
+                            // - Require minimum 2 Chinese chars (6 bytes in UTF-8, ~2 chars)
+                            // - Emit only when text has changed AND at least 1000ms since last partial
+                            // - Force emit every 3000ms for user feedback (slower but more stable)
+                            val shouldEmit = partialText.length >= 2 && (
+                                (partialText != lastPartialText && currentTimeMs - lastPartialEmitTime >= 1000) ||
+                                (currentTimeMs - lastForceEmitTime >= 3000)
                             )
                             if (shouldEmit) {
                                 val partialOffsetMs = if (skipped15Min) 15L * 60 * 1000 else 0L
@@ -1530,7 +1513,7 @@ class SubtitleGeneratorService : Service() {
                                     segmentStart = partialStartTime,
                                     segmentEnd = partialEndTime
                                 )
-                                logToFile("processVoskInChunks: [v2.0.91] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
+                                logToFile("processVoskInChunks: [v2.3.0] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
                                 writeVoskLog("partial: chunk=$chunkCount, text='${partialText.take(100)}'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
@@ -2772,12 +2755,12 @@ class SubtitleGeneratorService : Service() {
                 }
 
                 var chunkSuccess = false
+                var chunkErrorCode = 0
                 try {
                     // [v2.1.9] Add logging right before JNI call to pinpoint crash location
-                    logToFile("processWhisperInChunks: [v2.1.9] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
-                    // [v2.0.90] Use chunkSamples directly (5s chunks with audio_ctx=50)
+                    logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
                     val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
-                    logToFile("processWhisperInChunks: [v2.1.9] chunk $chunkIdx: AFTER bridge.full returned $result")
+                    logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: AFTER bridge.full returned $result")
 
                     if (result == 0) {
                         val nSeg = bridge.fullNSegments(ctxPtr)
@@ -2801,7 +2784,12 @@ class SubtitleGeneratorService : Service() {
                         chunkSuccess = true
                         consecutiveCrashes = 0
                     } else {
-                        logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx failed with code $result")
+                        chunkErrorCode = result
+                        // [v2.3.0] Non-zero return from whisper_full is also a failure (not just exceptions).
+                        // whisper_full returns: 0=success, 1=mel compute failed, 2=encode failed, 3=decode failed, etc.
+                        // Count consecutive errors just like crashes to trigger Vosk fallback quickly.
+                        consecutiveCrashes++
+                        logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx failed with code $result (consecutive errors=$consecutiveCrashes)")
                     }
                 } catch (oom: OutOfMemoryError) {
                     logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx OOM: ${oom.message}")
@@ -2813,12 +2801,23 @@ class SubtitleGeneratorService : Service() {
                     consecutiveCrashes++
                 }
 
+                // [v2.3.0] Abort early after 3 consecutive failures (crashes OR error codes).
+                // Previously we only counted exceptions, but whisper_full returning -1/1/2/3 also means failure.
                 if (consecutiveCrashes >= 3) {
-                    logToFile("processWhisperInChunks: [v2.0.90] $consecutiveCrashes consecutive crashes, aborting. Transcripts so far: ${allTranscripts.size}")
+                    logToFile("processWhisperInChunks: [v2.3.0] $consecutiveCrashes consecutive failures (code=$chunkErrorCode), aborting. Transcripts so far: ${allTranscripts.size}")
+                    // [v2.3.0] Dump native log tail for diagnostics
+                    try {
+                        val nativeLog = java.io.File(filesDir, "logs/subtitle/native.log")
+                        if (nativeLog.exists()) {
+                            val tail = nativeLog.readText().takeLast(2000)
+                            logToFile("processWhisperInChunks: [v2.3.0] native log tail:\n$tail")
+                        }
+                    } catch (_: Exception) {}
                     if (allTranscripts.isEmpty()) {
-                        val detail = "Whisper处理连续失败（${consecutiveCrashes}次chunk崩溃）"
+                        val detail = "Whisper引擎推理失败（连续${consecutiveCrashes}次chunk返回错误码$chunkErrorCode）"
                         ctx.lastErrorDetail = detail
-                        callback.onError("$detail 请检查模型文件完整性后在设置中重试。")
+                        logToFile("processWhisperInChunks: [v2.3.0] $detail - will auto-fallback to Vosk")
+                        callback.onError("$detail 正在自动切换到Vosk引擎...")
                         try { bridge.free(ctxPtr) } catch (_: Exception) {}
                         pcmInput.close()
                         return false
