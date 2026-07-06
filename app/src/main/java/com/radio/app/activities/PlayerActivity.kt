@@ -86,7 +86,8 @@ class PlayerActivity : AppCompatActivity() {
     // Position=0 is NEVER accepted as backward jump (player reset/buffering artifact).
     private var jitterSyncTimeMs = 0L
     private var jitterSyncBaseline = 0L
-    private val JITTER_STABILIZE_MS = 5000L  // 5 seconds stabilization (increased from 3s to cover config changes)
+    private val JITTER_STABILIZE_MS_DEFAULT = 5000L  // 5s for cold start / activity recreate
+    private var jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT  // dynamic duration, set in onResume
     // Count consecutive backward jumps to detect player reset
     private var consecutiveBackwardJumps = 0
     // [v2.0.76] Track when we last intentionally paused to prevent isPlaying race condition
@@ -333,6 +334,7 @@ class PlayerActivity : AppCompatActivity() {
             if (svcPos > 0) {
                 lastDisplayedPositionMs = svcPos
                 jitterSyncTimeMs = syncTime
+                jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
                 jitterSyncBaseline = svcPos
                 consecutiveBackwardJumps = 0
                 if (svcDur > 0) {
@@ -798,7 +800,7 @@ class PlayerActivity : AppCompatActivity() {
                 // 2. Position=0 or near-0 (<5s) is NEVER accepted as backward if last position >30s (player reset/buffering)
                 // 3. After stabilization: only accept backward jumps >=300s (genuine episode switch/seek)
                 // 4. After user presses pause, ignore isPlaying race conditions for 2s
-                val inStabilization = (now - jitterSyncTimeMs) < JITTER_STABILIZE_MS
+                val inStabilization = (now - jitterSyncTimeMs) < jitterStabilizeMs
                 val recentPause = (now - lastPauseIntentTimeMs) < 2000L
                 val isPositionNearZero = position < 5000L && lastDisplayedPositionMs > 30000L
 
@@ -820,7 +822,7 @@ class PlayerActivity : AppCompatActivity() {
                     } else if (inStabilization) {
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.0.86] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${JITTER_STABILIZE_MS - (now - jitterSyncTimeMs)}ms)")
+                            writeJitterLog("[v2.0.86] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${jitterStabilizeMs - (now - jitterSyncTimeMs)}ms)")
                         }
                     } else if (backwardDelta >= 300_000L && !recentPause) {
                         // Genuine large backward jump: episode switch or user seek to earlier position
@@ -1129,29 +1131,28 @@ class PlayerActivity : AppCompatActivity() {
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
 
-        // Issue 1 Fix: 只在真正的新鲜启动（用户主动操作）时预填充保存的位置。
-        // 当 freshLaunchTs=0（系统重建 Activity）时，不立即显示保存的位置，
-        // 因为保存的位置可能不准确（如 2329771ms），会导致进度条先跳到错误位置，
-        // 等服务连接后再跳回实际位置，造成"抖动"。
-        // 改为显示 "00:00 / 00:00"，等服务连接后由服务提供实际位置。
-        if (!isFreshStart && currentEpisode != null && freshLaunchTs > 0) {
-            // freshLaunchTs > 0 说明是用户主动操作（非系统重建），可以安全预填充
+        // [v2.3.1] Fix: Always pre-fill saved position to avoid "00:00 → real position" flicker
+        // when returning to app. The previous logic only pre-filled for freshLaunchTs>0, leaving
+        // system-recreated activities showing "00:00" for hundreds of milliseconds until
+        // onServiceConnected corrected it, causing visible progress bar jump.
+        // If saved position is stale, onServiceConnected will immediately correct it.
+        var preFilled = false
+        if (currentEpisode != null) {
             val episodeKey = "${currentEpisode!!.stationId}::${currentEpisode!!.title}"
             val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
             if (savedPos > 0) {
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                 binding.seekBar.progress = savedPos.toInt()
-                binding.tvLiveIndicator.text = "恢复中..."
-                android.util.Log.d("PlayerActivity", "initViews: pre-filled saved position ${savedPos}ms to avoid UI flicker")
-            } else {
-                binding.tvCurrentTime.text = "00:00 / 00:00"
-            }
-        } else {
-            // freshLaunchTs=0（系统重建）或新鲜启动，不预填充位置
-            binding.tvCurrentTime.text = "00:00 / 00:00"
-            if (!isFreshStart && currentEpisode != null) {
                 binding.tvLiveIndicator.text = "连接中..."
-                writeJitterLog("initViews: freshLaunchTs=0, skipping saved position pre-fill, waiting for service")
+                lastDisplayedPositionMs = savedPos
+                preFilled = true
+                android.util.Log.d("PlayerActivity", "initViews: [v2.3.1] pre-filled saved position ${savedPos}ms to avoid flicker")
+            }
+        }
+        if (!preFilled) {
+            binding.tvCurrentTime.text = "00:00 / 00:00"
+            if (currentEpisode != null) {
+                binding.tvLiveIndicator.text = "连接中..."
             }
         }
         binding.tvTotalTime.text = "00:00"
@@ -1647,15 +1648,16 @@ class PlayerActivity : AppCompatActivity() {
         if (playbackService?.isPrepared() == true) {
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val svcDur = playbackService?.getDuration() ?: -1L
-            // [v2.0.60] Issue 1 Fix: Remove monotonic guard in updateUI too
-            if (svcPos > 0) {
+            // [v2.3.1] Monotonic guard: never let updateUI() move position backward.
+            // The service's getCurrentPosition() is already monotonic when prepared, but
+            // during episode transitions there can be brief windows where stale values leak.
+            if (svcPos > 0 && svcPos >= lastDisplayedPositionMs - 2000) {
                 lastDisplayedPositionMs = svcPos
             }
             // Only update seekBar if we have valid position data (not 0 when playing)
             val isPlaying = playbackService?.isPlaying() ?: false
-            if (svcPos > 0 || !isPlaying) {
-                // [v2.0.60] Always use actual position (no backward guard)
-                val displayPos = svcPos
+            val displayPos = lastDisplayedPositionMs
+            if (displayPos > 0 || !isPlaying) {
                 if (displayPos > 0) {
                     binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
                     binding.seekBar.progress = displayPos.toInt()
@@ -2402,32 +2404,40 @@ class PlayerActivity : AppCompatActivity() {
         val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
         val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
         val syncTime = System.currentTimeMillis()
-        // Always reset stabilization timer
+
+        // [v2.3.1] Fix progress regression/flicker on resume:
+        // Check if service was already connected and had valid position BEFORE this onResume.
+        // If so (normal background→foreground, Activity not destroyed), the callback was updating
+        // lastDisplayedPositionMs continuously in the background, so the position is already
+        // accurate. Use a SHORT stabilization (1s) instead of 5s to avoid "frozen progress" feel.
+        // If service is NOT ready or position is 0 (fresh activity/recreate), use full 5s stabilization.
+        val svcPos = if (serviceBound && playbackService != null) playbackService?.getCurrentPosition() ?: 0L else 0L
+        val svcDur = if (serviceBound && playbackService != null) playbackService?.getDuration() ?: 0L else 0L
+        val wasAlreadyConnected = serviceBound && svcPos > 2000
+        jitterStabilizeMs = if (wasAlreadyConnected) 1000L else JITTER_STABILIZE_MS_DEFAULT
         jitterSyncTimeMs = syncTime
         consecutiveBackwardJumps = 0
-        writeJitterLog("[v2.0.76] onResume: stabilization STARTED (always), cachedPos=$cachedPos, cachedEpId=$cachedEpId, serviceBound=$serviceBound, svc=${playbackService != null}, curEp=${currentEpisode?.id}")
+        writeJitterLog("[v2.3.1] onResume: stabilization STARTED (${jitterStabilizeMs}ms), svcPos=$svcPos, cachedPos=$cachedPos, cachedEpId=$cachedEpId, serviceBound=$serviceBound, wasAlreadyConnected=$wasAlreadyConnected")
 
         // [v2.0.85] Fix: When service is not bound (svcPos=0), do NOT display stale cachedPos.
         // v2.0.76 would show cachedPos then snap to svcPos when service connects = visible flicker.
         // Now: only set UI if svcPos is valid. If service not bound yet, wait for onServiceConnected.
-        if (cachedPos > 0 && _binding != null) {
-            val svcPos = if (serviceBound && playbackService != null) playbackService?.getCurrentPosition() ?: 0L else 0L
-            val svcDur = if (serviceBound && playbackService != null) playbackService?.getDuration() ?: 0L else 0L
-            if (svcPos > 2000) {
-                // [v2.0.85] Service is bound and has valid position - use it
-                lastDisplayedPositionMs = svcPos
-                jitterSyncBaseline = svcPos
-                if (svcDur > 0 && _binding != null) {
-                    binding.seekBar.max = svcDur.toInt()
-                }
-                binding?.tvCurrentTime?.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
-                binding?.seekBar?.progress = svcPos.toInt()
-                writeJitterLog("[v2.0.85] onResume: UI set to svcPos=$svcPos (cached=$cachedPos), dur=$svcDur")
-            } else {
-                // [v2.0.85] Service not bound or position=0 - do NOT display stale cachedPos.
-                // onServiceConnected will set the UI when service is ready.
-                writeJitterLog("[v2.0.85] onResume: service not ready (svcPos=$svcPos), NOT displaying cached=$cachedPos - waiting for onServiceConnected")
+        if (svcPos > 2000) {
+            // Service is bound and has valid position - sync UI immediately
+            lastDisplayedPositionMs = svcPos
+            jitterSyncBaseline = svcPos
+            if (svcDur > 0 && _binding != null) {
+                binding.seekBar.max = svcDur.toInt()
             }
+            if (_binding != null) {
+                binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
+                binding.seekBar.progress = svcPos.toInt()
+            }
+            writeJitterLog("[v2.3.1] onResume: UI immediately synced to svcPos=$svcPos, dur=$svcDur")
+        } else if (cachedPos > 0 && _binding != null) {
+            // [v2.3.1] Service not ready yet - show cached position (which we already pre-filled
+            // in initViews) to prevent "00:00" gap. onServiceConnected will correct when ready.
+            writeJitterLog("[v2.3.1] onResume: service not ready (svcPos=$svcPos), keeping pre-filled cached=$cachedPos, waiting for onServiceConnected")
         }
 
         restoreBackgroundResults()
@@ -2486,8 +2496,11 @@ class PlayerActivity : AppCompatActivity() {
         subtitleAdapter?.setTranscripts(emptyList())
         // [跨进程] 同步清空广播累积列表
         subtitleBroadcastList.clear()
-        // [v2.0.62] Reset position tracking when switching episodes
-        lastDisplayedPositionMs = 0L
+        // [v2.3.1] Do NOT reset lastDisplayedPositionMs=0 here.
+        // clearSubtitles() is called during episode switches and service reconnects.
+        // Resetting the displayed position to 0 causes the progress bar to briefly
+        // show 00:00 before the next onPositionTick updates it, creating a visible flicker.
+        // The position is properly reset in updateUI()/onServiceConnected when needed.
         if (_binding != null) {
             binding.subtitleView.visibility = View.GONE
             binding.tvSubtitleTitle.visibility = View.GONE

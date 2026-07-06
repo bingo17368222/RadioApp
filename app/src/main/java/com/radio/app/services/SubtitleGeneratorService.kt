@@ -175,16 +175,12 @@ class SubtitleGeneratorService : Service() {
                     val settings = AppSettings.getInstance(this)
                     settings.whisperCrashCount = settings.whisperCrashCount + 1
                     settings.save(this)
-                    logToFile("[v2.0.51] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount})")
-                    // [v2.2.8] Auto-fallback to Vosk when Whisper crashes.
-                    // The auto-fallback in generateSubtitlesForEpisode cannot work because
-                    // SIGSEGV kills the entire process before the Kotlin fallback code executes.
-                    // Instead, we detect the crash here on restart and force Vosk for this episode.
-                    if (settings.whisperCrashCount >= 2) {
-                        settings.forceVoskUntil = System.currentTimeMillis() + 600_000  // 10 minutes
-                        settings.save(this)
-                        logToFile("[v2.2.8] onCreate: Whisper crashed ${settings.whisperCrashCount} times, forcing Vosk for 10 minutes")
-                    }
+                    logToFile("[v2.3.1] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount})")
+                    // [v2.3.1] Per user requirement: NO auto-switching to other models on failure.
+                    // Previously we auto-switched to Vosk after 2 Whisper crashes, but the user
+                    // explicitly requested that subtitle generation failure should NOT trigger
+                    // model switching. User must manually change ASR engine in Settings.
+                    logToFile("[v2.3.1] STRICT mode: NOT auto-switching to Vosk after Whisper crash (user preference)")
                 }
             }
         } catch (_: Exception) {}
@@ -521,40 +517,16 @@ class SubtitleGeneratorService : Service() {
 
                 when {
                     asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
-                        // [v2.2.8] Check if Vosk is being forced due to recent Whisper crashes
-                        val forceVosk = settings.forceVoskUntil > System.currentTimeMillis()
-                        if (forceVosk) {
-                            val voskModel = findVoskModel()
-                            if (voskModel != null) {
-                                logToFile("generateSubtitlesForEpisode: [v2.2.8] Whisper disabled (forceVoskUntil=${settings.forceVoskUntil}), using Vosk directly for $episodeId")
-                                ctx.log("Using Vosk (Whisper disabled due to recent crashes)")
-                                val modelLabel = File(voskModel).name
-                                currentModelName = modelLabel
-                                sendSubtitleBroadcast("com.radio.app.SUBTITLE_MODEL_INFO", mapOf(
-                                    "episodeId" to episodeId,
-                                    "modelName" to modelLabel,
-                                    "engineType" to "vosk"
-                                ))
-                                val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
-                                if (!success && !ctx.cancelled.get()) {
-                                    wrappedCallback.onError("Vosk字幕生成失败")
-                                    activeTasks.remove(episodeId)
-                                    cleanupTask()
-                                }
-                            } else {
-                                wrappedCallback.onError("Whisper因崩溃被临时禁用，且未找到Vosk模型。请在设置中检查引擎配置。")
-                                activeTasks.remove(episodeId)
-                                cleanupTask()
-                            }
-                        } else {
-                            // [v2.2.8] Reset crash count when force period expires
-                            if (settings.whisperCrashCount > 0 && settings.forceVoskUntil > 0 && settings.forceVoskUntil <= System.currentTimeMillis()) {
-                                settings.whisperCrashCount = 0
-                                settings.forceVoskUntil = 0
-                                settings.save(this)
-                                logToFile("generateSubtitlesForEpisode: [v2.2.8] Whisper crash cooldown expired, resetting crash count and trying Whisper again")
-                            }
-                        logToFile("generateSubtitlesForEpisode: entering Whisper branch")
+                        // [v2.3.1] STRICT mode per user requirement: NO auto-switching to Vosk
+                        // even after Whisper crashes. Always use Whisper when user selected Whisper.
+                        // Reset crash count since we're attempting Whisper again.
+                        if (settings.whisperCrashCount > 0) {
+                            settings.whisperCrashCount = 0
+                            settings.forceVoskUntil = 0
+                            settings.save(this)
+                            logToFile("generateSubtitlesForEpisode: [v2.3.1] resetting crash count, attempting Whisper as selected by user")
+                        }
+                        logToFile("generateSubtitlesForEpisode: entering Whisper branch (strict - no auto-fallback)")
                         val whisperModel = findWhisperModel()
                         if (whisperModel != null) {
                             // [v2.0.69] Issue 6: Broadcast model name from the very start
@@ -589,7 +561,6 @@ class SubtitleGeneratorService : Service() {
                             activeTasks.remove(episodeId)
                             cleanupTask()
                         }
-                        }  // [v2.2.8] end of else (not forceVosk) block
                     }
                     asrProvider == AppSettings.ASR_VOSK || asrProvider == "vosk-local" -> {
                         // [v2.0.91] Explicit Vosk branch - only entered when user selects Vosk

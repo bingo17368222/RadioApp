@@ -723,8 +723,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             writeServiceLog("playback", "onPlayerError: ${error.message}, retryCount=$errorRetryCount")
                             prepared = false
                             errorRetryCount++
-                            // [v2.3.0-fix] Cancel any previous pending retry
-                            retryHandler?.removeCallbacks(retryRunnable!!)
+                            // [v2.3.1] Cancel any previous pending retry (null-safe)
+                            retryRunnable?.let { retryHandler?.removeCallbacks(it) }
                             retryRunnable = null
                             if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
                                 isRetrying = true
@@ -739,23 +739,45 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                                 it.stop()
                                                 it.clearMediaItems()
                                                 it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                                                it.playWhenReady = true
                                                 it.prepare()
                                                 it.play()
                                             }
+                                            writeServiceLog("playback", "onPlayerError: retry #${errorRetryCount} executed")
                                         } catch (e: Exception) {
                                             Log.e(TAG, "Retry failed", e)
                                             writeServiceLog("playback", "onPlayerError: retry exception: ${e.message}")
+                                            // [v2.3.1] On retry exception, stop retrying and report error.
+                                            // Don't leave player in a stuck state with isRetrying=true.
+                                            isRetrying = false
+                                            playbackInitializing = false
+                                            episodeSwitching = false
+                                            callback?.onError("播放重试失败: ${e.message ?: "未知错误"}")
                                         }
                                     }
                                 }
                                 retryRunnable = runnable
                                 retryHandler?.postDelayed(runnable, retryDelay)
                             } else {
-                                // [v2.3.0-fix] Reset all state flags on final failure
-                                writeServiceLog("playback", "onPlayerError: max retries reached, reporting error")
+                                // [v2.3.1] Final failure: reset ALL state, stop player, and release
+                                // so next playEpisode() creates a fresh player instance.
+                                writeServiceLog("playback", "onPlayerError: max retries reached, releasing player for clean recovery")
                                 isRetrying = false
                                 playbackInitializing = false
                                 episodeSwitching = false
+                                try {
+                                    player?.stop()
+                                    player?.clearMediaItems()
+                                } catch (_: Exception) {}
+                                // [v2.3.1] Release the broken player instance.
+                                // ensurePlayerInitialized() will create a fresh one on next playEpisode().
+                                try {
+                                    player?.removeListener(this)
+                                } catch (_: Exception) {}
+                                try {
+                                    player?.release()
+                                } catch (_: Exception) {}
+                                player = null
                                 callback?.onError("播放失败: ${error.message ?: "未知错误"}")
                             }
                         }
@@ -3093,8 +3115,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         playbackStarted = true
         userPaused = false // Starting new playback, not user-paused
         errorRetryCount = 0; isRetrying = false; stopAutoSkipCheck()
-        // [v2.3.0-fix] Cancel pending retry from previous failed playback
-        retryHandler?.removeCallbacks(retryRunnable!!)
+        // [v2.3.1] Cancel pending retry from previous failed playback (null-safe)
+        retryRunnable?.let { retryHandler?.removeCallbacks(it) }
         retryRunnable = null
         playbackInitializing = false
         episodeSwitching = false
@@ -3158,10 +3180,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
-        // [v2.3.0-fix] Cancel any pending retry from previous failed episode
-        retryHandler?.removeCallbacks(retryRunnable!!)
+        // [v2.3.1] Cancel any pending retry from previous failed episode (null-safe)
+        retryRunnable?.let { retryHandler?.removeCallbacks(it) }
         retryRunnable = null
-        // [v2.3.0-fix] Reset all state flags that could block new playback
+        // [v2.3.1] Reset all state flags that could block new playback
         playbackInitializing = false
         episodeSwitching = !isSameEpisode
         // [v2.0.75] Issue 5 Fix: When switching to a DIFFERENT episode (cross-day), reset

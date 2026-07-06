@@ -126,6 +126,9 @@ extern "C" {
         struct whisper_aheads dtw_aheads;
 
         size_t dtw_mem_size; // TODO: remove
+
+        // [v2.3.1] Padding to ensure our struct is larger than the library's.
+        char _reserved[512];
     };
 
     typedef struct whisper_token_data {
@@ -570,6 +573,13 @@ extern "C" {
         size_t                           n_grammar_rules;
         size_t                           i_start_rule;
         float                            grammar_penalty;
+
+        // [v2.3.1] Padding to ensure our struct is LARGER than any whisper.cpp version.
+        // When passing structs by value on ARM64, the callee reads from a caller-provided buffer.
+        // If our struct is too small, the callee reads past our buffer → stack corruption → crash.
+        // If our struct is larger, the callee only reads the fields it knows about → safe.
+        // 2048 bytes of padding accommodates future whisper.cpp versions.
+        char _reserved[2048];
     };
 
     // NOTE: this function allocates memory, and it is the responsibility of the caller to free the pointer - see whisper_free_context_params & whisper_free_params()
