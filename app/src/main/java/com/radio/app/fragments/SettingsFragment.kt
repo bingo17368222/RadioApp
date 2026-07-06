@@ -38,6 +38,8 @@ class SettingsFragment : Fragment() {
     private var suppressListeners = true
     // [v2.0.61] Issue 6 Fix: Track Vosk model directory names for spinner label → dir mapping
     private val voskModelDirs = mutableMapOf<String, String>()  // label → directory name
+    // [v2.2.9] Track Whisper model directory names for spinner label → dir mapping
+    private val whisperModelDirs = mutableMapOf<String, String>()  // label → directory name
     private var audioTrack: android.media.AudioTrack? = null
     @Volatile private var pcmPlaybackActive = false
 
@@ -117,6 +119,7 @@ class SettingsFragment : Fragment() {
                 if (modelDir.exists()) {
                     val totalSize = calculateDirSize(modelDir)
                     if (totalSize >= 1024 * 1024) {
+                        whisperModelDirs[label] = dir  // [v2.2.9] Track label → dir mapping
                         adapter.add(label)
                     }
                 }
@@ -351,7 +354,15 @@ class SettingsFragment : Fragment() {
                 // IMPORTANT: Check "Whisper在线" BEFORE "本地Whisper" (both start with "Whisper")
                 val providerId = when {
                     selected.startsWith("Whisper在线") -> AppSettings.ASR_WHISPER  // Online Whisper = "whisper"
-                    selected.startsWith("本地Whisper") -> "whisper-local"  // Local Whisper
+                    selected.startsWith("本地Whisper") -> {
+                        // [v2.2.9] Save the specific Whisper model directory
+                        val dirName = whisperModelDirs[selected] ?: ""
+                        settings.whisperModelDir = dirName
+                        // [v2.2.9] Reset forceVosk when user explicitly selects Whisper (they want to try again)
+                        settings.forceVoskUntil = 0
+                        settings.whisperCrashCount = 0
+                        "whisper-local"
+                    }
                     selected.startsWith("Vosk") -> {
                         // [v2.0.61] Issue 6: Save the specific Vosk model directory
                         val dirName = voskModelDirs[selected] ?: ""
@@ -367,7 +378,11 @@ class SettingsFragment : Fragment() {
                 }
                 settings.asrProvider = providerId
                 save()
-                val dirInfo = if (providerId == "vosk-local") " (dir=${settings.voskModelDir})" else ""
+                val dirInfo = when {
+                    providerId == "vosk-local" -> " (dir=${settings.voskModelDir})"
+                    providerId == "whisper-local" -> " (dir=${settings.whisperModelDir})"
+                    else -> ""
+                }
                 Toast.makeText(requireContext(), "ASR方案已切换: $selected → $providerId$dirInfo", Toast.LENGTH_SHORT).show()
                 // [v2.0.99] Send broadcast to SubtitleGeneratorService to reload ASR settings.
                 // The service runs in :subtitle process and its AppSettings singleton is stale.
@@ -380,6 +395,9 @@ class SettingsFragment : Fragment() {
                     intent.putExtra("asr_provider", providerId)
                     if (providerId == "vosk-local") {
                         intent.putExtra("vosk_model_dir", settings.voskModelDir)
+                    }
+                    if (providerId == "whisper-local") {
+                        intent.putExtra("whisper_model_dir", settings.whisperModelDir)  // [v2.2.9]
                     }
                     requireContext().sendBroadcast(intent)
                 } catch (_: Exception) {}
@@ -507,14 +525,24 @@ class SettingsFragment : Fragment() {
         val asrProviders = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
         val savedProvider = settings.asrProvider
         val savedVoskDir = settings.voskModelDir  // [v2.0.61] Issue 6: Use saved Vosk model dir
+        val savedWhisperDir = settings.whisperModelDir  // [v2.2.9] Use saved Whisper model dir
         val index = asrProviders.indexOfFirst { it == savedProvider }
         val adapter = binding.spinnerAsrProvider.adapter as? ArrayAdapter<*>
         if (index >= 0) {
             binding.spinnerAsrProvider.setSelection(index)
         } else if (savedProvider == "whisper-local") {
-            val whisperIndex = (0 until (adapter?.count ?: 0)).indexOfFirst {
-                val item = adapter?.getItem(it)?.toString() ?: ""
-                item.startsWith("本地Whisper")
+            // [v2.2.9] Match the SPECIFIC Whisper model by saved directory name
+            val whisperLabel = whisperModelDirs.entries.find { it.value == savedWhisperDir }?.key
+            val whisperIndex = if (whisperLabel != null) {
+                (0 until (adapter?.count ?: 0)).indexOfFirst {
+                    adapter?.getItem(it)?.toString() == whisperLabel
+                }
+            } else {
+                // Fallback: find first 本地Whisper label
+                (0 until (adapter?.count ?: 0)).indexOfFirst {
+                    val item = adapter?.getItem(it)?.toString() ?: ""
+                    item.startsWith("本地Whisper")
+                }
             }
             if (whisperIndex >= 0) binding.spinnerAsrProvider.setSelection(whisperIndex)
         } else if (savedProvider == "vosk-local") {
@@ -1539,6 +1567,9 @@ class SettingsFragment : Fragment() {
                 // This was the root cause of "user selected Vosk but got Whisper prompts".
                 .putString("asr_provider", settings.asrProvider)
                 .putString("vosk_model_dir", settings.voskModelDir)
+                .putString("whisper_model_dir", settings.whisperModelDir)  // [v2.2.9]
+                .putLong("force_vosk_until", settings.forceVoskUntil)  // [v2.2.9] Sync reset
+                .putInt("whisper_crash_count", settings.whisperCrashCount)  // [v2.2.9] Sync reset
                 .apply()
             Log.d("SettingsFragment", "Synced settings to radio_app_settings for hot-switch (incl. asr_provider=${settings.asrProvider})")
         } catch (e: Exception) {

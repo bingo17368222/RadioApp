@@ -54,6 +54,7 @@ class AppSettings private constructor() {
     var aiModel: String = AI_MODEL_WENXIN
     var asrProvider: String = ASR_BAIDU
     var voskModelDir: String = ""  // [v2.0.61] Issue 6 Fix: Save selected Vosk model directory name
+    var whisperModelDir: String = ""  // [v2.2.9] Save selected Whisper model directory name (whisper-tiny, whisper-base, etc.)
     // [v2.0.50] Issue 3 Fix: Track Whisper crash count to permanently disable after 2 crashes
     var whisperCrashCount: Int = 0
     var forceVoskUntil: Long = 0  // [v2.2.8] Force Vosk after Whisper crashes (timestamp until which to skip Whisper)
@@ -104,6 +105,7 @@ class AppSettings private constructor() {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""
+        whisperModelDir = prefs.getString("whisper_model_dir", "") ?: ""  // [v2.2.9]
         // [v2.1.2] Also reload pinduoduo detection interval for RadioPlaybackService
         pinduoduoDetectionInterval = prefs.getInt("pinduoduo_detection_interval", 5)
     }
@@ -113,6 +115,7 @@ class AppSettings private constructor() {
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""  // [v2.0.61] Issue 6
+        whisperModelDir = prefs.getString("whisper_model_dir", "") ?: ""  // [v2.2.9]
         whisperCrashCount = prefs.getInt("whisper_crash_count", 0)  // [v2.0.50]
         forceVoskUntil = prefs.getLong("force_vosk_until", 0)  // [v2.2.8]
         uiTheme = prefs.getString("ui_theme", THEME_DARK) ?: THEME_DARK
@@ -167,6 +170,7 @@ class AppSettings private constructor() {
             putString("ai_model", aiModel)
             putString("asr_provider", asrProvider)
             putString("vosk_model_dir", voskModelDir)  // [v2.0.61] Issue 6
+            putString("whisper_model_dir", whisperModelDir)  // [v2.2.9]
             putInt("whisper_crash_count", whisperCrashCount)  // [v2.0.50]
             putLong("force_vosk_until", forceVoskUntil)  // [v2.2.8]
             putString("ui_theme", uiTheme)

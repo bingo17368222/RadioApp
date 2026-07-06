@@ -257,10 +257,18 @@ class SubtitleGeneratorService : Service() {
             override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
                 val provider = intent.getStringExtra("asr_provider") ?: return
                 val voskDir = intent.getStringExtra("vosk_model_dir") ?: ""
-                logToFile("[v2.1.6] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir")
+                val whisperDir = intent.getStringExtra("whisper_model_dir") ?: ""  // [v2.2.9]
+                // [v2.2.9] Reset forceVosk when Whisper is explicitly selected (user wants to retry)
+                val resetForceVosk = provider == "whisper-local"
+                logToFile("[v2.2.9] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir, whisperDir=$whisperDir, resetForceVosk=$resetForceVosk")
                 val settings = AppSettings.getInstance(context)
                 settings.asrProvider = provider
                 settings.voskModelDir = voskDir
+                settings.whisperModelDir = whisperDir  // [v2.2.9]
+                if (resetForceVosk) {
+                    settings.forceVoskUntil = 0
+                    settings.whisperCrashCount = 0
+                }
                 // [v2.1.6] Also write to this process's SharedPreferences.
                 // SubtitleGeneratorService runs in :subtitle process. SharedPreferences
                 // with MODE_PRIVATE does NOT sync across processes. Without this write,
@@ -269,9 +277,12 @@ class SubtitleGeneratorService : Service() {
                     context.getSharedPreferences("radio_app_settings", android.content.Context.MODE_PRIVATE).edit()
                         .putString("asr_provider", provider)
                         .putString("vosk_model_dir", voskDir)
+                        .putString("whisper_model_dir", whisperDir)  // [v2.2.9]
+                        .putLong("force_vosk_until", if (resetForceVosk) 0 else settings.forceVoskUntil)
+                        .putInt("whisper_crash_count", if (resetForceVosk) 0 else settings.whisperCrashCount)
                         .apply()
                 } catch (_: Exception) {}
-                logToFile("[v2.1.6] ASR settings updated via broadcast + persisted to prefs: provider=${settings.safeAsrProvider()}")
+                logToFile("[v2.2.9] ASR settings updated via broadcast + persisted to prefs: provider=${settings.safeAsrProvider()}, whisperDir=${settings.whisperModelDir}")
 
                 // [v2.1.2] Cancel current running task so the new ASR engine takes effect immediately.
                 // Previously, the running task would continue with the old engine until it finished.
@@ -2116,20 +2127,49 @@ class SubtitleGeneratorService : Service() {
      */
     private fun findWhisperModel(): String? {
         logToFile("findWhisperModel: searching for Whisper ggml models...")
+        // [v2.2.9] Check for saved Whisper model preference first
+        val savedWhisperDir = AppSettings.getInstance(this).whisperModelDir
+        if (savedWhisperDir.isNotEmpty()) {
+            logToFile("findWhisperModel: [v2.2.9] savedWhisperDir=$savedWhisperDir, looking for this specific model")
+        }
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {
             val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
             if (!modelDirs.isNullOrEmpty()) {
-                // 优先查找名称包含whisper的目录
-                val whisperDirs = modelDirs.filter { it.name.contains("whisper", ignoreCase = true) }
-                for (dir in whisperDirs) {
+                // [v2.2.9] Priority 1: Look for the user's saved Whisper model directory first
+                if (savedWhisperDir.isNotEmpty()) {
+                    val savedDir = modelDirs.find { it.name == savedWhisperDir }
+                    if (savedDir != null) {
+                        val binFile = findWhisperBinFile(savedDir)
+                        if (binFile != null) {
+                            logToFile("findWhisperModel: [v2.2.9] FOUND saved Whisper model: ${binFile.absolutePath}")
+                            return binFile.absolutePath
+                        }
+                    }
+                    logToFile("findWhisperModel: [v2.2.9] saved model $savedWhisperDir not found or invalid, falling back to auto-detect")
+                }
+                // Priority 2: Search directories containing "whisper" in name
+                val whisperDirs = modelDirs.filter { it.name.contains("whisper", ignoreCase = true) && it.name != "whisper-engine" }
+                // Sort: prefer smaller models first (tiny < base < small < medium < large) for reliability
+                val sortedWhisperDirs = whisperDirs.sortedBy { dir ->
+                    when {
+                        dir.name.contains("tiny", ignoreCase = true) -> 0
+                        dir.name.contains("base", ignoreCase = true) -> 1
+                        dir.name.contains("small", ignoreCase = true) -> 2
+                        dir.name.contains("medium", ignoreCase = true) -> 3
+                        dir.name.contains("large", ignoreCase = true) -> 4
+                        else -> 5
+                    }
+                }
+                logToFile("findWhisperModel: whisper directories found (sorted, smaller first): ${sortedWhisperDirs.map { it.name }}")
+                for (dir in sortedWhisperDirs) {
                     val binFile = findWhisperBinFile(dir)
                     if (binFile != null) {
                         logToFile("findWhisperModel: found Whisper model file: ${binFile.absolutePath}")
                         return binFile.absolutePath
                     }
                 }
-                // 其次在所有目录中查找
+                // Priority 3: Search all other directories
                 for (dir in modelDirs) {
                     if (dir.name.contains("whisper", ignoreCase = true)) continue // already checked
                     val binFile = findWhisperBinFile(dir)
