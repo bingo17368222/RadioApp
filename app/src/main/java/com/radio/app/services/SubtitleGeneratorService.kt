@@ -2738,32 +2738,19 @@ class SubtitleGeneratorService : Service() {
                 logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
 
                 // [v2.0.91] Heap check — lower thresholds
-                // [v2.4.2] Lowered thresholds: allow processing even with very low heap.
-                // whisper_full runs in native code and doesn't need much Java heap.
-                // Only abort when heap is truly exhausted (<1MB after GC).
+                // [v2.4.3] Removed CRITICALLY LOW HEAP abort entirely.
+                // whisper_full runs in NATIVE code and doesn't need Java heap.
+                // The Java heap drops to 0-4MB after model init because Android compresses
+                // Java heap when native heap uses memory. This is NORMAL and doesn't affect
+                // whisper_full. Aborting here was the root cause of "输出条数偏少".
+                // Only GC to clean up, never abort.
                 val freeBeforeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                if (freeBeforeMB < 3) {
-                    logToFile("processWhisperInChunks: [v2.0.91] Low heap (${freeBeforeMB}MB), running GC before chunk")
-                    // [v2.3.9] More aggressive GC: 5 rounds with finalization
-                    repeat(5) {
+                if (freeBeforeMB < 5) {
+                    logToFile("processWhisperInChunks: [v2.0.91] Low heap (${freeBeforeMB}MB), running GC before chunk (continuing - native code doesn't need Java heap)")
+                    repeat(3) {
                         try { System.gc() } catch (_: Exception) {}
                         try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
-                        Thread.sleep(100)
-                    }
-                    val freeAfterMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                    if (freeAfterMB < 1) {
-                        logToFile("processWhisperInChunks: [v2.0.91] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
-                        if (allTranscripts.isEmpty()) {
-                            val detail = "Whisper处理Java堆内存不足（GC后仅${freeAfterMB}MB）"
-                            ctx.lastErrorDetail = detail
-                            callback.onError("$detail 请关闭其他应用或使用更小的模型。")
-                            try { bridge.free(ctxPtr) } catch (_: Exception) {}
-                            pcmInput.close()
-                            return false
-                        } else {
-                            logToFile("processWhisperInChunks: [v2.0.91] Returning ${allTranscripts.size} partial transcripts before OOM")
-                            break
-                        }
+                        Thread.sleep(50)
                     }
                 }
 
@@ -2806,10 +2793,15 @@ class SubtitleGeneratorService : Service() {
                             val t0 = bridge.fullGetSegmentT0(ctxPtr, i)
                             val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
                             if (text.isNotBlank()) {
+                                // [v2.4.3] Fix integer overflow: totalSamplesRead * 1000 overflows Int.MAX
+                                // when totalSamplesRead >= 2147483 (chunk 5+ with 480000 samples/chunk).
+                                // This caused timestamps to show 13:01 instead of 17:30.
+                                // Fix: use Long arithmetic via .toLong()
+                                val chunkOffsetMs = totalSamplesRead.toLong() * 1000L / 16000L
                                 val transcript = com.radio.app.models.Transcript(
                                     text = text.trim(),
-                                    segmentStart = whisperOffsetMs + totalSamplesRead * 1000 / 16000 + t0 * 10,
-                                    segmentEnd = whisperOffsetMs + totalSamplesRead * 1000 / 16000 + t1 * 10
+                                    segmentStart = whisperOffsetMs + chunkOffsetMs + t0 * 10,
+                                    segmentEnd = whisperOffsetMs + chunkOffsetMs + t1 * 10
                                 )
                                 allTranscripts.add(transcript)
                                 logToFile("processWhisperInChunks: chunk $chunkIdx seg $i: [${transcript.segmentStart}-${transcript.segmentEnd}ms] ${text.take(80)}")

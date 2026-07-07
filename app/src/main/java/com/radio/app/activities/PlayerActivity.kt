@@ -173,7 +173,16 @@ class PlayerActivity : AppCompatActivity() {
                     runOnUiThread {
                         if (_binding == null) return@runOnUiThread
                         finishAiProcessing("subtitle")
-                        subtitleTranscripts = subtitleBroadcastList.toList()
+                        // [v2.4.3] Also check DB in case broadcast list is empty (cross-process timing)
+                        val episode = currentEpisode
+                        if (subtitleBroadcastList.isNotEmpty()) {
+                            subtitleTranscripts = subtitleBroadcastList.toList()
+                        } else if (episode != null) {
+                            val dbHelper = RadioDatabaseHelper.getInstance(this@PlayerActivity)
+                            subtitleTranscripts = dbHelper.getTranscripts(episode.id)
+                            subtitleBroadcastList.clear()
+                            subtitleBroadcastList.addAll(subtitleTranscripts)
+                        }
                         subtitleAdapter?.setTranscripts(subtitleTranscripts)
                         binding.subtitleView.visibility = View.GONE
                         binding.tvSubtitleTitle.visibility = View.VISIBLE
@@ -1975,15 +1984,26 @@ class PlayerActivity : AppCompatActivity() {
     // [v2.0.67] Issue 6: Format raw model directory name into a user-readable label.
     private fun formatModelName(rawName: String): String {
         if (rawName.isBlank()) return getCurrentAsrLabel()
+        // [v2.4.3] If the name already looks like a friendly name, return as-is
+        // (SubtitleGeneratorService now sends "Whisper Tiny", "Whisper Base", etc.)
+        if (rawName.startsWith("Whisper ") || rawName.startsWith("Vosk ")) {
+            return rawName
+        }
         return when {
+            // Vosk models: check specific patterns first
             rawName.contains("small-cn", ignoreCase = true) -> "Vosk中文小模型"
             rawName.contains("cn-0.22", ignoreCase = true) -> "Vosk中文大模型"
             rawName.contains("small-en", ignoreCase = true) -> "Vosk英文小模型"
             rawName.contains("en-us-0.22-lgraph", ignoreCase = true) -> "Vosk英文中模型"
             rawName.contains("en-us-0.22", ignoreCase = true) -> "Vosk英文大模型"
-            rawName.contains("whisper", ignoreCase = true) -> "Whisper"
-            rawName.contains("small", ignoreCase = true) -> "Vosk小模型"
+            // Whisper models by filename
+            rawName.contains("tiny", ignoreCase = true) -> "Whisper Tiny"
+            rawName.contains("base", ignoreCase = true) -> "Whisper Base"
+            rawName.contains("medium", ignoreCase = true) -> "Whisper Medium"
+            rawName.contains("large", ignoreCase = true) -> "Whisper Large"
+            rawName.contains("small", ignoreCase = true) -> "Whisper Small"
             rawName.contains("vosk", ignoreCase = true) -> "Vosk模型"
+            rawName.contains("whisper", ignoreCase = true) -> "Whisper"
             else -> rawName
         }
     }
@@ -2441,6 +2461,27 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         restoreBackgroundResults()
+
+        // [v2.4.3] Delayed retry: if subtitles exist in DB but weren't loaded on first pass
+        // (possible DB timing issue on cold start), retry after 1.5 seconds.
+        positionUpdateHandler.postDelayed({
+            if (_binding != null && subtitleTranscripts.isEmpty()) {
+                val ep = currentEpisode
+                if (ep != null) {
+                    val dbHelper = RadioDatabaseHelper.getInstance(this)
+                    val dbTranscripts = dbHelper.getTranscripts(ep.id)
+                    if (dbTranscripts.isNotEmpty()) {
+                        android.util.Log.d("PlayerActivity", "restoreSubtitles delayed retry: found ${dbTranscripts.size} transcripts")
+                        subtitleTranscripts = dbTranscripts
+                        subtitleBroadcastList.clear()
+                        subtitleBroadcastList.addAll(dbTranscripts)
+                        subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                        binding.tvSubtitleTitle.visibility = View.VISIBLE
+                        binding.recyclerSubtitles.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }, 1500)
     }
 
     private fun restoreBackgroundResults() {
