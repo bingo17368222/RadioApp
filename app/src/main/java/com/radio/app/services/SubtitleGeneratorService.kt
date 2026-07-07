@@ -2556,7 +2556,19 @@ class SubtitleGeneratorService : Service() {
                     val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB）"
                     ctx.lastErrorDetail = detail
                     logToFile("processWhisperInChunks: [v2.0.91] INSUFFICIENT JAVA HEAP for Whisper: $detail")
-                    callback.onError("$detail。请关闭其他应用或重启App后重试。")
+                    callback.onError("$detail。正在重启字幕服务以释放内存，请重试。")
+                    // [v2.4.1] Kill and restart :subtitle process to recover from permanent heap exhaustion.
+                    // After multiple OOM failures, the Java heap is permanently stuck at 1-5MB and cannot
+                    // be recovered by GC alone. The only way to recover is to restart the process.
+                    logToFile("processWhisperInChunks: [v2.4.1] Scheduling process restart to recover from heap exhaustion")
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        try {
+                            logToFile("processWhisperInChunks: [v2.4.1] Killing :subtitle process to recover heap")
+                            android.os.Process.killProcess(android.os.Process.myPid())
+                        } catch (e: Exception) {
+                            logToFile("processWhisperInChunks: [v2.4.1] Failed to kill process: ${e.message}")
+                        }
+                    }, 1000)
                     return false
                 }
             }
