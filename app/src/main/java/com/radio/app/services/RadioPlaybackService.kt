@@ -66,7 +66,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     companion object {
         private const val TAG = "RadioPlaybackService"
-        private const val MAX_ERROR_RETRY = 3
+        private const val MAX_ERROR_RETRY = 1  // [v2.3.6] Reduced from 3 to 1: faster recovery (2s instead of 18s)
         private const val NOTIFICATION_ID = 1
         private const val POSITION_SAVE_INTERVAL = 5000L
 
@@ -742,7 +742,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                                 if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
                                     isRetrying = true
-                                    val retryDelay = errorRetryCount * 3000L
+                                    val retryDelay = errorRetryCount * 2000L  // [v2.3.6] Reduced from 3s to 2s
                                     writeServiceLog("playback", "onPlayerError: scheduling retry #$errorRetryCount in ${retryDelay}ms")
                                     try {
                                         retryHandler = Handler(Looper.getMainLooper())
