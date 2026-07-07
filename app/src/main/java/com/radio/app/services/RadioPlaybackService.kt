@@ -370,8 +370,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // - After cooldown: NO LIMITS on user clicks (per user requirement #3).
     // [v2.2.6] Relaxed skip protection parameters to prevent false-positive blocking of legitimate skips.
     // Previous values were too aggressive: 3s blackout + 5 requests + 30s cooldown blocked normal usage.
-    private val POST_RESUME_BLACKOUT_MS = 2000L        // [v2.3.2] Re-enabled 2s blackout: blocks spurious media button replays after app resume that caused 15s back-seeks
-    private val SKIP_CIRCUIT_BREAKER_MS = 2_000L       // [v2.2.6] 2s breaker
+    private val POST_RESUME_BLACKOUT_MS = 5000L        // [v2.3.3] Extended to 5s: headsets/bluetooth can replay MEDIA_PREVIOUS key events at ~220ms intervals for many seconds after resume
+    private val SKIP_CIRCUIT_BREAKER_MS = 5_000L       // [v2.3.3] Extended breaker to 5s to stop sustained key-repeat storms
     private val SKIP_DEBOUNCE_MS = 200L                 // [v2.2.8] 200ms debounce (was 300ms)
     private val EPISODE_CHANGE_SKIP_COOLDOWN_MS = 2_000L // [v2.2.6] 2s (was 3s)
     private val LOW_POSITION_SKIP_DEDUP_MS = 3_000L
@@ -760,6 +760,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                                 isRetrying = false
                                                 playbackInitializing = false
                                                 episodeSwitching = false
+                                                // [v2.3.3] Release broken player on retry exception too, so next playEpisode recreates it
+                                                val brokenPlayer2 = player
+                                                player = null
+                                                try { brokenPlayer2?.stop(); brokenPlayer2?.clearMediaItems() } catch (_: Exception) {}
+                                                try { brokenPlayer2?.release() } catch (_: Exception) {}
                                                 try { callback?.onError("播放重试失败: ${e.message ?: "未知错误"}") } catch (_: Exception) {}
                                             }
                                         }

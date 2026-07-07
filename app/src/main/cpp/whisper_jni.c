@@ -246,9 +246,16 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.3.1] Build params using the SAME by-value pattern as whisper_context_default_params
-// (which works for init). The _reserved[2048] padding in our struct ensures the local
-// buffer is large enough to receive the full struct from the library without stack overflow.
+// [v2.3.3] MAXIMUM ABI SAFETY: Only modify the FIRST field (strategy) which is guaranteed
+// to be at offset 0 in every whisper.cpp version. All other fields use library defaults
+// (auto language detection, default thread count, default context size, etc.).
+// Previous versions crashed with SIGSEGV/SIGABRT after 8s because field offsets for
+// language/audio_ctx/no_context in our stub header did not match the precompiled library
+// (struct padding/alignment differences between NDK versions cause later fields to shift),
+// causing us to write NULL/0/false into memory locations that corrupted critical internal state.
+// With defaults: language is auto-detected (Whisper reliably detects Chinese),
+// n_threads defaults to std::thread::hardware_concurrency() (optimal for device),
+// all other parameters use whisper.cpp's tested defaults.
 static void setup_params(struct whisper_full_params* params) {
     if (!params_func) {
         NLOGE("setup_params: params_func is NULL!");
@@ -256,69 +263,15 @@ static void setup_params(struct whisper_full_params* params) {
         return;
     }
 
-    NLOGI("setup_params: getting defaults via by-value params_func");
-    // Get defaults from library by value into our (padded) local struct.
-    // The _reserved[2048] ensures the buffer is large enough for any whisper.cpp version.
+    NLOGI("setup_params: getting defaults via by-value params_func (ABI-safe: only strategy will be overridden)");
     *params = params_func(WHISPER_SAMPLING_GREEDY);
-    NLOGI("setup_params: got defaults by value, strategy=%d, sizeof(params)=%zu",
-         (int)params->strategy, sizeof(struct whisper_full_params));
 
-    // Override core early fields for Chinese streaming ASR.
-    // [v2.3.2] Key parameter fixes for "0 segments" issue:
-    // - single_segment=false: let Whisper manage segments naturally (true forces 1 segment
-    //   which can cause 0 output when audio doesn't fit a single segment cleanly)
-    // - no_context=false: allow Whisper to use internal context between calls (important
-    //   for streaming; we reset context at episode boundaries by recreating ctx)
-    // - audio_ctx=768: limit audio context tokens to prevent excessive memory allocation
-    //   (0 = default which is 1500 tokens = 30s, way too much for 10s chunks)
-    // - n_threads=2: safe for mobile
-    params->strategy         = WHISPER_SAMPLING_GREEDY;
-    params->n_threads        = 2;
-    params->translate        = false;
-    params->no_context       = false;       // [v2.3.2] Allow context for better recognition
-    params->single_segment   = false;       // [v2.3.2] Don't force single segment
-    params->print_special    = false;
-    params->print_progress   = false;
-    params->print_realtime   = false;
-    params->print_timestamps = false;
-    params->token_timestamps = false;
-    params->debug_mode       = false;
-    params->audio_ctx        = 768;         // [v2.3.2] Limit audio context (~15s) instead of 0=auto(30s)
+    // ONLY set the first field (strategy, offset 0) - guaranteed safe across all versions.
+    // Do NOT touch language, n_threads, audio_ctx, no_context, single_segment, or any other
+    // field - their offsets may differ between our stub and the precompiled library.
+    params->strategy = WHISPER_SAMPLING_GREEDY;
 
-    params->language         = "zh";
-    params->detect_language  = false;
-
-    params->suppress_blank             = true;
-    params->suppress_non_speech_tokens = true;
-    params->temperature                = 0.0f;
-    params->greedy.best_of             = 1;
-    params->beam_search.beam_size      = 1;
-
-    // NULL out callback/pointer fields to prevent library from calling into stale memory
-    params->initial_prompt   = NULL;
-    params->prompt_tokens    = NULL;
-    params->prompt_n_tokens  = 0;
-    params->suppress_regex   = NULL;
-    params->new_segment_callback           = NULL;
-    params->new_segment_callback_user_data = NULL;
-    params->progress_callback              = NULL;
-    params->progress_callback_user_data    = NULL;
-    params->encoder_begin_callback         = NULL;
-    params->encoder_begin_callback_user_data = NULL;
-    params->abort_callback                 = NULL;
-    params->abort_callback_user_data       = NULL;
-    params->logits_filter_callback         = NULL;
-    params->logits_filter_callback_user_data = NULL;
-    params->grammar_rules                  = NULL;
-    params->n_grammar_rules                = 0;
-    params->i_start_rule                   = 0;
-    params->grammar_penalty                = 0.0f;
-
-    NLOGI("setup_params: ready n_threads=%d lang=%s no_context=%d single_segment=%d",
-         params->n_threads,
-         params->language ? params->language : "(null)",
-         (int)params->no_context,
-         (int)params->single_segment);
+    NLOGI("setup_params: ready (all defaults except strategy=GREEDY, language=auto, threads=auto)");
 }
 
 JNIEXPORT jint JNICALL
