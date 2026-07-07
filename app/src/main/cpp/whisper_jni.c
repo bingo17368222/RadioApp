@@ -243,12 +243,11 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
         cparams = ctx_params_func();
     }
     // [v2.3.4] Only set use_gpu (offset 0, guaranteed safe across all versions).
-    // [v2.4.4] Enable flash_attn (offset 8) for ~2x speedup on ARM64.
-    // flash_attn uses fused attention kernels which are faster and use less memory.
-    // The struct only has 2 fields (use_gpu, flash_attn) so this is safe.
+    // [v2.4.5] Reverted flash_attn to false — it caused SIGABRT crash with base model.
+    // The flash_attn implementation in this whisper.cpp build is unstable on ARM64.
     cparams.use_gpu = false;
-    cparams.flash_attn = true;  // [v2.4.4] Enable flash attention for speed
-    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false, flash_attn=true)", path);
+    // cparams.flash_attn = false;  // already false from default params
+    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false, flash_attn=false)", path);
     struct whisper_context* ctx = init_func(path, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path, path);
     NLOGI("initFromFile: ctx=%p", (void*)ctx);
@@ -292,8 +291,8 @@ static struct whisper_full_params* prepare_params(void) {
 
     // offset 4: n_threads (int, 4 bytes)
     // [v2.4.4] Increased from 2 to 4 threads for ~2x speedup.
-    // Modern phones have 8+ cores; 4 threads balances speed vs battery.
-    // More than 4 threads shows diminishing returns on mobile due to thermal throttling.
+    // [v2.4.5] Keep n_threads=4. Although v2.4.4 showed no measurable improvement,
+    // it doesn't cause harm and may help on devices with more cores.
     ref->n_threads = 4;
 
     // Force Chinese language.
@@ -317,7 +316,7 @@ static struct whisper_full_params* prepare_params(void) {
          offsetof(struct whisper_full_params, strategy),
          offsetof(struct whisper_full_params, n_threads));
 
-    NLOGI("prepare_params: ready n_threads=%d language=zh (correct offset), strategy=GREEDY, flash_attn=true",
+    NLOGI("prepare_params: ready n_threads=%d language=zh (correct offset), strategy=GREEDY",
          ref->n_threads);
     return ref;
 }
