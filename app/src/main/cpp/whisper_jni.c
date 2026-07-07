@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <math.h>
 #include <dlfcn.h>
 #include <android/log.h>
@@ -254,21 +255,22 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.3.6] ABI-SAFE params preparation with BRUTE-FORCE language setting.
+// [v2.3.7] ABI-SAFE params preparation with CORRECT struct layout.
 //
-// PROBLEM: Even with by_ref (library-allocated memory), we access fields through
-// our STUB struct definition. If the actual library has extra fields (like vad_params)
-// before `language`, our stub's offset for `language` is WRONG, and the write goes
-// to the wrong memory location — the library still reads NULL (auto-detect) from
-// the correct offset, producing English output.
+// ROOT CAUSE of v2.3.5 English output:
+//   whisper.cpp master has `bool carry_initial_prompt;` between `initial_prompt`
+//   and `prompt_tokens`, but our stub was missing it. This caused our `language`
+//   field offset to be 8 bytes BEFORE the actual library's `language` offset.
+//   So `ref->language = "zh"` wrote to `prompt_n_tokens` (int) instead of `language`
+//   (const char*), and the library still read NULL → auto-detect → English.
 //
-// SOLUTION: Scan the first 256 bytes of the library-allocated struct for ALL
-// 8-byte-aligned NULL pointer slots, and write "zh" to each one. This guarantees
-// we hit the `language` field. Writing "zh" to other NULL pointer fields is safe:
-//   - suppress_regex: "zh" is a valid regex (matches literal "zh"), harmless
-//   - initial_prompt: "zh" as prompt, harmless (decoder may see it as context)
-//   - prompt_tokens: prompt_n_tokens defaults to 0, so library reads 0 tokens → safe
-//   - callbacks: we only scan first 128 bytes; callbacks are at offset 160+ → safe
+// FIX: Added `carry_initial_prompt` to our stub struct. Now offsets match.
+//
+// v2.3.6 brute-force approach was WRONG — it wrote "zh" pointer to non-pointer
+// fields (int/bool/float), causing SIGSEGV/SIGABRT crashes.
+//
+// This version: ONLY sets strategy, n_threads, and language (3 fields, all at
+// correct offsets now). All other fields use library defaults.
 static struct whisper_full_params* prepare_params(void) {
     struct whisper_full_params* ref = NULL;
     if (!params_by_ref_func) {
@@ -282,45 +284,24 @@ static struct whisper_full_params* prepare_params(void) {
     }
     NLOGI("prepare_params: got default params from by_ref (library-allocated)");
 
-    // Set strategy (offset 0, 100% safe)
+    // offset 0: strategy (enum, 4 bytes)
     ref->strategy = WHISPER_SAMPLING_GREEDY;
-    // Set n_threads (offset 4, safe)
+
+    // offset 4: n_threads (int, 4 bytes) — limit to 2 threads for mobile
     ref->n_threads = 2;
 
-    // ---- HEX DUMP for diagnostics ----
-    // Dump first 256 bytes of the struct to see actual layout
-    char* raw = (char*)ref;
-    NLOGI("prepare_params: === STRUCT HEX DUMP (first 256 bytes) ===");
-    for (int i = 0; i < 256; i += 8) {
-        // Read 8 bytes as a pointer value
-        void* val;
-        memcpy(&val, raw + i, 8);
-        NLOGI("prepare_params: offset %3d: ptr=%p", i, val);
-    }
+    // Force Chinese language.
+    // Now that carry_initial_prompt is in our stub, the offset of `language`
+    // matches the actual library's offset. This write goes to the correct memory.
+    ref->language = "zh";
 
-    // ---- BRUTE-FORCE LANGUAGE SETTING ----
-    // Write "zh" to every 8-byte-aligned NULL pointer slot in first 128 bytes.
-    // This covers: suppress_regex, initial_prompt, prompt_tokens, language
-    // (and any extra pointer fields the library version may have added).
-    // We stop at offset 128 to avoid touching callback function pointers (offset 160+).
-    static const char* zh_str = "zh";
-    int zh_writes = 0;
-    for (int off = 56; off <= 128; off += 8) {
-        void* current_val;
-        memcpy(&current_val, raw + off, 8);
-        if (current_val == NULL) {
-            // This slot is NULL — write "zh" to it
-            void* zh_ptr = (void*)zh_str;
-            memcpy(raw + off, &zh_ptr, 8);
-            NLOGI("prepare_params: wrote \"zh\" to offset %d (was NULL)", off);
-            zh_writes++;
-        } else {
-            NLOGI("prepare_params: offset %d has non-NULL value %p, skipping", off, current_val);
-        }
-    }
-    NLOGI("prepare_params: wrote \"zh\" to %d NULL pointer slots", zh_writes);
+    // Log the offset for verification
+    NLOGI("prepare_params: offsetof(language)=%zu, offsetof(strategy)=%zu, offsetof(n_threads)=%zu",
+         offsetof(struct whisper_full_params, language),
+         offsetof(struct whisper_full_params, strategy),
+         offsetof(struct whisper_full_params, n_threads));
 
-    NLOGI("prepare_params: ready n_threads=%d language=zh (brute-force), strategy=GREEDY",
+    NLOGI("prepare_params: ready n_threads=%d language=zh (correct offset), strategy=GREEDY",
          ref->n_threads);
     return ref;
 }

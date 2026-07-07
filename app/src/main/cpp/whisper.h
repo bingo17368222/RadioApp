@@ -517,6 +517,7 @@ extern "C" {
         // use whisper_tokenize() to convert text to tokens
         // maximum of whisper_n_text_ctx()/2 tokens are used (typically 224)
         const char * initial_prompt;
+        bool carry_initial_prompt;  // [v2.3.7] Added: this field exists in actual whisper.cpp but was missing from stub, causing 8-byte offset shift for language and all subsequent fields
         const whisper_token * prompt_tokens;
         int prompt_n_tokens;
 
