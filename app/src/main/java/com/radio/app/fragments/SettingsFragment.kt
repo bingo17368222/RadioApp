@@ -383,7 +383,7 @@ class SettingsFragment : Fragment() {
                     providerId == "whisper-local" -> " (dir=${settings.whisperModelDir})"
                     else -> ""
                 }
-                Toast.makeText(requireContext(), "ASR方案已切换: $selected → $providerId$dirInfo", Toast.LENGTH_SHORT).show()
+                Toast.makeText(requireContext(), "字幕生成方案已切换: $selected → $providerId$dirInfo", Toast.LENGTH_SHORT).show()
                 // [v2.0.99] Send broadcast to SubtitleGeneratorService to reload ASR settings.
                 // The service runs in :subtitle process and its AppSettings singleton is stale.
                 // reloadAsrSettings() is called at the start of each subtitle generation,

@@ -51,7 +51,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="ASR方案"
+                android:text="字幕生成方案"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
             <TextView

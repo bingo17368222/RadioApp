@@ -89,7 +89,8 @@ class SubtitleGeneratorService : Service() {
         val taskId: String,
         val episodeId: String,
         val taskType: String,
-        val logFile: File
+        val logFile: File,
+        @Volatile var audioUrl: String = ""  // [v2.3.9] Saved for re-generation on ASR change
     ) {
         @Volatile var lastReportedProgress = 0
         @Volatile var startTime = System.currentTimeMillis()
@@ -289,14 +290,42 @@ class SubtitleGeneratorService : Service() {
 
                 // [v2.1.2] Cancel current running task so the new ASR engine takes effect immediately.
                 // Previously, the running task would continue with the old engine until it finished.
+                // [v2.3.9] Also re-generate cancelled tasks with the new engine immediately.
                 try {
+                    val cancelledTasks = activeTasks.values.toList()
                     var cancelled = 0
-                    activeTasks.values.forEach { it.cancelled.set(true); cancelled++ }
+                    cancelledTasks.forEach { it.cancelled.set(true); cancelled++ }
                     if (cancelled > 0) {
                         logToFile("[v2.1.6] Cancelled $cancelled active subtitle task(s) due to ASR provider change")
                     }
+                    // [v2.3.9] Remove from activeTasks and re-generate with new engine
+                    activeTasks.clear()
+                    // Wait a moment for old task to actually stop
+                    Thread.sleep(500)
+                    // Re-generate each cancelled task with the new ASR engine
+                    cancelledTasks.forEach { oldCtx ->
+                        if (oldCtx.audioUrl.isNotEmpty()) {
+                            logToFile("[v2.3.9] Re-generating subtitle for ${oldCtx.episodeId} with new ASR engine")
+                            // Use a minimal callback — the real callback was already consumed
+                            val dummyCallback = object : SubtitleCallback {
+                                override fun onSubtitleGenerated(transcript: Transcript) {}
+                                override fun onProgressUpdate(progress: Int, total: Int) {}
+                                override fun onComplete(transcripts: List<Transcript>) {
+                                    logToFile("[v2.3.9] Re-generation complete for ${oldCtx.episodeId}: ${transcripts.size} transcripts")
+                                }
+                                override fun onError(error: String) {
+                                    logToFile("[v2.3.9] Re-generation failed for ${oldCtx.episodeId}: $error")
+                                }
+                            }
+                            try {
+                                generateSubtitlesForEpisode(oldCtx.episodeId, oldCtx.audioUrl, dummyCallback)
+                            } catch (e: Exception) {
+                                logToFile("[v2.3.9] Re-generation exception for ${oldCtx.episodeId}: ${e.message}")
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
-                    logToFile("[v2.1.2] Failed to cancel current task: ${e.message}")
+                    logToFile("[v2.1.2] Failed to cancel/restart task: ${e.message}")
                 }
             }
         }, android.content.IntentFilter("com.radio.app.ASR_PROVIDER_CHANGED"))
@@ -402,6 +431,7 @@ class SubtitleGeneratorService : Service() {
         val taskId = "sub_${episodeId}_${System.currentTimeMillis()}"
         val logFile = prepareTaskLogFile("subtitle", episodeId)
         val ctx = TaskContext(taskId, episodeId, "SUBTITLE", logFile)
+        ctx.audioUrl = audioUrl  // [v2.3.9] Save for re-generation on ASR change
         if (activeTasks.putIfAbsent(episodeId, ctx) != null) {
             Log.w(TAG, "Subtitle task already running for $episodeId, skipping duplicate")
             return
@@ -2674,12 +2704,16 @@ class SubtitleGeneratorService : Service() {
 
                 // [v2.0.91] Heap check — lower thresholds
                 val freeBeforeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                if (freeBeforeMB < 2) {
+                if (freeBeforeMB < 5) {
                     logToFile("processWhisperInChunks: [v2.0.91] Low heap (${freeBeforeMB}MB), running GC before chunk")
-                    System.gc()
-                    Thread.sleep(200)
+                    // [v2.3.9] More aggressive GC: 5 rounds with finalization
+                    repeat(5) {
+                        try { System.gc() } catch (_: Exception) {}
+                        try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
+                        Thread.sleep(100)
+                    }
                     val freeAfterMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                    if (freeAfterMB < 1) {
+                    if (freeAfterMB < 3) {
                         logToFile("processWhisperInChunks: [v2.0.91] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
                         if (allTranscripts.isEmpty()) {
                             val detail = "Whisper处理Java堆内存不足（GC后仅${freeAfterMB}MB）"
@@ -2746,6 +2780,8 @@ class SubtitleGeneratorService : Service() {
                         }
                         chunkSuccess = true
                         consecutiveCrashes = 0
+                        // [v2.3.9] GC after each successful chunk to prevent heap exhaustion
+                        try { System.gc() } catch (_: Exception) {}
                     } else {
                         chunkErrorCode = result
                         // [v2.3.0] Non-zero return from whisper_full is also a failure (not just exceptions).
