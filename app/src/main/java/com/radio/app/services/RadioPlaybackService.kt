@@ -760,6 +760,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                                 isRetrying = false
                                                 playbackInitializing = false
                                                 episodeSwitching = false
+                                                prepared = false  // [v2.3.4] Reset prepared flag
                                                 // [v2.3.3] Release broken player on retry exception too, so next playEpisode recreates it
                                                 val brokenPlayer2 = player
                                                 player = null
@@ -778,6 +779,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     isRetrying = false
                                     playbackInitializing = false
                                     episodeSwitching = false
+                                    prepared = false  // [v2.3.4] Reset prepared flag when player is released
                                     // Release player safely - post to avoid doing dangerous ops inside error callback
                                     val brokenPlayer = player
                                     player = null

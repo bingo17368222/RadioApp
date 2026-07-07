@@ -20,17 +20,15 @@
 
 #include "whisper.h"
 
-// [v2.3.0] File logging for native code - writes to same log dir as Kotlin
+// [v2.3.4] File logging for native code - writes to same log dir as Kotlin
 static int g_native_log_fd = -1;
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void native_log(const char* level, const char* fmt, ...) {
     pthread_mutex_lock(&g_log_mutex);
     if (g_native_log_fd < 0) {
-        // Open log file on first use
         const char* log_path = "/data/data/com.radio.app/files/logs/subtitle/native.log";
         g_native_log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        // Also try external path as fallback
         if (g_native_log_fd < 0) {
             log_path = "/storage/emulated/0/Android/data/com.radio.app/files/logs/subtitle/native.log";
             g_native_log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -43,12 +41,10 @@ static void native_log(const char* level, const char* fmt, ...) {
         int len = vsnprintf(buf, sizeof(buf), fmt, args);
         va_end(args);
         if (len > 0) {
-            // Write level and message
             write(g_native_log_fd, level, strlen(level));
             write(g_native_log_fd, buf, len < (int)sizeof(buf)-1 ? len : (int)sizeof(buf)-1);
             const char* nl = "\n";
             write(g_native_log_fd, nl, 1);
-            // Don't fsync every time for performance; just flush
         }
     }
     pthread_mutex_unlock(&g_log_mutex);
@@ -85,11 +81,10 @@ static void register_crash_handlers() {
     signal(SIGILL,  whisper_crash_handler);
 }
 
-// [v2.3.0] whisper.cpp internal log callback - capture logs from library
+// [v2.3.0] whisper.cpp internal log callback
 static void whisper_log_cb(ggml_log_level level, const char* text, void* user_data) {
     (void)user_data;
     if (text && *text) {
-        // Trim trailing newline for consistency
         char buf[512];
         strncpy(buf, text, sizeof(buf)-1);
         buf[sizeof(buf)-1] = '\0';
@@ -107,24 +102,39 @@ static void whisper_log_cb(ggml_log_level level, const char* text, void* user_da
     }
 }
 
-// Function pointer types for dynamically loaded libwhisper.so
-// [v2.3.1] ABI-SAFE approach: Use the same by-value pattern as whisper_init_from_file_with_params
-// (which works correctly). The key fix is the _reserved[2048] padding in whisper_full_params
-// struct definition, which ensures our local struct is LARGER than the library's, preventing
-// stack buffer overflow when the library writes/reads the struct by value.
+// ============================================================================
+// [v2.3.4] ABI-SAFE FUNCTION POINTER TYPES
+// ============================================================================
+// KEY INSIGHT for ARM64 AAPCS:
+//   For any struct larger than 16 bytes passed by value, the caller allocates
+//   a stack copy and passes a POINTER to that copy in the next available
+//   integer register (X0-X7). This is indistinguishable from passing a void*.
+//   So we declare the params argument as `void*` and pass a pointer to
+//   library-allocated memory (from whisper_full_default_params_by_ref),
+//   whose layout is guaranteed to match the library exactly.
+//
+//   This approach ZERO-DEPENDENCE on our stub whisper.h struct layout.
+// ============================================================================
+
 typedef struct whisper_context* (*whisper_init_from_file_with_params_t)(
     const char* path_model, struct whisper_context_params params);
+
+// [v2.3.4] Second arg is void* (pointer to library-allocated params) — ABI-safe
 typedef int (*whisper_full_t)(
-    struct whisper_context* ctx, struct whisper_full_params params,
+    struct whisper_context* ctx, void* params,
     const float* samples, int n_samples);
+
 typedef int (*whisper_full_n_segments_t)(struct whisper_context* ctx);
 typedef const char* (*whisper_full_get_segment_text_t)(struct whisper_context* ctx, int i_segment);
 typedef int64_t (*whisper_full_get_segment_t0_t)(struct whisper_context* ctx, int i_segment);
 typedef int64_t (*whisper_full_get_segment_t1_t)(struct whisper_context* ctx, int i_segment);
 typedef void (*whisper_free_t)(struct whisper_context* ctx);
-typedef struct whisper_full_params (*whisper_full_default_params_t)(
+
+// [v2.3.4] Only use _by_ref variant — returns library-allocated pointer
+typedef struct whisper_full_params* (*whisper_full_default_params_by_ref_t)(
     enum whisper_sampling_strategy strategy);
 typedef void (*whisper_free_params_t)(struct whisper_full_params* params);
+
 typedef struct whisper_context_params (*whisper_context_default_params_t)(void);
 typedef const char* (*whisper_print_system_info_t)(void);
 typedef void (*whisper_log_set_t)(ggml_log_callback log_callback, void* user_data);
@@ -137,7 +147,7 @@ static whisper_full_get_segment_text_t text_func = NULL;
 static whisper_full_get_segment_t0_t t0_func = NULL;
 static whisper_full_get_segment_t1_t t1_func = NULL;
 static whisper_free_t free_func = NULL;
-static whisper_full_default_params_t params_func = NULL;
+static whisper_full_default_params_by_ref_t params_by_ref_func = NULL;
 static whisper_free_params_t free_params_func = NULL;
 static whisper_context_default_params_t ctx_params_func = NULL;
 static whisper_print_system_info_t system_info_func = NULL;
@@ -172,34 +182,31 @@ static int load_whisper_funcs() {
     t0_func             = (whisper_full_get_segment_t0_t)         dlsym(whisper_lib, "whisper_full_get_segment_t0");
     t1_func             = (whisper_full_get_segment_t1_t)         dlsym(whisper_lib, "whisper_full_get_segment_t1");
     free_func           = (whisper_free_t)                        dlsym(whisper_lib, "whisper_free");
-    params_func         = (whisper_full_default_params_t)         dlsym(whisper_lib, "whisper_full_default_params");
+    params_by_ref_func  = (whisper_full_default_params_by_ref_t)  dlsym(whisper_lib, "whisper_full_default_params_by_ref");
     free_params_func    = (whisper_free_params_t)                 dlsym(whisper_lib, "whisper_free_params");
     ctx_params_func     = (whisper_context_default_params_t)      dlsym(whisper_lib, "whisper_context_default_params");
     system_info_func    = (whisper_print_system_info_t)           dlsym(whisper_lib, "whisper_print_system_info");
     log_set_func        = (whisper_log_set_t)                     dlsym(whisper_lib, "whisper_log_set");
 
-    NLOGI("load_whisper_funcs: init=%p full=%p nseg=%p text=%p free=%p params=%p free_params=%p sysinfo=%p log_set=%p",
+    NLOGI("load_whisper_funcs: init=%p full=%p nseg=%p text=%p free=%p params_by_ref=%p free_params=%p sysinfo=%p log_set=%p",
          (void*)init_func, (void*)full_func, (void*)nseg_func, (void*)text_func, (void*)free_func,
-         (void*)params_func, (void*)free_params_func, (void*)system_info_func, (void*)log_set_func);
+         (void*)params_by_ref_func, (void*)free_params_func, (void*)system_info_func, (void*)log_set_func);
 
     if (!init_func || !full_func || !nseg_func || !text_func || !free_func) {
         NLOGE("load_whisper_funcs: one or more required symbols not found");
         return 0;
     }
-    // [v2.3.1] Use by-value whisper_full_default_params (same pattern as ctx_params which works).
-    // The _reserved[2048] padding in our struct ensures we have enough stack space.
-    if (!params_func) {
-        NLOGE("load_whisper_funcs: whisper_full_default_params not found");
+    if (!params_by_ref_func) {
+        NLOGE("load_whisper_funcs: whisper_full_default_params_by_ref not found - required for ABI-safe calls");
         return 0;
     }
 
-    // [v2.3.0] Install whisper.cpp log callback to capture internal errors
     if (log_set_func) {
         log_set_func(whisper_log_cb, NULL);
         NLOGI("load_whisper_funcs: installed whisper.cpp log callback");
     }
 
-    NLOGI("load_whisper_funcs: all required symbols resolved");
+    NLOGI("load_whisper_funcs: all required symbols resolved (ABI-safe by_ref mode)");
     return 1;
 }
 
@@ -234,9 +241,10 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     if (ctx_params_func) {
         cparams = ctx_params_func();
     }
+    // [v2.3.4] Only set use_gpu (offset 0, guaranteed safe across all versions).
+    // Don't touch flash_attn or other fields to avoid offset mismatch.
     cparams.use_gpu = false;
-    cparams.flash_attn = false;
-    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false)", path);
+    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false, other fields at library defaults)", path);
     struct whisper_context* ctx = init_func(path, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path, path);
     NLOGI("initFromFile: ctx=%p", (void*)ctx);
@@ -246,32 +254,62 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.3.3] MAXIMUM ABI SAFETY: Only modify the FIRST field (strategy) which is guaranteed
-// to be at offset 0 in every whisper.cpp version. All other fields use library defaults
-// (auto language detection, default thread count, default context size, etc.).
-// Previous versions crashed with SIGSEGV/SIGABRT after 8s because field offsets for
-// language/audio_ctx/no_context in our stub header did not match the precompiled library
-// (struct padding/alignment differences between NDK versions cause later fields to shift),
-// causing us to write NULL/0/false into memory locations that corrupted critical internal state.
-// With defaults: language is auto-detected (Whisper reliably detects Chinese),
-// n_threads defaults to std::thread::hardware_concurrency() (optimal for device),
-// all other parameters use whisper.cpp's tested defaults.
-static void setup_params(struct whisper_full_params* params) {
-    if (!params_func) {
-        NLOGE("setup_params: params_func is NULL!");
-        memset(params, 0, sizeof(struct whisper_full_params));
-        return;
+// [v2.3.4] ABI-SAFE params preparation.
+// Strategy:
+//   1. Call whisper_full_default_params_by_ref(GREEDY) to get a library-allocated
+//      params pointer. Memory layout is 100% correct for the loaded library.
+//   2. Set ONLY strategy (offset 0, 100% safe in all versions) and n_threads (offset 4,
+//      second field, stable across all whisper.cpp versions).
+//   3. ALL OTHER fields use library defaults:
+//      - language defaults to NULL/auto-detect (most robust for any language)
+//      - no_context defaults to false (cross-chunk context improves streaming accuracy)
+//      - single_segment defaults to false (allows multiple segments per chunk)
+//      - print_progress defaults to false in modern versions
+//      - All callbacks default to NULL
+//      - audio_ctx defaults to 0 (use model default)
+//   4. Caller must call whisper_free_params() after whisper_full() returns.
+//
+//   This MINIMIZES struct field writes to avoid ANY offset mismatch between our
+//   stub whisper.h and the precompiled library.
+static struct whisper_full_params* prepare_params(void) {
+    struct whisper_full_params* ref = NULL;
+    if (!params_by_ref_func) {
+        NLOGE("prepare_params: params_by_ref_func is NULL");
+        return NULL;
     }
+    ref = params_by_ref_func(WHISPER_SAMPLING_GREEDY);
+    if (!ref) {
+        NLOGE("prepare_params: by_ref returned NULL");
+        return NULL;
+    }
+    NLOGI("prepare_params: got default params from by_ref (library-allocated, layout=exact)");
 
-    NLOGI("setup_params: getting defaults via by-value params_func (ABI-safe: only strategy will be overridden)");
-    *params = params_func(WHISPER_SAMPLING_GREEDY);
+    // ---- ABSOLUTE MINIMUM FIELD OVERRIDES ----
+    // offset 0: strategy (enum, 4 bytes) — GREEDY is fastest, no beam search overhead
+    ref->strategy = WHISPER_SAMPLING_GREEDY;
 
-    // ONLY set the first field (strategy, offset 0) - guaranteed safe across all versions.
-    // Do NOT touch language, n_threads, audio_ctx, no_context, single_segment, or any other
-    // field - their offsets may differ between our stub and the precompiled library.
-    params->strategy = WHISPER_SAMPLING_GREEDY;
+    // offset 4: n_threads (int, 4 bytes) — limit to 2 threads to avoid stack overflow on mobile.
+    // Default is std::thread::hardware_concurrency() which can be 8 on octa-core phones;
+    // each ggml worker thread allocates significant stack space, causing SIGABRT/SIGSEGV.
+    ref->n_threads = 2;
 
-    NLOGI("setup_params: ready (all defaults except strategy=GREEDY, language=auto, threads=auto)");
+    // ---- NO OTHER FIELDS ARE MODIFIED ----
+    // All other fields retain library defaults, which are tested and correct.
+    // Notable defaults:
+    //   language      = NULL / auto-detect (Whisper auto-detects Chinese reliably)
+    //   detect_language = true (when language is NULL)
+    //   no_context    = false (use previous chunk as prompt — better streaming)
+    //   no_timestamps = false (generate timestamps — needed for subtitles)
+    //   single_segment = false (allow multiple segments per chunk)
+    //   audio_ctx     = 0 (use model default: 1500 tokens = 30s context)
+    //   translate     = false (transcribe, not translate)
+    //   All callbacks = NULL (no user callbacks to invoke)
+    //   initial_prompt = NULL
+    //   temperature   = 0.0f (greedy decoding)
+
+    NLOGI("prepare_params: ready n_threads=%d language=auto (all other fields at library defaults)",
+         ref->n_threads);
+    return ref;
 }
 
 JNIEXPORT jint JNICALL
@@ -311,23 +349,26 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     NLOGI("full: n_samples=%d, abs_max=%.6f, avg_amp=%.6f, silence_pct=%d%%, nan_count=%d",
          n_samples, abs_max, avg_amp, silence_pct, nan_count);
 
-    // Check for completely silent audio (avoid passing pure silence which may cause issues)
     if (abs_max < 0.0001f) {
         NLOGI("full: audio is nearly silent (abs_max=%.6f), returning 0 segments (not an error)", abs_max);
         free(sample_data);
-        return 0;  // Return success with 0 segments - not an error
+        return 0;
     }
 
-    // [v2.3.1] Build params using by-value defaults (same pattern as init which works).
-    // Local struct has _reserved[2048] padding to prevent stack overflow.
-    struct whisper_full_params params;
-    setup_params(&params);
+    // [v2.3.4] ABI-SAFE: get params from library (zero struct layout dependence)
+    struct whisper_full_params* params = prepare_params();
+    if (!params) {
+        NLOGE("full: prepare_params failed");
+        free(sample_data);
+        return -2;
+    }
 
-    NLOGI("full: calling whisper_full, ctx=%p n_samples=%d n_threads=%d lang=%s",
-         (void*)ctx, n_samples, params.n_threads, params.language ? params.language : "(null)");
+    NLOGI("full: calling whisper_full (ABI-safe void* mode), ctx=%p n_samples=%d n_threads=%d language=auto",
+         (void*)ctx, n_samples, params->n_threads);
 
-    // Pass params by value - same pattern as init_func(path, cparams) which works.
-    // The C compiler handles ARM64 AAPCS indirect passing automatically.
+    // Pass library-allocated params pointer directly.
+    // On ARM64 AAPCS, structs >16 bytes are passed as pointers (in X1 for 2nd arg),
+    // so passing a void* is bit-exact identical to passing by value.
     int result = full_func(ctx, params, sample_data, n_samples);
 
     NLOGI("full: whisper_full returned %d", result);
@@ -336,8 +377,12 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         NLOGI("full: whisper_full_n_segments = %d", n);
     }
     if (result != 0) {
-        NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f, lang=%s)",
-             result, n_samples, abs_max, params.language ? params.language : "(null)");
+        NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f)",
+             result, n_samples, abs_max);
+    }
+
+    if (free_params_func) {
+        free_params_func(params);
     }
 
     free(sample_data);
