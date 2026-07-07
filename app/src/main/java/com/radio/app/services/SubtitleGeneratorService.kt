@@ -278,13 +278,13 @@ class SubtitleGeneratorService : Service() {
                 // with MODE_PRIVATE does NOT sync across processes. Without this write,
                 // reloadAsrSettings() would read stale data from this process's prefs.
                 try {
-                    context.getSharedPreferences("radio_app_settings", android.content.Context.MODE_PRIVATE).edit()
+                    context.getSharedPreferences("radio_app_settings", android.content.Context.MODE_MULTI_PROCESS).edit()
                         .putString("asr_provider", provider)
                         .putString("vosk_model_dir", voskDir)
                         .putString("whisper_model_dir", whisperDir)  // [v2.2.9]
                         .putLong("force_vosk_until", if (resetForceVosk) 0 else settings.forceVoskUntil)
                         .putInt("whisper_crash_count", if (resetForceVosk) 0 else settings.whisperCrashCount)
-                        .apply()
+                        .commit()  // [v2.4.0] Use commit() for synchronous write across processes
                 } catch (_: Exception) {}
                 logToFile("[v2.2.9] ASR settings updated via broadcast + persisted to prefs: provider=${settings.safeAsrProvider()}, whisperDir=${settings.whisperModelDir}")
 
@@ -2655,7 +2655,12 @@ class SubtitleGeneratorService : Service() {
             // running simultaneously, exhausting Java heap to 0-1MB, causing silent failures where
             // whisper_full() returned 0 but produced 0 segments due to OOM.
             // 10s chunks provide better speech context, and we also add concurrency guard below.
-            val chunkSize = 10 * 16000  // 10 seconds per chunk (160000 samples)
+            // [v2.4.0] Use 30-second chunks (480000 samples). This is Whisper's native chunk size.
+            // Previously 10s chunks caused too many JNI calls, each consuming ~4MB of Java heap
+            // that couldn't be recovered by GC, leading to OOM after 5-6 chunks (50-60s of audio).
+            // 30s chunks reduce JNI calls by 3x, allowing 5-min audio to be processed in ~10 chunks.
+            // Whisper internally handles 30s segments natively, so this also improves accuracy.
+            val chunkSize = 30 * 16000  // 30 seconds per chunk (480000 samples)
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2680,7 +2685,7 @@ class SubtitleGeneratorService : Service() {
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
-                if (samplesToRead < 32000) {  // [v2.3.2] 2s threshold for 10s chunks
+                if (samplesToRead < 48000) {  // [v2.4.0] 3s threshold for 30s chunks
                     logToFile("processWhisperInChunks: [v2.3.2] last chunk too small ($samplesToRead samples), skipping")
                     break
                 }

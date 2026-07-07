@@ -102,7 +102,11 @@ class AppSettings private constructor() {
      * the latest values from SharedPreferences.
      */
     fun reloadAsrSettings(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // [v2.4.0] Force reload from disk — SharedPreferences doesn't sync across processes
+        // (UI process writes, :subtitle process has stale cache). The broadcast handler writes
+        // to this process's prefs, but if the broadcast wasn't received, we need to force-read.
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS)
+        prefs.all  // Force access to trigger reload
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""
         whisperModelDir = prefs.getString("whisper_model_dir", "") ?: ""  // [v2.2.9]
@@ -111,7 +115,7 @@ class AppSettings private constructor() {
     }
 
     private fun load(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS)
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""  // [v2.0.61] Issue 6
@@ -165,7 +169,7 @@ class AppSettings private constructor() {
     }
 
     fun save(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS)
         prefs.edit().apply {
             putString("ai_model", aiModel)
             putString("asr_provider", asrProvider)
