@@ -3427,7 +3427,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             isRetrying = false
             if (currentEpisode != null && currentStreamUrl.isNotEmpty()) {
                 writeServiceLog("playback", "[v2.3.5] play(): recovering with current episode at pos=${authoritativePosition}ms")
-                playEpisode(currentEpisode!!, authoritativePosition.coerceAtLeast(0L))
+                playEpisode(currentEpisode!!, isLive, authoritativePosition.coerceAtLeast(0L))
                 return
             } else {
                 writeServiceLog("playback", "[v2.3.5] play(): no current episode to recover, callback onError")

@@ -263,7 +263,6 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
 //      - n_threads (offset 4): 2 (avoid stack overflow on mobile)
 //      - language (stable core field): "zh" (force Chinese — auto-detect fails
 //        on short/noisy chunks, producing English/Japanese hallucinations)
-//      - detect_language (next to language): false (since we force language)
 //   3. ALL OTHER fields use library defaults.
 //   4. Caller must call whisper_free_params() after whisper_full() returns.
 //
@@ -299,8 +298,9 @@ static struct whisper_full_params* prepare_params(void) {
     // Force Chinese language — auto-detection on 10s radio chunks (which may start
     // mid-sentence or contain music/noise) often misidentifies as English/Japanese,
     // producing garbage output like "[Speaking Japanese]" or English hallucinations.
+    // When language is set to non-NULL, whisper.cpp automatically skips language detection,
+    // so we don't need to set detect_language=false (avoiding another field write).
     ref->language = "zh";
-    ref->detect_language = false;
 
     NLOGI("prepare_params: ready n_threads=%d language=zh (forced), strategy=GREEDY",
          ref->n_threads);
