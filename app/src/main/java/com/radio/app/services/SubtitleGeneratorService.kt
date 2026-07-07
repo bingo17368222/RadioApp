@@ -567,7 +567,8 @@ class SubtitleGeneratorService : Service() {
                         val whisperModel = findWhisperModel()
                         if (whisperModel != null) {
                             // [v2.0.69] Issue 6: Broadcast model name from the very start
-                            val modelLabel = File(whisperModel).name
+                            // [v2.4.2] Show friendly name "Whisper Tiny" instead of "ggml-tiny.bin"
+                            val modelLabel = getFriendlyModelName(whisperModel)
                             currentModelName = modelLabel
                             sendSubtitleBroadcast("com.radio.app.SUBTITLE_MODEL_INFO", mapOf(
                                 "episodeId" to episodeId,
@@ -605,7 +606,8 @@ class SubtitleGeneratorService : Service() {
                         val voskModel = findVoskModel()
                         if (voskModel != null) {
                             // [v2.0.69] Issue 6: Broadcast model name from the very start
-                            val modelLabel = File(voskModel).name
+                            // [v2.4.2] Show friendly name "Vosk 小模型" instead of directory name
+                            val modelLabel = getFriendlyModelName(voskModel)
                             currentModelName = modelLabel
                             sendSubtitleBroadcast("com.radio.app.SUBTITLE_MODEL_INFO", mapOf(
                                 "episodeId" to episodeId,
@@ -2080,6 +2082,27 @@ class SubtitleGeneratorService : Service() {
      * 查找Whisper模型（ggml格式，供whisper.cpp使用）
      * 返回模型.bin文件的绝对路径（不是目录路径），找不到返回null
      */
+
+    // [v2.4.2] Convert model file/directory path to friendly display name
+    private fun getFriendlyModelName(path: String): String {
+        val name = File(path).name.lowercase()
+        return when {
+            // Whisper models: ggml-tiny.bin -> "Whisper Tiny"
+            name.contains("tiny") -> "Whisper Tiny"
+            name.contains("base") -> "Whisper Base"
+            name.contains("small") && !name.contains("vosk") -> "Whisper Small"
+            name.contains("medium") -> "Whisper Medium"
+            name.contains("large") -> "Whisper Large"
+            // Vosk models: vosk-model-small-cn-0.22 -> "Vosk 小模型"
+            name.contains("vosk") && name.contains("small") -> "Vosk 小模型"
+            name.contains("vosk") && name.contains("large") -> "Vosk 大模型"
+            name.contains("vosk") -> "Vosk 模型"
+            // Fallback: capitalize
+            else -> name.replace(".bin", "").replace("ggml-", "Whisper ").replace("vosk-model-", "Vosk ")
+                .split("-").joinToString(" ") { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() } }
+        }
+    }
+
     private fun findWhisperModel(): String? {
         logToFile("findWhisperModel: searching for Whisper ggml models...")
         // [v2.2.9] Check for saved Whisper model preference first
@@ -2347,18 +2370,12 @@ class SubtitleGeneratorService : Service() {
             val crashedEpisode = crashMarker.getString("crashed_episode", null)
             val crashTime = crashMarker.getLong("crash_time", 0L)
             val now = System.currentTimeMillis()
-            if (crashedEpisode == episodeId && (now - crashTime) < 5L * 60 * 1000) {
-                // Same episode crashed within 5 minutes - skip to prevent loop
-                crashMarker.edit().clear().apply()  // Clear marker
-                val detail = "Whisper在上次处理此节目时崩溃，已自动跳过以防止循环崩溃。"
-                ctx.lastErrorDetail = detail
-                logToFile("generateWithWhisper: [v2.1.2] SKIPPING episode $episodeId (crashed ${(now-crashTime)/1000}s ago)")
-                callback.onError(detail)
-                return false
-            }
-            // Clear stale marker
+            // [v2.4.2] Removed 5-minute crash cooldown per user request.
+            // User wants all Whisper models to be available immediately after failure.
+            // The crash marker is still cleared to prevent stale data.
             if (crashedEpisode != null) {
                 crashMarker.edit().clear().apply()
+                logToFile("generateWithWhisper: [v2.4.2] cleared crash marker (was episode=$crashedEpisode, ${(now-crashTime)/1000}s ago)")
             }
         } catch (_: Exception) {}
 
@@ -2449,7 +2466,8 @@ class SubtitleGeneratorService : Service() {
         // [v2.0.74] Issue 2 Fix: Report initial progress immediately so UI shows progress bar
         callback.onProgressUpdate(1, 100)
         // [v2.0.66] Issue 6: Set model name for broadcast
-        currentModelName = File(modelPath).name
+        // [v2.4.2] Use friendly name instead of raw filename
+        currentModelName = getFriendlyModelName(modelPath)
 
         try {
             val bridge = com.radio.app.whisper.WhisperBridge()
@@ -2720,8 +2738,11 @@ class SubtitleGeneratorService : Service() {
                 logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
 
                 // [v2.0.91] Heap check — lower thresholds
+                // [v2.4.2] Lowered thresholds: allow processing even with very low heap.
+                // whisper_full runs in native code and doesn't need much Java heap.
+                // Only abort when heap is truly exhausted (<1MB after GC).
                 val freeBeforeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                if (freeBeforeMB < 5) {
+                if (freeBeforeMB < 3) {
                     logToFile("processWhisperInChunks: [v2.0.91] Low heap (${freeBeforeMB}MB), running GC before chunk")
                     // [v2.3.9] More aggressive GC: 5 rounds with finalization
                     repeat(5) {
@@ -2730,7 +2751,7 @@ class SubtitleGeneratorService : Service() {
                         Thread.sleep(100)
                     }
                     val freeAfterMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                    if (freeAfterMB < 3) {
+                    if (freeAfterMB < 1) {
                         logToFile("processWhisperInChunks: [v2.0.91] CRITICALLY LOW HEAP after GC (${freeAfterMB}MB), aborting")
                         if (allTranscripts.isEmpty()) {
                             val detail = "Whisper处理Java堆内存不足（GC后仅${freeAfterMB}MB）"
