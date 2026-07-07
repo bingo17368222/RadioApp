@@ -295,6 +295,12 @@ static struct whisper_full_params* prepare_params(void) {
     // matches the actual library's offset. This write goes to the correct memory.
     ref->language = "zh";
 
+    // [v2.3.8] Set initial_prompt with simplified Chinese text to guide the model
+    // to output simplified Chinese characters instead of traditional.
+    // Whisper models sometimes output traditional Chinese (繁体) for Mandarin speech.
+    // An initial prompt with simplified Chinese text biases the decoder toward simplified.
+    ref->initial_prompt = "以下是普通话的句子。";
+
     // Log the offset for verification
     NLOGI("prepare_params: offsetof(language)=%zu, offsetof(strategy)=%zu, offsetof(n_threads)=%zu",
          offsetof(struct whisper_full_params, language),

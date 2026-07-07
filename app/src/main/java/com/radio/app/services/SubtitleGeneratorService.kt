@@ -2493,6 +2493,23 @@ class SubtitleGeneratorService : Service() {
                 logToFile("processWhisperInChunks: [v2.0.93] WARNING: Recent OOM ${((now - lastOomTime) / 1000)}s ago, but proceeding per user request (no cooldown)")
             }
             logToFile("processWhisperInChunks: [v2.0.93] Memory: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}")
+            // [v2.3.8] For large models (small=465MB), require more available memory.
+            // Small model needs ~1.5GB to load + inference. If availMem < modelSize*2, abort early.
+            if (modelSizeMB > 300 && availMemMB < modelSizeMB * 2) {
+                val detail = "Whisper ${modelSizeMB}MB模型需要至少${modelSizeMB * 2}MB可用内存（当前${availMemMB}MB）"
+                ctx.lastErrorDetail = detail
+                logToFile("processWhisperInChunks: [v2.3.8] INSUFFICIENT MEMORY for large model: $detail")
+                callback.onError("$detail。建议使用tiny(74MB)或base(141MB)模型，或关闭其他应用后重试。")
+                return false
+            }
+            // [v2.3.8] Force GC before loading model to free previous Whisper context
+            repeat(3) {
+                try { System.gc() } catch (_: Exception) {}
+                try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
+                Thread.sleep(300)
+            }
+            val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
+            logToFile("processWhisperInChunks: [v2.3.8] After pre-init GC: freeHeap=${freeHeapAfterGcMB}MB")
             // [v2.0.93] Lowered heap requirement — Whisper tiny with audio_ctx=128 needs minimal Java heap
             val requiredHeapMB = 4
             if (freeHeapMB < requiredHeapMB) {
@@ -2789,10 +2806,16 @@ class SubtitleGeneratorService : Service() {
             try { bridge.free(ctxPtr) } catch (_: Exception) {}
             logToFile("processWhisperInChunks: COMPLETE, ${allTranscripts.size} transcripts generated from $chunkIdx chunks")
             if (allTranscripts.isEmpty()) {
-                val detail = "Whisper处理完成但未识别到任何内容（${chunkIdx}个chunk，0条字幕）"
+                // [v2.3.8] Better error message — mention memory as possible cause for large models
+                val memNote = if (modelSizeMB > 300) {
+                    " 大模型(${modelSizeMB}MB)可能因内存不足导致推理失败（freeHeap=${freeHeapAfterGcMB}MB），建议使用tiny(74MB)或base(141MB)模型。"
+                } else {
+                    " 音频可能是音乐/静音，或模型不匹配。"
+                }
+                val detail = "Whisper处理完成但未识别到任何内容（${chunkIdx}个chunk，0条字幕）${memNote}"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.90] WARNING: 0 transcripts generated! $detail")
-                callback.onError("$detail 音频可能是音乐/静音，或模型不匹配。")
+                logToFile("processWhisperInChunks: [v2.3.8] WARNING: 0 transcripts generated! $detail")
+                callback.onError("$detail")
                 return false
             }
             callback.onComplete(allTranscripts)
