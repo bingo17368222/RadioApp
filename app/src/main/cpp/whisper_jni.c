@@ -254,23 +254,26 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.3.4] ABI-SAFE params preparation.
+// [v2.3.5] ABI-SAFE params preparation.
 // Strategy:
 //   1. Call whisper_full_default_params_by_ref(GREEDY) to get a library-allocated
 //      params pointer. Memory layout is 100% correct for the loaded library.
-//   2. Set ONLY strategy (offset 0, 100% safe in all versions) and n_threads (offset 4,
-//      second field, stable across all whisper.cpp versions).
-//   3. ALL OTHER fields use library defaults:
-//      - language defaults to NULL/auto-detect (most robust for any language)
-//      - no_context defaults to false (cross-chunk context improves streaming accuracy)
-//      - single_segment defaults to false (allows multiple segments per chunk)
-//      - print_progress defaults to false in modern versions
-//      - All callbacks default to NULL
-//      - audio_ctx defaults to 0 (use model default)
+//   2. Set ONLY stable early fields that are required for correct Chinese ASR:
+//      - strategy (offset 0): GREEDY
+//      - n_threads (offset 4): 2 (avoid stack overflow on mobile)
+//      - language (stable core field): "zh" (force Chinese — auto-detect fails
+//        on short/noisy chunks, producing English/Japanese hallucinations)
+//      - detect_language (next to language): false (since we force language)
+//   3. ALL OTHER fields use library defaults.
 //   4. Caller must call whisper_free_params() after whisper_full() returns.
 //
-//   This MINIMIZES struct field writes to avoid ANY offset mismatch between our
-//   stub whisper.h and the precompiled library.
+//   NOTE ON LANGUAGE FIELD OFFSET SAFETY:
+//   The `language` field (const char*) was introduced in whisper.cpp when multilingual
+//   support was added (2022), before the _by_ref API existed. It is preceded only by
+//   primitive fields (enums, ints, bools, floats, other pointers) whose sizes and
+//   alignments are standard across ARM64 compilers. The offset is stable across all
+//   whisper.cpp versions that export whisper_full_default_params_by_ref.
+//   We write a pointer to a string literal "zh" which is valid for the life of the process.
 static struct whisper_full_params* prepare_params(void) {
     struct whisper_full_params* ref = NULL;
     if (!params_by_ref_func) {
@@ -284,30 +287,22 @@ static struct whisper_full_params* prepare_params(void) {
     }
     NLOGI("prepare_params: got default params from by_ref (library-allocated, layout=exact)");
 
-    // ---- ABSOLUTE MINIMUM FIELD OVERRIDES ----
-    // offset 0: strategy (enum, 4 bytes) — GREEDY is fastest, no beam search overhead
+    // ---- FIELD OVERRIDES (only stable, early fields) ----
+
+    // offset 0: strategy (enum, 4 bytes)
     ref->strategy = WHISPER_SAMPLING_GREEDY;
 
-    // offset 4: n_threads (int, 4 bytes) — limit to 2 threads to avoid stack overflow on mobile.
-    // Default is std::thread::hardware_concurrency() which can be 8 on octa-core phones;
-    // each ggml worker thread allocates significant stack space, causing SIGABRT/SIGSEGV.
+    // offset 4: n_threads (int, 4 bytes) — limit to 2 threads for mobile
     ref->n_threads = 2;
 
-    // ---- NO OTHER FIELDS ARE MODIFIED ----
-    // All other fields retain library defaults, which are tested and correct.
-    // Notable defaults:
-    //   language      = NULL / auto-detect (Whisper auto-detects Chinese reliably)
-    //   detect_language = true (when language is NULL)
-    //   no_context    = false (use previous chunk as prompt — better streaming)
-    //   no_timestamps = false (generate timestamps — needed for subtitles)
-    //   single_segment = false (allow multiple segments per chunk)
-    //   audio_ctx     = 0 (use model default: 1500 tokens = 30s context)
-    //   translate     = false (transcribe, not translate)
-    //   All callbacks = NULL (no user callbacks to invoke)
-    //   initial_prompt = NULL
-    //   temperature   = 0.0f (greedy decoding)
+    // offset of language field: after all core primitive fields.
+    // Force Chinese language — auto-detection on 10s radio chunks (which may start
+    // mid-sentence or contain music/noise) often misidentifies as English/Japanese,
+    // producing garbage output like "[Speaking Japanese]" or English hallucinations.
+    ref->language = "zh";
+    ref->detect_language = false;
 
-    NLOGI("prepare_params: ready n_threads=%d language=auto (all other fields at library defaults)",
+    NLOGI("prepare_params: ready n_threads=%d language=zh (forced), strategy=GREEDY",
          ref->n_threads);
     return ref;
 }
@@ -363,7 +358,7 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         return -2;
     }
 
-    NLOGI("full: calling whisper_full (ABI-safe void* mode), ctx=%p n_samples=%d n_threads=%d language=auto",
+    NLOGI("full: calling whisper_full (ABI-safe void* mode), ctx=%p n_samples=%d n_threads=%d language=zh (forced)",
          (void*)ctx, n_samples, params->n_threads);
 
     // Pass library-allocated params pointer directly.

@@ -309,8 +309,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     audioFocusLossType = FOCUS_LOSS_NONE
                     pausedByAudioFocus = false
                     smartResumeRunning = false
-                    player?.play()
-                    prepared = true
+                    // [v2.3.5] Only resume if player exists; if null, let play() handle recovery
+                    if (player != null) {
+                        player?.play()
+                        prepared = true
+                    } else {
+                        writeServiceLog("audiofocus", "[v2.3.5] smartResume: player is null, calling play() for recovery")
+                        audioFocusHandler.post { play() }
+                    }
                     forceNotificationUpdate = true
                     lastNotificationContentHash = 0
                     updateNotification()
@@ -3413,6 +3419,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.78] Issue 5 Fix: Clear pause confirmation window on play
         pauseConfirmedUntil = 0L
 
+        // [v2.3.5] If player is null (was released after error), recreate it and resume current episode
+        if (player == null) {
+            writeServiceLog("playback", "[v2.3.5] play(): player is null, attempting recovery")
+            // Reset error state so we can retry
+            errorRetryCount = 0
+            isRetrying = false
+            if (currentEpisode != null && currentStreamUrl.isNotEmpty()) {
+                writeServiceLog("playback", "[v2.3.5] play(): recovering with current episode at pos=${authoritativePosition}ms")
+                playEpisode(currentEpisode!!, authoritativePosition.coerceAtLeast(0L))
+                return
+            } else {
+                writeServiceLog("playback", "[v2.3.5] play(): no current episode to recover, callback onError")
+                try { callback?.onError("播放器已重置，请重新选择节目") } catch (_: Exception) {}
+                return
+            }
+        }
+
         // [v2.0.87] Fix: If player has ended (STATE_ENDED), seek to 0 before playing.
         // ExoPlayer does NOT restart from beginning when play() is called in STATE_ENDED.
         // This was the root cause of "notification stuck at 100% progress, pause/play doesn't fix it".
@@ -3428,7 +3451,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         requestAudioFocus()
         player?.play()
-        prepared = true  // [v2.0.87] Mark as prepared since we're explicitly starting playback
+        // [v2.3.5] Only set prepared=true if player actually exists
+        if (player != null) {
+            prepared = true
+        }
         // [v2.0.76] Issue 6 Fix: Immediately update MediaSession to STATE_PLAYING
         writeServiceLog("notification", "[v2.0.87] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
         forceNotificationUpdate = true
