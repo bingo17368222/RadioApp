@@ -469,7 +469,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                         adapter?.notifyDataSetChanged()
                     }
                     "标记无需预处理", "取消无需预处理" -> {
-                        val nowMarked = settings.toggleNoPreprocess(episode.id)
+                        val nowMarked = settings.toggleNoPreprocess(requireContext(), episode.id)
                         Toast.makeText(context, if (nowMarked) "已标记无需预处理" else "已取消无需预处理", Toast.LENGTH_SHORT).show()
                         adapter?.notifyDataSetChanged()
                     }

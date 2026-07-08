@@ -225,7 +225,7 @@ class AppSettings private constructor() {
     }
 
     // [v2.4.14] Toggle "no preprocessing needed" for an episode. Returns true if now marked.
-    fun toggleNoPreprocess(episodeId: String): Boolean {
+    fun toggleNoPreprocess(context: Context, episodeId: String): Boolean {
         val nowMarked = if (noPreprocessEpisodes.contains(episodeId)) {
             noPreprocessEpisodes.remove(episodeId)
             false
