@@ -2456,6 +2456,60 @@ class SubtitleGeneratorService : Service() {
             // [v2.1.0] Unified PCM cache: always use ${episodeId}_5min.pcm (16kHz mono)
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+
+            // [v2.4.10] For pre-cache subtitle generation, use FULL audio PCM instead of 5-min clip
+            if (forceWhisperBaseModel) {
+                logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
+                val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+                try {
+                    // Check if full PCM already exists (from a previous run)
+                    if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+                        val sizeMB = fullPcmFile.length() / 1024 / 1024
+                        logToFile("generateWithWhisper: [v2.4.10] full PCM cache found (${sizeMB}MB), using for processing")
+                        ctx.log("完整PCM缓存 (${sizeMB}MB)")
+                        val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
+                        // Delete temporary full PCM after processing
+                        fullPcmFile.delete()
+                        logToFile("generateWithWhisper: [v2.4.10] deleted temporary full PCM file after processing")
+                        return result
+                    }
+
+                    // Need to generate full PCM from cached audio file
+                    // Find the cached audio file
+                    val audioFileName = try {
+                        val url = java.net.URL(audioUrl)
+                        url.path.substringAfterLast("/")
+                    } catch (e: Exception) {
+                        audioUrl.substringAfterLast("/")
+                    }
+                    val cacheFile = java.io.File(com.radio.app.RadioApplication.getEpisodesCacheDir(this), audioFileName)
+                    if (!cacheFile.exists() || cacheFile.length() < 1024) {
+                        logToFile("generateWithWhisper: [v2.4.10] cached audio not found: ${cacheFile.absolutePath}, falling back to 5min PCM")
+                        // Fall through to 5-min PCM logic below
+                    } else {
+                        ctx.log("正在解码完整音频为PCM...")
+                        logToFile("generateWithWhisper: [v2.4.10] decoding full audio to PCM: ${cacheFile.absolutePath} (${cacheFile.length()/1024/1024}MB)")
+                        val success = decodeFullAudioToPcm(cacheFile, fullPcmFile, ctx)
+                        if (success && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+                            val sizeMB = fullPcmFile.length() / 1024 / 1024
+                            logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB), processing with Whisper")
+                            ctx.log("完整PCM解码完成 (${sizeMB}MB)")
+                            val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
+                            // Delete temporary full PCM after processing
+                            fullPcmFile.delete()
+                            logToFile("generateWithWhisper: [v2.4.10] deleted temporary full PCM file after processing")
+                            return result
+                        } else {
+                            logToFile("generateWithWhisper: [v2.4.10] full PCM decode failed, falling back to 5min PCM")
+                            fullPcmFile.delete()
+                        }
+                    }
+                } catch (e: Exception) {
+                    logToFile("generateWithWhisper: [v2.4.10] full PCM generation error: ${e.message}, falling back to 5min PCM")
+                    fullPcmFile.delete()
+                }
+            }
+
             if (pcm16kFile.exists() && pcm16kFile.length() > 1024 * 500) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
@@ -2683,17 +2737,21 @@ class SubtitleGeneratorService : Service() {
             // If PCM is smaller than expected (~9.6MB for 5min @ 16kHz), it's from a fallback range.
             val maxPcmBytes = 5L * 60 * 16000 * 2  // 5 minutes = 9,600,000 bytes
             val fileBytes = pcmFile.length()
+            // [v2.4.10] For full PCM files (pre-cache mode), read entire file
+            val isFullPcm = pcmFile.name.endsWith("_full.pcm")
             val expected5minBytes = maxPcmBytes
             val isFrom15MinRange = fileBytes >= expected5minBytes * 0.9
-            val whisperOffsetMs = if (isFrom15MinRange) 15L * 60 * 1000 else 0L
-            val bytesToRead = minOf(fileBytes, maxPcmBytes).toInt()
+            // [v2.4.10] Full PCM starts from beginning, no offset needed
+            val whisperOffsetMs = if (isFullPcm) 0L else (if (isFrom15MinRange) 15L * 60 * 1000 else 0L)
+            // [v2.4.10] For full PCM, read entire file; for 5min PCM, cap at 5 minutes
+            val bytesToRead = if (isFullPcm) fileBytes.toInt() else minOf(fileBytes, maxPcmBytes).toInt()
             if (bytesToRead <= 0) {
                 logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes), aborting")
                 callback.onError("音频文件太短，无法处理")
                 try { bridge.free(ctxPtr) } catch (_: Exception) {}
                 return false
             }
-            logToFile("processWhisperInChunks: [v2.0.75] PCM=${fileBytes} bytes, reading ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s), isFrom15Min=$isFrom15MinRange, offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [v2.0.75] PCM=${fileBytes} bytes, reading ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s), isFrom15Min=$isFrom15MinRange, isFullPcm=$isFullPcm, offsetMs=$whisperOffsetMs")
 
             // [v2.0.89] Issue 5 Fix: STREAMING PCM processing — do NOT load entire file into memory.
             // v2.0.78 loaded entire PCM as ByteArray(9.6MB) + FloatArray(19.2MB) = 29MB Java heap.
@@ -3041,6 +3099,144 @@ class SubtitleGeneratorService : Service() {
         }
         return downloadAudioWithProgress(audioUrl) { progress ->
             onProgress?.invoke((progress * 14 / 30).coerceAtMost(14))
+        }
+    }
+
+    /**
+     * v2.4.10: Decode entire audio file to 16kHz mono PCM for pre-cache subtitle generation.
+     * Unlike decodeToPcm which only decodes 5 minutes, this decodes the FULL audio.
+     * The resulting PCM file is temporary and should be deleted after Whisper processing.
+     */
+    private fun decodeFullAudioToPcm(
+        audioFile: File, pcmFile: File, ctx: TaskContext
+    ): Boolean {
+        logToFile("decodeFullAudioToPcm: [v2.4.10] START, audio=${audioFile.absolutePath} (${audioFile.length()/1024/1024}MB)")
+        var extractor: MediaExtractor? = null
+        var codec: MediaCodec? = null
+        var fos: FileOutputStream? = null
+
+        try {
+            extractor = MediaExtractor()
+            extractor.setDataSource(audioFile.absolutePath)
+
+            var audioTrack = -1
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrack = i
+                    break
+                }
+            }
+            if (audioTrack < 0) {
+                logToFile("decodeFullAudioToPcm: [v2.4.10] no audio track found")
+                return false
+            }
+
+            val format = extractor.getTrackFormat(audioTrack)
+            extractor.selectTrack(audioTrack)
+            val mime = format.getString(MediaFormat.KEY_MIME)!!
+            codec = MediaCodec.createDecoderByType(mime)
+            codec.configure(format, null, null, 0)
+            codec.start()
+
+            val inSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+                format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
+            val inChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
+            val outSampleRate = 16000
+            val outChannels = 1
+
+            logToFile("decodeFullAudioToPcm: [v2.4.10] input: ${inSampleRate}Hz ${inChannels}ch -> output: ${outSampleRate}Hz ${outChannels}ch")
+
+            fos = FileOutputStream(pcmFile)
+            val bufferInfo = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+            var resampledBytes = 0L
+
+            val maxDecodeTimeMs = 10 * 60 * 1000L  // 10 min max decode time
+            val decodeStartTime = System.currentTimeMillis()
+
+            var resamplePhase = 0.0
+            var lastSample: Short = 0
+
+            while (!outputDone && !ctx.cancelled.get()) {
+                val now = System.currentTimeMillis()
+                if (now - decodeStartTime > maxDecodeTimeMs) {
+                    logToFile("decodeFullAudioToPcm: [v2.4.10] max decode time reached, stopping")
+                    outputDone = true
+                    break
+                }
+
+                if (!inputDone) {
+                    val inIdx = codec.dequeueInputBuffer(10000)
+                    if (inIdx >= 0) {
+                        val buffer = codec.getInputBuffer(inIdx)!!
+                        val sampleSize = extractor.readSampleData(buffer, 0)
+                        if (sampleSize < 0) {
+                            codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            val sampleTime = extractor.sampleTime
+                            codec.queueInputBuffer(inIdx, 0, sampleSize, sampleTime, 0)
+                            extractor.advance()
+                        }
+                    }
+                }
+
+                val outIdx = codec.dequeueOutputBuffer(bufferInfo, 10000)
+                if (outIdx >= 0) {
+                    val buffer = codec.getOutputBuffer(outIdx)
+                    if (buffer != null && bufferInfo.size > 0) {
+                        buffer.position(bufferInfo.offset)
+                        buffer.limit(bufferInfo.offset + bufferInfo.size)
+                        val pcmBytes = ByteArray(buffer.remaining())
+                        buffer.get(pcmBytes)
+
+                        val chunkShorts = ShortArray(pcmBytes.size / 2)
+                        java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
+                        val resampledTriple = resampleChunkContinuousSG(
+                            chunkShorts, inSampleRate, inChannels,
+                            outSampleRate, 1, resamplePhase, lastSample
+                        )
+                        val outBytes = resampledTriple.first
+                        resamplePhase = resampledTriple.second
+                        lastSample = resampledTriple.third
+                        if (outBytes.isNotEmpty()) {
+                            fos.write(outBytes)
+                            resampledBytes += outBytes.size
+                        }
+                    }
+                    codec.releaseOutputBuffer(outIdx, false)
+
+                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        outputDone = true
+                    }
+                }
+            }
+
+            fos.flush()
+            fos.close()
+            fos = null
+
+            // Write info file
+            val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
+            infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=4")
+
+            val sizeMB = pcmFile.length() / 1024 / 1024
+            val durationSec = pcmFile.length() / 2 / outSampleRate
+            logToFile("decodeFullAudioToPcm: [v2.4.10] DONE, output=${sizeMB}MB (${durationSec}s), took ${System.currentTimeMillis()-decodeStartTime}ms")
+            return pcmFile.exists() && pcmFile.length() > 1024 * 100
+
+        } catch (e: Exception) {
+            logToFile("decodeFullAudioToPcm: [v2.4.10] EXCEPTION: ${e.message}")
+            return false
+        } finally {
+            try { fos?.close() } catch (_: Exception) {}
+            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.release() } catch (_: Exception) {}
+            try { extractor?.release() } catch (_: Exception) {}
         }
     }
 

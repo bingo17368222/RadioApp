@@ -35,7 +35,7 @@ class MainActivity : AppCompatActivity() {
         private set
 
     private val navIds = intArrayOf(R.id.nav_home, R.id.nav_episodes, R.id.nav_search, R.id.nav_settings)
-    private var currentNavId: Int = R.id.nav_home
+    private var currentNavId: Int = R.id.nav_episodes  // [v2.4.10] Default to 回放(Episodes) tab
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -65,8 +65,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (savedInstanceState == null) {
-            loadFragment(HomeFragment())
-            selectNav(R.id.nav_home)
+            // [v2.4.10] Default to 回放(Episodes) tab on app launch
+            loadFragment(EpisodesFragment())
+            selectNav(R.id.nav_episodes)
         }
 
         bindService(

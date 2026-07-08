@@ -78,6 +78,16 @@
                 android:layout_marginStart="8dp" />
 
             <TextView
+                android:id="@+id/tv_subtitle_indicator"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="有字幕"
+                android:textSize="11sp"
+                android:textColor="#2196F3"
+                android:visibility="gone"
+                android:layout_marginStart="8dp" />
+
+            <TextView
                 android:id="@+id/tv_playing_indicator"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="?attr/appBackground">
-    <EditText android:id="@+id/et_search" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_margin="16dp" android:hint="搜索节目..." android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_search" android:padding="16dp" android:drawableStart="@drawable/ic_search" android:drawablePadding="12dp" />
+    <EditText android:id="@+id/et_search" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_margin="16dp" android:hint="搜索字幕..." android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_search" android:padding="16dp" android:drawableStart="@drawable/ic_search" android:drawablePadding="12dp" />
     <androidx.recyclerview.widget.RecyclerView android:id="@+id/recycler_view" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="16dp" android:clipToPadding="false" />
 </LinearLayout>

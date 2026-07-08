@@ -114,6 +114,19 @@ class EpisodeAdapter(
             holder.tvCachedIndicator.visibility = View.GONE
         }
 
+        // [v2.4.10] Check if subtitles exist for this episode
+        val hasSubtitles = try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
+            dbHelper.getTranscripts(episode.id).isNotEmpty()
+        } catch (e: Exception) {
+            false
+        }
+        if (hasSubtitles) {
+            holder.tvSubtitleIndicator.visibility = View.VISIBLE
+        } else {
+            holder.tvSubtitleIndicator.visibility = View.GONE
+        }
+
         holder.itemView.setOnClickListener { listener?.onEpisodeClick(episode) }
         holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
@@ -131,6 +144,7 @@ class EpisodeAdapter(
         val btnPlay: ImageView = view.findViewById(R.id.btn_play)
         val tvDislikeIndicator: TextView = view.findViewById(R.id.tv_dislike_indicator)
         val tvCachedIndicator: TextView = view.findViewById(R.id.tv_cached_indicator)
+        val tvSubtitleIndicator: TextView = view.findViewById(R.id.tv_subtitle_indicator)
         val tvPlayingIndicator: TextView = view.findViewById(R.id.tv_playing_indicator)
     }
 }
