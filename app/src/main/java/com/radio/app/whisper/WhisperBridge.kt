@@ -14,6 +14,11 @@ class WhisperBridge {
         private var loaded = false
         private var whisperSoPath: String? = null
 
+        /** Optimization mode constants for full() call */
+        const val OPT_ACCURACY = 0   // For tiny model: beam search, temperature fallback
+        const val OPT_BALANCED = 1   // For base model: greedy, multi-threaded
+        const val OPT_SPEED = 2      // For small model: greedy, max threads, VAD skip
+
         fun getWhisperSoPath(): String? = whisperSoPath
 
         fun loadNativeLibraries(codeCacheDir: java.io.File, modelsDir: java.io.File?): Boolean {
@@ -95,9 +100,18 @@ class WhisperBridge {
 
     /**
      * Run full transcription on PCM float samples.
+     * @param opt_mode Optimization mode: 0=ACCURACY (tiny, beam search),
+     *                 1=BALANCED (base, greedy+threads), 2=SPEED (small, greedy+VAD skip)
      * Returns 0 on success, non-zero on error.
      */
-    external fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int): Int
+    external fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int, optMode: Int): Int
+
+    /**
+     * Backward-compatible overload (defaults to BALANCED mode).
+     */
+    fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int): Int {
+        return full(ctxPtr, samples, nSamples, OPT_BALANCED)
+    }
 
     /**
      * Get the number of segments from the last full() call.
