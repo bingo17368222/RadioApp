@@ -1689,7 +1689,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // 检查是否已有字幕（避免重复生成）
         try {
-            val dbHelper = com.radio.app.database.RadioDatabaseHelper(this)
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             val existingSubtitles = dbHelper.getTranscripts(episodeId)
             if (existingSubtitles.isNotEmpty()) {
                 writePreCacheLog("startPreCacheSubtitleGeneration: subtitles already exist for $episodeId, skipping")
