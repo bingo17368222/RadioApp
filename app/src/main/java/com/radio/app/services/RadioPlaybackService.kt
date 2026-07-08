@@ -215,6 +215,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationHandler: Handler? = null
     private var notificationRunnable: Runnable? = null
     private var lastNotifiedPosition = -1L
+    // [v2.4.6] Track when playback gets stuck near the end of an episode.
+    // ExoPlayer sometimes doesn't fire STATE_ENDED when audio reaches the end,
+    // leaving the player in STATE_READY with isPlaying=true but position frozen
+    // near dur. This causes the notification progress bar to stay at 100% forever.
+    private var stuckAtEndSince = 0L
+    private var stuckAtEndPos = 0L
     private var positionSaveHandler: Handler? = null
     private var positionSaveRunnable: Runnable? = null
     private var skipSeconds = 15
@@ -2562,6 +2568,63 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
+        // [v2.4.6] Detect playback stuck near the end of an episode.
+        // ExoPlayer sometimes doesn't fire STATE_ENDED when audio reaches the end,
+        // leaving position frozen near dur with isPlaying=true. The notification
+        // progress bar then stays at 100% (999/1000) forever, and continuous play
+        // (autoPlayNextEpisode) is never triggered.
+        // Fix: when pos is within 3s of dur AND position hasn't changed for 15s
+        // (3 consecutive 5s polls), manually trigger episode end handling.
+        if (prepared && !isLive && !userPaused && continuousPlay && dur > 10000) {
+            val distToEnd = dur - pos
+            if (distToEnd in 0..3000) {
+                // Position is near the end
+                if (stuckAtEndSince == 0L) {
+                    stuckAtEndSince = System.currentTimeMillis()
+                    stuckAtEndPos = pos
+                    writeServiceLog("notification", "[v2.4.6] STUCK-AT-END detected: pos=$pos, dur=$dur, distToEnd=${distToEnd}ms, starting 15s timer")
+                } else if (pos == stuckAtEndPos) {
+                    // Position hasn't changed since we first detected near-end
+                    val stuckDuration = System.currentTimeMillis() - stuckAtEndSince
+                    if (stuckDuration >= 15000) {
+                        writeServiceLog("notification", "[v2.4.6] STUCK-AT-END CONFIRMED: pos=$pos unchanged for ${stuckDuration}ms, triggering autoPlayNextEpisode manually")
+                        stuckAtEndSince = 0L
+                        stuckAtEndPos = 0L
+                        // Simulate STATE_ENDED handling to trigger continuous play
+                        prepared = false
+                        authoritativePosition = 0L
+                        maxKnownPosition = 0L
+                        lastNotifiedPosition = -1L
+                        if (continuousPlay && !isLive) {
+                            autoPlayNextEpisode()
+                        } else {
+                            forceNotificationUpdate = true
+                            lastNotificationContentHash = 0
+                            updateNotification()
+                        }
+                        return
+                    } else {
+                        writeServiceLog("notification", "[v2.4.6] STUCK-AT-END waiting: pos=$pos unchanged for ${stuckDuration}ms (need 15000ms)")
+                    }
+                } else {
+                    // Position changed (advanced slightly), reset timer
+                    stuckAtEndSince = System.currentTimeMillis()
+                    stuckAtEndPos = pos
+                }
+            } else {
+                // Not near end, reset
+                if (stuckAtEndSince != 0L) {
+                    writeServiceLog("notification", "[v2.4.6] STUCK-AT-END cancelled: pos=$pos moved away from end (distToEnd=${distToEnd}ms)")
+                    stuckAtEndSince = 0L
+                    stuckAtEndPos = 0L
+                }
+            }
+        } else {
+            // Not in a state where we should check, reset
+            stuckAtEndSince = 0L
+            stuckAtEndPos = 0L
+        }
+
         // [v2.0.87] Fix: Removed posDelta < 2000 early return. This was causing the notification
         // to freeze when position didn't change (e.g., during buffering, at end of audio, or when
         // player was in a bad state). The content hash dedup in doNotifyNotification() already
@@ -3244,6 +3307,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         lastNotifiedPosition = -1L
         lastNotificationContentHash = 0
         forceNotificationUpdate = true
+        // [v2.4.6] Reset stuck-at-end detection for new episode
+        stuckAtEndSince = 0L
+        stuckAtEndPos = 0L
         // [v2.0.69] Issue 1 Fix: When service was killed (preservedPosition=-1), use startPositionMs
         // as authoritative position. This is the actual position the player will seek to.
         // Old v2.0.68 code always used preservedPosition for same episode, but when service was killed,
