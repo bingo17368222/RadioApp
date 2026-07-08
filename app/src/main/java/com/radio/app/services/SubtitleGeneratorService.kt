@@ -511,6 +511,10 @@ class SubtitleGeneratorService : Service() {
                             if (t.episodeId.isNullOrBlank()) t.episodeId = episodeId
                             dbHelper.saveTranscript(t)
                         }
+                        // [v2.4.12] Save the engine name used to generate subtitles
+                        val engineName = if (currentModelName.isNotBlank()) currentModelName else "Unknown"
+                        dbHelper.saveTranscriptEngine(episodeId, engineName)
+                        logToFile("onComplete: [v2.4.12] saved engine name '$engineName' for $episodeId")
                         logToFile("onComplete: [v2.2.6] replaced old subtitles with ${transcripts.size} new transcripts for $episodeId")
                     } catch (e: Exception) {
                         logToFile("onComplete: [v2.2.6] failed to replace subtitles: ${e.message}")
@@ -523,7 +527,8 @@ class SubtitleGeneratorService : Service() {
                 sendSubtitleBroadcast(
                     "com.radio.app.SUBTITLE_COMPLETE",
                     mapOf(
-                        "episodeId" to episodeId
+                        "episodeId" to episodeId,
+                        "engineName" to (if (currentModelName.isNotBlank()) currentModelName else "")
                     )
                 )
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {

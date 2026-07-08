@@ -16,7 +16,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 4
+        private const val DATABASE_VERSION = 5
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -36,6 +36,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE $TABLE_PLAY_PROGRESS (episode_id TEXT PRIMARY KEY, progress INTEGER NOT NULL, recorded_at INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE $TABLE_TRANSCRIPTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, segment_start INTEGER NOT NULL, segment_end INTEGER NOT NULL, text TEXT NOT NULL)")
         db.execSQL("CREATE INDEX idx_transcripts_episode ON $TABLE_TRANSCRIPTS(episode_id)")
+        // [v2.4.12] Store the engine used to generate subtitles for each episode
+        db.execSQL("CREATE TABLE IF NOT EXISTS transcript_engine (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, generated_at INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE $TABLE_DISLIKED_EPISODES (episode_id TEXT PRIMARY KEY, title TEXT, station_name TEXT, created_at INTEGER)")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
@@ -55,6 +57,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         if (oldVersion < 4) {
             db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
+        }
+        // [v2.4.12] Add transcript_engine table for tracking subtitle generation engine
+        if (oldVersion < 5) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS transcript_engine (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, generated_at INTEGER NOT NULL)")
         }
     }
 
@@ -118,6 +124,29 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     fun clearAllTranscripts() {
         val db = writableDatabase
         db.delete(TABLE_TRANSCRIPTS, null, null)
+    }
+
+    // [v2.4.12] Save the engine used to generate subtitles for an episode
+    fun saveTranscriptEngine(episodeId: String, engineName: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("episode_id", episodeId)
+            put("engine_name", engineName)
+            put("generated_at", System.currentTimeMillis())
+        }
+        db.replace("transcript_engine", null, values)
+    }
+
+    // [v2.4.12] Get the engine used to generate subtitles for an episode
+    fun getTranscriptEngine(episodeId: String): String? {
+        val db = readableDatabase
+        val cursor = db.query("transcript_engine", arrayOf("engine_name"), "episode_id = ?", arrayOf(episodeId), null, null, null)
+        var engine: String? = null
+        if (cursor.moveToFirst()) {
+            engine = cursor.getString(0)
+        }
+        cursor.close()
+        return engine
     }
 
     // [v2.1.3] Delete transcripts for a specific episode

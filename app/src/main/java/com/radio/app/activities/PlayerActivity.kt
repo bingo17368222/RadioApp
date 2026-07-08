@@ -190,6 +190,17 @@ class PlayerActivity : AppCompatActivity() {
                         }
                         subtitleAdapter?.setTranscripts(subtitleTranscripts)
                         binding.subtitleView.visibility = View.GONE
+                        // [v2.4.12] Show subtitle title with engine info
+                        val engineName = intent.getStringExtra("engineName") ?: ""
+                        if (engineName.isNotBlank()) {
+                            binding.tvSubtitleTitle.text = "字幕  生成所用引擎：$engineName"
+                        } else if (episode != null) {
+                            val dbEngine = RadioDatabaseHelper.getInstance(this@PlayerActivity).getTranscriptEngine(episode.id)
+                            binding.tvSubtitleTitle.text = if (!dbEngine.isNullOrBlank())
+                                "字幕  生成所用引擎：$dbEngine" else "字幕"
+                        } else {
+                            binding.tvSubtitleTitle.text = "字幕"
+                        }
                         binding.tvSubtitleTitle.visibility = View.VISIBLE
                         binding.recyclerSubtitles.visibility = View.VISIBLE
                         Toast.makeText(this@PlayerActivity, "字幕生成完成，共${subtitleTranscripts.size}条", Toast.LENGTH_SHORT).show()
@@ -2542,6 +2553,10 @@ class PlayerActivity : AppCompatActivity() {
                         subtitleBroadcastList.clear()
                         subtitleBroadcastList.addAll(dbTranscripts)
                         subtitleAdapter?.setTranscripts(subtitleTranscripts)
+                        // [v2.4.12] Show engine info in subtitle title
+                        val retryEngineName = dbHelper.getTranscriptEngine(ep.id)
+                        binding.tvSubtitleTitle.text = if (!retryEngineName.isNullOrBlank())
+                            "字幕  生成所用引擎：$retryEngineName" else "字幕"
                         binding.tvSubtitleTitle.visibility = View.VISIBLE
                         binding.recyclerSubtitles.visibility = View.VISIBLE
                     }
@@ -2581,6 +2596,10 @@ class PlayerActivity : AppCompatActivity() {
             subtitleBroadcastList.clear()
             subtitleBroadcastList.addAll(dbTranscripts)
             subtitleAdapter?.setTranscripts(subtitleTranscripts)
+            // [v2.4.12] Show engine info in subtitle title
+            val engineName = dbHelper.getTranscriptEngine(episode.id)
+            binding.tvSubtitleTitle.text = if (!engineName.isNullOrBlank())
+                "字幕  生成所用引擎：$engineName" else "字幕"
             binding.tvSubtitleTitle.visibility = View.VISIBLE
             binding.recyclerSubtitles.visibility = View.VISIBLE
             // Keep segments visible too (do not touch recyclerSegments visibility).
