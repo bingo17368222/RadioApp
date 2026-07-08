@@ -2769,6 +2769,10 @@ class SubtitleGeneratorService : Service() {
                 else -> "SPEED(greedy+vad)"
             }
             logToFile("processWhisperInChunks: [v2.4.7] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
+
+            // [v2.4.7] Set optimization mode on the native bridge before processing chunks
+            bridge.setOptMode(optMode)
+
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2886,7 +2890,7 @@ class SubtitleGeneratorService : Service() {
 
                     // [v2.1.9] Add logging right before JNI call to pinpoint crash location
                     logToFile("processWhisperInChunks: [v2.4.7] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead, optMode=$optModeName")
-                    val result = bridge.full(ctxPtr, chunkSamples, samplesToRead, optMode)
+                    val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
                     logToFile("processWhisperInChunks: [v2.4.7] chunk $chunkIdx: AFTER bridge.full returned $result")
 
                     if (result == 0) {

@@ -14,7 +14,7 @@ class WhisperBridge {
         private var loaded = false
         private var whisperSoPath: String? = null
 
-        /** Optimization mode constants for full() call */
+        /** Optimization mode constants for setOptMode() */
         const val OPT_ACCURACY = 0   // For tiny model: beam search, temperature fallback
         const val OPT_BALANCED = 1   // For base model: greedy, multi-threaded
         const val OPT_SPEED = 2      // For small model: greedy, max threads, VAD skip
@@ -88,9 +88,24 @@ class WhisperBridge {
         setLibraryPathNative(path)
     }
 
+    /**
+     * [v2.4.7] Set optimization mode for subsequent full() calls.
+     * @param mode 0=ACCURACY (tiny, beam search), 1=BALANCED (base, greedy+threads),
+     *             2=SPEED (small, greedy+VAD skip)
+     */
+    fun setOptMode(mode: Int) {
+        val clamped = when {
+            mode < 0 -> 1
+            mode > 2 -> 1
+            else -> mode
+        }
+        setOptModeNative(clamped)
+    }
+
     // Native method declarations
 
     private external fun setLibraryPathNative(path: String)
+    private external fun setOptModeNative(mode: Int)
 
     /**
      * Initialize whisper context from model file.
@@ -100,18 +115,10 @@ class WhisperBridge {
 
     /**
      * Run full transcription on PCM float samples.
-     * @param opt_mode Optimization mode: 0=ACCURACY (tiny, beam search),
-     *                 1=BALANCED (base, greedy+threads), 2=SPEED (small, greedy+VAD skip)
+     * Call setOptMode() before this to select optimization strategy.
      * Returns 0 on success, non-zero on error.
      */
-    external fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int, optMode: Int): Int
-
-    /**
-     * Backward-compatible overload (defaults to BALANCED mode).
-     */
-    fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int): Int {
-        return full(ctxPtr, samples, nSamples, OPT_BALANCED)
-    }
+    external fun full(ctxPtr: Long, samples: FloatArray, nSamples: Int): Int
 
     /**
      * Get the number of segments from the last full() call.

@@ -106,21 +106,9 @@ static void whisper_log_cb(ggml_log_level level, const char* text, void* user_da
 // ============================================================================
 // [v2.3.4] ABI-SAFE FUNCTION POINTER TYPES
 // ============================================================================
-// KEY INSIGHT for ARM64 AAPCS:
-//   For any struct larger than 16 bytes passed by value, the caller allocates
-//   a stack copy and passes a POINTER to that copy in the next available
-//   integer register (X0-X7). This is indistinguishable from passing a void*.
-//   So we declare the params argument as `void*` and pass a pointer to
-//   library-allocated memory (from whisper_full_default_params_by_ref),
-//   whose layout is guaranteed to match the library exactly.
-//
-//   This approach ZERO-DEPENDENCE on our stub whisper.h struct layout.
-// ============================================================================
-
 typedef struct whisper_context* (*whisper_init_from_file_with_params_t)(
     const char* path_model, struct whisper_context_params params);
 
-// [v2.3.4] Second arg is void* (pointer to library-allocated params) — ABI-safe
 typedef int (*whisper_full_t)(
     struct whisper_context* ctx, void* params,
     const float* samples, int n_samples);
@@ -131,7 +119,6 @@ typedef int64_t (*whisper_full_get_segment_t0_t)(struct whisper_context* ctx, in
 typedef int64_t (*whisper_full_get_segment_t1_t)(struct whisper_context* ctx, int i_segment);
 typedef void (*whisper_free_t)(struct whisper_context* ctx);
 
-// [v2.3.4] Only use _by_ref variant — returns library-allocated pointer
 typedef struct whisper_full_params* (*whisper_full_default_params_by_ref_t)(
     enum whisper_sampling_strategy strategy);
 typedef void (*whisper_free_params_t)(struct whisper_full_params* params);
@@ -155,6 +142,12 @@ static whisper_print_system_info_t system_info_func = NULL;
 static whisper_log_set_t log_set_func = NULL;
 
 static char whisper_so_path[512] = "libwhisper.so";
+
+// [v2.4.7] Global optimization mode (set via setOptMode JNI before full() call)
+// 0 = ACCURACY (tiny model: beam search)
+// 1 = BALANCED (base model: greedy, multi-threaded)
+// 2 = SPEED (small model: greedy, max threads)
+static int g_opt_mode = 1;
 
 static int load_whisper_funcs() {
     if (init_func != NULL) return 1;
@@ -222,6 +215,14 @@ Java_com_radio_app_whisper_WhisperBridge_setLibraryPathNative(JNIEnv* env, jobje
     }
 }
 
+// [v2.4.7] Set optimization mode for subsequent full() calls
+JNIEXPORT void JNICALL
+Java_com_radio_app_whisper_WhisperBridge_setOptModeNative(JNIEnv* env, jobject thiz, jint mode) {
+    if (mode < 0 || mode > 2) mode = 1;
+    g_opt_mode = mode;
+    NLOGI("setOptModeNative: g_opt_mode=%d", g_opt_mode);
+}
+
 JNIEXPORT jlong JNICALL
 Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz, jstring model_path) {
     register_crash_handlers();
@@ -242,11 +243,8 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     if (ctx_params_func) {
         cparams = ctx_params_func();
     }
-    // [v2.3.4] Only set use_gpu (offset 0, guaranteed safe across all versions).
-    // [v2.4.5] Reverted flash_attn to false — it caused SIGABRT crash with base model.
-    // The flash_attn implementation in this whisper.cpp build is unstable on ARM64.
     cparams.use_gpu = false;
-    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false, flash_attn=false)", path);
+    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false)", path);
     struct whisper_context* ctx = init_func(path, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path, path);
     NLOGI("initFromFile: ctx=%p", (void*)ctx);
@@ -256,111 +254,96 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.4.7] Detect optimal thread count based on CPU cores.
-// Whisper encoding scales well up to ~4 threads on mobile, decoding up to ~2-3.
-// Using too many threads causes overhead from cache thrashing and context switching.
+// [v2.4.7] Get optimal thread count based on CPU cores and optimization mode
 static int get_optimal_threads(int opt_mode) {
-    int cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
     if (cores < 1) cores = 4;
-    NLOGI("get_optimal_threads: detected %d CPU cores, opt_mode=%d", cores, opt_mode);
-
-    // Clamp to reasonable range per mode
+    int c = (int)cores;
+    NLOGI("get_optimal_threads: detected %ld CPU cores, opt_mode=%d", cores, opt_mode);
     switch (opt_mode) {
-        case 0:  // ACCURACY (tiny): beam search is memory-bandwidth bound, 4 threads is optimal
-            return cores < 4 ? cores : (cores > 6 ? 5 : 4);
-        case 1:  // BALANCED (base): moderate parallelism
-            return cores < 3 ? cores : (cores > 6 ? 6 : cores);
-        case 2:  // SPEED (small): use more cores but cap at 8
-            return cores < 3 ? cores : (cores > 8 ? 8 : cores);
-        default:
-            return 4;
+        case 0: return c < 4 ? c : 4;        // ACCURACY: 4 threads (beam search is bandwidth-bound)
+        case 1: return c < 3 ? c : (c > 6 ? 6 : c); // BALANCED: up to 6 threads
+        case 2: return c < 3 ? c : (c > 8 ? 8 : c); // SPEED: up to 8 threads
+        default: return 4;
     }
 }
 
-// [v2.4.7] Model-specific parameter preparation.
-// opt_mode:
-//   0 = ACCURACY (tiny model): beam search, temperature fallback
-//   1 = BALANCED (base model): greedy, multi-threaded
-//   2 = SPEED (small model): greedy, max threads, conservative limits
-//
-// We only override fields that differ from whisper_full_default_params_by_ref defaults.
-// All other fields (print_*, translate, no_timestamps, etc.) use library defaults.
-static struct whisper_full_params* prepare_params(int opt_mode) {
+// [v2.4.7] Prepare params based on g_opt_mode.
+// Uses ABI-safe approach: get library-allocated params and only set
+// fields known to be at correct offsets (proven by v2.3.7 fix).
+static struct whisper_full_params* prepare_params(void) {
     struct whisper_full_params* ref = NULL;
     if (!params_by_ref_func) {
         NLOGE("prepare_params: params_by_ref_func is NULL");
         return NULL;
     }
 
+    int mode = g_opt_mode;
     enum whisper_sampling_strategy strategy;
     const char* mode_name;
     int threads;
+    const char* prompt;
 
-    switch (opt_mode) {
+    switch (mode) {
         case 0:
             strategy = WHISPER_SAMPLING_BEAM_SEARCH;
             mode_name = "ACCURACY(beam5)";
             break;
-        case 1:
         case 2:
+            strategy = WHISPER_SAMPLING_GREEDY;
+            mode_name = "SPEED(greedy)";
+            break;
+        case 1:
         default:
             strategy = WHISPER_SAMPLING_GREEDY;
-            mode_name = (opt_mode == 2) ? "SPEED(greedy)" : "BALANCED(greedy)";
+            mode_name = "BALANCED(greedy)";
             break;
     }
 
     ref = params_by_ref_func(strategy);
     if (!ref) {
-        NLOGE("prepare_params: by_ref returned NULL for strategy=%d", strategy);
+        NLOGE("prepare_params: by_ref returned NULL");
         return NULL;
     }
-    NLOGI("prepare_params: mode=%s, got default params from library", mode_name);
 
-    // === Thread count (dynamic per CPU cores) ===
-    threads = get_optimal_threads(opt_mode);
+    threads = get_optimal_threads(mode);
+
+    // === Fields at known-good offsets (proven since v2.3.7) ===
+    ref->strategy = strategy;
     ref->n_threads = threads;
-
-    // === Language: Chinese ===
     ref->language = "zh";
-    ref->detect_language = false;
 
-    // === Print flags: disable all console output ===
+    // Print flags: disable
     ref->print_special = false;
     ref->print_progress = false;
     ref->print_realtime = false;
     ref->print_timestamps = false;
 
-    // === Context: carry over between segments ===
-    ref->no_context = false;
-    ref->single_segment = false;
-
-    // === Suppress non-speech tokens for cleaner output ===
-    ref->suppress_blank = true;
-    ref->suppress_non_speech_tokens = true;
-
-    // === Initial prompt per mode ===
-    switch (opt_mode) {
-        case 0:  // ACCURACY: longer prompt for better Chinese context
-            ref->initial_prompt = "以下是普通话的句子。"
+    // Initial prompt per mode
+    switch (mode) {
+        case 0:
+            prompt = "以下是普通话的句子。"
                 "大家好，欢迎收听今天的节目。"
                 "首先让我们来了解一下今天的主要话题。"
                 "接下来我们会详细讨论。"
                 "感谢大家的收听。";
-            ref->carry_initial_prompt = true;
             break;
-        case 1:  // BALANCED: moderate prompt
-            ref->initial_prompt = "以下是普通话的句子。大家好，欢迎收听节目。";
-            ref->carry_initial_prompt = true;
+        case 1:
+            prompt = "以下是普通话的句子。大家好，欢迎收听节目。";
             break;
-        case 2:  // SPEED: minimal prompt
+        case 2:
         default:
-            ref->initial_prompt = "以下是普通话的句子。";
-            ref->carry_initial_prompt = true;
+            prompt = "以下是普通话的句子。";
             break;
     }
+    ref->initial_prompt = prompt;
+    ref->carry_initial_prompt = true;
+    ref->no_context = false;
+    ref->suppress_blank = true;
+    ref->suppress_non_speech_tokens = true;
 
-    // === Decoding parameters per mode ===
-    switch (opt_mode) {
+    // === Mode-specific tuning (fields exist in stub, offsets verified) ===
+    switch (mode) {
         case 0: {  // ACCURACY: beam search with temperature fallback
             ref->beam_search.beam_size = 5;
             ref->beam_search.patience = 1.0f;
@@ -369,89 +352,49 @@ static struct whisper_full_params* prepare_params(int opt_mode) {
             ref->no_speech_thold = 0.5f;
             break;
         }
-        case 1:   // BALANCED
-        case 2:   // SPEED
+        case 1:    // BALANCED
+        case 2:    // SPEED
         default: {
             ref->greedy.best_of = 1;
             ref->temperature = 0.0f;
             ref->temperature_inc = 0.0f;
-            if (opt_mode == 2) {
-                ref->max_tokens = 224;  // limit token count for speed
+            if (mode == 2) {
+                ref->max_tokens = 224;
             }
             break;
         }
     }
 
-    NLOGI("prepare_params: done mode=%s strategy=%s n_threads=%d prompt_len=%zu",
+    NLOGI("prepare_params: mode=%s strategy=%s n_threads=%d prompt_len=%zu",
          mode_name,
          (strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY",
-         threads,
-         ref->initial_prompt ? strlen(ref->initial_prompt) : 0);
+         threads, strlen(prompt));
 
     return ref;
 }
 
-// [v2.4.7] Energy-based VAD to skip chunks with insufficient speech energy.
-// Returns true if the chunk appears to contain speech worth processing.
-// This runs BEFORE sending data to whisper_full, saving JNI + inference time on silent chunks.
-static int quick_vad_check(const float* samples, int n_samples, int opt_mode) {
-    if (n_samples <= 0) return 0;
-
+// [v2.4.7] Quick energy-based VAD: returns 1 if speech is present, 0 if silent
+static int quick_vad_check(const float* samples, int n_samples, int mode) {
     float abs_max = 0.0f;
-    float abs_sum = 0.0f;
     int active_count = 0;
-    int nan_count = 0;
-
     for (int i = 0; i < n_samples; i++) {
-        float s = samples[i];
-        if (!isfinite(s)) { nan_count++; continue; }
-        float a = fabsf(s);
+        float a = fabsf(samples[i]);
         if (a > abs_max) abs_max = a;
-        abs_sum += a;
-        // Count samples above speech threshold (0.005 ≈ -46dB, indicates active speech)
         if (a > 0.005f) active_count++;
     }
-
-    float avg_amp = abs_sum / (float)n_samples;
     float active_ratio = (float)active_count / (float)n_samples;
 
-    // Thresholds per mode:
-    // - ACCURACY: very permissive (process everything, even quiet speech)
-    // - BALANCED: moderate threshold
-    // - SPEED: more aggressive skipping
-    float max_amp_threshold;
-    float active_ratio_threshold;
+    float max_thresh = (mode == 2) ? 0.002f : 0.001f;
+    float ratio_thresh = (mode == 2) ? 0.05f : 0.02f;
 
-    switch (opt_mode) {
-        case 0:  // ACCURACY: process nearly everything
-            max_amp_threshold = 0.0005f;     // -66dB
-            active_ratio_threshold = 0.005f; // 0.5% active samples
-            break;
-        case 1:  // BALANCED
-            max_amp_threshold = 0.001f;      // -60dB
-            active_ratio_threshold = 0.02f;  // 2% active samples
-            break;
-        case 2:  // SPEED: skip quiet chunks aggressively
-        default:
-            max_amp_threshold = 0.002f;      // -54dB
-            active_ratio_threshold = 0.05f;  // 5% active samples
-            break;
-    }
-
-    int has_speech = (abs_max >= max_amp_threshold) && (active_ratio >= active_ratio_threshold);
-
-    NLOGI("quick_vad: n_samples=%d abs_max=%.6f avg_amp=%.6f active_ratio=%.3f%% nan=%d "
-          "has_speech=%d (threshold max=%.4f ratio=%.3f)",
-         n_samples, abs_max, avg_amp, active_ratio * 100.0f, nan_count,
-         has_speech, max_amp_threshold, active_ratio_threshold);
-
+    int has_speech = (abs_max >= max_thresh) && (active_ratio >= ratio_thresh);
+    NLOGI("quick_vad: n=%d max=%.6f active=%.1f%% has_speech=%d",
+         n_samples, abs_max, active_ratio * 100.0f, has_speech);
     return has_speech;
 }
 
 JNIEXPORT jint JNICALL
-Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz,
-                                              jlong ctx_ptr, jfloatArray samples, jint n_samples,
-                                              jint opt_mode) {
+Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong ctx_ptr, jfloatArray samples, jint n_samples) {
     if (!ctx_ptr || !full_func) {
         NLOGE("full: invalid state ctx=%lld full=%p", (long long)ctx_ptr, (void*)full_func);
         return -1;
@@ -462,11 +405,7 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz,
         return -1;
     }
 
-    // Validate opt_mode
-    if (opt_mode < 0 || opt_mode > 2) {
-        NLOGI("full: invalid opt_mode=%d, defaulting to BALANCED(1)", opt_mode);
-        opt_mode = 1;
-    }
+    int mode = g_opt_mode;
 
     jfloat* sample_data = (jfloat*)malloc((size_t)n_samples * sizeof(jfloat));
     if (!sample_data) {
@@ -491,44 +430,34 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz,
     float avg_amp = abs_sum / (float)(n_samples > 0 ? n_samples : 1);
     int silence_pct = (int)((float)silence_count * 100.0f / (float)(n_samples > 0 ? n_samples : 1));
     NLOGI("full: n_samples=%d, abs_max=%.6f, avg_amp=%.6f, silence_pct=%d%%, nan_count=%d, opt_mode=%d",
-         n_samples, abs_max, avg_amp, silence_pct, nan_count, opt_mode);
+         n_samples, abs_max, avg_amp, silence_pct, nan_count, mode);
 
-    // Near-silence quick exit (same as before)
     if (abs_max < 0.0001f) {
-        NLOGI("full: audio is nearly silent (abs_max=%.6f), returning 0 segments (not an error)", abs_max);
+        NLOGI("full: audio is nearly silent (abs_max=%.6f), returning 0 segments", abs_max);
         free(sample_data);
         return 0;
     }
 
-    // [v2.4.7] Energy-based VAD pre-filter for speed modes.
-    // If the chunk has very little speech energy, skip the expensive whisper_full call.
-    // Accuracy mode always processes the chunk (most permissive VAD).
-    if (opt_mode != 0) {
-        int has_speech = quick_vad_check(sample_data, n_samples, opt_mode);
-        if (!has_speech) {
-            NLOGI("full: VAD determined chunk has insufficient speech energy, skipping whisper_full (opt_mode=%d)", opt_mode);
+    // [v2.4.7] VAD pre-filter for speed/balanced modes (skip silent chunks)
+    if (mode != 0) {
+        if (!quick_vad_check(sample_data, n_samples, mode)) {
+            NLOGI("full: VAD skip - insufficient speech energy (mode=%d)", mode);
             free(sample_data);
-            return 0;  // Return 0 segments, not an error
+            return 0;
         }
     }
 
-    // [v2.3.4] ABI-SAFE: get params from library (zero struct layout dependence)
-    struct whisper_full_params* params = prepare_params(opt_mode);
+    struct whisper_full_params* params = prepare_params();
     if (!params) {
         NLOGE("full: prepare_params failed");
         free(sample_data);
         return -2;
     }
 
-    NLOGI("full: calling whisper_full (ABI-safe void* mode), ctx=%p n_samples=%d n_threads=%d "
-          "strategy=%s language=zh opt_mode=%d",
+    NLOGI("full: calling whisper_full, ctx=%p n_samples=%d n_threads=%d strategy=%s mode=%d",
          (void*)ctx, n_samples, params->n_threads,
-         (params->strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY",
-         opt_mode);
+         (params->strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY", mode);
 
-    // Pass library-allocated params pointer directly.
-    // On ARM64 AAPCS, structs >16 bytes are passed as pointers (in X1 for 2nd arg),
-    // so passing a void* is bit-exact identical to passing by value.
     int result = full_func(ctx, params, sample_data, n_samples);
 
     NLOGI("full: whisper_full returned %d", result);
@@ -537,8 +466,8 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz,
         NLOGI("full: whisper_full_n_segments = %d", n);
     }
     if (result != 0) {
-        NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f, opt_mode=%d)",
-             result, n_samples, abs_max, opt_mode);
+        NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f, mode=%d)",
+             result, n_samples, abs_max, mode);
     }
 
     if (free_params_func) {
