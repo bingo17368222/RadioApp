@@ -143,10 +143,7 @@ static whisper_log_set_t log_set_func = NULL;
 
 static char whisper_so_path[512] = "libwhisper.so";
 
-// [v2.4.7] Global optimization mode (set via setOptMode JNI before full() call)
-// 0 = ACCURACY (tiny model: beam search)
-// 1 = BALANCED (base model: greedy, multi-threaded)
-// 2 = SPEED (small model: greedy, max threads)
+// [v2.4.8] Optimization mode: 0=ACCURACY(beam), 1=BALANCED(greedy), 2=SPEED(greedy)
 static int g_opt_mode = 1;
 
 static int load_whisper_funcs() {
@@ -215,11 +212,10 @@ Java_com_radio_app_whisper_WhisperBridge_setLibraryPathNative(JNIEnv* env, jobje
     }
 }
 
-// [v2.4.7] Set optimization mode for subsequent full() calls
+// [v2.4.8] Set optimization mode
 JNIEXPORT void JNICALL
 Java_com_radio_app_whisper_WhisperBridge_setOptModeNative(JNIEnv* env, jobject thiz, jint mode) {
-    if (mode < 0 || mode > 2) mode = 1;
-    g_opt_mode = mode;
+    g_opt_mode = (mode < 0 || mode > 2) ? 1 : mode;
     NLOGI("setOptModeNative: g_opt_mode=%d", g_opt_mode);
 }
 
@@ -254,23 +250,7 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
     return (jlong)(intptr_t)ctx;
 }
 
-// [v2.4.7] Get optimal thread count based on CPU cores and optimization mode
-static int get_optimal_threads(int opt_mode) {
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
-    if (cores < 1) cores = 4;
-    int c = (int)cores;
-    NLOGI("get_optimal_threads: detected %ld CPU cores, opt_mode=%d", cores, opt_mode);
-    switch (opt_mode) {
-        case 0: return c < 4 ? c : 4;        // ACCURACY: 4 threads (beam search is bandwidth-bound)
-        case 1: return c < 3 ? c : (c > 6 ? 6 : c); // BALANCED: up to 6 threads
-        case 2: return c < 3 ? c : (c > 8 ? 8 : c); // SPEED: up to 8 threads
-        default: return 4;
-    }
-}
-
-// [v2.4.7] Prepare params based on g_opt_mode.
-// Uses ABI-safe approach: get library-allocated params and only set
-// fields known to be at correct offsets (proven by v2.3.7 fix).
+// [v2.4.8] ABI-safe params with model-specific optimization
 static struct whisper_full_params* prepare_params(void) {
     struct whisper_full_params* ref = NULL;
     if (!params_by_ref_func) {
@@ -280,24 +260,30 @@ static struct whisper_full_params* prepare_params(void) {
 
     int mode = g_opt_mode;
     enum whisper_sampling_strategy strategy;
-    const char* mode_name;
     int threads;
     const char* prompt;
 
-    switch (mode) {
-        case 0:
-            strategy = WHISPER_SAMPLING_BEAM_SEARCH;
-            mode_name = "ACCURACY(beam5)";
-            break;
-        case 2:
-            strategy = WHISPER_SAMPLING_GREEDY;
-            mode_name = "SPEED(greedy)";
-            break;
-        case 1:
-        default:
-            strategy = WHISPER_SAMPLING_GREEDY;
-            mode_name = "BALANCED(greedy)";
-            break;
+    if (mode == 0) {
+        // ACCURACY (tiny): beam search, 4 threads, long prompt
+        strategy = WHISPER_SAMPLING_BEAM_SEARCH;
+        threads = 4;
+        prompt = "以下是普通话的句子。"
+            "大家好，欢迎收听今天的节目。"
+            "首先让我们来了解一下今天的主要话题。"
+            "接下来我们会详细讨论。"
+            "感谢大家的收听。";
+    } else if (mode == 2) {
+        // SPEED (small): greedy, max threads, short prompt
+        strategy = WHISPER_SAMPLING_GREEDY;
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        threads = (int)(cores > 8 ? 8 : (cores < 2 ? 2 : cores));
+        prompt = "以下是普通话的句子。";
+    } else {
+        // BALANCED (base): greedy, moderate threads, medium prompt
+        strategy = WHISPER_SAMPLING_GREEDY;
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        threads = (int)(cores > 6 ? 6 : (cores < 2 ? 2 : cores));
+        prompt = "以下是普通话的句子。大家好，欢迎收听节目。";
     }
 
     ref = params_by_ref_func(strategy);
@@ -305,92 +291,34 @@ static struct whisper_full_params* prepare_params(void) {
         NLOGE("prepare_params: by_ref returned NULL");
         return NULL;
     }
+    NLOGI("prepare_params: got default params from library, mode=%d strategy=%s threads=%d",
+         mode, (strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY", threads);
 
-    threads = get_optimal_threads(mode);
-
-    // === Fields at known-good offsets (proven since v2.3.7) ===
+    // Core fields at known-good offsets (proven since v2.3.7)
     ref->strategy = strategy;
     ref->n_threads = threads;
     ref->language = "zh";
+    ref->initial_prompt = prompt;
 
-    // Print flags: disable
+    // Disable printing (proven offsets since v2.3.7)
     ref->print_special = false;
     ref->print_progress = false;
     ref->print_realtime = false;
     ref->print_timestamps = false;
 
-    // Initial prompt per mode
-    switch (mode) {
-        case 0:
-            prompt = "以下是普通话的句子。"
-                "大家好，欢迎收听今天的节目。"
-                "首先让我们来了解一下今天的主要话题。"
-                "接下来我们会详细讨论。"
-                "感谢大家的收听。";
-            break;
-        case 1:
-            prompt = "以下是普通话的句子。大家好，欢迎收听节目。";
-            break;
-        case 2:
-        default:
-            prompt = "以下是普通话的句子。";
-            break;
-    }
-    ref->initial_prompt = prompt;
-    ref->carry_initial_prompt = true;
-    ref->no_context = false;
-    ref->suppress_blank = true;
-    ref->suppress_non_speech_tokens = true;
-
-    // === Mode-specific tuning (fields exist in stub, offsets verified) ===
-    switch (mode) {
-        case 0: {  // ACCURACY: beam search with temperature fallback
-            ref->beam_search.beam_size = 5;
-            ref->beam_search.patience = 1.0f;
-            ref->temperature = 0.0f;
-            ref->temperature_inc = 0.2f;
-            ref->no_speech_thold = 0.5f;
-            break;
-        }
-        case 1:    // BALANCED
-        case 2:    // SPEED
-        default: {
-            ref->greedy.best_of = 1;
-            ref->temperature = 0.0f;
-            ref->temperature_inc = 0.0f;
-            if (mode == 2) {
-                ref->max_tokens = 224;
-            }
-            break;
-        }
+    // Beam size / best_of per mode
+    if (mode == 0) {
+        ref->beam_search.beam_size = 5;
+    } else {
+        ref->greedy.best_of = 1;
     }
 
-    NLOGI("prepare_params: mode=%s strategy=%s n_threads=%d prompt_len=%zu",
-         mode_name,
+    NLOGI("prepare_params: ready n_threads=%d language=zh strategy=%s prompt_len=%zu",
+         threads,
          (strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY",
-         threads, strlen(prompt));
+         strlen(prompt));
 
     return ref;
-}
-
-// [v2.4.7] Quick energy-based VAD: returns 1 if speech is present, 0 if silent
-static int quick_vad_check(const float* samples, int n_samples, int mode) {
-    float abs_max = 0.0f;
-    int active_count = 0;
-    for (int i = 0; i < n_samples; i++) {
-        float a = fabsf(samples[i]);
-        if (a > abs_max) abs_max = a;
-        if (a > 0.005f) active_count++;
-    }
-    float active_ratio = (float)active_count / (float)n_samples;
-
-    float max_thresh = (mode == 2) ? 0.002f : 0.001f;
-    float ratio_thresh = (mode == 2) ? 0.05f : 0.02f;
-
-    int has_speech = (abs_max >= max_thresh) && (active_ratio >= ratio_thresh);
-    NLOGI("quick_vad: n=%d max=%.6f active=%.1f%% has_speech=%d",
-         n_samples, abs_max, active_ratio * 100.0f, has_speech);
-    return has_speech;
 }
 
 JNIEXPORT jint JNICALL
@@ -404,8 +332,6 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         NLOGE("full: ctx is NULL after cast");
         return -1;
     }
-
-    int mode = g_opt_mode;
 
     jfloat* sample_data = (jfloat*)malloc((size_t)n_samples * sizeof(jfloat));
     if (!sample_data) {
@@ -430,21 +356,12 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
     float avg_amp = abs_sum / (float)(n_samples > 0 ? n_samples : 1);
     int silence_pct = (int)((float)silence_count * 100.0f / (float)(n_samples > 0 ? n_samples : 1));
     NLOGI("full: n_samples=%d, abs_max=%.6f, avg_amp=%.6f, silence_pct=%d%%, nan_count=%d, opt_mode=%d",
-         n_samples, abs_max, avg_amp, silence_pct, nan_count, mode);
+         n_samples, abs_max, avg_amp, silence_pct, nan_count, g_opt_mode);
 
     if (abs_max < 0.0001f) {
-        NLOGI("full: audio is nearly silent (abs_max=%.6f), returning 0 segments", abs_max);
+        NLOGI("full: audio is nearly silent (abs_max=%.6f), returning 0 segments (not an error)", abs_max);
         free(sample_data);
         return 0;
-    }
-
-    // [v2.4.7] VAD pre-filter for speed/balanced modes (skip silent chunks)
-    if (mode != 0) {
-        if (!quick_vad_check(sample_data, n_samples, mode)) {
-            NLOGI("full: VAD skip - insufficient speech energy (mode=%d)", mode);
-            free(sample_data);
-            return 0;
-        }
     }
 
     struct whisper_full_params* params = prepare_params();
@@ -454,9 +371,8 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         return -2;
     }
 
-    NLOGI("full: calling whisper_full, ctx=%p n_samples=%d n_threads=%d strategy=%s mode=%d",
-         (void*)ctx, n_samples, params->n_threads,
-         (params->strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY", mode);
+    NLOGI("full: calling whisper_full (ABI-safe void* mode), ctx=%p n_samples=%d n_threads=%d language=zh",
+         (void*)ctx, n_samples, params->n_threads);
 
     int result = full_func(ctx, params, sample_data, n_samples);
 
@@ -466,8 +382,8 @@ Java_com_radio_app_whisper_WhisperBridge_full(JNIEnv* env, jobject thiz, jlong c
         NLOGI("full: whisper_full_n_segments = %d", n);
     }
     if (result != 0) {
-        NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f, mode=%d)",
-             result, n_samples, abs_max, mode);
+        NLOGE("full: whisper_full FAILED with code %d (n_samples=%d, abs_max=%.4f)",
+             result, n_samples, abs_max);
     }
 
     if (free_params_func) {

@@ -37,7 +37,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 
 class SubtitleGeneratorService : Service() {
 
@@ -2104,70 +2103,6 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
-    /**
-     * [v2.4.7] Clean Whisper output text:
-     * - Remove common hallucinations (repeated punctuation, ellipsis, filler)
-     * - Normalize whitespace
-     * - Remove trailing/leading punctuation-only segments
-     * - Remove extremely short noise segments (1-2 chars that are not Chinese words)
-     */
-    private fun cleanWhisperText(raw: String): String {
-        var text = raw.trim()
-
-        // Remove common Whisper hallucinations: repeated dots, dashes, etc.
-        text = text.replace(Regex("[.。]{3,}"), "……")
-        text = text.replace(Regex("[-—]{3,}"), "——")
-        text = text.replace(Regex("[,，、]{2,}"), "，")
-        text = text.replace(Regex("\\s+"), " ")
-
-        // Remove "请不吝点赞" and other common hallucination phrases from initial prompt leakage
-        text = text.replace(Regex("(以下是普通话的句子|大家好[，,]欢迎收听节目|感谢大家的收听)[。！!]?"), "")
-
-        // Trim again after replacements
-        text = text.trim()
-
-        // Remove leading/trailing punctuation-only content
-        while (text.isNotEmpty() && text.first() in listOf('，', '。', '、', '！', '？', ',', '.', '!', '?', ' ', '…', '—')) {
-            text = text.drop(1).trim()
-        }
-        while (text.isNotEmpty() && text.last() in listOf('，', '、', ',', ' ', '…', '—')) {
-            text = text.dropLast(1).trim()
-        }
-
-        return text.trim()
-    }
-
-    /**
-     * [v2.4.7] Simple character-level similarity between two strings (0.0 to 1.0).
-     * Uses Jaccard similarity on character bigrams for efficiency.
-     */
-    private fun textSimilarity(a: String, b: String): Float {
-        if (a == b) return 1.0f
-        if (a.isEmpty() || b.isEmpty()) return 0.0f
-
-        // For very short strings, compare directly
-        if (a.length < 3 || b.length < 3) {
-            return if (a == b) 1.0f else 0.0f
-        }
-
-        // Use character-level bigrams
-        fun bigrams(s: String): Set<String> {
-            val set = mutableSetOf<String>()
-            for (i in 0 until s.length - 1) {
-                set.add(s.substring(i, i + 2))
-            }
-            return set
-        }
-
-        val bgA = bigrams(a)
-        val bgB = bigrams(b)
-        if (bgA.isEmpty() || bgB.isEmpty()) return 0.0f
-
-        val intersection = bgA.intersect(bgB).size
-        val union = bgA.size + bgB.size - intersection
-        return if (union > 0) intersection.toFloat() / union.toFloat() else 0.0f
-    }
-
     private fun findWhisperModel(): String? {
         logToFile("findWhisperModel: searching for Whisper ggml models...")
         // [v2.2.9] Check for saved Whisper model preference first
@@ -2757,20 +2692,20 @@ class SubtitleGeneratorService : Service() {
                 modelSizeMB > 100 -> 20 * 16000  // base: 20s (320000 samples)
                 else -> 30 * 16000  // tiny: 30s (480000 samples)
             }
-            // [v2.4.7] Determine optimization mode based on model size
+            // [v2.4.8] Determine optimization mode based on model size
             val optMode = when {
-                modelSizeMB > 300 -> com.radio.app.whisper.WhisperBridge.OPT_SPEED    // small: speed
-                modelSizeMB > 100 -> com.radio.app.whisper.WhisperBridge.OPT_BALANCED // base: balanced
-                else -> com.radio.app.whisper.WhisperBridge.OPT_ACCURACY              // tiny: accuracy
+                modelSizeMB > 300 -> com.radio.app.whisper.WhisperBridge.OPT_SPEED
+                modelSizeMB > 100 -> com.radio.app.whisper.WhisperBridge.OPT_BALANCED
+                else -> com.radio.app.whisper.WhisperBridge.OPT_ACCURACY
             }
             val optModeName = when (optMode) {
                 com.radio.app.whisper.WhisperBridge.OPT_ACCURACY -> "ACCURACY(beam5)"
                 com.radio.app.whisper.WhisperBridge.OPT_BALANCED -> "BALANCED(greedy)"
                 else -> "SPEED(greedy+vad)"
             }
-            logToFile("processWhisperInChunks: [v2.4.7] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
+            logToFile("processWhisperInChunks: [v2.4.8] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
 
-            // [v2.4.7] Set optimization mode on the native bridge before processing chunks
+            // [v2.4.8] Set optimization mode on native bridge before processing
             bridge.setOptMode(optMode)
 
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
@@ -2861,86 +2796,37 @@ class SubtitleGeneratorService : Service() {
                 var chunkSuccess = false
                 var chunkErrorCode = 0
                 try {
-                    // [v2.4.7] Kotlin-level energy VAD pre-check for speed/balanced modes.
-                    // This avoids the JNI call entirely for obviously silent chunks,
-                    // saving FloatArray copy + native inference overhead.
-                    if (optMode != com.radio.app.whisper.WhisperBridge.OPT_ACCURACY) {
-                        var kMaxAmp = 0.0f
-                        var kActiveCount = 0
-                        for (si in 0 until samplesToRead) {
-                            val a = kotlin.math.abs(chunkSamples[si])
-                            if (a > kMaxAmp) kMaxAmp = a
-                            if (a > 0.005f) kActiveCount++
-                        }
-                        val activeRatio = kActiveCount.toFloat() / samplesToRead.toFloat()
-                        val kThreshold = if (optMode == com.radio.app.whisper.WhisperBridge.OPT_SPEED) 0.05f else 0.02f
-                        val kMaxThresh = if (optMode == com.radio.app.whisper.WhisperBridge.OPT_SPEED) 0.002f else 0.001f
-                        if (kMaxAmp < kMaxThresh || activeRatio < kThreshold) {
-                            logToFile("processWhisperInChunks: [v2.4.7] chunk $chunkIdx: KOTLIN_VAD skip (maxAmp=$kMaxAmp, active=${(activeRatio*100).toInt()}%), skipping JNI call")
-                            totalSamplesRead += samplesToRead
-                            chunkIdx++
-                            chunkSuccess = true
-                            consecutiveCrashes = 0
-                            val progress = ((totalSamplesRead.toLong() * 100) / totalSamplesToRead).toInt()
-                            callback.onProgressUpdate(progress, 100)
-                            // Null out for GC
-                            continue
-                        }
-                    }
-
                     // [v2.1.9] Add logging right before JNI call to pinpoint crash location
-                    logToFile("processWhisperInChunks: [v2.4.7] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead, optMode=$optModeName")
+                    logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
                     val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
-                    logToFile("processWhisperInChunks: [v2.4.7] chunk $chunkIdx: AFTER bridge.full returned $result")
+                    logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: AFTER bridge.full returned $result")
 
                     if (result == 0) {
                         val nSeg = bridge.fullNSegments(ctxPtr)
                         logToFile("processWhisperInChunks: chunk $chunkIdx: got $nSeg segments")
-                        var addedInChunk = 0
                         for (i in 0 until nSeg) {
                             if (ctx.cancelled.get()) break
-                            var text = bridge.fullGetSegmentText(ctxPtr, i)
+                            val text = bridge.fullGetSegmentText(ctxPtr, i)
                             val t0 = bridge.fullGetSegmentT0(ctxPtr, i)
                             val t1 = bridge.fullGetSegmentT1(ctxPtr, i)
                             if (text.isNotBlank()) {
-                                // [v2.4.7] Post-process text for accuracy mode:
-                                // - Clean up common Whisper hallucinations (repeated tokens, ellipsis, etc.)
-                                // - Trim whitespace
-                                text = cleanWhisperText(text)
-
-                                if (text.isBlank()) continue
-
                                 // [v2.4.3] Fix integer overflow: totalSamplesRead * 1000 overflows Int.MAX
                                 // when totalSamplesRead >= 2147483 (chunk 5+ with 480000 samples/chunk).
                                 // This caused timestamps to show 13:01 instead of 17:30.
                                 // Fix: use Long arithmetic via .toLong()
                                 val chunkOffsetMs = totalSamplesRead.toLong() * 1000L / 16000L
                                 val transcript = com.radio.app.models.Transcript(
-                                    text = text,
+                                    text = text.trim(),
                                     segmentStart = whisperOffsetMs + chunkOffsetMs + t0 * 10,
                                     segmentEnd = whisperOffsetMs + chunkOffsetMs + t1 * 10
                                 )
-                                // [v2.4.7] Deduplicate: skip segments that are nearly identical
-                                // to the last added transcript (Whisper beam search can produce
-                                // near-duplicate adjacent segments with slight timestamp differences)
-                                val lastT = allTranscripts.lastOrNull()
-                                val isDuplicate = lastT != null &&
-                                    kotlin.math.abs(transcript.segmentStart - lastT.segmentStart) < 500 &&
-                                    kotlin.math.abs(transcript.segmentEnd - lastT.segmentEnd) < 500 &&
-                                    textSimilarity(text, lastT.text) > 0.85f
-                                if (!isDuplicate) {
-                                    allTranscripts.add(transcript)
-                                    addedInChunk++
-                                    logToFile("processWhisperInChunks: chunk $chunkIdx seg $i: [${transcript.segmentStart}-${transcript.segmentEnd}ms] ${text.take(80)}")
-                                    callback.onSubtitleGenerated(transcript)
-                                } else {
-                                    logToFile("processWhisperInChunks: chunk $chunkIdx seg $i: DEDUP_SKIP (similar to last): ${text.take(50)}")
-                                }
+                                allTranscripts.add(transcript)
+                                logToFile("processWhisperInChunks: chunk $chunkIdx seg $i: [${transcript.segmentStart}-${transcript.segmentEnd}ms] ${text.take(80)}")
+                                callback.onSubtitleGenerated(transcript)
                             }
                         }
                         chunkSuccess = true
                         consecutiveCrashes = 0
-                        logToFile("processWhisperInChunks: chunk $chunkIdx: added $addedInChunk new transcripts")
                         // [v2.3.9] GC after each successful chunk to prevent heap exhaustion
                         try { System.gc() } catch (_: Exception) {}
                     } else {
