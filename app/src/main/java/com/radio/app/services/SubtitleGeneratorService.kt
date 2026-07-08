@@ -47,6 +47,13 @@ class SubtitleGeneratorService : Service() {
         private const val CHANNEL_ID = "subtitle_progress_channel"
         private const val TASK_TIMEOUT_MS = 10 * 60 * 1000L // 10 minutes hard timeout per task
         private const val MAX_AUDIO_DURATION_SEC = 1800L // 30分钟最大处理时长，超长音频只处理前30分钟
+        // [v2.4.13] File-based flag for cross-process subtitle idle detection.
+        // Created when any subtitle task is active, deleted when all tasks complete.
+        // RadioPlaybackService (main process) checks this file to know if subtitle service is idle.
+        private val SUBTITLE_BUSY_FLAG = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "RadioApp/subtitle_service_busy.flag"
+        )
     }
 
     /** Issue 9: app version tag included in every log line */
@@ -67,16 +74,6 @@ class SubtitleGeneratorService : Service() {
     // [v2.4.10] Flag to force Whisper base model for pre-cache subtitle generation
     @Volatile
     private var forceWhisperBaseModel: Boolean = false
-
-    companion object {
-        // [v2.4.13] File-based flag for cross-process subtitle idle detection.
-        // Created when any subtitle task is active, deleted when all tasks complete.
-        // RadioPlaybackService (main process) checks this file to know if subtitle service is idle.
-        private val SUBTITLE_BUSY_FLAG = java.io.File(
-            android.os.Environment.getExternalStorageDirectory(),
-            "RadioApp/subtitle_service_busy.flag"
-        )
-    }
 
     interface SubtitleCallback {
         fun onSubtitleGenerated(transcript: Transcript)
