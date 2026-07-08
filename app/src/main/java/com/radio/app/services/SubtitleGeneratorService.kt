@@ -3051,26 +3051,7 @@ class SubtitleGeneratorService : Service() {
         try {
             // [v2.1.0] Use centralized cache dir from RadioApplication
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
-            // [v2.1.3] Rename legacy _5min_16k.pcm to _5min.pcm if it exists and new file doesn't.
-            // v2.0.98 SubtitleGeneratorService generated valid 16kHz data in _5min_16k.pcm.
-            val legacyFile = File(pcmCacheDir, "${episodeId}_5min_16k.pcm")
-            if (legacyFile.exists()) {
-                val newFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-                if (!newFile.exists() || newFile.length() < legacyFile.length()) {
-                    newFile.delete()
-                    legacyFile.renameTo(newFile)
-                    logToFile("find16kHzPcmCache: [v2.1.3] renamed _5min_16k.pcm to _5min.pcm (${newFile.length()} bytes)")
-                } else {
-                    legacyFile.delete()
-                    logToFile("find16kHzPcmCache: [v2.1.3] deleted legacy _5min_16k.pcm (new file is better)")
-                }
-                val legacyInfo = File(pcmCacheDir, "${episodeId}_5min_16k.info")
-                if (legacyInfo.exists()) {
-                    val newInfo = File(pcmCacheDir, "${episodeId}_5min.info")
-                    newInfo.delete()
-                    legacyInfo.renameTo(newInfo)
-                }
-            }
+            // [v2.4.15] Cleaned up legacy _5min_16k.pcm migration code (v2.0.98 era, no longer needed)
             // [v2.1.0] Unified _5min.pcm file (always 16kHz mono)
             val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
             // [v2.1.0] Raised minimum from 1024 to 500KB to reject corrupt tiny files
@@ -3162,9 +3143,11 @@ class SubtitleGeneratorService : Service() {
             codec.configure(format, null, null, 0)
             codec.start()
 
-            val inSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+            // [v2.4.15] Fix: Use var for sample rate/channels — they may change after INFO_OUTPUT_FORMAT_CHANGED
+            // (e.g. HE-AAC v2: container says 22050Hz/1ch, but codec outputs 44100Hz/2ch after SBR+PS)
+            var inSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE))
                 format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
-            val inChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+            var inChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
                 format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
             val outSampleRate = 16000
             val outChannels = 1
@@ -3208,6 +3191,17 @@ class SubtitleGeneratorService : Service() {
                 }
 
                 val outIdx = codec.dequeueOutputBuffer(bufferInfo, 10000)
+                // [v2.4.15] Fix: Handle INFO_OUTPUT_FORMAT_CHANGED — codec actual output may differ from container
+                if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = codec.outputFormat
+                    try {
+                        inSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        inChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        logToFile("decodeFullAudioToPcm: [v2.4.15] FORMAT_CHANGED: actual sampleRate=$inSampleRate, channels=$inChannels")
+                    } catch (e: Exception) {
+                        logToFile("decodeFullAudioToPcm: [v2.4.15] FORMAT_CHANGED but failed to read format: ${e.message}")
+                    }
+                }
                 if (outIdx >= 0) {
                     val buffer = codec.getOutputBuffer(outIdx)
                     if (buffer != null && bufferInfo.size > 0) {

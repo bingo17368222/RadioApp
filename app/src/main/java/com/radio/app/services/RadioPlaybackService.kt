@@ -1874,17 +1874,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
 
                         val pcmFile = File(pcmCacheDir, "${ep.id}_5min.pcm")
-                        val pcm16kFile = File(pcmCacheDir, "${ep.id}_5min_16k.pcm")
                         val infoFile = File(pcmCacheDir, "${ep.id}_5min.info")
 
                         val pcmValid = pcmFile.exists() && pcmFile.length() > minValidPcmBytes
-                        // [v2.1.0] Always delete legacy _5min_16k.pcm (corrupt from v2.0.98 bug)
-                        if (pcm16kFile.exists()) {
-                            writePreCacheLog("patrolPcm: [v2.1.0] deleting legacy _5min_16k.pcm: ${pcm16kFile.name} (${pcm16kFile.length()} bytes)")
-                            pcm16kFile.delete()
-                            val legacyInfo = File(pcmCacheDir, "${ep.id}_5min_16k.info")
-                            if (legacyInfo.exists()) legacyInfo.delete()
-                        }
                         val infoValid = infoFile.exists() && infoFile.readText().contains("version=3")
 
                         if (pcmValid && infoValid) {
