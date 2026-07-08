@@ -89,7 +89,7 @@ class WhisperBridge {
     }
 
     /**
-     * [v2.4.7] Set optimization mode for subsequent full() calls.
+     * v2.4.8: Set optimization mode for subsequent full() calls.
      * @param mode 0=ACCURACY (tiny, beam search), 1=BALANCED (base, greedy+threads),
      *             2=SPEED (small, greedy+VAD skip)
      */
