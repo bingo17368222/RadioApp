@@ -2719,8 +2719,7 @@ class SubtitleGeneratorService : Service() {
             // - base (141MB): 20s chunks reduce peak native memory by 33%
             // - small (465MB): 15s chunks reduce peak native memory by 50%
             // Base model was crashing during chunk 1 with 30s chunks due to native memory exhaustion.
-            val modelFile = File(modelPath)
-            val modelSizeMB = modelFile.length() / 1024 / 1024
+            // modelSizeMB already calculated above (line 2567)
             val chunkSize = when {
                 modelSizeMB > 300 -> 15 * 16000  // small/medium: 15s (240000 samples)
                 modelSizeMB > 100 -> 20 * 16000  // base: 20s (320000 samples)
