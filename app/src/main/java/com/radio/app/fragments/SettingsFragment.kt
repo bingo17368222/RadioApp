@@ -283,6 +283,23 @@ class SettingsFragment : Fragment() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
+        // [v2.4.9] Subtitle scroll pause interval spinner
+        binding.spinnerSubtitleScrollPause.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressListeners) return
+                settings.subtitleScrollPauseSeconds = when (position) {
+                    0 -> 5
+                    1 -> 10
+                    2 -> 15
+                    3 -> 20
+                    4 -> 30
+                    else -> 10
+                }
+                save()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
         binding.spinnerTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
@@ -488,6 +505,13 @@ class SettingsFragment : Fragment() {
             else -> 1
         }
         binding.spinnerPinduoduoInterval.setSelection(pinduoduoIntervalIndex)
+
+        // [v2.4.9] Subtitle scroll pause interval
+        val scrollPauseIndex = when (settings.subtitleScrollPauseSeconds) {
+            5 -> 0; 10 -> 1; 15 -> 2; 20 -> 3; 30 -> 4
+            else -> 1
+        }
+        binding.spinnerSubtitleScrollPause.setSelection(scrollPauseIndex)
 
         suppressListeners = true
 
@@ -1555,6 +1579,7 @@ class SettingsFragment : Fragment() {
                 .putString("notification_style", settings.notificationStyle)
                 .putInt("skip_seconds", settings.skipSeconds)
                 .putInt("pinduoduo_detection_interval", settings.pinduoduoDetectionInterval)  // [v2.1.2]
+                .putInt("subtitle_scroll_pause_seconds", settings.subtitleScrollPauseSeconds)  // [v2.4.9]
                 .putBoolean("preload_cache", settings.autoCache)
                 .putBoolean("auto_cache", settings.autoCache)
                 .putBoolean("enable_preprocessing", settings.enablePreprocessing)

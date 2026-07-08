@@ -96,6 +96,10 @@ class PlayerActivity : AppCompatActivity() {
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
     private var lastSubtitleHighlightIdx = -1
+    // [v2.4.9] Subtitle scroll pause: when user manually scrolls, pause auto-jump for N seconds
+    private var lastUserScrollTimeMs: Long = 0L
+    private var isSubtitleScrollPaused: Boolean = false
+    private var subtitleScrollPauseDurationMs: Long = 10000L  // default 10s, loaded from settings
     // [跨进程] 服务运行在 ":subtitle" 进程，SubtitleCallback 回调对象无法跨进程传递，
     // 改用广播回传结果。这里维护一份通过广播累积的字幕列表（与数据库互为校验，onResume 时从 DB 同步）。
     private val subtitleBroadcastList = mutableListOf<Transcript>()
@@ -1192,6 +1196,20 @@ class PlayerActivity : AppCompatActivity() {
         subtitleAdapter = SubtitleEntryAdapter()
         binding.recyclerSubtitles.layoutManager = LinearLayoutManager(this)
         binding.recyclerSubtitles.adapter = subtitleAdapter
+
+        // [v2.4.9] Detect manual scroll on subtitle RecyclerView to pause auto-jump
+        // Load pause duration from settings
+        subtitleScrollPauseDurationMs = AppSettings.getInstance(this).subtitleScrollPauseSeconds * 1000L
+        binding.recyclerSubtitles.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                super.onScrolled(recyclerView, dx, dy)
+                // Only treat as user scroll if there's actual movement
+                if (dx != 0 || dy != 0) {
+                    lastUserScrollTimeMs = System.currentTimeMillis()
+                    isSubtitleScrollPaused = true
+                }
+            }
+        })
 
         val isLiveNav = currentEpisode?.isLive ?: false
         if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
@@ -2402,6 +2420,8 @@ class PlayerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         writeJitterLog("onResume: subtitleProcessing=$subtitleProcessing, segmentProcessing=$segmentProcessing, serviceBound=$serviceBound")
+        // [v2.4.9] Refresh subtitle scroll pause duration from settings (user may have changed it)
+        subtitleScrollPauseDurationMs = AppSettings.getInstance(this).subtitleScrollPauseSeconds * 1000L
         // [v2.0.80] Issue 1 Fix: Notify service that Activity resumed to activate skip blackout window.
         // v2.0.79 bug: lastClientBindTime was only set in onBind (39s before onResume), so the
         // 3-second post-resume blackout never triggered. Skip storms started 159ms after onResume.
@@ -2580,6 +2600,9 @@ class PlayerActivity : AppCompatActivity() {
     private fun clearSubtitles() {
         subtitleTranscripts = emptyList()
         lastSubtitleHighlightIdx = -1
+        // [v2.4.9] Reset scroll pause state when switching episodes
+        isSubtitleScrollPaused = false
+        lastUserScrollTimeMs = 0L
         subtitleAdapter?.setTranscripts(emptyList())
         // [跨进程] 同步清空广播累积列表
         subtitleBroadcastList.clear()
@@ -2764,13 +2787,24 @@ class PlayerActivity : AppCompatActivity() {
         if (_binding == null) return
         val pos = currentPlaybackPositionMs
 
+        // [v2.4.9] Check if subtitle scroll pause has expired
+        if (isSubtitleScrollPaused) {
+            val elapsed = System.currentTimeMillis() - lastUserScrollTimeMs
+            if (elapsed >= subtitleScrollPauseDurationMs) {
+                // Pause expired, resume auto-jump
+                isSubtitleScrollPaused = false
+            }
+        }
+
         // Update subtitle highlight - only if index changed
+        // [v2.4.9] Skip auto-scroll if user is manually scrolling (pause active)
         if (subtitleTranscripts.isNotEmpty()) {
             val subtitleIdx = findClosestTranscriptIndex(pos)
             if (subtitleIdx != lastSubtitleHighlightIdx) {
                 lastSubtitleHighlightIdx = subtitleIdx
                 subtitleAdapter?.setCurrentHighlightIndex(subtitleIdx)
-                if (subtitleIdx >= 0) {
+                // Only auto-scroll to position if user is NOT in scroll-pause period
+                if (subtitleIdx >= 0 && !isSubtitleScrollPaused) {
                     binding.recyclerSubtitles.post {
                         (binding.recyclerSubtitles.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(subtitleIdx, 0)
                     }

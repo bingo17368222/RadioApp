@@ -22,4 +22,13 @@
         <item>15 秒</item>
         <item>30 秒</item>
     </string-array>
+
+    <!-- [v2.4.9] 字幕滑动暂停自动跳转选项 -->
+    <string-array name="subtitle_scroll_pause_options">
+        <item>5 秒</item>
+        <item>10 秒（默认）</item>
+        <item>15 秒</item>
+        <item>20 秒</item>
+        <item>30 秒</item>
+    </string-array>
 </resources>

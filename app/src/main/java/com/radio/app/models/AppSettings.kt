@@ -84,6 +84,7 @@ class AppSettings private constructor() {
     var lastSelectedDate: String = ""
     var lastSelectedStationId: String = ""
     var pinduoduoDetectionInterval: Int = 5  // [v2.1.2] seconds, default 5
+    var subtitleScrollPauseSeconds: Int = 10  // [v2.4.9] seconds, default 10
 
     /** Gson 安全访问：确保字段不为 null */
     fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
@@ -152,6 +153,7 @@ class AppSettings private constructor() {
         lastSelectedDate = prefs.getString("last_selected_date", "") ?: ""
         lastSelectedStationId = prefs.getString("last_selected_station_id", "") ?: ""
         pinduoduoDetectionInterval = prefs.getInt("pinduoduo_detection_interval", 5)  // [v2.1.2]
+        subtitleScrollPauseSeconds = prefs.getInt("subtitle_scroll_pause_seconds", 10)  // [v2.4.9]
 
         // 加载播放次数
         val playCountJson = prefs.getString("station_play_count", "{}") ?: "{}"
@@ -200,6 +202,7 @@ class AppSettings private constructor() {
             putString("last_selected_date", lastSelectedDate)
             putString("last_selected_station_id", lastSelectedStationId)
             putInt("pinduoduo_detection_interval", pinduoduoDetectionInterval)  // [v2.1.2]
+            putInt("subtitle_scroll_pause_seconds", subtitleScrollPauseSeconds)  // [v2.4.9]
             apply()
         }
     }

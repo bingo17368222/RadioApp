@@ -455,6 +455,35 @@
                 android:entries="@array/pinduoduo_interval_options" />
         </LinearLayout>
 
+        <!-- [v2.4.9] 字幕滑动暂停自动跳转设置 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="24dp">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="字幕滑动暂停自动跳转"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="手动滑动字幕后，暂停自动跳转的等待时间"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp" />
+            <Spinner
+                android:id="@+id/spinner_subtitle_scroll_pause"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:entries="@array/subtitle_scroll_pause_options" />
+        </LinearLayout>
+
         <!-- 界面设置 -->
         <TextView
             android:layout_width="wrap_content"
