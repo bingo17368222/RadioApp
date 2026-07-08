@@ -69,6 +69,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         private const val MAX_ERROR_RETRY = 1  // [v2.3.6] Reduced from 3 to 1: faster recovery (2s instead of 18s)
         private const val NOTIFICATION_ID = 1
         private const val POSITION_SAVE_INTERVAL = 5000L
+        // [v2.4.13] Subtitle patrol interval: 3 minutes
+        private const val SUBTITLE_PATROL_INTERVAL_MS = 3L * 60 * 1000
 
         const val ACTION_PLAY = "com.radio.app.PLAY"
         const val ACTION_PAUSE = "com.radio.app.PAUSE"
@@ -510,7 +512,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("patrolPcm: triggering startup PCM patrol")
             patrolAndRepairPcmFiles()
         }, 10_000)
+
+        // [v2.4.13] Subtitle patrol: check every 3 minutes for cached episodes without subtitles
+        // Only generates when subtitle service is idle (checked inside patrolSubtitleGeneration)
+        subtitlePatrolHandler = Handler(Looper.getMainLooper())
+        subtitlePatrolRunnable = object : Runnable {
+            override fun run() {
+                patrolSubtitleGeneration()
+                subtitlePatrolHandler.postDelayed(this, SUBTITLE_PATROL_INTERVAL_MS)
+            }
+        }
+        subtitlePatrolHandler.postDelayed(subtitlePatrolRunnable, 30_000)  // First check after 30s
     }
+
+    // [v2.4.13] Subtitle patrol handler and runnable
+    private lateinit var subtitlePatrolHandler: Handler
+    private lateinit var subtitlePatrolRunnable: Runnable
 
     private fun initMediaSession() {
         val componentName = ComponentName(this, "RadioPlaybackService")
@@ -1458,6 +1475,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun triggerPreCacheIndependently() {
         Log.d(TAG, "Pre-cache: independent trigger")
         triggerPreCache()
+        // [v2.4.13] Also trigger subtitle patrol when episode changes (with delay to allow pre-cache list update)
+        Handler(Looper.getMainLooper()).postDelayed({
+            patrolSubtitleGeneration()
+        }, 5_000)
     }
 
     private fun downloadPreCacheEpisode(episode: Episode) {
@@ -1720,6 +1741,71 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             writePreCacheLog("startPreCacheSubtitleGeneration: failed to start subtitle service: ${e.message}")
             Log.e(TAG, "Pre-cache subtitle generation failed to start: ${e.message}")
+        }
+    }
+
+    /**
+     * v2.4.13: Subtitle Patrol - scan cached episodes after current one and auto-generate
+     * subtitles for episodes that are cached but don't have subtitles yet.
+     * Only runs when subtitle generation service is idle (not busy with other tasks).
+     */
+    private fun patrolSubtitleGeneration() {
+        val appSettings = AppSettings.getInstance(this)
+        if (!appSettings.enablePreprocessing) {
+            return
+        }
+        // [v2.4.13] Check if subtitle service is busy (cross-process via flag file)
+        val busyFlag = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "RadioApp/subtitle_service_busy.flag"
+        )
+        if (busyFlag.exists()) {
+            writePreCacheLog("patrolSubtitle: subtitle service is busy, skipping patrol")
+            return
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val currentEp = currentEpisode ?: return@launch
+                if (currentEp.id.isNullOrBlank()) return@launch
+
+                // Load pre-cache list and find episodes after current one
+                val preCacheList = loadPreCacheList()
+                var currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id }
+                if (currentIdx < 0) {
+                    currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
+                }
+                if (currentIdx < 0) return@launch  // Current episode not in list
+
+                val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+                val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                val cachedNames = episodesDir.listFiles()
+                    ?.filter { it.isFile && it.length() > 1024 }
+                    ?.map { it.name }?.toSet() ?: emptySet()
+
+                // Find the first cached episode after current one that has no subtitles
+                for (i in (currentIdx + 1) until preCacheList.size) {
+                    val ep = preCacheList[i]
+                    if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
+
+                    // Check if audio is cached
+                    val fileName = extractCacheFileName(ep.audioUrl)
+                    if (fileName !in cachedNames) continue
+
+                    // Check if subtitles already exist
+                    val existingSubtitles = dbHelper.getTranscripts(ep.id)
+                    if (existingSubtitles.isNotEmpty()) continue
+
+                    // Found a cached episode without subtitles — trigger subtitle generation
+                    writePreCacheLog("patrolSubtitle: [v2.4.13] found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
+                    startPreCacheSubtitleGeneration(ep)
+                    return@launch  // Only generate one at a time; next patrol will pick up the next one
+                }
+
+                writePreCacheLog("patrolSubtitle: [v2.4.13] all cached episodes after current already have subtitles")
+            } catch (e: Exception) {
+                writePreCacheLog("patrolSubtitle: [v2.4.13] patrol failed: ${e.message}")
+            }
         }
     }
 
@@ -4782,6 +4868,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         progressRunnable?.let { progressHandler?.removeCallbacks(it) }
         notificationRunnable?.let { notificationHandler?.removeCallbacks(it) }
         positionSaveRunnable?.let { positionSaveHandler?.removeCallbacks(it) }
+        // [v2.4.13] Stop subtitle patrol
+        if (::subtitlePatrolHandler.isInitialized) {
+            subtitlePatrolHandler.removeCallbacks(subtitlePatrolRunnable)
+        }
         stopAutoSkipCheck()
         downloadingJob?.cancel()
         downloadActive.set(false)

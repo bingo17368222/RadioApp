@@ -68,6 +68,16 @@ class SubtitleGeneratorService : Service() {
     @Volatile
     private var forceWhisperBaseModel: Boolean = false
 
+    companion object {
+        // [v2.4.13] File-based flag for cross-process subtitle idle detection.
+        // Created when any subtitle task is active, deleted when all tasks complete.
+        // RadioPlaybackService (main process) checks this file to know if subtitle service is idle.
+        private val SUBTITLE_BUSY_FLAG = java.io.File(
+            android.os.Environment.getExternalStorageDirectory(),
+            "RadioApp/subtitle_service_busy.flag"
+        )
+    }
+
     interface SubtitleCallback {
         fun onSubtitleGenerated(transcript: Transcript)
         fun onProgressUpdate(progress: Int, total: Int)
@@ -440,6 +450,8 @@ class SubtitleGeneratorService : Service() {
             Log.w(TAG, "Subtitle task already running for $episodeId, skipping duplicate")
             return
         }
+        // [v2.4.13] Set busy flag for cross-process idle detection
+        try { SUBTITLE_BUSY_FLAG.parentFile?.mkdirs(); SUBTITLE_BUSY_FLAG.createNewFile() } catch (_: Exception) {}
         ctx.log("Starting subtitle generation, audioUrl=$audioUrl")
 
         // 包装回调，同时更新通知；并同时发送跨进程广播，保证 :subtitle 进程崩溃后主进程仍可收到结果
@@ -3763,6 +3775,8 @@ class SubtitleGeneratorService : Service() {
         // 只有当没有任何活跃任务时才停止前台服务和移除通知
         if (activeTasks.isEmpty()) {
             logToFile("cleanupTask: no more active tasks, stopping foreground")
+            // [v2.4.13] Clear busy flag — subtitle service is now idle
+            try { SUBTITLE_BUSY_FLAG.delete() } catch (_: Exception) {}
             try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
             releaseWakeLock()
             stopSelf()
