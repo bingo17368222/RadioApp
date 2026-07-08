@@ -2579,8 +2579,9 @@ class SubtitleGeneratorService : Service() {
                     // playback position. Instead, just return false and let the user retry.
                     // The next subtitle generation will naturally have more heap available
                     // because the previous whisper context will be freed.
-                    try { bridge.free(ctxPtr) } catch (_: Exception) {}
-                    pcmInput.close()
+                    // Note: ctxPtr and pcmInput are not yet defined at this point
+                    // (whisper context hasn't been created, PCM file not opened yet),
+                    // so no cleanup needed here.
                     return false
                 }
             }
