@@ -47,40 +47,6 @@ class SubtitleGeneratorService : Service() {
         private const val CHANNEL_ID = "subtitle_progress_channel"
         private const val TASK_TIMEOUT_MS = 10 * 60 * 1000L // 10 minutes hard timeout per task
         private const val MAX_AUDIO_DURATION_SEC = 1800L // 30分钟最大处理时长，超长音频只处理前30分钟
-
-        // [v2.4.6] Static method to find whisper model path (for PlayerActivity to show model name)
-        fun findWhisperModelStatic(context: android.content.Context): String? {
-            val savedWhisperDir = AppSettings.getInstance(context).whisperModelDir
-            val modelsDir = context.getExternalFilesDir("models")
-            if (modelsDir != null && modelsDir.exists()) {
-                val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
-                if (!modelDirs.isNullOrEmpty()) {
-                    if (savedWhisperDir.isNotEmpty()) {
-                        val savedDir = modelDirs.find { it.name == savedWhisperDir }
-                        if (savedDir != null) {
-                            val binFile = savedDir.listFiles()?.find { it.name.endsWith(".bin") }
-                            if (binFile != null) return binFile.absolutePath
-                        }
-                    }
-                    val whisperDirs = modelDirs.filter { it.name.contains("whisper", ignoreCase = true) && it.name != "whisper-engine" }
-                    val sorted = whisperDirs.sortedBy { dir ->
-                        when {
-                            dir.name.contains("tiny", ignoreCase = true) -> 0
-                            dir.name.contains("base", ignoreCase = true) -> 1
-                            dir.name.contains("small", ignoreCase = true) -> 2
-                            dir.name.contains("medium", ignoreCase = true) -> 3
-                            dir.name.contains("large", ignoreCase = true) -> 4
-                            else -> 5
-                        }
-                    }
-                    for (dir in sorted) {
-                        val binFile = dir.listFiles()?.find { it.name.endsWith(".bin") }
-                        if (binFile != null) return binFile.absolutePath
-                    }
-                }
-            }
-            return null
-        }
     }
 
     /** Issue 9: app version tag included in every log line */

@@ -1986,20 +1986,18 @@ class PlayerActivity : AppCompatActivity() {
     private fun getDetailedAsrLabel(): String {
         val settings = AppSettings.getInstance(this)
         val provider = settings.safeAsrProvider()
+        // [v2.4.6] If we already have a currentModelName set by subtitle service, use it
+        if (currentModelName.isNotBlank()) {
+            return currentModelName
+        }
         return when {
             provider == AppSettings.ASR_WHISPER || provider == "whisper-local" -> {
-                // Show specific Whisper model name
                 val modelDir = settings.whisperModelDir
                 if (modelDir.isNotBlank()) {
                     val friendlyName = getFriendlyModelName(modelDir)
                     if (friendlyName.startsWith("Whisper ")) friendlyName
                     else "Whisper $friendlyName"
-                } else {
-                    // No specific model dir, try to find one
-                    val modelPath = SubtitleGeneratorService.findWhisperModelStatic(this)
-                    if (modelPath != null) getFriendlyModelName(modelPath)
-                    else "Whisper"
-                }
+                } else "Whisper"
             }
             provider == AppSettings.ASR_VOSK -> {
                 val modelDir = settings.voskModelDir
@@ -2012,7 +2010,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // [v2.4.6] Static helper to find whisper model (delegates to service)
+    // [v2.4.6] Format model path/dir to friendly name
     private fun getFriendlyModelName(path: String): String {
         val name = File(path).name.lowercase()
         return when {
