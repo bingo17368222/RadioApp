@@ -279,9 +279,12 @@ static int get_optimal_threads(int opt_mode) {
 
 // [v2.4.7] Model-specific parameter preparation.
 // opt_mode:
-//   0 = ACCURACY (tiny model): beam search, temperature fallback, thorough decoding
-//   1 = BALANCED (base model): greedy, more threads, moderate prompt
-//   2 = SPEED (small model): greedy, max threads, short prompt, conservative limits
+//   0 = ACCURACY (tiny model): beam search, temperature fallback
+//   1 = BALANCED (base model): greedy, multi-threaded
+//   2 = SPEED (small model): greedy, max threads, conservative limits
+//
+// We only override fields that differ from whisper_full_default_params_by_ref defaults.
+// All other fields (print_*, translate, no_timestamps, etc.) use library defaults.
 static struct whisper_full_params* prepare_params(int opt_mode) {
     struct whisper_full_params* ref = NULL;
     if (!params_by_ref_func) {
@@ -291,11 +294,12 @@ static struct whisper_full_params* prepare_params(int opt_mode) {
 
     enum whisper_sampling_strategy strategy;
     const char* mode_name;
+    int threads;
 
     switch (opt_mode) {
         case 0:
             strategy = WHISPER_SAMPLING_BEAM_SEARCH;
-            mode_name = "ACCURACY(beam)";
+            mode_name = "ACCURACY(beam5)";
             break;
         case 1:
         case 2:
@@ -310,128 +314,79 @@ static struct whisper_full_params* prepare_params(int opt_mode) {
         NLOGE("prepare_params: by_ref returned NULL for strategy=%d", strategy);
         return NULL;
     }
-    NLOGI("prepare_params: got default params from by_ref (library-allocated), mode=%s", mode_name);
+    NLOGI("prepare_params: mode=%s, got default params from library", mode_name);
 
-    // Common settings for all modes
-    ref->strategy = strategy;
-    ref->n_threads = get_optimal_threads(opt_mode);
+    // === Thread count (dynamic per CPU cores) ===
+    threads = get_optimal_threads(opt_mode);
+    ref->n_threads = threads;
+
+    // === Language: Chinese ===
     ref->language = "zh";
-    ref->translate = false;
-    ref->no_context = false;
-    ref->no_timestamps = false;
-    ref->single_segment = false;
+    ref->detect_language = false;
+
+    // === Print flags: disable all console output ===
     ref->print_special = false;
     ref->print_progress = false;
     ref->print_realtime = false;
     ref->print_timestamps = false;
-    ref->token_timestamps = false;
-    ref->debug_mode = false;
-    ref->audio_ctx = 0;  // Use model default (1500 for full 30s context)
-    ref->tdrz_enable = false;
-    ref->suppress_regex = NULL;
-    ref->detect_language = false;
-    ref->offset_ms = 0;
-    ref->duration_ms = 0;
-    ref->max_len = 0;        // no character limit
-    ref->split_on_word = false;
-    ref->max_tokens = 0;     // no token limit (set per mode below)
 
-    // Suppress blank and non-speech tokens for cleaner output
+    // === Context: carry over between segments ===
+    ref->no_context = false;
+    ref->single_segment = false;
+
+    // === Suppress non-speech tokens for cleaner output ===
     ref->suppress_blank = true;
     ref->suppress_non_speech_tokens = true;
 
-    // Carry initial prompt across segments within one whisper_full call
-    ref->carry_initial_prompt = true;
-
-    // Initial prompt - guides model toward simplified Chinese with proper punctuation
-    // Accuracy mode uses a more detailed prompt; speed modes use shorter prompts
+    // === Initial prompt per mode ===
     switch (opt_mode) {
-        case 0:  // ACCURACY: detailed prompt for better Chinese punctuation and context
+        case 0:  // ACCURACY: longer prompt for better Chinese context
             ref->initial_prompt = "以下是普通话的句子。"
                 "大家好，欢迎收听今天的节目。"
-                "在这个节目中，我们将为您带来精彩的内容。"
-                "首先，让我们来了解一下今天的主要话题。"
-                "接下来，我们会详细讨论这个问题的各个方面。"
-                "感谢大家的收听，我们下期节目再见。";
+                "首先让我们来了解一下今天的主要话题。"
+                "接下来我们会详细讨论。"
+                "感谢大家的收听。";
+            ref->carry_initial_prompt = true;
             break;
-        case 1:  // BALANCED: moderate-length prompt
-            ref->initial_prompt = "以下是普通话的句子。大家好，欢迎收听节目。"
-                "今天我们来聊一聊最近发生的一些事情。";
+        case 1:  // BALANCED: moderate prompt
+            ref->initial_prompt = "以下是普通话的句子。大家好，欢迎收听节目。";
+            ref->carry_initial_prompt = true;
             break;
-        case 2:  // SPEED: minimal prompt to reduce prompt processing overhead
+        case 2:  // SPEED: minimal prompt
+        default:
             ref->initial_prompt = "以下是普通话的句子。";
+            ref->carry_initial_prompt = true;
             break;
     }
 
-    // Decoding parameters
+    // === Decoding parameters per mode ===
     switch (opt_mode) {
         case 0: {  // ACCURACY: beam search with temperature fallback
-            // Beam search settings
             ref->beam_search.beam_size = 5;
             ref->beam_search.patience = 1.0f;
-
-            // Temperature: start at 0 (deterministic), fall back on uncertainty
             ref->temperature = 0.0f;
-            ref->temperature_inc = 0.2f;     // increment on fallback
-            ref->entropy_thold = 2.4f;       // compression ratio threshold (OpenAI default)
-            ref->logprob_thold = -1.0f;      // avg logprob threshold
-            ref->no_speech_thold = 0.5f;     // lower threshold to detect quiet speech better
-
-            // Length penalty for beam search
-            ref->length_penalty = 1.0f;
-            ref->max_initial_ts = 1.0f;
-
-            // Token timestamp thresholds
-            ref->thold_pt = 0.01f;
-            ref->thold_ptsum = 0.01f;
+            ref->temperature_inc = 0.2f;
+            ref->no_speech_thold = 0.5f;
             break;
         }
-        case 1:   // BALANCED: greedy, temperature=0 for speed
-        case 2:   // SPEED: greedy, temperature=0, shortest prompt
+        case 1:   // BALANCED
+        case 2:   // SPEED
         default: {
-            // Greedy: best_of is used for sampling but we use pure greedy (temperature=0)
             ref->greedy.best_of = 1;
-
-            // Pure greedy: temperature=0 means deterministic argmax, no sampling
             ref->temperature = 0.0f;
-            ref->temperature_inc = 0.0f;     // no fallback for speed
-            ref->entropy_thold = 2.4f;
-            ref->logprob_thold = -1.0f;
-            ref->no_speech_thold = 0.6f;     // default threshold
-
-            ref->length_penalty = 1.0f;
-            ref->max_initial_ts = 1.0f;
-
-            ref->thold_pt = 0.01f;
-            ref->thold_ptsum = 0.01f;
-
+            ref->temperature_inc = 0.0f;
             if (opt_mode == 2) {
-                // SPEED: limit max tokens per segment to prevent runaway generation
-                // 224 tokens = whisper_n_text_ctx/2 ≈ 30s speech
-                ref->max_tokens = 224;
+                ref->max_tokens = 224;  // limit token count for speed
             }
             break;
         }
     }
 
-    NLOGI("prepare_params: mode=%s strategy=%s n_threads=%d beam_size=%d temperature=%.1f temp_inc=%.1f "
-          "no_speech_thold=%.2f suppress_blank=%d initial_prompt_len=%zu",
+    NLOGI("prepare_params: done mode=%s strategy=%s n_threads=%d prompt_len=%zu",
          mode_name,
          (strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY",
-         ref->n_threads,
-         (strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? ref->beam_search.beam_size : 0,
-         ref->temperature,
-         ref->temperature_inc,
-         ref->no_speech_thold,
-         ref->suppress_blank ? 1 : 0,
+         threads,
          ref->initial_prompt ? strlen(ref->initial_prompt) : 0);
-
-    NLOGI("prepare_params: offsetof(strategy)=%zu, n_threads=%zu, language=%zu, initial_prompt=%zu, temperature=%zu",
-         offsetof(struct whisper_full_params, strategy),
-         offsetof(struct whisper_full_params, n_threads),
-         offsetof(struct whisper_full_params, language),
-         offsetof(struct whisper_full_params, initial_prompt),
-         offsetof(struct whisper_full_params, temperature));
 
     return ref;
 }
