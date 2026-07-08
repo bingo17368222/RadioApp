@@ -2175,7 +2175,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun startPositionSaver() {
         positionSaveRunnable = Runnable {
-            if (savePlaybackPosition && !isLive && prepared && player?.isPlaying == true) {
+            // [v2.4.6] Save position when prepared (not just when playing).
+            // Previously only saved when isPlaying==true, which meant if the user
+            // paused and the app crashed, the position was lost.
+            if (savePlaybackPosition && !isLive && prepared) {
                 saveCurrentPosition()
             }
             positionSaveHandler?.postDelayed(positionSaveRunnable!!, POSITION_SAVE_INTERVAL)
@@ -3599,6 +3602,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (prepared && player != null) {
             player?.seekTo(pos)
             writeServiceLog("playback", "[v2.0.77] seekTo: immediate seek to $pos (prepared=true)")
+            // [v2.4.6] Save position immediately after seek to prevent loss on crash.
+            // Previously position was only saved periodically while playing.
+            // If the app crashes (e.g., Whisper OOM), the last seek position would be lost.
+            val ep = currentEpisode
+            if (ep != null && pos > 0 && !isLive) {
+                val episodeKey = "${ep.stationId}::${ep.title}"
+                getSharedPreferences("playback_positions", MODE_PRIVATE)
+                    .edit().putLong(episodeKey, pos)
+                    .putLong(ep.id ?: "", pos).commit()  // commit() = synchronous write
+                writeServiceLog("playback", "[v2.4.6] seekTo: saved position=$pos for episode=$episodeKey")
+            }
         } else {
             // Player not ready - store seek and apply when STATE_READY fires
             pendingStartPosition = pos

@@ -1454,7 +1454,7 @@ class PlayerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
                                 binding.progressSubtitle.progress = progress
-                                binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getCurrentAsrLabel()})"
+                                binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getDetailedAsrLabel()})"
                             }
                         }
                         override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
@@ -1570,7 +1570,7 @@ class PlayerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
                                 binding.progressSubtitle.progress = progress
-                                binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getCurrentAsrLabel()})"
+                                binding.tvSubtitleStatus.text = "字幕生成: $progress% (引擎: ${getDetailedAsrLabel()})"
                             }
                         }
                         override fun onComplete(transcripts: List<com.radio.app.models.Transcript>) {
@@ -1981,9 +1981,56 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    // [v2.4.6] Get detailed ASR label including specific model name (e.g., "Whisper Tiny" instead of "Whisper")
+    private fun getDetailedAsrLabel(): String {
+        val settings = AppSettings.getInstance(this)
+        val provider = settings.safeAsrProvider()
+        return when {
+            provider == AppSettings.ASR_WHISPER || provider == "whisper-local" -> {
+                // Show specific Whisper model name
+                val modelDir = settings.whisperModelDir
+                if (modelDir.isNotBlank()) {
+                    val friendlyName = getFriendlyModelName(modelDir)
+                    if (friendlyName.startsWith("Whisper ")) friendlyName
+                    else "Whisper $friendlyName"
+                } else {
+                    // No specific model dir, try to find one
+                    val modelPath = SubtitleGeneratorService.findWhisperModelStatic(this)
+                    if (modelPath != null) getFriendlyModelName(modelPath)
+                    else "Whisper"
+                }
+            }
+            provider == AppSettings.ASR_VOSK -> {
+                val modelDir = settings.voskModelDir
+                if (modelDir.isNotBlank()) getFriendlyModelName(modelDir)
+                else "Vosk离线"
+            }
+            provider == AppSettings.ASR_BAIDU -> "百度ASR"
+            provider == AppSettings.ASR_FUNASR -> "FunASR"
+            else -> provider
+        }
+    }
+
+    // [v2.4.6] Static helper to find whisper model (delegates to service)
+    private fun getFriendlyModelName(path: String): String {
+        val name = File(path).name.lowercase()
+        return when {
+            name.contains("tiny") -> "Whisper Tiny"
+            name.contains("base") -> "Whisper Base"
+            name.contains("small") && !name.contains("vosk") -> "Whisper Small"
+            name.contains("medium") -> "Whisper Medium"
+            name.contains("large") -> "Whisper Large"
+            name.contains("vosk") && name.contains("small") -> "Vosk 小模型"
+            name.contains("vosk") && name.contains("large") -> "Vosk 大模型"
+            name.contains("vosk") -> "Vosk 模型"
+            else -> name.replace(".bin", "").replace("ggml-", "Whisper ").replace("vosk-model-", "Vosk ")
+                .split("-").joinToString(" ") { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase() else c.toString() } }
+        }
+    }
+
     // [v2.0.67] Issue 6: Format raw model directory name into a user-readable label.
     private fun formatModelName(rawName: String): String {
-        if (rawName.isBlank()) return getCurrentAsrLabel()
+        if (rawName.isBlank()) return getDetailedAsrLabel()
         // [v2.4.3] If the name already looks like a friendly name, return as-is
         // (SubtitleGeneratorService now sends "Whisper Tiny", "Whisper Base", etc.)
         if (rawName.startsWith("Whisper ") || rawName.startsWith("Vosk ")) {
@@ -2019,7 +2066,7 @@ class PlayerActivity : AppCompatActivity() {
             binding.progressSubtitle.progress = 0
             binding.progressSubtitle.visibility = View.VISIBLE
             binding.tvSubtitleStatus.visibility = View.VISIBLE
-            binding.tvSubtitleStatus.text = "字幕生成: 0% (引擎: ${getCurrentAsrLabel()})"
+            binding.tvSubtitleStatus.text = "字幕生成: 0% (引擎: ${getDetailedAsrLabel()})"
             binding.btnGenerateSubtitle.isEnabled = false
         } else {
             binding.progressAi.progress = 0

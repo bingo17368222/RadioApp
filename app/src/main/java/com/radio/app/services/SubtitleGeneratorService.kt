@@ -47,6 +47,40 @@ class SubtitleGeneratorService : Service() {
         private const val CHANNEL_ID = "subtitle_progress_channel"
         private const val TASK_TIMEOUT_MS = 10 * 60 * 1000L // 10 minutes hard timeout per task
         private const val MAX_AUDIO_DURATION_SEC = 1800L // 30分钟最大处理时长，超长音频只处理前30分钟
+
+        // [v2.4.6] Static method to find whisper model path (for PlayerActivity to show model name)
+        fun findWhisperModelStatic(context: android.content.Context): String? {
+            val savedWhisperDir = AppSettings.getInstance(context).whisperModelDir
+            val modelsDir = context.getExternalFilesDir("models")
+            if (modelsDir != null && modelsDir.exists()) {
+                val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
+                if (!modelDirs.isNullOrEmpty()) {
+                    if (savedWhisperDir.isNotEmpty()) {
+                        val savedDir = modelDirs.find { it.name == savedWhisperDir }
+                        if (savedDir != null) {
+                            val binFile = savedDir.listFiles()?.find { it.name.endsWith(".bin") }
+                            if (binFile != null) return binFile.absolutePath
+                        }
+                    }
+                    val whisperDirs = modelDirs.filter { it.name.contains("whisper", ignoreCase = true) && it.name != "whisper-engine" }
+                    val sorted = whisperDirs.sortedBy { dir ->
+                        when {
+                            dir.name.contains("tiny", ignoreCase = true) -> 0
+                            dir.name.contains("base", ignoreCase = true) -> 1
+                            dir.name.contains("small", ignoreCase = true) -> 2
+                            dir.name.contains("medium", ignoreCase = true) -> 3
+                            dir.name.contains("large", ignoreCase = true) -> 4
+                            else -> 5
+                        }
+                    }
+                    for (dir in sorted) {
+                        val binFile = dir.listFiles()?.find { it.name.endsWith(".bin") }
+                        if (binFile != null) return binFile.absolutePath
+                    }
+                }
+            }
+            return null
+        }
     }
 
     /** Issue 9: app version tag included in every log line */
@@ -2574,19 +2608,13 @@ class SubtitleGeneratorService : Service() {
                     val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB）"
                     ctx.lastErrorDetail = detail
                     logToFile("processWhisperInChunks: [v2.0.91] INSUFFICIENT JAVA HEAP for Whisper: $detail")
-                    callback.onError("$detail。正在重启字幕服务以释放内存，请重试。")
-                    // [v2.4.1] Kill and restart :subtitle process to recover from permanent heap exhaustion.
-                    // After multiple OOM failures, the Java heap is permanently stuck at 1-5MB and cannot
-                    // be recovered by GC alone. The only way to recover is to restart the process.
-                    logToFile("processWhisperInChunks: [v2.4.1] Scheduling process restart to recover from heap exhaustion")
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        try {
-                            logToFile("processWhisperInChunks: [v2.4.1] Killing :subtitle process to recover heap")
-                            android.os.Process.killProcess(android.os.Process.myPid())
-                        } catch (e: Exception) {
-                            logToFile("processWhisperInChunks: [v2.4.1] Failed to kill process: ${e.message}")
-                        }
-                    }, 1000)
+                    callback.onError("$detail。请关闭其他应用或使用更小的模型。")
+                    // [v2.4.6] Removed killProcess — it can cause the main process to lose
+                    // playback position. Instead, just return false and let the user retry.
+                    // The next subtitle generation will naturally have more heap available
+                    // because the previous whisper context will be freed.
+                    try { bridge.free(ctxPtr) } catch (_: Exception) {}
+                    pcmInput.close()
                     return false
                 }
             }
@@ -2686,11 +2714,19 @@ class SubtitleGeneratorService : Service() {
             // whisper_full() returned 0 but produced 0 segments due to OOM.
             // 10s chunks provide better speech context, and we also add concurrency guard below.
             // [v2.4.0] Use 30-second chunks (480000 samples). This is Whisper's native chunk size.
-            // Previously 10s chunks caused too many JNI calls, each consuming ~4MB of Java heap
-            // that couldn't be recovered by GC, leading to OOM after 5-6 chunks (50-60s of audio).
-            // 30s chunks reduce JNI calls by 3x, allowing 5-min audio to be processed in ~10 chunks.
-            // Whisper internally handles 30s segments natively, so this also improves accuracy.
-            val chunkSize = 30 * 16000  // 30 seconds per chunk (480000 samples)
+            // [v2.4.6] Dynamic chunk size based on model size to prevent base/small crashes.
+            // - tiny (74MB): 30s chunks are fine
+            // - base (141MB): 20s chunks reduce peak native memory by 33%
+            // - small (465MB): 15s chunks reduce peak native memory by 50%
+            // Base model was crashing during chunk 1 with 30s chunks due to native memory exhaustion.
+            val modelFile = File(modelPath)
+            val modelSizeMB = modelFile.length() / 1024 / 1024
+            val chunkSize = when {
+                modelSizeMB > 300 -> 15 * 16000  // small/medium: 15s (240000 samples)
+                modelSizeMB > 100 -> 20 * 16000  // base: 20s (320000 samples)
+                else -> 30 * 16000  // tiny: 30s (480000 samples)
+            }
+            logToFile("processWhisperInChunks: [v2.4.6] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s")
             val allTranscripts = mutableListOf<com.radio.app.models.Transcript>()
             var chunkIdx = 0
             var consecutiveCrashes = 0
@@ -2715,7 +2751,7 @@ class SubtitleGeneratorService : Service() {
             while (totalSamplesRead < totalSamplesToRead && !ctx.cancelled.get()) {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
-                if (samplesToRead < 48000) {  // [v2.4.0] 3s threshold for 30s chunks
+                if (samplesToRead < chunkSize / 10) {  // [v2.4.6] Dynamic threshold = 10% of chunk size
                     logToFile("processWhisperInChunks: [v2.3.2] last chunk too small ($samplesToRead samples), skipping")
                     break
                 }
