@@ -1527,6 +1527,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
                 // 同时检查当前播放节目的PCM预解码
                 startPcmPreDecodeIfNeeded()
+                // [v2.4.10] 预缓存完成后，自动生成字幕（使用Whisper base模型）
+                startPreCacheSubtitleGeneration(episode)
                 // Download complete, release guard and schedule next pre-cache check
                 isPrecaching = false
                 Handler(Looper.getMainLooper()).post { triggerPreCache() }
@@ -1661,6 +1663,64 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         writePreCacheLog("startPcmPreDecodeIfNeeded: triggering PCM pre-decode from normal cache for ${episode.title}")
         startPcmPreDecode(episodeId, audioFile, episode.title ?: "unknown")
+    }
+
+    /**
+     * v2.4.10: 预缓存完成后自动生成字幕
+     * 使用Whisper base模型，预生成字幕的节目数取自设置中的预缓存节目个数
+     */
+    private fun startPreCacheSubtitleGeneration(episode: Episode) {
+        val appSettings = AppSettings.getInstance(this)
+        // 只有预处理开关开启时才预生成字幕
+        if (!appSettings.enablePreprocessing) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: preprocessing disabled, skipping")
+            return
+        }
+        val episodeId = episode.id
+        if (episodeId.isNullOrBlank()) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: empty episodeId, skipping")
+            return
+        }
+        val audioUrl = episode.audioUrl
+        if (audioUrl.isNullOrBlank()) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: empty audioUrl, skipping")
+            return
+        }
+
+        // 检查是否已有字幕（避免重复生成）
+        try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper(this)
+            val existingSubtitles = dbHelper.getTranscripts(episodeId)
+            if (existingSubtitles.isNotEmpty()) {
+                writePreCacheLog("startPreCacheSubtitleGeneration: subtitles already exist for $episodeId, skipping")
+                return
+            }
+        } catch (e: Exception) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: error checking existing subtitles: ${e.message}")
+        }
+
+        writePreCacheLog("startPreCacheSubtitleGeneration: triggering subtitle generation for ${episode.title} ($episodeId)")
+
+        // 发送Intent启动SubtitleGeneratorService，使用"precache_subtitle"作为任务类型
+        // 添加extra标记force_whisper_base=true，让SubtitleGeneratorService使用Whisper base模型
+        val subtitleIntent = android.content.Intent(this, com.radio.app.services.SubtitleGeneratorService::class.java).apply {
+            putExtra("episode_id", episodeId)
+            putExtra("audio_url", audioUrl)
+            putExtra("task_type", "subtitle")
+            putExtra("precache_subtitle", true)
+            putExtra("force_whisper_base", true)
+        }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                startForegroundService(subtitleIntent)
+            } else {
+                startService(subtitleIntent)
+            }
+            writePreCacheLog("startPreCacheSubtitleGeneration: subtitle service started for $episodeId")
+        } catch (e: Exception) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: failed to start subtitle service: ${e.message}")
+            Log.e(TAG, "Pre-cache subtitle generation failed to start: ${e.message}")
+        }
     }
 
     /**

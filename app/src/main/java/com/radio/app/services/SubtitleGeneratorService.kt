@@ -64,6 +64,10 @@ class SubtitleGeneratorService : Service() {
     @Volatile
     private var currentModelName: String = ""
 
+    // [v2.4.10] Flag to force Whisper base model for pre-cache subtitle generation
+    @Volatile
+    private var forceWhisperBaseModel: Boolean = false
+
     interface SubtitleCallback {
         fun onSubtitleGenerated(transcript: Transcript)
         fun onProgressUpdate(progress: Int, total: Int)
@@ -546,7 +550,15 @@ class SubtitleGeneratorService : Service() {
                 // at process start and never refreshed. Without this, ASR engine changes in UI
                 // process don't take effect until the :subtitle process is restarted.
                 settings.reloadAsrSettings(this@SubtitleGeneratorService)
-                val asrProvider = settings.safeAsrProvider()
+                // [v2.4.10] If forceWhisperBaseModel is set (pre-cache subtitle generation),
+                // override ASR provider to Whisper
+                val asrProvider = if (forceWhisperBaseModel) {
+                    ctx.log("ASR provider overridden to Whisper (forceWhisperBaseModel=true, pre-cache subtitle)")
+                    logToFile("generateSubtitlesForEpisode: [v2.4.10] forceWhisperBaseModel=true, using Whisper base for pre-cache, episodeId=$episodeId")
+                    AppSettings.ASR_WHISPER
+                } else {
+                    settings.safeAsrProvider()
+                }
                 val savedVoskDir = settings.voskModelDir
                 ctx.log("ASR provider: $asrProvider (strict mode - NO auto-switch), savedVoskDir=$savedVoskDir")
                 logToFile("generateSubtitlesForEpisode: [v2.0.86] ASR engine = $asrProvider (STRICT - no auto-fallback), savedVoskDir=$savedVoskDir, episodeId=$episodeId")
@@ -2104,7 +2116,33 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun findWhisperModel(): String? {
-        logToFile("findWhisperModel: searching for Whisper ggml models...")
+        logToFile("findWhisperModel: searching for Whisper ggml models... (forceWhisperBaseModel=$forceWhisperBaseModel)")
+        // [v2.4.10] If forced to use Whisper base model (pre-cache subtitle generation), skip saved preference
+        // and look for base model specifically
+        if (forceWhisperBaseModel) {
+            logToFile("findWhisperModel: [v2.4.10] forceWhisperBaseModel=true, looking for Whisper base model specifically")
+            val modelsDir = getExternalFilesDir("models")
+            if (modelsDir != null && modelsDir.exists()) {
+                val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
+                if (!modelDirs.isNullOrEmpty()) {
+                    // Look for "base" model specifically
+                    val baseDirs = modelDirs.filter {
+                        it.name.contains("whisper", ignoreCase = true) &&
+                        it.name.contains("base", ignoreCase = true) &&
+                        it.name != "whisper-engine"
+                    }
+                    for (dir in baseDirs) {
+                        val binFile = findWhisperBinFile(dir)
+                        if (binFile != null) {
+                            logToFile("findWhisperModel: [v2.4.10] FOUND Whisper base model for pre-cache: ${binFile.absolutePath}")
+                            return binFile.absolutePath
+                        }
+                    }
+                    logToFile("findWhisperModel: [v2.4.10] Whisper base model not found, falling back to normal search")
+                }
+            }
+            // Fall through to normal search if base not found
+        }
         // [v2.2.9] Check for saved Whisper model preference first
         val savedWhisperDir = AppSettings.getInstance(this).whisperModelDir
         if (savedWhisperDir.isNotEmpty()) {
@@ -3458,6 +3496,8 @@ class SubtitleGeneratorService : Service() {
             val episodeId = intent.getStringExtra("episode_id") ?: return START_NOT_STICKY
             val audioUrl = intent.getStringExtra("audio_url") ?: return START_NOT_STICKY
             val taskType = intent.getStringExtra("task_type") ?: "subtitle"
+            val isPreCacheSubtitle = intent.getBooleanExtra("precache_subtitle", false)
+            val forceWhisperBase = intent.getBooleanExtra("force_whisper_base", false)
             val taskLabel = if (taskType == "segment") "AI分段" else "字幕生成"
 
             logToFile("onStartCommand: starting foreground for $taskLabel, episode=$episodeId")
@@ -3485,7 +3525,9 @@ class SubtitleGeneratorService : Service() {
 
             // Only start if not already running (prevents duplicate when Activity also binds in-process)
             if (!activeTasks.containsKey(episodeId)) {
-                logToFile("onStartCommand: [v2.0.58] starting $taskType task for episode=$episodeId (cross-process mode)")
+                // [v2.4.10] Set force Whisper base flag for pre-cache subtitle generation
+                forceWhisperBaseModel = forceWhisperBase
+                logToFile("onStartCommand: [v2.0.58] starting $taskType task for episode=$episodeId (cross-process mode), forceWhisperBase=$forceWhisperBase, isPreCache=$isPreCacheSubtitle")
                 if (taskType == "segment") {
                     val dummyCallback = object : SegmentCallback {
                         override fun onSegmentGenerated(segment: VoiceSegment) {}
@@ -3515,6 +3557,8 @@ class SubtitleGeneratorService : Service() {
         try {
             getSharedPreferences("subtitle_restart_guard", MODE_PRIVATE).edit().clear().apply()
         } catch (_: Exception) {}
+        // [v2.4.10] Reset force Whisper base flag after task completes
+        forceWhisperBaseModel = false
         // 只有当没有任何活跃任务时才停止前台服务和移除通知
         if (activeTasks.isEmpty()) {
             logToFile("cleanupTask: no more active tasks, stopping foreground")

@@ -131,7 +131,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="缓存完成后自动将音频解码为PCM格式，加速字幕生成"
+                    android:text="缓存完成后自动将音频解码为PCM格式并使用Whisper base模型预先生成完整字幕，加速播放时的字幕显示"
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:layout_marginTop="2dp" />
