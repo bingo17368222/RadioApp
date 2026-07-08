@@ -1986,9 +1986,9 @@ class PlayerActivity : AppCompatActivity() {
     private fun getDetailedAsrLabel(): String {
         val settings = AppSettings.getInstance(this)
         val provider = settings.safeAsrProvider()
-        // [v2.4.6] If we already have a currentModelName set by subtitle service, use it
-        if (currentModelName.isNotBlank()) {
-            return currentModelName
+        // [v2.4.6] If we already have a lastReportedModelName set by subtitle service, use it
+        if (lastReportedModelName.isNotBlank()) {
+            return lastReportedModelName
         }
         return when {
             provider == AppSettings.ASR_WHISPER || provider == "whisper-local" -> {
