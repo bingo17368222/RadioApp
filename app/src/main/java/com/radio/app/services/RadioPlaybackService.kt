@@ -1702,6 +1702,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("startPreCacheSubtitleGeneration: empty episodeId, skipping")
             return
         }
+        // [v2.4.14] Skip episodes marked as "no preprocessing needed"
+        if (appSettings.isNoPreprocess(episodeId)) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.14] episode $episodeId marked as no-preprocess, skipping")
+            return
+        }
         val audioUrl = episode.audioUrl
         if (audioUrl.isNullOrBlank()) {
             writePreCacheLog("startPreCacheSubtitleGeneration: empty audioUrl, skipping")
@@ -1779,9 +1784,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                 val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
                 val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
                 val cachedNames = episodesDir.listFiles()
                     ?.filter { it.isFile && it.length() > 1024 }
                     ?.map { it.name }?.toSet() ?: emptySet()
+                val settings = AppSettings.getInstance(this@RadioPlaybackService)
 
                 // Find the first cached episode after current one that has no subtitles
                 for (i in (currentIdx + 1) until preCacheList.size) {
@@ -1792,9 +1799,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) continue
 
+                    // [v2.4.14] Skip episodes marked as "no preprocessing needed"
+                    if (settings.isNoPreprocess(ep.id)) continue
+
                     // Check if subtitles already exist
                     val existingSubtitles = dbHelper.getTranscripts(ep.id)
                     if (existingSubtitles.isNotEmpty()) continue
+
+                    // [v2.4.14] Check if there's a leftover _full.pcm (interrupted generation)
+                    // If so, this episode needs resume — prioritize it
+                    val fullPcmFile = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
+                    if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.14] found leftover full PCM for ${ep.id}, resuming subtitle generation")
+                        startPreCacheSubtitleGeneration(ep)
+                        return@launch
+                    }
 
                     // Found a cached episode without subtitles — trigger subtitle generation
                     writePreCacheLog("patrolSubtitle: [v2.4.13] found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")

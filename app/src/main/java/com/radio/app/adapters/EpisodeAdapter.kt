@@ -127,6 +127,14 @@ class EpisodeAdapter(
             holder.tvSubtitleIndicator.visibility = View.GONE
         }
 
+        // [v2.4.14] Check if episode is marked as "no preprocessing needed"
+        val isNoPreprocess = AppSettings.getInstance(ctx).isNoPreprocess(episode.id)
+        if (isNoPreprocess) {
+            holder.tvNoPreprocessIndicator.visibility = View.VISIBLE
+        } else {
+            holder.tvNoPreprocessIndicator.visibility = View.GONE
+        }
+
         holder.itemView.setOnClickListener { listener?.onEpisodeClick(episode) }
         holder.itemView.setOnLongClickListener {
             listener?.onEpisodeLongClick(episode)
@@ -145,6 +153,7 @@ class EpisodeAdapter(
         val tvDislikeIndicator: TextView = view.findViewById(R.id.tv_dislike_indicator)
         val tvCachedIndicator: TextView = view.findViewById(R.id.tv_cached_indicator)
         val tvSubtitleIndicator: TextView = view.findViewById(R.id.tv_subtitle_indicator)
+        val tvNoPreprocessIndicator: TextView = view.findViewById(R.id.tv_no_preprocess_indicator)
         val tvPlayingIndicator: TextView = view.findViewById(R.id.tv_playing_indicator)
     }
 }

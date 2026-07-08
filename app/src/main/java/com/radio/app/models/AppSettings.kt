@@ -85,6 +85,8 @@ class AppSettings private constructor() {
     var lastSelectedStationId: String = ""
     var pinduoduoDetectionInterval: Int = 5  // [v2.1.2] seconds, default 5
     var subtitleScrollPauseSeconds: Int = 10  // [v2.4.9] seconds, default 10
+    // [v2.4.14] Episodes marked as "no preprocessing needed" (skip subtitle pre-generation)
+    var noPreprocessEpisodes: MutableSet<String> = mutableSetOf()
 
     /** Gson 安全访问：确保字段不为 null */
     fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
@@ -154,6 +156,17 @@ class AppSettings private constructor() {
         lastSelectedStationId = prefs.getString("last_selected_station_id", "") ?: ""
         pinduoduoDetectionInterval = prefs.getInt("pinduoduo_detection_interval", 5)  // [v2.1.2]
         subtitleScrollPauseSeconds = prefs.getInt("subtitle_scroll_pause_seconds", 10)  // [v2.4.9]
+        // [v2.4.14] Load no-preprocess episodes
+        try {
+            val npJson = prefs.getString("no_preprocess_episodes", "[]") ?: "[]"
+            val npArr = JSONArray(npJson)
+            noPreprocessEpisodes.clear()
+            for (i in 0 until npArr.length()) {
+                noPreprocessEpisodes.add(npArr.getString(i))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         // 加载播放次数
         val playCountJson = prefs.getString("station_play_count", "{}") ?: "{}"
@@ -203,9 +216,31 @@ class AppSettings private constructor() {
             putString("last_selected_station_id", lastSelectedStationId)
             putInt("pinduoduo_detection_interval", pinduoduoDetectionInterval)  // [v2.1.2]
             putInt("subtitle_scroll_pause_seconds", subtitleScrollPauseSeconds)  // [v2.4.9]
+            // [v2.4.14] Save no-preprocess episodes
+            val npArr = JSONArray()
+            for (ep in noPreprocessEpisodes) npArr.put(ep)
+            putString("no_preprocess_episodes", npArr.toString())
             apply()
         }
     }
+
+    // [v2.4.14] Toggle "no preprocessing needed" for an episode. Returns true if now marked.
+    fun toggleNoPreprocess(episodeId: String): Boolean {
+        val nowMarked = if (noPreprocessEpisodes.contains(episodeId)) {
+            noPreprocessEpisodes.remove(episodeId)
+            false
+        } else {
+            noPreprocessEpisodes.add(episodeId)
+            true
+        }
+        val npArr = JSONArray()
+        for (ep in noPreprocessEpisodes) npArr.put(ep)
+        val prefs = context.getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+        prefs.edit().putString("no_preprocess_episodes", npArr.toString()).apply()
+        return nowMarked
+    }
+
+    fun isNoPreprocess(episodeId: String): Boolean = noPreprocessEpisodes.contains(episodeId)
 
     fun addDislikedEpisode(context: Context, episodeId: String, stationId: String? = null, title: String? = null) {
         var changed = false

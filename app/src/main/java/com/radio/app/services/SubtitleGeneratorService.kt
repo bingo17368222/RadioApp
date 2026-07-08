@@ -2479,12 +2479,16 @@ class SubtitleGeneratorService : Service() {
                     // Check if full PCM already exists (from a previous run)
                     if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                         val sizeMB = fullPcmFile.length() / 1024 / 1024
-                        logToFile("generateWithWhisper: [v2.4.10] full PCM cache found (${sizeMB}MB), using for processing")
+                        logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB), resuming processing")
                         ctx.log("完整PCM缓存 (${sizeMB}MB)")
                         val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
-                        // Delete temporary full PCM after processing
-                        fullPcmFile.delete()
-                        logToFile("generateWithWhisper: [v2.4.10] deleted temporary full PCM file after processing")
+                        // [v2.4.14] Only delete full PCM on success; keep for resume on failure
+                        if (result) {
+                            fullPcmFile.delete()
+                            logToFile("generateWithWhisper: [v2.4.14] deleted full PCM after successful processing")
+                        } else {
+                            logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
+                        }
                         return result
                     }
 
@@ -2509,9 +2513,13 @@ class SubtitleGeneratorService : Service() {
                             logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
                             val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
-                            // Delete temporary full PCM after processing
-                            fullPcmFile.delete()
-                            logToFile("generateWithWhisper: [v2.4.10] deleted temporary full PCM file after processing")
+                            // [v2.4.14] Only delete full PCM on success; keep for resume on failure
+                            if (result) {
+                                fullPcmFile.delete()
+                                logToFile("generateWithWhisper: [v2.4.14] deleted full PCM after successful processing")
+                            } else {
+                                logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
+                            }
                             return result
                         } else {
                             logToFile("generateWithWhisper: [v2.4.10] full PCM decode failed, falling back to 5min PCM")

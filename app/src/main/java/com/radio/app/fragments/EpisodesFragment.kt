@@ -427,13 +427,54 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     override fun onEpisodeLongClick(episode: Episode) {
+        // [v2.4.14] Show a dialog with multiple options
         val settings = AppSettings.getInstance(requireContext())
-        val isNowDisliked = settings.toggleDislikedEpisode(requireContext(), episode)
-        if (isNowDisliked) {
-            Toast.makeText(context, "已标记为不喜欢: ${episode.title}", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(context, "已取消不喜欢: ${episode.title}", Toast.LENGTH_SHORT).show()
-        }
-        adapter?.notifyDataSetChanged()
+        val dbHelper = RadioDatabaseHelper.getInstance(requireContext())
+        val hasSubtitles = try { dbHelper.getTranscripts(episode.id).isNotEmpty() } catch (_: Exception) { false }
+        val isNoPreprocess = settings.isNoPreprocess(episode.id)
+        val isDisliked = settings.isDisliked(episode.id) || settings.isDislikedByTitle(episode.stationId, episode.title)
+
+        val options = mutableListOf<String>()
+        // Option 0: Toggle dislike
+        options.add(if (isDisliked) "取消不喜欢" else "标记不喜欢")
+        // Option 1: Delete subtitles (only if exists)
+        if (hasSubtitles) options.add("删除字幕")
+        // Option 2: Toggle no-preprocess
+        options.add(if (isNoPreprocess) "取消无需预处理" else "标记无需预处理")
+
+        val items = options.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(requireContext())
+            .setTitle(episode.title)
+            .setItems(items) { _, which ->
+                val selected = options[which]
+                when (selected) {
+                    "标记不喜欢", "取消不喜欢" -> {
+                        val nowDisliked = settings.toggleDislikedEpisode(requireContext(), episode)
+                        Toast.makeText(context, if (nowDisliked) "已标记为不喜欢" else "已取消不喜欢", Toast.LENGTH_SHORT).show()
+                        adapter?.notifyDataSetChanged()
+                    }
+                    "删除字幕" -> {
+                        try {
+                            dbHelper.deleteTranscriptsByEpisode(episode.id)
+                            // Also delete leftover full PCM if exists
+                            val pcmDir = com.radio.app.RadioApplication.getPcmCacheDir(requireContext())
+                            val fullPcm = java.io.File(pcmDir, "${episode.id}_full.pcm")
+                            if (fullPcm.exists()) fullPcm.delete()
+                            val fullInfo = java.io.File(pcmDir, "${episode.id}_full.info")
+                            if (fullInfo.exists()) fullInfo.delete()
+                            Toast.makeText(context, "已删除字幕", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "删除字幕失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                        adapter?.notifyDataSetChanged()
+                    }
+                    "标记无需预处理", "取消无需预处理" -> {
+                        val nowMarked = settings.toggleNoPreprocess(episode.id)
+                        Toast.makeText(context, if (nowMarked) "已标记无需预处理" else "已取消无需预处理", Toast.LENGTH_SHORT).show()
+                        adapter?.notifyDataSetChanged()
+                    }
+                }
+            }
+            .show()
     }
 }
