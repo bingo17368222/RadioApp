@@ -2765,46 +2765,19 @@ class SubtitleGeneratorService : Service() {
                 callback.onError("$detail。建议使用tiny(74MB)或base(141MB)模型，或关闭其他应用后重试。")
                 return false
             }
-            // [v2.3.8] Force GC before loading model to free previous Whisper context
-            repeat(3) {
-                try { System.gc() } catch (_: Exception) {}
-                try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
-                Thread.sleep(300)
-            }
-            val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-            logToFile("processWhisperInChunks: [v2.3.8] After pre-init GC: freeHeap=${freeHeapAfterGcMB}MB")
-            // [v2.0.93] Lowered heap requirement — Whisper tiny with audio_ctx=128 needs minimal Java heap
-            val requiredHeapMB = 4
-            if (freeHeapMB < requiredHeapMB) {
-                logToFile("processWhisperInChunks: [v2.0.91] Low Java heap (${freeHeapMB}MB < ${requiredHeapMB}MB), running aggressive GC")
-                // [v2.0.91] Aggressive cleanup
-                repeat(3) {
-                    try { System.gc() } catch (_: Exception) {}
-                    try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
-                    Thread.sleep(200)
-                }
-                val freeHeapAfterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                logToFile("processWhisperInChunks: [v2.0.91] After aggressive GC: freeHeap=${freeHeapAfterGcMB}MB")
-                if (freeHeapAfterGcMB < 2) {
-                    val detail = "Whisper Java堆内存不足（GC后仅${freeHeapAfterGcMB}MB，需要${requiredHeapMB}MB）"
-                    ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.91] INSUFFICIENT JAVA HEAP for Whisper: $detail")
-                    callback.onError("$detail。请关闭其他应用或使用更小的模型。")
-                    // [v2.4.6] Removed killProcess — it can cause the main process to lose
-                    // playback position. Instead, just return false and let the user retry.
-                    // The next subtitle generation will naturally have more heap available
-                    // because the previous whisper context will be freed.
-                    // Note: ctxPtr and pcmInput are not yet defined at this point
-                    // (whisper context hasn't been created, PCM file not opened yet),
-                    // so no cleanup needed here.
-                    return false
-                }
-            }
+            // [v2.4.25] REMOVED all pre-init GC calls and heap checks.
+            // These were causing:
+            // 1. 900ms delay from repeat(3) { gc + runFinalization + sleep(300) }
+            // 2. 600ms delay from aggressive GC when heap < 4MB
+            // 3. ABORT when heap < 2MB after GC ("INSUFFICIENT JAVA HEAP")
+            // Native whisper uses native memory (mmap/malloc), NOT Java heap.
+            // Low Java heap is NORMAL when native memory is in use.
+            // The abort at freeHeap < 2MB was preventing processing entirely.
+            logToFile("processWhisperInChunks: [v2.4.25] skipping heap checks (native code uses native memory)")
+
             // [v2.0.93] Lowered system memory requirement.
-            // With audio_ctx=128 (vs default 1500), KV cache is 91% smaller than default.
             // tiny model: ~75MB weights (mmap'd) + ~30-50MB runtime = ~105-125MB total.
             val requiredMemMB = modelSizeMB + 50
-            // [v2.0.93] Removed cooldown blocking — always allow retry per user request
             if (availMemMB < requiredMemMB) {
                 val detail = "Whisper内存不足（可用${availMemMB}MB，需要${requiredMemMB}MB=模型${modelSizeMB}MB+推理${requiredMemMB - modelSizeMB}MB）"
                 ctx.lastErrorDetail = detail
@@ -2817,8 +2790,6 @@ class SubtitleGeneratorService : Service() {
             if (memInfo.lowMemory) {
                 logToFile("processWhisperInChunks: [v2.0.91] WARNING: System reports lowMemory=true, but availMem=${availMemMB}MB >= required=${requiredMemMB}MB. Attempting to load anyway...")
             }
-            System.gc()
-            Thread.sleep(300)
 
             // Initialize whisper context
             logToFile("processWhisperInChunks: initializing whisper context with model=$modelPath")
@@ -2836,25 +2807,7 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
             logToFile("processWhisperInChunks: whisper context initialized, ctxPtr=$ctxPtr")
-
-            // [v2.0.90] Check Java heap AFTER model load. With audio_ctx=100, native init uses less memory,
-            // so Java heap pressure is the main concern. Per-chunk heap needs are ~500KB.
-            val postInitFreeHeapMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-            logToFile("processWhisperInChunks: [v2.0.90] After model init: freeHeap=${postInitFreeHeapMB}MB")
-            if (postInitFreeHeapMB < 3) {
-                logToFile("processWhisperInChunks: [v2.0.90] Low heap after model init (${postInitFreeHeapMB}MB), running aggressive GC")
-                repeat(2) { System.gc(); Thread.sleep(200) }
-                val afterGcMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
-                logToFile("processWhisperInChunks: [v2.0.90] After post-init GC: freeHeap=${afterGcMB}MB")
-                if (afterGcMB < 1) {
-                    val detail = "Whisper模型加载后Java堆内存不足（GC后仅${afterGcMB}MB）"
-                    ctx.lastErrorDetail = detail
-                    logToFile("processWhisperInChunks: [v2.0.90] ABORT after model init: $detail")
-                    callback.onError("$detail。请关闭其他应用或重启App后重试。")
-                    try { bridge.free(ctxPtr) } catch (_: Exception) {}
-                    return false
-                }
-            }
+            // [v2.4.25] REMOVED post-init heap check and abort — was blocking processing when Java heap was low
 
             // [v2.0.74] Issue 2 Fix: PCM may be from different ranges due to fallback decode chain.
             // If PCM is smaller than expected (~9.6MB for 5min @ 16kHz), it's from a fallback range.

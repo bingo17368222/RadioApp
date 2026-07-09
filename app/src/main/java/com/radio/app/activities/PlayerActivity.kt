@@ -2495,7 +2495,7 @@ class PlayerActivity : AppCompatActivity() {
         return segments
     }
 
-    // [v2.4.21] Generate content-based segments from subtitles
+    // [v2.4.25] Generate content-based segments from subtitles
     // Groups subtitles into meaningful segments and classifies as 干货(content) or 水货(filler)
     private fun generateContentBasedSegments(episodeId: String, durationMs: Int): List<VoiceSegment> {
         try {
@@ -2503,12 +2503,18 @@ class PlayerActivity : AppCompatActivity() {
             val transcripts = dbHelper.getTranscripts(episodeId)
             if (transcripts.size < 3) return emptyList()
 
-            // Dry keywords (干货): news, discussion, interview, information
-            val dryKeywords = listOf("新闻", "资讯", "报道", "访谈", "评论", "讨论", "问题", "解决",
-                "今天", "话题", "大家", "节目", "欢迎", "听众", "分享", "介绍", "了解", "我们", "现在")
-            // Water keywords (水货): ads, music, interlude, filler
+            // [v2.4.25] Refined keywords — removed common words that match everything
+            // Dry keywords: specific content indicators (news, analysis, data, interview)
+            val dryKeywords = listOf("新闻", "资讯", "报道", "访谈", "评论", "分析", "数据", "调查",
+                "采访", "记者", "专家", "研究", "政策", "经济", "社会", "科技", "教育", "健康",
+                "事故", "事件", "天气", "路况", "交通", "市场", "价格")
+            // Water keywords: broadcast filler, ads, music, station ID, greetings
             val waterKeywords = listOf("广告", "音乐", "歌曲", "休息", "片头", "片尾", "赞助",
-                "支持", "微信", "公众号", "下载", "关注", "扫码", "二维码", "推广")
+                "微信", "公众号", "下载", "关注", "扫码", "二维码", "推广",
+                "欢迎收听", "感谢收听", "这里是", "您正在收听", "广播电台",
+                "接下来", "稍后", "马上回来", "不要走开",
+                "早安", "晚安", "再见", "拜拜",
+                "片花", "预告", "下周", "明天同一时间")
 
             // Group transcripts into segments (every ~3-5 minutes of content)
             val segmentDurationMs = 3 * 60 * 1000L  // 3 minutes per segment
@@ -2521,7 +2527,7 @@ class PlayerActivity : AppCompatActivity() {
                 while (t.segmentStart >= currentSegEnd && currentTexts.isNotEmpty()) {
                     // Close current segment
                     val combinedText = currentTexts.joinToString("")
-                    val isDry = classifySegment(combinedText, dryKeywords, waterKeywords)
+                    val isDry = classifySegment(combinedText, dryKeywords, waterKeywords, segmentDurationMs)
                     val seg = VoiceSegment().apply {
                         this.start = currentSegStart
                         this.end = currentSegEnd
@@ -2539,7 +2545,7 @@ class PlayerActivity : AppCompatActivity() {
             // Close last segment
             if (currentTexts.isNotEmpty()) {
                 val combinedText = currentTexts.joinToString("")
-                val isDry = classifySegment(combinedText, dryKeywords, waterKeywords)
+                val isDry = classifySegment(combinedText, dryKeywords, waterKeywords, segmentDurationMs)
                 val seg = VoiceSegment().apply {
                     this.start = currentSegStart
                     this.end = durationMs.toLong()
@@ -2550,16 +2556,17 @@ class PlayerActivity : AppCompatActivity() {
                 segments.add(seg)
             }
 
-            writeJitterLog("[v2.4.21] generateContentBasedSegments: ${segments.size} segments from ${transcripts.size} transcripts")
+            writeJitterLog("[v2.4.25] generateContentBasedSegments: ${segments.size} segments from ${transcripts.size} transcripts, dry=${segments.count{it.hasVoice}}, water=${segments.count{!it.hasVoice}}")
             return segments
         } catch (e: Exception) {
-            writeJitterLog("[v2.4.21] generateContentBasedSegments failed: ${e.message}")
+            writeJitterLog("[v2.4.25] generateContentBasedSegments failed: ${e.message}")
             return emptyList()
         }
     }
 
-    // [v2.4.21] Classify a text segment as dry(content) or water(filler) based on keywords
-    private fun classifySegment(text: String, dryKeywords: List<String>, waterKeywords: List<String>): Boolean {
+    // [v2.4.25] Classify a text segment as dry(content) or water(filler)
+    // Uses keyword matching + text density (words per minute)
+    private fun classifySegment(text: String, dryKeywords: List<String>, waterKeywords: List<String>, segmentDurationMs: Long): Boolean {
         val textLower = text.lowercase()
         var dryScore = 0
         var waterScore = 0
@@ -2569,10 +2576,26 @@ class PlayerActivity : AppCompatActivity() {
         for (kw in waterKeywords) {
             if (textLower.contains(kw.lowercase())) waterScore++
         }
-        // If text is very short (likely filler/silence), mark as water
-        if (text.length < 10) return false
-        // Dry if dryScore >= waterScore, otherwise water
-        return dryScore >= waterScore
+
+        // [v2.4.25] Text density: words per minute
+        // Normal speech ~150-200 Chinese chars/min. If < 30 chars/min, likely silence/filler.
+        val segmentMinutes = segmentDurationMs / 60000.0
+        val charsPerMin = if (segmentMinutes > 0) text.length / segmentMinutes else 0.0
+
+        // [v2.4.25] Classification rules:
+        // 1. If text is very short (< 30 chars total), mark as water
+        if (text.length < 30) return false
+        // 2. If text density is very low (< 20 chars/min), mark as water
+        if (charsPerMin < 20) return false
+        // 3. If water keywords found and dryScore <= waterScore, mark as water
+        if (waterScore > 0 && dryScore <= waterScore) return false
+        // 4. If no keywords match at all, use text density:
+        //    Dense text (>50 chars/min) = likely content, Sparse = likely filler
+        if (dryScore == 0 && waterScore == 0) {
+            return charsPerMin > 50
+        }
+        // 5. Default: dry only if dryScore > waterScore
+        return dryScore > waterScore
     }
 
     private fun updateSegmentsUI() {
