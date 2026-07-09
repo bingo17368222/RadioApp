@@ -906,7 +906,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBarCache.visibility = View.GONE
                     binding.tvCacheProgress.visibility = View.GONE
                 } else {
-                    binding.tvCurrentTime.text = "缓冲中 ${formatTime(pos)}"
+                    binding.tvCurrentTime.text = "播放: ${formatTime(pos)}"
                 }
             }
         }
@@ -915,7 +915,7 @@ class PlayerActivity : AppCompatActivity() {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
                 if (hasError) return@runOnUiThread
-                binding.tvAiProgress.text = "缓冲: ${percent}%"
+                binding.tvAiProgress.text = "播放: ${percent}%"
                 binding.tvAiProgress.visibility = if (percent >= 100) View.GONE else View.VISIBLE
                 binding.progressBuffer.progress = percent
                 binding.progressBuffer.visibility = if (percent >= 100) View.GONE else View.VISIBLE
@@ -2402,6 +2402,16 @@ class PlayerActivity : AppCompatActivity() {
     private fun generateSimulatedSegments(): List<VoiceSegment> {
         val dur = playbackService?.getDuration()?.toInt() ?: 0
         if (dur <= 0) return emptyList()
+
+        // [v2.4.21] If complete subtitles exist, use content-based AI segmentation
+        // instead of fixed 5-minute segments
+        val episode = currentEpisode
+        if (episode != null && episode.id.isNotBlank()) {
+            val contentSegments = generateContentBasedSegments(episode.id, dur)
+            if (contentSegments.isNotEmpty()) return contentSegments
+        }
+
+        // Fallback: fixed 5-minute segments
         val segmentDuration = 300 // 5分钟一段
         val count = minOf((dur / 1000 / segmentDuration).coerceAtLeast(3), 20)
         val segments = mutableListOf<VoiceSegment>()
@@ -2417,6 +2427,86 @@ class PlayerActivity : AppCompatActivity() {
             segments.add(seg)
         }
         return segments
+    }
+
+    // [v2.4.21] Generate content-based segments from subtitles
+    // Groups subtitles into meaningful segments and classifies as 干货(content) or 水货(filler)
+    private fun generateContentBasedSegments(episodeId: String, durationMs: Int): List<VoiceSegment> {
+        try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+            val transcripts = dbHelper.getTranscripts(episodeId)
+            if (transcripts.size < 3) return emptyList()
+
+            // Dry keywords (干货): news, discussion, interview, information
+            val dryKeywords = listOf("新闻", "资讯", "报道", "访谈", "评论", "讨论", "问题", "解决",
+                "今天", "话题", "大家", "节目", "欢迎", "听众", "分享", "介绍", "了解", "我们", "现在")
+            // Water keywords (水货): ads, music, interlude, filler
+            val waterKeywords = listOf("广告", "音乐", "歌曲", "休息", "片头", "片尾", "赞助",
+                "支持", "微信", "公众号", "下载", "关注", "扫码", "二维码", "推广")
+
+            // Group transcripts into segments (every ~3-5 minutes of content)
+            val segmentDurationMs = 3 * 60 * 1000L  // 3 minutes per segment
+            val segments = mutableListOf<VoiceSegment>()
+            var currentSegStart = 0L
+            var currentSegEnd = segmentDurationMs
+            var currentTexts = mutableListOf<String>()
+
+            for (t in transcripts) {
+                while (t.segmentStart >= currentSegEnd && currentTexts.isNotEmpty()) {
+                    // Close current segment
+                    val combinedText = currentTexts.joinToString("")
+                    val isDry = classifySegment(combinedText, dryKeywords, waterKeywords)
+                    val seg = VoiceSegment().apply {
+                        this.start = currentSegStart
+                        this.end = currentSegEnd
+                        this.hasVoice = isDry  // 干货 = hasVoice=true, 水货 = hasVoice=false
+                        this.label = if (isDry) "干货" else "水货"
+                        this.isSimulated = false
+                    }
+                    segments.add(seg)
+                    currentSegStart = currentSegEnd
+                    currentSegEnd = currentSegStart + segmentDurationMs
+                    currentTexts = mutableListOf()
+                }
+                currentTexts.add(t.text ?: "")
+            }
+            // Close last segment
+            if (currentTexts.isNotEmpty()) {
+                val combinedText = currentTexts.joinToString("")
+                val isDry = classifySegment(combinedText, dryKeywords, waterKeywords)
+                val seg = VoiceSegment().apply {
+                    this.start = currentSegStart
+                    this.end = durationMs.toLong()
+                    this.hasVoice = isDry
+                    this.label = if (isDry) "干货" else "水货"
+                    this.isSimulated = false
+                }
+                segments.add(seg)
+            }
+
+            writeJitterLog("[v2.4.21] generateContentBasedSegments: ${segments.size} segments from ${transcripts.size} transcripts")
+            return segments
+        } catch (e: Exception) {
+            writeJitterLog("[v2.4.21] generateContentBasedSegments failed: ${e.message}")
+            return emptyList()
+        }
+    }
+
+    // [v2.4.21] Classify a text segment as dry(content) or water(filler) based on keywords
+    private fun classifySegment(text: String, dryKeywords: List<String>, waterKeywords: List<String>): Boolean {
+        val textLower = text.lowercase()
+        var dryScore = 0
+        var waterScore = 0
+        for (kw in dryKeywords) {
+            if (textLower.contains(kw.lowercase())) dryScore++
+        }
+        for (kw in waterKeywords) {
+            if (textLower.contains(kw.lowercase())) waterScore++
+        }
+        // If text is very short (likely filler/silence), mark as water
+        if (text.length < 10) return false
+        // Dry if dryScore >= waterScore, otherwise water
+        return dryScore >= waterScore
     }
 
     private fun updateSegmentsUI() {

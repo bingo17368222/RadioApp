@@ -28,13 +28,13 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="AI模型"
+                android:text="AI分段模型"
                 android:textColor="?attr/appTextPrimary"
                 android:textSize="16sp" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="选择用于语音识别和字幕生成的AI模型"
+                android:text="用于区分干货片段和水货片段，将完整字幕划分为有意义的内容段落"
                 android:textColor="?attr/appTextSecondary"
                 android:textSize="12sp"
                 android:layout_marginTop="2dp" />

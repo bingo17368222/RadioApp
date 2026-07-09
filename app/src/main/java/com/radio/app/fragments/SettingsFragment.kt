@@ -358,7 +358,7 @@ class SettingsFragment : Fragment() {
                 )
                 settings.aiModel = models[position]
                 save()
-                Toast.makeText(requireContext(), "AI模型已切换: " + parent?.getItemAtPosition(position), Toast.LENGTH_SHORT).show()
+                Toast.makeText(requireContext(), "AI分段模型已切换: " + parent?.getItemAtPosition(position), Toast.LENGTH_SHORT).show()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }

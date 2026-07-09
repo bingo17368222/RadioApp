@@ -62,7 +62,8 @@ class OfflineEngineActivity : AppCompatActivity() {
         val size: String,
         val downloadUrl: String?,
         val modelDir: String,
-        val unavailable: Boolean = false
+        val unavailable: Boolean = false,
+        val multiFileUrls: List<String>? = null  // [v2.4.21] For multi-file downloads (e.g. MNN model)
     )
 
     private val engines = arrayOf(
@@ -114,12 +115,21 @@ class OfflineEngineActivity : AppCompatActivity() {
 
         // ===== 阿里 MNN-LLM 离线引擎 =====
         EngineInfo(
-            "阿里 MNN-LLM (设备端)",
-            "阿里巴巴 MNN 推理引擎\n状态: 暂不可用\nMNN-LLM 暂无独立可下载的 Android AAR/引擎包。\n替代方案:\n- Google Play 搜索 \"MNN LLM Chat\" 安装独立应用\n- Maven 依赖: com.alibaba.android.mnnkit:core:0.1.3\n- 源码编译: github.com/alibaba/MNN\n适用: 本地AI内容分析、干货/水分分类",
-            "—",
-            null,
-            "mnn-llm",
-            unavailable = true
+            "阿里 MNN-LLM (Qwen1.5-1.8B-Chat)",
+            "阿里巴巴 MNN 推理引擎\n模型: Qwen1.5-1.8B-Chat-MNN (4bit量化)\n大小: 约870MB | 来源: ModelScope\n状态: 支持下载\n适用: AI分段模型，区分干货片段和水货片段\n说明: 从魔搭社区下载MNN格式模型文件",
+            "约870MB",
+            null,  // 使用 multiFileUrls 多文件下载
+            "mnn-llm/Qwen1.5-1.8B-Chat-MNN",
+            unavailable = false,
+            multiFileUrls = listOf(
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm.mnn",
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm.mnn.weight",
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm.mnn.json",
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=tokenizer.txt",
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=config.json",
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm_config.json",
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=embedding_ids.txt"
+            )
         ),
 
         // ===== Vosk 原生引擎 (libvosk.so，从 Maven AAR 中提取) =====
@@ -272,7 +282,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         tvSize.text = engine.size
         progressBar?.visibility = View.GONE
 
-        val isBuiltin = engine.downloadUrl == null || engine.downloadUrl.isEmpty()
+        val isBuiltin = (engine.downloadUrl == null || engine.downloadUrl.isEmpty()) && engine.multiFileUrls == null
         if (isBuiltin) {
             btnAction.text = if (engine.unavailable) "暂不可用" else "已内置"
             btnAction.isEnabled = false
@@ -383,6 +393,58 @@ class OfflineEngineActivity : AppCompatActivity() {
         return listOf(originalUrl)
     }
 
+    // [v2.4.21] Download a single file with resume support for MNN multi-file downloads
+    private fun downloadSingleFile(url: String, outFile: File, engine: EngineInfo, btn: Button, progressBar: ProgressBar?): Boolean {
+        try {
+            if (outFile.exists() && outFile.length() > 100) {
+                writeEngineLog("downloadSingleFile: already exists, skipping: ${outFile.name} (${outFile.length()} bytes)")
+                return true
+            }
+            val tmpFile = File(outFile.parentFile, outFile.name + ".tmp")
+            val existingBytes = if (tmpFile.exists()) tmpFile.length() else 0L
+            val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 30000
+                readTimeout = 60000
+                if (existingBytes > 0) {
+                    setRequestProperty("Range", "bytes=$existingBytes-")
+                }
+            }
+            val responseCode = connection.responseCode
+            if (responseCode != 200 && responseCode != 206) {
+                writeEngineLog("downloadSingleFile: HTTP $responseCode for ${outFile.name}")
+                connection.disconnect()
+                return false
+            }
+            val totalSize = connection.contentLengthLong + existingBytes
+            val input = connection.inputStream
+            val output = java.io.FileOutputStream(tmpFile, existingBytes > 0)
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            var totalRead = existingBytes
+            while (true) {
+                if (downloadCancelled) {
+                    input.close(); output.close(); connection.disconnect()
+                    return false
+                }
+                bytesRead = input.read(buffer)
+                if (bytesRead == -1) break
+                output.write(buffer, 0, bytesRead)
+                totalRead += bytesRead
+            }
+            input.close(); output.close(); connection.disconnect()
+            if (totalRead < 100) {
+                writeEngineLog("downloadSingleFile: too small (${totalRead} bytes), likely failed: ${outFile.name}")
+                return false
+            }
+            tmpFile.renameTo(outFile)
+            writeEngineLog("downloadSingleFile: COMPLETE: ${outFile.name} (${outFile.length()} bytes)")
+            return true
+        } catch (e: Exception) {
+            writeEngineLog("downloadSingleFile: ERROR for ${outFile.name}: ${e.message}")
+            return false
+        }
+    }
+
     private fun downloadModel(engine: EngineInfo, btn: Button, progressBar: ProgressBar?, modelDir: File?) {
         // Issue 5/9: 综合日志记录下载开始
         writeEngineLog("downloadModel: START, engine=${engine.name}, modelDir=${engine.modelDir}, url=${engine.downloadUrl}")
@@ -402,6 +464,55 @@ class OfflineEngineActivity : AppCompatActivity() {
                 }
                 if (!modelsDir.exists()) {
                     modelsDir.mkdirs()
+                }
+
+                // [v2.4.21] Multi-file download for MNN-LLM model
+                if (engine.multiFileUrls != null) {
+                    val targetDir = File(modelsDir, engine.modelDir)
+                    if (!targetDir.exists()) targetDir.mkdirs()
+                    writeEngineLog("downloadModel: multi-file download START, ${engine.multiFileUrls.size} files")
+                    var downloadedCount = 0
+                    for ((idx, url) in engine.multiFileUrls.withIndex()) {
+                        if (downloadCancelled) break
+                        val fileName = url.substringAfter("FilePath=")
+                        val outFile = File(targetDir, fileName)
+                        withContext(Dispatchers.Main) {
+                            btn.text = "下载中(${idx+1}/${engine.multiFileUrls.size})"
+                            progressBar?.progress = (idx * 100 / engine.multiFileUrls.size)
+                        }
+                        writeEngineLog("downloadModel: downloading file ${idx+1}/${engine.multiFileUrls.size}: $fileName")
+                        val success = withContext(Dispatchers.IO) {
+                            downloadSingleFile(url, outFile, engine, btn, progressBar)
+                        }
+                        if (success) downloadedCount++ else {
+                            writeEngineLog("downloadModel: FAILED to download $fileName")
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(this@OfflineEngineActivity, "下载失败: $fileName", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        progressBar?.progress = 100
+                        if (downloadedCount == engine.multiFileUrls.size) {
+                            writeEngineLog("downloadModel: multi-file download COMPLETE, all ${downloadedCount} files downloaded")
+                            btn.text = "已安装(点击删除)"
+                            Toast.makeText(this@OfflineEngineActivity, "${engine.name} 下载完成", Toast.LENGTH_SHORT).show()
+                            progressBar?.visibility = View.GONE
+                            btn.setOnClickListener {
+                                targetDir.let { deleteRecursive(it) }
+                                btn.text = "安装"
+                                Toast.makeText(this@OfflineEngineActivity, "${engine.name} 已删除", Toast.LENGTH_SHORT).show()
+                                bindInstallAction(engine, btn, progressBar, targetDir)
+                            }
+                        } else {
+                            writeEngineLog("downloadModel: multi-file download INCOMPLETE, only $downloadedCount/${engine.multiFileUrls.size} files")
+                            btn.text = "继续下载"
+                            Toast.makeText(this@OfflineEngineActivity, "下载不完整 ($downloadedCount/${engine.multiFileUrls.size})", Toast.LENGTH_SHORT).show()
+                            progressBar?.visibility = View.GONE
+                            bindInstallAction(engine, btn, progressBar, targetDir)
+                        }
+                    }
+                    return@launch
                 }
 
                 val baseUrl = engine.downloadUrl ?: return@launch
@@ -1021,6 +1132,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         val result = when {
             engine.modelDir.contains("vosk", ignoreCase = true) -> isValidVoskModelDir(modelDir)
             engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
+            engine.modelDir.contains("mnn", ignoreCase = true) -> isValidMnnModelDir(modelDir)
             else -> true
         }
         writeEngineLog("isEngineInstalled: '${engine.name}' -> $result")
@@ -1103,6 +1215,20 @@ class OfflineEngineActivity : AppCompatActivity() {
             return@run findBinFile(dir)
         }
         Log.d(TAG, "isValidWhisperModelDir: result=$result for ${dir.absolutePath}")
+        return result
+    }
+
+    // [v2.4.21] Check if MNN model directory is valid
+    private fun isValidMnnModelDir(dir: File): Boolean {
+        Log.d(TAG, "isValidMnnModelDir: checking ${dir.absolutePath}, exists=${dir.exists()}, files=${dir.listFiles()?.map { it.name }}")
+        val result = run {
+            if (!dir.isDirectory) return@run false
+            // MNN model requires llm.mnn and llm.mnn.weight files
+            val hasLlmMnn = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn" }
+            val hasWeight = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn.weight" && it.length() > 100_000_000 }
+            return@run hasLlmMnn && hasWeight
+        }
+        Log.d(TAG, "isValidMnnModelDir: result=$result")
         return result
     }
 
