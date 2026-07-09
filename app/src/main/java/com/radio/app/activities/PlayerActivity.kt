@@ -813,14 +813,15 @@ class PlayerActivity : AppCompatActivity() {
                         jitterSyncTimeMs = now
                         jitterSyncBaseline = position
                     } else {
-                        writeJitterLog("[v2.0.73] onPositionChanged: episode changed to $currentEpId but pos=$position (<2s), holding old pos=$lastDisplayedPositionMs until valid position")
+                        // [v2.4.19] Episode changed with pos=0: reset to 0 instead of HOLDING old position
+                        // Old code held lastDisplayedPositionMs which caused flicker between old/new episode positions
+                        writeJitterLog("[v2.4.19] onPositionChanged: episode changed to $currentEpId, pos=$position (<2s), resetting to 0 (was lastPos=$lastDisplayedPositionMs)")
                         lastJitterEpisodeId = currentEpId
-                        displayPosition = lastDisplayedPositionMs
+                        lastDisplayedPositionMs = 0
                         consecutiveBackwardJumps = 0
                         jitterSyncTimeMs = now
-                        jitterSyncBaseline = lastDisplayedPositionMs
-                        // [v2.4.16] Fix: Skip seekBar update during episode switch HOLD
-                        // to prevent old position/old duration showing as ~100% full progress bar
+                        jitterSyncBaseline = 0
+                        // Skip seekBar update — wait for valid position
                         return@runOnUiThread
                     }
                 }
@@ -2533,6 +2534,7 @@ class PlayerActivity : AppCompatActivity() {
         // [v2.0.85] Fix: When service is not bound (svcPos=0), do NOT display stale cachedPos.
         // v2.0.76 would show cachedPos then snap to svcPos when service connects = visible flicker.
         // Now: only set UI if svcPos is valid. If service not bound yet, wait for onServiceConnected.
+        // [v2.4.19] Also check if cachedEpId matches current episode - don't show stale pos from different episode
         if (svcPos > 2000) {
             // Service is bound and has valid position - sync UI immediately
             lastDisplayedPositionMs = svcPos
@@ -2545,10 +2547,16 @@ class PlayerActivity : AppCompatActivity() {
                 binding.seekBar.progress = svcPos.toInt()
             }
             writeJitterLog("[v2.3.1] onResume: UI immediately synced to svcPos=$svcPos, dur=$svcDur")
-        } else if (cachedPos > 0 && _binding != null) {
+        } else if (cachedPos > 0 && _binding != null && cachedEpId == currentEpisode?.id) {
             // [v2.3.1] Service not ready yet - show cached position (which we already pre-filled
             // in initViews) to prevent "00:00" gap. onServiceConnected will correct when ready.
+            // [v2.4.19] Only show if cachedEpId matches current episode
             writeJitterLog("[v2.3.1] onResume: service not ready (svcPos=$svcPos), keeping pre-filled cached=$cachedPos, waiting for onServiceConnected")
+        } else {
+            // [v2.4.19] Service not bound AND cached position is from a different episode (or no cache)
+            // Don't show stale position - reset to 0 and wait for valid callback
+            lastDisplayedPositionMs = 0
+            writeJitterLog("[v2.4.19] onResume: service not bound, cachedEpId=$cachedEpId != currentEpId=${currentEpisode?.id}, NOT showing stale cachedPos=$cachedPos")
         }
 
         // [v2.4.17] Sync title from service's currentEpisode to prevent stale title after background episode switch

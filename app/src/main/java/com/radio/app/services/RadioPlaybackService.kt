@@ -1786,7 +1786,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (currentIdx < 0) {
                     currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
                 }
-                if (currentIdx < 0) return@launch  // Current episode not in list
+                if (currentIdx < 0) {
+                    writePreCacheLog("patrolSubtitle: [v2.4.19] current episode not in preCacheList, scanning all episodes")
+                    currentIdx = -1  // [v2.4.19] Scan all episodes if current not found
+                }
 
                 val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
                 val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
@@ -1796,8 +1799,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     ?.map { it.name }?.toSet() ?: emptySet()
                 val settings = AppSettings.getInstance(this@RadioPlaybackService)
 
-                // Find the first cached episode after current one that has no subtitles
-                for (i in (currentIdx + 1) until preCacheList.size) {
+                // [v2.4.19] Scan episodes after current first, then scan episodes before current
+                // This ensures all cached episodes get processed, not just future ones
+                val scanOrder = if (currentIdx >= 0) {
+                    ((currentIdx + 1) until preCacheList.size).toList() + (0 until currentIdx).toList()
+                } else {
+                    (0 until preCacheList.size).toList()
+                }
+
+                // [v2.4.19] Also check for leftover _full.pcm (interrupted generation) - prioritize these
+                for (i in scanOrder) {
                     val ep = preCacheList[i]
                     if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
 
@@ -1809,8 +1820,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     if (settings.isNoPreprocess(ep.id)) continue
 
                     // [v2.4.18] Check if subtitles are COMPLETE (not just existing)
-                    // Incomplete subtitles (from crash/OOM) should be regenerated, not skipped
-                    if (dbHelper.hasCompleteSubtitles(ep.id)) continue
+                    // [v2.4.19] Wrap in try-catch to prevent patrol abort on DB errors
+                    var isComplete = false
+                    try {
+                        isComplete = dbHelper.hasCompleteSubtitles(ep.id)
+                    } catch (e: Exception) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.19] hasCompleteSubtitles failed for ${ep.id}: ${e.message}, treating as incomplete")
+                    }
+                    if (isComplete) continue
 
                     // [v2.4.14] Check if there's a leftover _full.pcm (interrupted generation)
                     // If so, this episode needs resume — prioritize it
@@ -1827,7 +1844,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
-                writePreCacheLog("patrolSubtitle: [v2.4.13] all cached episodes after current already have subtitles")
+                writePreCacheLog("patrolSubtitle: [v2.4.13] all cached episodes already have complete subtitles (scanned ${scanOrder.size} episodes)")
             } catch (e: Exception) {
                 writePreCacheLog("patrolSubtitle: [v2.4.13] patrol failed: ${e.message}")
             }

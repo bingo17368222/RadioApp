@@ -3889,9 +3889,11 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun createProgressNotification(progress: Int, taskLabel: String): Notification {
-        // [v2.4.18] Get current task's display title for notification
+        // [v2.4.19] Split date+title into title and content for better display
         val currentTitle = activeTasks.values.firstOrNull()?.displayTitle ?: ""
-        val notifTitle = if (currentTitle.isNotBlank()) "正在处理音频: $currentTitle" else "正在处理音频"
+        // [v2.4.19] Use short title for collapsed view, full info in expanded view
+        val notifTitle = if (currentTitle.isNotBlank()) currentTitle else "正在处理音频"
+        val notifContent = "$taskLabel: ${progress}%"
         val contentIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, PlayerActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
@@ -3906,7 +3908,10 @@ class SubtitleGeneratorService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(notifTitle)
-            .setContentText("$taskLabel: ${progress}%")
+            .setContentText(notifContent)
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText("$notifTitle\n$notifContent")
+                .setSummaryText("正在处理音频"))
             .setProgress(100, progress, false)
             .setOngoing(true)
             .setContentIntent(contentIntent)
