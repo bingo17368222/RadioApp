@@ -2551,6 +2551,24 @@ class PlayerActivity : AppCompatActivity() {
             writeJitterLog("[v2.3.1] onResume: service not ready (svcPos=$svcPos), keeping pre-filled cached=$cachedPos, waiting for onServiceConnected")
         }
 
+        // [v2.4.17] Sync title from service's currentEpisode to prevent stale title after background episode switch
+        if (serviceBound && playbackService != null) {
+            try {
+                val svcEpisode = playbackService?.getCurrentEpisode()
+                if (svcEpisode != null && svcEpisode.id != currentEpisode?.id) {
+                    writeJitterLog("[v2.4.17] onResume: syncing episode from service: ${svcEpisode.title} (id=${svcEpisode.id}), was: ${currentEpisode?.title}")
+                    currentEpisode = svcEpisode
+                    lastDisplayedPositionMs = 0
+                    lastJitterEpisodeId = svcEpisode.id
+                    val newIdx = episodeList.indexOfFirst { it.id == svcEpisode.id }
+                    if (newIdx >= 0) currentEpisodeIndex = newIdx
+                    updateUI()
+                }
+            } catch (e: Exception) {
+                writeJitterLog("[v2.4.17] onResume: failed to sync episode: ${e.message}")
+            }
+        }
+
         restoreBackgroundResults()
 
         // [v2.4.3] Delayed retry: if subtitles exist in DB but weren't loaded on first pass

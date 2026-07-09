@@ -1765,8 +1765,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             "RadioApp/subtitle_service_busy.flag"
         )
         if (busyFlag.exists()) {
-            writePreCacheLog("patrolSubtitle: subtitle service is busy, skipping patrol")
-            return
+            // [v2.4.17] Check flag age — if older than 15 minutes, it's stale (service crashed/OOM killed)
+            val flagAge = System.currentTimeMillis() - busyFlag.lastModified()
+            if (flagAge > 15 * 60 * 1000L) {
+                writePreCacheLog("patrolSubtitle: [v2.4.17] stale busy flag detected (age=${flagAge/1000}s > 15min), deleting and continuing patrol")
+                busyFlag.delete()
+            } else {
+                writePreCacheLog("patrolSubtitle: subtitle service is busy (flag age=${flagAge/1000}s), skipping patrol")
+                return
+            }
         }
 
         CoroutineScope(Dispatchers.IO).launch {
@@ -4026,6 +4033,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // If authoritativePosition is 0 (fresh episode start) and player reports a non-zero
         // position from previous media item, ignore it.
         if (!prepared) {
+            // [v2.4.17] During episode switch, return authoritativePosition only.
+            // This prevents old episode's seekTargetPosition from leaking through isSeekingToPosition.
+            if (episodeSwitching) {
+                return authoritativePosition
+            }
             // When not prepared, only return authoritativePosition (set by playEpisode/seekTo).
             // Do NOT update from rawPos during preparation - rawPos may be from old media source.
             if (isSeekingToPosition) {

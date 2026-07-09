@@ -73,7 +73,7 @@ class SubtitleGeneratorService : Service() {
 
     // [v2.4.10] Flag to force Whisper base model for pre-cache subtitle generation
     @Volatile
-    private var forceWhisperBaseModel: Boolean = false
+    private var forceWhisperBaseModel: Boolean = false  // [v2.4.17] Now forces Whisper tiny for pre-cache
 
     interface SubtitleCallback {
         fun onSubtitleGenerated(transcript: Transcript)
@@ -170,6 +170,18 @@ class SubtitleGeneratorService : Service() {
                 if (!subtitleDir.exists()) {
                     subtitleDir.mkdirs()
                 }
+            }
+        } catch (_: Exception) {}
+
+        // [v2.4.17] Clean up stale busy flag file on service start.
+        // If the service was killed (crash/OOM) without calling cleanupTask(), the flag file remains
+        // and blocks subtitle patrol indefinitely. Since we're just starting, there are no active tasks,
+        // so the flag MUST be stale — delete it.
+        try {
+            if (SUBTITLE_BUSY_FLAG.exists()) {
+                val flagAge = System.currentTimeMillis() - SUBTITLE_BUSY_FLAG.lastModified()
+                logToFile("onCreate: [v2.4.17] found stale subtitle busy flag (age=${flagAge}ms), deleting")
+                SUBTITLE_BUSY_FLAG.delete()
             }
         } catch (_: Exception) {}
 
@@ -568,7 +580,7 @@ class SubtitleGeneratorService : Service() {
                 // override ASR provider to Whisper
                 val asrProvider = if (forceWhisperBaseModel) {
                     ctx.log("ASR provider overridden to Whisper (forceWhisperBaseModel=true, pre-cache subtitle)")
-                    logToFile("generateSubtitlesForEpisode: [v2.4.10] forceWhisperBaseModel=true, using Whisper base for pre-cache, episodeId=$episodeId")
+                    logToFile("generateSubtitlesForEpisode: [v2.4.17] forceWhisperBaseModel=true, using Whisper tiny for pre-cache, episodeId=$episodeId")
                     AppSettings.ASR_WHISPER
                 } else {
                     settings.safeAsrProvider()
@@ -2131,15 +2143,28 @@ class SubtitleGeneratorService : Service() {
 
     private fun findWhisperModel(): String? {
         logToFile("findWhisperModel: searching for Whisper ggml models... (forceWhisperBaseModel=$forceWhisperBaseModel)")
-        // [v2.4.10] If forced to use Whisper base model (pre-cache subtitle generation), skip saved preference
-        // and look for base model specifically
+        // [v2.4.17] Changed from Whisper base to Whisper tiny for pre-cache subtitle generation (faster)
         if (forceWhisperBaseModel) {
-            logToFile("findWhisperModel: [v2.4.10] forceWhisperBaseModel=true, looking for Whisper base model specifically")
+            logToFile("findWhisperModel: [v2.4.17] forceWhisperBaseModel=true, looking for Whisper tiny model specifically")
             val modelsDir = getExternalFilesDir("models")
             if (modelsDir != null && modelsDir.exists()) {
                 val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
                 if (!modelDirs.isNullOrEmpty()) {
-                    // Look for "base" model specifically
+                    // Look for "tiny" model specifically
+                    val tinyDirs = modelDirs.filter {
+                        it.name.contains("whisper", ignoreCase = true) &&
+                        it.name.contains("tiny", ignoreCase = true) &&
+                        it.name != "whisper-engine"
+                    }
+                    for (dir in tinyDirs) {
+                        val binFile = findWhisperBinFile(dir)
+                        if (binFile != null) {
+                            logToFile("findWhisperModel: [v2.4.17] FOUND Whisper tiny model for pre-cache: ${binFile.absolutePath}")
+                            return binFile.absolutePath
+                        }
+                    }
+                    // [v2.4.17] Fallback to base if tiny not found
+                    logToFile("findWhisperModel: [v2.4.17] Whisper tiny not found, trying base model")
                     val baseDirs = modelDirs.filter {
                         it.name.contains("whisper", ignoreCase = true) &&
                         it.name.contains("base", ignoreCase = true) &&
@@ -2148,14 +2173,14 @@ class SubtitleGeneratorService : Service() {
                     for (dir in baseDirs) {
                         val binFile = findWhisperBinFile(dir)
                         if (binFile != null) {
-                            logToFile("findWhisperModel: [v2.4.10] FOUND Whisper base model for pre-cache: ${binFile.absolutePath}")
+                            logToFile("findWhisperModel: [v2.4.17] FOUND Whisper base model (fallback): ${binFile.absolutePath}")
                             return binFile.absolutePath
                         }
                     }
-                    logToFile("findWhisperModel: [v2.4.10] Whisper base model not found, falling back to normal search")
+                    logToFile("findWhisperModel: [v2.4.17] Whisper tiny/base not found, falling back to normal search")
                 }
             }
-            // Fall through to normal search if base not found
+            // Fall through to normal search if tiny not found
         }
         // [v2.2.9] Check for saved Whisper model preference first
         val savedWhisperDir = AppSettings.getInstance(this).whisperModelDir
