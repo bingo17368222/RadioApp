@@ -1378,66 +1378,73 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         binding.btnAiSegment.setOnClickListener {
-            val episode = currentEpisode ?: return@setOnClickListener
+            val episode = currentEpisode ?: run {
+                Toast.makeText(this, "无法AI分段：无节目", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             if (episode.id.isBlank()) {
                 Toast.makeText(this, "无法AI分段：缺少节目ID", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (segmentProcessing) return@setOnClickListener
+            if (segmentProcessing) {
+                Toast.makeText(this, "正在处理中，请稍候", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
 
-            // [v2.4.22] AI分段: use existing subtitles for content-based segmentation
-            // instead of slow ASR regeneration
+            // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
+            writeJitterLog("[v2.4.23] btnAiSegment CLICKED: episodeId=${episode.id}")
             startAiProcessing("segment")
-            CoroutineScope(Dispatchers.IO).launch {
+            Thread {
                 try {
-                    val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@PlayerActivity)
+                    val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
                     val transcriptCount = dbHelper.getTranscriptCount(episode.id)
                     val isComplete = dbHelper.hasCompleteSubtitles(episode.id)
+                    writeJitterLog("[v2.4.23] btnAiSegment: transcriptCount=$transcriptCount, isComplete=$isComplete")
 
                     if (transcriptCount < 3 || !isComplete) {
-                        withContext(Dispatchers.Main) {
+                        runOnUiThread {
                             finishAiProcessing("segment")
                             val msg = if (transcriptCount == 0) "无字幕，请先生成字幕" else "字幕不完整($transcriptCount 条)，请先完成字幕生成"
-                            Toast.makeText(this@PlayerActivity, msg, Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         }
-                        return@launch
+                        return@Thread
                     }
 
                     // Generate content-based segments from subtitles
                     val dur = playbackService?.getDuration()?.toInt() ?: 0
-                    val segments = if (dur > 0) {
-                        generateContentBasedSegments(episode.id, dur)
+                    val maxEnd = if (dur > 0) dur else dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
+                    writeJitterLog("[v2.4.23] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
+                    val segments = if (maxEnd > 0) {
+                        generateContentBasedSegments(episode.id, maxEnd)
                     } else {
-                        // Fallback: estimate duration from last transcript
-                        val maxEnd = dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
-                        if (maxEnd > 0) generateContentBasedSegments(episode.id, maxEnd)
-                        else emptyList()
+                        emptyList()
                     }
+                    writeJitterLog("[v2.4.23] btnAiSegment: generated ${segments.size} segments")
 
-                    withContext(Dispatchers.Main) {
-                        if (_binding == null) return@withContext
+                    runOnUiThread {
+                        if (_binding == null) return@runOnUiThread
                         if (segments.isNotEmpty()) {
                             voiceSegments = segments
                             segmentAdapter?.setSegments(segments)
                             binding.recyclerSegments.visibility = View.VISIBLE
-                            // Count dry vs water
                             val dryCount = segments.count { it.hasVoice }
                             val waterCount = segments.size - dryCount
-                            Toast.makeText(this@PlayerActivity,
+                            Toast.makeText(this,
                                 "AI分段完成: ${segments.size}段 (干货${dryCount} 水货${waterCount})",
                                 Toast.LENGTH_LONG).show()
                         } else {
-                            Toast.makeText(this@PlayerActivity, "AI分段失败：无法生成分段", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "AI分段失败：无法生成分段", Toast.LENGTH_SHORT).show()
                         }
                         finishAiProcessing("segment")
                     }
                 } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
+                    writeJitterLog("[v2.4.23] btnAiSegment ERROR: ${e.message}")
+                    runOnUiThread {
                         finishAiProcessing("segment")
-                        Toast.makeText(this@PlayerActivity, "AI分段错误: ${e.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "AI分段错误: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
-            }
+            }.start()
         }
 
         binding.btnSubtitleToggle.setOnClickListener {

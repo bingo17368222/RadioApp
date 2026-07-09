@@ -2911,18 +2911,12 @@ class SubtitleGeneratorService : Service() {
                 modelSizeMB > 100 -> 20 * 16000  // base: 20s (320000 samples)
                 else -> 30 * 16000  // tiny: 30s (480000 samples)
             }
-            // [v2.4.8] Determine optimization mode based on model size
-            val optMode = when {
-                modelSizeMB > 300 -> com.radio.app.whisper.WhisperBridge.OPT_SPEED
-                modelSizeMB > 100 -> com.radio.app.whisper.WhisperBridge.OPT_BALANCED
-                else -> com.radio.app.whisper.WhisperBridge.OPT_ACCURACY
-            }
-            val optModeName = when (optMode) {
-                com.radio.app.whisper.WhisperBridge.OPT_ACCURACY -> "ACCURACY(beam5)"
-                com.radio.app.whisper.WhisperBridge.OPT_BALANCED -> "BALANCED(greedy)"
-                else -> "SPEED(greedy+vad)"
-            }
-            logToFile("processWhisperInChunks: [v2.4.8] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
+            // [v2.4.23] All models use SPEED mode (greedy) for faster processing
+            // Previously tiny used ACCURACY(beam5) which was 3x slower (0.86x vs 2.71x speed)
+            // Beam search doesn't significantly improve Chinese broadcast quality
+            val optMode = com.radio.app.whisper.WhisperBridge.OPT_SPEED
+            val optModeName = "SPEED(greedy)"
+            logToFile("processWhisperInChunks: [v2.4.23] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
 
             // [v2.4.8] Set optimization mode on native bridge before processing
             bridge.setOptMode(optMode)
