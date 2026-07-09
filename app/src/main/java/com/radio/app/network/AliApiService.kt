@@ -58,18 +58,24 @@ class AliApiService {
         return parseResponse(response, groupedSegments)
     }
 
+    private data class SegmentGroup(
+        val startMs: Long,
+        val endMs: Long,
+        val text: String
+    )
+
     private fun groupSubtitles(
         subtitles: List<Triple<Long, Long, String>>,
         segmentDurationMs: Long
-    ): MutableList<Pair<LongRange, String>> {
-        val groups = mutableListOf<Pair<LongRange, String>>()
+    ): MutableList<SegmentGroup> {
+        val groups = mutableListOf<SegmentGroup>()
         var currentStart = 0L
         var currentEnd = segmentDurationMs
         var currentText = StringBuilder()
 
         for ((start, end, text) in subtitles) {
             while (start >= currentEnd && currentText.isNotEmpty()) {
-                groups.add(Pair(LongRange(currentStart.toInt(), currentEnd.toInt()), currentText.toString()))
+                groups.add(SegmentGroup(currentStart, currentEnd, currentText.toString()))
                 currentStart = currentEnd
                 currentEnd = currentStart + segmentDurationMs
                 currentText = StringBuilder()
@@ -77,12 +83,12 @@ class AliApiService {
             currentText.append(text)
         }
         if (currentText.isNotEmpty()) {
-            groups.add(Pair(LongRange(currentStart.toInt(), currentEnd.toInt()), currentText.toString()))
+            groups.add(SegmentGroup(currentStart, currentEnd, currentText.toString()))
         }
         return groups
     }
 
-    private fun buildPrompt(segments: List<Pair<LongRange, String>>): String {
+    private fun buildPrompt(segments: List<SegmentGroup>): String {
         val sb = StringBuilder()
         sb.append("你是一个广播电台内容分析专家。下面是广播节目的字幕，按时间段分组。")
         sb.append("请分析每段内容，判断是「干货」（有价值的新闻、资讯、访谈、评论）还是「水货」（广告、音乐、片头片尾、闲聊、填充内容）。\n\n")
@@ -92,12 +98,10 @@ class AliApiService {
         sb.append("- reason: 简短理由（不超过10字）\n\n")
         sb.append("字幕内容：\n")
 
-        for ((index, pair) in segments.withIndex()) {
-            val (range, text) = pair
-            val startTime = range.first / 1000
-            val endTime = range.last / 1000
-            // Limit text to 500 chars per segment to avoid token overflow
-            val truncatedText = if (text.length > 500) text.substring(0, 500) + "..." else text
+        for ((index, seg) in segments.withIndex()) {
+            val startTime = seg.startMs / 1000
+            val endTime = seg.endMs / 1000
+            val truncatedText = if (seg.text.length > 500) seg.text.substring(0, 500) + "..." else seg.text
             sb.append("[段落${index + 1}] ${startTime}s-${endTime}s: $truncatedText\n")
         }
 
@@ -167,19 +171,18 @@ class AliApiService {
         }
     }
 
-    private fun parseResponse(responseText: String, segments: List<Pair<LongRange, String>>): List<SegmentResult> {
+    private fun parseResponse(responseText: String, segments: List<SegmentGroup>): List<SegmentResult> {
         try {
             val responseJson = JSONObject(responseText)
             val output = responseJson.optJSONObject("output")
-                ?: responseJson.optJSONObject("output", JSONObject())
             val choices = output?.optJSONArray("choices")
-            val text = output?.optString("text", null)
+            val text = output?.optString("text", "")
 
             val content = when {
                 choices != null && choices.length() > 0 -> {
                     choices.getJSONObject(0).optJSONObject("message")?.optString("content", "")
                 }
-                text != null -> text
+                !text.isNullOrEmpty() -> text
                 else -> ""
             }
 
@@ -207,10 +210,10 @@ class AliApiService {
                 val isDry = type.contains("干货")
 
                 if (index in segments.indices) {
-                    val (range, _) = segments[index]
+                    val seg = segments[index]
                     results.add(SegmentResult(
-                        start = range.first.toLong(),
-                        end = range.last.toLong(),
+                        start = seg.startMs,
+                        end = seg.endMs,
                         isDry = isDry,
                         label = if (isDry) "干货" else "水货"
                     ))

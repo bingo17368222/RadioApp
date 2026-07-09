@@ -1397,6 +1397,7 @@ class PlayerActivity : AppCompatActivity() {
             // [v2.4.24] Get duration on main thread BEFORE spawning background thread
             val dur = playbackService?.getDuration()?.toInt() ?: 0
             // [v2.4.26] Check if Ali API should be used
+            val settings = AppSettings.getInstance(this)
             val aiModel = settings.safeAiModel()
             val aliApiKey = settings.safeAliApiKey()
             writeJitterLog("[v2.4.26] btnAiSegment: aiModel=$aiModel, hasApiKey=${aliApiKey.isNotBlank()}")
