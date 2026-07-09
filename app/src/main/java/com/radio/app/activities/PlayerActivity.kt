@@ -93,6 +93,8 @@ class PlayerActivity : AppCompatActivity() {
     private var consecutiveBackwardJumps = 0
     // [v2.0.76] Track when we last intentionally paused to prevent isPlaying race condition
     private var lastPauseIntentTimeMs = 0L
+    // [v2.4.16] Track onResume timestamp to skip stale onPositionChanged callbacks
+    private var lastOnResumeTimestampMs = 0L
     private var subtitleTranscripts: List<Transcript> = emptyList()
     private var subtitleAdapter: SubtitleEntryAdapter? = null
     private var lastSubtitleHighlightIdx = -1
@@ -817,6 +819,9 @@ class PlayerActivity : AppCompatActivity() {
                         consecutiveBackwardJumps = 0
                         jitterSyncTimeMs = now
                         jitterSyncBaseline = lastDisplayedPositionMs
+                        // [v2.4.16] Fix: Skip seekBar update during episode switch HOLD
+                        // to prevent old position/old duration showing as ~100% full progress bar
+                        return@runOnUiThread
                     }
                 }
 
@@ -828,6 +833,14 @@ class PlayerActivity : AppCompatActivity() {
                 val inStabilization = (now - jitterSyncTimeMs) < jitterStabilizeMs
                 val recentPause = (now - lastPauseIntentTimeMs) < 2000L
                 val isPositionNearZero = position < 5000L && lastDisplayedPositionMs > 30000L
+
+                // [v2.4.16] Fix: If this is a stale callback enqueued before onResume, skip it
+                // to prevent progress from flickering back to old position
+                if (lastOnResumeTimestampMs > 0 && now - lastOnResumeTimestampMs < 500L
+                    && position < lastDisplayedPositionMs - 2000 && !isUserSeeking) {
+                    writeJitterLog("[v2.4.16] onPositionChanged: skipping stale callback pos=$position < lastPos=$lastDisplayedPositionMs (within 500ms of onResume)")
+                    return@runOnUiThread
+                }
 
                 if (position < lastDisplayedPositionMs - 2000 && !isUserSeeking) {
                     val backwardDelta = lastDisplayedPositionMs - position
@@ -2497,6 +2510,7 @@ class PlayerActivity : AppCompatActivity() {
         // v2.0.75 bug: stabilization only started when serviceBound && playbackService!=null && cachedPos>0,
         // which failed during Activity recreation (config change), causing inStab=false and pos=0 to be
         // accepted as LEGIT BACK (delta=3809322 >= 300000), triggering seekTo(0) storm.
+        lastOnResumeTimestampMs = System.currentTimeMillis()  // [v2.4.16] Track for stale callback detection
         val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
         val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
         val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")

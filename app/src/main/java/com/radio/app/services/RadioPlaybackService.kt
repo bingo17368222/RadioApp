@@ -2396,7 +2396,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     try {
                         // [v2.0.62] Issue 1 Fix: Use authoritative position from getCurrentPosition()
                         val pos = getCurrentPosition()
-                        var dur = p.duration
+                        // [v2.4.16] Fix: Use getSafeDuration() instead of raw p.duration
+                        // This prevents old episode's duration leaking to UI during episode switch
+                        var dur = getSafeDuration()
                         // [v2.0.62] Issue 1 Fix: When player duration is 0 (not prepared) but we have episode duration, use it
                         // This prevents seekBar max from being 0 during buffering
                         if (dur <= 0 && !isLive) {

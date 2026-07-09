@@ -2475,6 +2475,7 @@ class SubtitleGeneratorService : Service() {
             if (forceWhisperBaseModel) {
                 logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
                 val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+                val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
                 try {
                     // Check if full PCM already exists (from a previous run)
                     if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
@@ -2485,7 +2486,15 @@ class SubtitleGeneratorService : Service() {
                         // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                         if (result) {
                             fullPcmFile.delete()
-                            logToFile("generateWithWhisper: [v2.4.14] deleted full PCM after successful processing")
+                            // [v2.4.16] Fix: Also delete corresponding info file
+                            val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
+                            if (fullInfoFile.exists()) fullInfoFile.delete()
+                            // [v2.4.16] Speed statistics
+                            val totalTimeMs = System.currentTimeMillis() - statsStartTime
+                            val pcmDurationSec = fullPcmFile.length() / 2 / 16000  // 16kHz mono 16-bit
+                            val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
+                            logToFile("generateWithWhisper: [v2.4.16] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
+                            logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
                         } else {
                             logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
                         }
@@ -2516,7 +2525,15 @@ class SubtitleGeneratorService : Service() {
                             // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                             if (result) {
                                 fullPcmFile.delete()
-                                logToFile("generateWithWhisper: [v2.4.14] deleted full PCM after successful processing")
+                                // [v2.4.16] Fix: Also delete corresponding info file
+                                val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
+                                if (fullInfoFile.exists()) fullInfoFile.delete()
+                                // [v2.4.16] Speed statistics
+                                val totalTimeMs = System.currentTimeMillis() - statsStartTime
+                                val pcmDurationSec = fullPcmFile.length() / 2 / 16000  // 16kHz mono 16-bit
+                                val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
+                                logToFile("generateWithWhisper: [v2.4.16] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (full decode + whisper)")
+                                logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
                             } else {
                                 logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
                             }
@@ -2524,11 +2541,17 @@ class SubtitleGeneratorService : Service() {
                         } else {
                             logToFile("generateWithWhisper: [v2.4.10] full PCM decode failed, falling back to 5min PCM")
                             fullPcmFile.delete()
+                            // [v2.4.16] Fix: Also delete corresponding info file on failure
+                            val failInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
+                            if (failInfoFile.exists()) failInfoFile.delete()
                         }
                     }
                 } catch (e: Exception) {
                     logToFile("generateWithWhisper: [v2.4.10] full PCM generation error: ${e.message}, falling back to 5min PCM")
                     fullPcmFile.delete()
+                    // [v2.4.16] Fix: Also delete corresponding info file on error
+                    val errInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
+                    if (errInfoFile.exists()) errInfoFile.delete()
                 }
             }
 
