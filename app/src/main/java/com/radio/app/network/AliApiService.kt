@@ -9,10 +9,8 @@ import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-/**
- * [v2.4.26] Ali DashScope API client for AI content segmentation.
- * Uses 通义千问 (Qwen) model to classify subtitle segments as 干货(content) or 水货(filler).
- */
+// v2.4.26 Ali DashScope API client for AI content segmentation.
+// Uses Qwen model to classify subtitle segments as dry(content) or water(filler).
 class AliApiService {
 
     companion object {
