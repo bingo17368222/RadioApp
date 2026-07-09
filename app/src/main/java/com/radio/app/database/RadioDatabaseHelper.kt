@@ -228,6 +228,36 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return result
     }
 
+    // [v2.4.20] Get the last transcript end time (in ms) for resume support
+    fun getMaxTranscriptEndMs(episodeId: String): Long {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT MAX(segment_end) FROM $TABLE_TRANSCRIPTS WHERE episode_id = ?",
+            arrayOf(episodeId)
+        )
+        var maxEnd = 0L
+        if (cursor.moveToFirst()) {
+            maxEnd = cursor.getLong(0)
+        }
+        cursor.close()
+        return maxEnd
+    }
+
+    // [v2.4.20] Get transcript count for an episode
+    fun getTranscriptCount(episodeId: String): Int {
+        val db = readableDatabase
+        val cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM $TABLE_TRANSCRIPTS WHERE episode_id = ?",
+            arrayOf(episodeId)
+        )
+        var count = 0
+        if (cursor.moveToFirst()) {
+            count = cursor.getInt(0)
+        }
+        cursor.close()
+        return count
+    }
+
     // ===== Disliked Episodes =====
 
     fun addDislikedEpisode(episodeId: String, title: String, stationName: String) {

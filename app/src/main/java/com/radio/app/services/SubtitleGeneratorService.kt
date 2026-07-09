@@ -71,6 +71,10 @@ class SubtitleGeneratorService : Service() {
     @Volatile
     private var currentModelName: String = ""
 
+    // [v2.4.20] Resume mode flag: when true, append new transcripts instead of deleting old ones
+    @Volatile
+    private var isResumeMode: Boolean = false
+
     // [v2.4.10] Flag to force Whisper base model for pre-cache subtitle generation
     @Volatile
     private var forceWhisperBaseModel: Boolean = false  // [v2.4.17] Now forces Whisper tiny for pre-cache
@@ -528,18 +532,27 @@ class SubtitleGeneratorService : Service() {
                 if (transcripts.isNotEmpty()) {
                     try {
                         val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@SubtitleGeneratorService)
-                        dbHelper.deleteTranscriptsByEpisode(episodeId)
-                        // Re-save all new transcripts (for Vosk they were saved incrementally,
-                        // for Whisper they need to be saved here)
-                        for (t in transcripts) {
-                            if (t.episodeId.isNullOrBlank()) t.episodeId = episodeId
-                            dbHelper.saveTranscript(t)
+                        // [v2.4.20] Resume mode: append new transcripts instead of deleting old ones
+                        if (isResumeMode) {
+                            logToFile("onComplete: [v2.4.20] RESUME MODE: appending ${transcripts.size} new transcripts to existing ones for $episodeId")
+                            for (t in transcripts) {
+                                if (t.episodeId.isNullOrBlank()) t.episodeId = episodeId
+                                dbHelper.saveTranscript(t)
+                            }
+                        } else {
+                            dbHelper.deleteTranscriptsByEpisode(episodeId)
+                            // Re-save all new transcripts (for Vosk they were saved incrementally,
+                            // for Whisper they need to be saved here)
+                            for (t in transcripts) {
+                                if (t.episodeId.isNullOrBlank()) t.episodeId = episodeId
+                                dbHelper.saveTranscript(t)
+                            }
                         }
                         // [v2.4.12] Save the engine name used to generate subtitles
                         val engineName = if (currentModelName.isNotBlank()) currentModelName else "Unknown"
                         dbHelper.saveTranscriptEngine(episodeId, engineName)
                         logToFile("onComplete: [v2.4.12] saved engine name '$engineName' for $episodeId")
-                        logToFile("onComplete: [v2.2.6] replaced old subtitles with ${transcripts.size} new transcripts for $episodeId")
+                        logToFile("onComplete: [v2.2.6] ${if (isResumeMode) "appended" else "replaced with"} ${transcripts.size} new transcripts for $episodeId")
                         // [v2.4.18] Mark subtitles as complete so patrol skips this episode
                         dbHelper.markSubtitlesComplete(episodeId)
                         logToFile("onComplete: [v2.4.18] marked subtitles as COMPLETE for $episodeId")
@@ -2508,6 +2521,29 @@ class SubtitleGeneratorService : Service() {
                 val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
                 var pcmDecodeTimeMs = 0L  // [v2.4.18] Track PCM decode time separately
+
+                // [v2.4.20] Resume support: check if partial subtitles exist for this episode
+                // If so, skip already-processed audio and append new subtitles instead of deleting old ones
+                isResumeMode = false  // [v2.4.20] Reset for each episode
+                var resumeFromSample = 0
+                try {
+                    val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+                    val existingCount = dbHelper.getTranscriptCount(episodeId)
+                    val isComplete = dbHelper.hasCompleteSubtitles(episodeId)
+                    if (existingCount > 0 && !isComplete) {
+                        // Partial subtitles exist — resume from last position
+                        val maxEndMs = dbHelper.getMaxTranscriptEndMs(episodeId)
+                        if (maxEndMs > 5000) {  // At least 5s of audio processed
+                            resumeFromSample = ((maxEndMs / 1000.0) * 16000).toInt()
+                            isResumeMode = true
+                            logToFile("generateWithWhisper: [v2.4.20] RESUME MODE: found $existingCount partial transcripts, last end=${maxEndMs}ms, resuming from sample $resumeFromSample (${maxEndMs/1000}s)")
+                            ctx.log("续传字幕 (从 ${maxEndMs/1000}s 处继续)")
+                        }
+                    }
+                } catch (e: Exception) {
+                    logToFile("generateWithWhisper: [v2.4.20] failed to check resume status: ${e.message}")
+                }
+
                 try {
                     // Check if full PCM already exists (from a previous run)
                     if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
@@ -2517,7 +2553,7 @@ class SubtitleGeneratorService : Service() {
                         val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
                         logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
                         ctx.log("完整PCM缓存 (${sizeMB}MB)")
-                        val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
+                        val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample)  // [v2.4.20] pass resumeFromSample
                         // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                         if (result) {
                             // [v2.4.18] Compute stats BEFORE deleting file
@@ -2562,7 +2598,7 @@ class SubtitleGeneratorService : Service() {
                             logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
                             val whisperStartTime = System.currentTimeMillis()  // [v2.4.18] Track Whisper processing time
-                            val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
+                            val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample)  // [v2.4.20] pass resumeFromSample
                             val whisperTimeMs = System.currentTimeMillis() - whisperStartTime
                             // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                             if (result) {
@@ -2638,9 +2674,10 @@ class SubtitleGeneratorService : Service() {
      */
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext,
-        episodeId: String = ""  // [v2.1.2] For crash marker
+        episodeId: String = "",  // [v2.1.2] For crash marker
+        resumeFromSample: Int = 0  // [v2.4.20] Resume support: skip first N samples already processed
     ): Boolean {
-        logToFile("processWhisperInChunks: START, pcmFile=${pcmFile.absolutePath}, modelPath=$modelPath")
+        logToFile("processWhisperInChunks: START, pcmFile=${pcmFile.absolutePath}, modelPath=$modelPath, resumeFromSample=$resumeFromSample")
         // [v2.0.74] Issue 2 Fix: Report initial progress immediately so UI shows progress bar
         callback.onProgressUpdate(1, 100)
         // [v2.0.66] Issue 6: Set model name for broadcast
@@ -2897,14 +2934,25 @@ class SubtitleGeneratorService : Service() {
 
             // Open PCM file for streaming
             val pcmInput = java.io.DataInputStream(java.io.BufferedInputStream(java.io.FileInputStream(pcmFile), 65536))
-            var totalSamplesRead = 0
+            // [v2.4.20] Resume support: skip already-processed samples
+            var totalSamplesRead = resumeFromSample
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
+            if (resumeFromSample > 0) {
+                // Skip the first resumeFromSample samples (2 bytes each)
+                val skipBytes = resumeFromSample.toLong() * 2
+                val actuallySkipped = pcmInput.skip(skipBytes)
+                logToFile("processWhisperInChunks: [v2.4.20] RESUME: skipped $actuallySkipped bytes ($resumeFromSample samples), starting from sample $resumeFromSample")
+                if (actuallySkipped < skipBytes) {
+                    logToFile("processWhisperInChunks: [v2.4.20] RESUME WARNING: could not skip all bytes, skipping ${actuallySkipped / 2} samples instead")
+                    totalSamplesRead = (actuallySkipped / 2).toInt()
+                }
+            }
 
             logToFile("processWhisperInChunks: [v2.3.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (STRICT mode, no engine switching), offsetMs=$whisperOffsetMs")
 
             // [v2.4.18] Track 10-minute interval timing for Whisper processing
             val tenMinStartSamples = 10 * 60 * 16000  // 10 minutes of audio at 16kHz
-            var lastTenMinCheckpoint = 0  // samples at last 10-min checkpoint
+            var lastTenMinCheckpoint = resumeFromSample  // [v2.4.20] Start checkpoint from resume position
             var tenMinSegmentStartTime = System.currentTimeMillis()
             var tenMinSegmentIdx = 0
 
