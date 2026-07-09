@@ -1394,6 +1394,9 @@ class PlayerActivity : AppCompatActivity() {
             // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
             writeJitterLog("[v2.4.23] btnAiSegment CLICKED: episodeId=${episode.id}")
             startAiProcessing("segment")
+            // [v2.4.24] Get duration on main thread BEFORE spawning background thread
+            // (playbackService binder can only be accessed on main thread)
+            val dur = playbackService?.getDuration()?.toInt() ?: 0
             Thread {
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
@@ -1411,7 +1414,7 @@ class PlayerActivity : AppCompatActivity() {
                     }
 
                     // Generate content-based segments from subtitles
-                    val dur = playbackService?.getDuration()?.toInt() ?: 0
+                    // [v2.4.24] Use dur captured on main thread, fallback to maxEnd from DB
                     val maxEnd = if (dur > 0) dur else dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
                     writeJitterLog("[v2.4.23] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
                     val segments = if (maxEnd > 0) {

@@ -2918,6 +2918,10 @@ class SubtitleGeneratorService : Service() {
             val optModeName = "SPEED(greedy)"
             logToFile("processWhisperInChunks: [v2.4.23] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
 
+            // [v2.4.24] Reusable buffers to reduce GC pressure
+            var pcmChunk: ByteArray? = null
+            var chunkSamples: FloatArray? = null
+
             // [v2.4.8] Set optimization mode on native bridge before processing
             bridge.setOptMode(optMode)
 
@@ -2967,15 +2971,21 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
-                val pcmChunk = ByteArray(bytesForChunk)
-                pcmInput.readFully(pcmChunk, 0, bytesForChunk)
+                // [v2.4.24] Reuse buffers to reduce GC pressure
+                if (pcmChunk == null || pcmChunk!!.size < bytesForChunk) {
+                    pcmChunk = ByteArray(bytesForChunk)
+                }
+                pcmInput.readFully(pcmChunk!!, 0, bytesForChunk)
 
                 // Convert this chunk's PCM bytes to float samples
-                val chunkSamples = FloatArray(samplesToRead)
+                // [v2.4.24] Reuse float buffer too
+                if (chunkSamples == null || chunkSamples!!.size < samplesToRead) {
+                    chunkSamples = FloatArray(samplesToRead)
+                }
                 for (i in 0 until samplesToRead) {
-                    val sample = (pcmChunk[i * 2].toInt() and 0xFF) or (pcmChunk[i * 2 + 1].toInt() shl 8)
+                    val sample = (pcmChunk!![i * 2].toInt() and 0xFF) or (pcmChunk!![i * 2 + 1].toInt() shl 8)
                     val shortSample = if (sample > 32767) sample - 65536 else sample
-                    chunkSamples[i] = shortSample.toFloat() / 32768.0f
+                    chunkSamples!![i] = shortSample.toFloat() / 32768.0f
                 }
                 // Free PCM byte array immediately
                 // (Kotlin will GC it, but we can help by nulling the reference)
@@ -2990,15 +3000,15 @@ class SubtitleGeneratorService : Service() {
                 // The Java heap drops to 0-4MB after model init because Android compresses
                 // Java heap when native heap uses memory. This is NORMAL and doesn't affect
                 // whisper_full. Aborting here was the root cause of "输出条数偏少".
-                // Only GC to clean up, never abort.
+                // [v2.4.24] REMOVED aggressive GC calls — they were stealing CPU from the native
+                // Whisper thread, causing 166s+ chunk times (0.18x speed).
+                // Native code (whisper_full) doesn't need Java heap. GC pauses were the bottleneck.
+                // Only log the heap status, don't trigger GC.
                 val freeBeforeMB = Runtime.getRuntime().freeMemory() / 1024 / 1024
                 if (freeBeforeMB < 5) {
-                    logToFile("processWhisperInChunks: [v2.0.91] Low heap (${freeBeforeMB}MB), running GC before chunk (continuing - native code doesn't need Java heap)")
-                    repeat(3) {
-                        try { System.gc() } catch (_: Exception) {}
-                        try { Runtime.getRuntime().runFinalization() } catch (_: Exception) {}
-                        Thread.sleep(50)
-                    }
+                    // [v2.4.24] Only log, do NOT call System.gc() — it steals CPU from native thread
+                    // Each gc() call was adding 50-150ms pause, with 3 calls = 450ms per chunk
+                    // That's 450ms * 240 chunks = 108 seconds of pure GC overhead
                 }
 
                 // [v2.0.91] Check NATIVE available memory — lowered threshold for tiny model
@@ -3028,7 +3038,7 @@ class SubtitleGeneratorService : Service() {
                 try {
                     // [v2.1.9] Add logging right before JNI call to pinpoint crash location
                     logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
-                    val result = bridge.full(ctxPtr, chunkSamples, samplesToRead)
+                    val result = bridge.full(ctxPtr, chunkSamples!!, samplesToRead)
                     logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: AFTER bridge.full returned $result")
 
                     if (result == 0) {
@@ -3057,8 +3067,7 @@ class SubtitleGeneratorService : Service() {
                         }
                         chunkSuccess = true
                         consecutiveCrashes = 0
-                        // [v2.3.9] GC after each successful chunk to prevent heap exhaustion
-                        try { System.gc() } catch (_: Exception) {}
+                        // [v2.4.24] REMOVED post-chunk GC — was stealing CPU from native thread
                     } else {
                         chunkErrorCode = result
                         // [v2.3.0] Non-zero return from whisper_full is also a failure (not just exceptions).
