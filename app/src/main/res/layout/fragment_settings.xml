@@ -43,6 +43,24 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp" />
+
+            <!-- [v2.4.26] Ali API Key input for AI segmentation -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="阿里API密钥"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="14sp"
+                android:layout_marginTop="8dp" />
+            <EditText
+                android:id="@+id/et_ali_api_key"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="sk-xxxx (DashScope API Key)"
+                android:inputType="textPassword"
+                android:textSize="13sp"
+                android:singleLine="true" />
+
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"

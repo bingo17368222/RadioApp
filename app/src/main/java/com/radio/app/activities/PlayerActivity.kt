@@ -1392,11 +1392,14 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
-            writeJitterLog("[v2.4.23] btnAiSegment CLICKED: episodeId=${episode.id}")
+            writeJitterLog("[v2.4.26] btnAiSegment CLICKED: episodeId=${episode.id}")
             startAiProcessing("segment")
             // [v2.4.24] Get duration on main thread BEFORE spawning background thread
-            // (playbackService binder can only be accessed on main thread)
             val dur = playbackService?.getDuration()?.toInt() ?: 0
+            // [v2.4.26] Check if Ali API should be used
+            val aiModel = settings.safeAiModel()
+            val aliApiKey = settings.safeAliApiKey()
+            writeJitterLog("[v2.4.26] btnAiSegment: aiModel=$aiModel, hasApiKey=${aliApiKey.isNotBlank()}")
             Thread {
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
@@ -1416,13 +1419,45 @@ class PlayerActivity : AppCompatActivity() {
                     // Generate content-based segments from subtitles
                     // [v2.4.24] Use dur captured on main thread, fallback to maxEnd from DB
                     val maxEnd = if (dur > 0) dur else dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
-                    writeJitterLog("[v2.4.23] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
-                    val segments = if (maxEnd > 0) {
-                        generateContentBasedSegments(episode.id, maxEnd)
+                    writeJitterLog("[v2.4.26] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
+
+                    // [v2.4.26] When AI分段模型 = 阿里MNN-LLM, use Ali DashScope API for intelligent classification
+                    var segments: List<VoiceSegment> = emptyList()
+                    if (aiModel == AppSettings.AI_MODEL_MNN_LLM && aliApiKey.isNotBlank()) {
+                        writeJitterLog("[v2.4.26] btnAiSegment: using Ali API for classification")
+                        runOnUiThread { Toast.makeText(this, "正在调用阿里AI分析字幕...", Toast.LENGTH_SHORT).show() }
+                        try {
+                            val transcripts = dbHelper.getTranscripts(episode.id)
+                            val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
+                            val apiService = com.radio.app.network.AliApiService()
+                            val results = apiService.classifySubtitles(aliApiKey, subtitleData)
+                            writeJitterLog("[v2.4.26] btnAiSegment: Ali API returned ${results.size} results")
+                            if (results.isNotEmpty()) {
+                                segments = results.map { r ->
+                                    VoiceSegment().apply {
+                                        this.start = r.start
+                                        this.end = r.end
+                                        this.hasVoice = r.isDry
+                                        this.label = r.label
+                                        this.isSimulated = false
+                                    }
+                                }
+                            } else {
+                                // Fallback to keyword-based
+                                writeJitterLog("[v2.4.26] btnAiSegment: Ali API returned no results, falling back to keyword")
+                                runOnUiThread { Toast.makeText(this, "阿里AI分析失败，使用关键词分析", Toast.LENGTH_SHORT).show() }
+                                if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                            }
+                        } catch (e: Exception) {
+                            writeJitterLog("[v2.4.26] btnAiSegment: Ali API error: ${e.message}")
+                            runOnUiThread { Toast.makeText(this, "阿里AI错误: ${e.message}", Toast.LENGTH_SHORT).show() }
+                            if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                        }
                     } else {
-                        emptyList()
+                        // [v2.4.25] Keyword-based segmentation (default)
+                        if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                     }
-                    writeJitterLog("[v2.4.23] btnAiSegment: generated ${segments.size} segments")
+                    writeJitterLog("[v2.4.26] btnAiSegment: generated ${segments.size} segments")
 
                     runOnUiThread {
                         if (_binding == null) return@runOnUiThread

@@ -363,6 +363,15 @@ class SettingsFragment : Fragment() {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
         }
 
+        // [v2.4.26] Ali API Key input
+        binding.etAliApiKey.setText(settings.safeAliApiKey())
+        binding.etAliApiKey.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus && !suppressListeners) {
+                settings.aliApiKey = binding.etAliApiKey.text.toString().trim()
+                save()
+            }
+        }
+
         binding.spinnerAsrProvider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
