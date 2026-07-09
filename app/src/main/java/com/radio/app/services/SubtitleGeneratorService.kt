@@ -3095,7 +3095,7 @@ class SubtitleGeneratorService : Service() {
             if (allTranscripts.isEmpty()) {
                 // [v2.3.8] Better error message — mention memory as possible cause for large models
                 val memNote = if (modelSizeMB > 300) {
-                    " 大模型(${modelSizeMB}MB)可能因内存不足导致推理失败（freeHeap=${freeHeapAfterGcMB}MB），建议使用tiny(74MB)或base(141MB)模型。"
+                    " 大模型(${modelSizeMB}MB)可能因内存不足导致推理失败，建议使用tiny(74MB)或base(141MB)模型。"
                 } else {
                     " 音频可能是音乐/静音，或模型不匹配。"
                 }
