@@ -325,6 +325,8 @@ static struct whisper_full_params* prepare_params(void) {
     ref->temperature_inc = 0.0f;   // disable temperature increment (no retries)
     ref->suppress_blank = true;    // suppress blank tokens
     ref->detect_language = false;  // already set language="zh", skip detection
+    ref->max_text_tokens = 200;    // [v2.4.27] limit tokens per chunk to prevent 100s+ outliers
+    ref->entropy_thold = 1.0f;    // [v2.4.27] higher entropy threshold = less retry on uncertain segments
 
     NLOGI("prepare_params: ready n_threads=%d language=zh strategy=%s prompt_len=%zu flash_attn=true no_ctx=true temp=0",
          threads,

@@ -33,6 +33,7 @@ import com.radio.app.services.SubtitleGeneratorService
 import com.radio.app.models.AppSettings
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.utils.PreferenceManager
+import com.radio.app.whisper.MnnLlmBridge
 import java.io.File
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -1392,15 +1393,14 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
-            writeJitterLog("[v2.4.26] btnAiSegment CLICKED: episodeId=${episode.id}")
+            writeJitterLog("[v2.4.27] btnAiSegment CLICKED: episodeId=${episode.id}")
             startAiProcessing("segment")
             // [v2.4.24] Get duration on main thread BEFORE spawning background thread
             val dur = playbackService?.getDuration()?.toInt() ?: 0
-            // [v2.4.26] Check if Ali API should be used
+            // [v2.4.27] Check which AI model to use for segmentation
             val settings = AppSettings.getInstance(this)
             val aiModel = settings.safeAiModel()
-            val aliApiKey = settings.safeAliApiKey()
-            writeJitterLog("[v2.4.26] btnAiSegment: aiModel=$aiModel, hasApiKey=${aliApiKey.isNotBlank()}")
+            writeJitterLog("[v2.4.27] btnAiSegment: aiModel=$aiModel")
             Thread {
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
@@ -1420,45 +1420,68 @@ class PlayerActivity : AppCompatActivity() {
                     // Generate content-based segments from subtitles
                     // [v2.4.24] Use dur captured on main thread, fallback to maxEnd from DB
                     val maxEnd = if (dur > 0) dur else dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
-                    writeJitterLog("[v2.4.26] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
+                    writeJitterLog("[v2.4.27] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
 
-                    // [v2.4.26] When AI分段模型 = 阿里MNN-LLM, use Ali DashScope API for intelligent classification
+                    // [v2.4.27] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
                     var segments: List<VoiceSegment> = emptyList()
-                    if (aiModel == AppSettings.AI_MODEL_MNN_LLM && aliApiKey.isNotBlank()) {
-                        writeJitterLog("[v2.4.26] btnAiSegment: using Ali API for classification")
-                        runOnUiThread { Toast.makeText(this, "正在调用阿里AI分析字幕...", Toast.LENGTH_SHORT).show() }
-                        try {
-                            val transcripts = dbHelper.getTranscripts(episode.id)
-                            val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
-                            val apiService = com.radio.app.network.AliApiService()
-                            val results = apiService.classifySubtitles(aliApiKey, subtitleData)
-                            writeJitterLog("[v2.4.26] btnAiSegment: Ali API returned ${results.size} results")
-                            if (results.isNotEmpty()) {
-                                segments = results.map { r ->
-                                    VoiceSegment().apply {
-                                        this.start = r.start
-                                        this.end = r.end
-                                        this.hasVoice = r.isDry
-                                        this.label = r.label
-                                        this.isSimulated = false
-                                    }
-                                }
-                            } else {
-                                // Fallback to keyword-based
-                                writeJitterLog("[v2.4.26] btnAiSegment: Ali API returned no results, falling back to keyword")
-                                runOnUiThread { Toast.makeText(this, "阿里AI分析失败，使用关键词分析", Toast.LENGTH_SHORT).show() }
-                                if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
-                            }
-                        } catch (e: Exception) {
-                            writeJitterLog("[v2.4.26] btnAiSegment: Ali API error: ${e.message}")
-                            runOnUiThread { Toast.makeText(this, "阿里AI错误: ${e.message}", Toast.LENGTH_SHORT).show() }
+                    if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
+                        val modelsDir = getExternalFilesDir("models")
+                        val mnnModelDir = File(modelsDir, "mnn-llm/Qwen1.5-1.8B-Chat-MNN")
+                        writeJitterLog("[v2.4.27] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
+
+                        if (!MnnLlmBridge.isModelInstalled(mnnModelDir)) {
+                            writeJitterLog("[v2.4.27] btnAiSegment: MNN model not installed, falling back to keyword")
+                            runOnUiThread { Toast.makeText(this, "MNN模型未安装，使用关键词分析。请在离线引擎页面下载阿里MNN-LLM模型。", Toast.LENGTH_LONG).show() }
                             if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                        } else {
+                            runOnUiThread { Toast.makeText(this, "正在加载MNN离线模型分析字幕...", Toast.LENGTH_SHORT).show() }
+                            try {
+                                // Initialize MNN-LLM
+                                writeJitterLog("[v2.4.27] btnAiSegment: initializing MnnLlmBridge...")
+                                val initOk = MnnLlmBridge.init(mnnModelDir)
+                                writeJitterLog("[v2.4.27] btnAiSegment: MnnLlmBridge.init result=$initOk")
+                                if (!initOk) {
+                                    throw RuntimeException("MNN模型加载失败")
+                                }
+
+                                // Get all subtitles and feed to MNN-LLM
+                                val transcripts = dbHelper.getTranscripts(episode.id)
+                                val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
+                                writeJitterLog("[v2.4.27] btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM")
+
+                                runOnUiThread { Toast.makeText(this, "MNN模型分析中，请稍候...", Toast.LENGTH_SHORT).show() }
+
+                                val results = MnnLlmBridge.classifySubtitles(subtitleData)
+                                writeJitterLog("[v2.4.27] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
+
+                                if (results != null && results.isNotEmpty()) {
+                                    segments = results.map { r ->
+                                        VoiceSegment().apply {
+                                            this.start = r.start
+                                            this.end = r.end
+                                            this.hasVoice = r.isDry
+                                            this.label = r.label
+                                            this.isSimulated = false
+                                        }
+                                    }
+                                } else {
+                                    writeJitterLog("[v2.4.27] btnAiSegment: MNN-LLM returned no results, falling back to keyword")
+                                    runOnUiThread { Toast.makeText(this, "MNN分析无结果，使用关键词分析", Toast.LENGTH_SHORT).show() }
+                                    if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                                }
+                                MnnLlmBridge.release()
+                            } catch (e: Exception) {
+                                writeJitterLog("[v2.4.27] btnAiSegment: MNN-LLM error: ${e.message}")
+                                runOnUiThread { Toast.makeText(this, "MNN离线分析错误: ${e.message}", Toast.LENGTH_LONG).show() }
+                                if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                                try { MnnLlmBridge.release() } catch (_: Exception) {}
+                            }
                         }
                     } else {
                         // [v2.4.25] Keyword-based segmentation (default)
                         if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                     }
-                    writeJitterLog("[v2.4.26] btnAiSegment: generated ${segments.size} segments")
+                    writeJitterLog("[v2.4.27] btnAiSegment: generated ${segments.size} segments")
 
                     runOnUiThread {
                         if (_binding == null) return@runOnUiThread
