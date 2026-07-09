@@ -114,17 +114,31 @@ class EpisodeAdapter(
             holder.tvCachedIndicator.visibility = View.GONE
         }
 
-        // [v2.4.10] Check if subtitles exist for this episode
-        val hasSubtitles = try {
+        // [v2.4.18] Check subtitle status: "完整字幕" (complete) vs "部分字幕" (incomplete) vs none
+        val subtitleStatus = try {
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
-            dbHelper.getTranscripts(episode.id).isNotEmpty()
+            when {
+                dbHelper.hasCompleteSubtitles(episode.id) -> "complete"
+                dbHelper.getTranscripts(episode.id).isNotEmpty() -> "partial"
+                else -> "none"
+            }
         } catch (e: Exception) {
-            false
+            "none"
         }
-        if (hasSubtitles) {
-            holder.tvSubtitleIndicator.visibility = View.VISIBLE
-        } else {
-            holder.tvSubtitleIndicator.visibility = View.GONE
+        when (subtitleStatus) {
+            "complete" -> {
+                holder.tvSubtitleIndicator.text = "完整字幕"
+                holder.tvSubtitleIndicator.setTextColor(android.graphics.Color.parseColor("#4CAF50"))
+                holder.tvSubtitleIndicator.visibility = View.VISIBLE
+            }
+            "partial" -> {
+                holder.tvSubtitleIndicator.text = "部分字幕"
+                holder.tvSubtitleIndicator.setTextColor(android.graphics.Color.parseColor("#FF9800"))
+                holder.tvSubtitleIndicator.visibility = View.VISIBLE
+            }
+            else -> {
+                holder.tvSubtitleIndicator.visibility = View.GONE
+            }
         }
 
         // [v2.4.14] Check if episode is marked as "no preprocessing needed"

@@ -107,6 +107,7 @@ class SubtitleGeneratorService : Service() {
         @Volatile var startTime = System.currentTimeMillis()
         @Volatile var lastOutputTime = System.currentTimeMillis()
         @Volatile var lastErrorDetail: String? = null
+        @Volatile var displayTitle: String = ""  // [v2.4.18] Episode title+date for notification
         val cancelled = AtomicBoolean(false)
 
         fun log(msg: String) {
@@ -455,6 +456,8 @@ class SubtitleGeneratorService : Service() {
         val logFile = prepareTaskLogFile("subtitle", episodeId)
         val ctx = TaskContext(taskId, episodeId, "SUBTITLE", logFile)
         ctx.audioUrl = audioUrl  // [v2.3.9] Save for re-generation on ASR change
+        // [v2.4.18] Build display title (date + title) for notification
+        ctx.displayTitle = buildDisplayTitle(episodeId, audioUrl)
         if (activeTasks.putIfAbsent(episodeId, ctx) != null) {
             Log.w(TAG, "Subtitle task already running for $episodeId, skipping duplicate")
             return
@@ -537,6 +540,9 @@ class SubtitleGeneratorService : Service() {
                         dbHelper.saveTranscriptEngine(episodeId, engineName)
                         logToFile("onComplete: [v2.4.12] saved engine name '$engineName' for $episodeId")
                         logToFile("onComplete: [v2.2.6] replaced old subtitles with ${transcripts.size} new transcripts for $episodeId")
+                        // [v2.4.18] Mark subtitles as complete so patrol skips this episode
+                        dbHelper.markSubtitlesComplete(episodeId)
+                        logToFile("onComplete: [v2.4.18] marked subtitles as COMPLETE for $episodeId")
                     } catch (e: Exception) {
                         logToFile("onComplete: [v2.2.6] failed to replace subtitles: ${e.message}")
                     }
@@ -2501,24 +2507,27 @@ class SubtitleGeneratorService : Service() {
                 logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
                 val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
+                var pcmDecodeTimeMs = 0L  // [v2.4.18] Track PCM decode time separately
                 try {
                     // Check if full PCM already exists (from a previous run)
                     if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                         val sizeMB = fullPcmFile.length() / 1024 / 1024
-                        logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB), resuming processing")
+                        // [v2.4.18] Read PCM length BEFORE deleting
+                        val pcmFileBytes = fullPcmFile.length()
+                        val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
+                        logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
                         ctx.log("完整PCM缓存 (${sizeMB}MB)")
                         val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
                         // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                         if (result) {
+                            // [v2.4.18] Compute stats BEFORE deleting file
+                            val totalTimeMs = System.currentTimeMillis() - statsStartTime
+                            val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
+                            logToFile("generateWithWhisper: [v2.4.18] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=0ms (cached), whisperTime=${totalTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
                             fullPcmFile.delete()
                             // [v2.4.16] Fix: Also delete corresponding info file
                             val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                             if (fullInfoFile.exists()) fullInfoFile.delete()
-                            // [v2.4.16] Speed statistics
-                            val totalTimeMs = System.currentTimeMillis() - statsStartTime
-                            val pcmDurationSec = fullPcmFile.length() / 2 / 16000  // 16kHz mono 16-bit
-                            val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
-                            logToFile("generateWithWhisper: [v2.4.16] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
                             logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
                         } else {
                             logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
@@ -2541,23 +2550,30 @@ class SubtitleGeneratorService : Service() {
                     } else {
                         ctx.log("正在解码完整音频为PCM...")
                         logToFile("generateWithWhisper: [v2.4.10] decoding full audio to PCM: ${cacheFile.absolutePath} (${cacheFile.length()/1024/1024}MB)")
+                        val decodeStartTime = System.currentTimeMillis()  // [v2.4.18] Track PCM decode time
                         val success = decodeFullAudioToPcm(cacheFile, fullPcmFile, ctx)
+                        pcmDecodeTimeMs = System.currentTimeMillis() - decodeStartTime  // [v2.4.18] Record decode time
+                        logToFile("generateWithWhisper: [v2.4.18] PCM decode took ${pcmDecodeTimeMs}ms")
                         if (success && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                             val sizeMB = fullPcmFile.length() / 1024 / 1024
-                            logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB), processing with Whisper")
+                            // [v2.4.18] Read PCM length BEFORE deleting
+                            val pcmFileBytes = fullPcmFile.length()
+                            val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
+                            logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
+                            val whisperStartTime = System.currentTimeMillis()  // [v2.4.18] Track Whisper processing time
                             val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId)
+                            val whisperTimeMs = System.currentTimeMillis() - whisperStartTime
                             // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                             if (result) {
+                                // [v2.4.18] Compute stats BEFORE deleting file
+                                val totalTimeMs = System.currentTimeMillis() - statsStartTime
+                                val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
+                                logToFile("generateWithWhisper: [v2.4.18] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=${pcmDecodeTimeMs}ms, whisperTime=${whisperTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (full decode + whisper)")
                                 fullPcmFile.delete()
                                 // [v2.4.16] Fix: Also delete corresponding info file
                                 val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                                 if (fullInfoFile.exists()) fullInfoFile.delete()
-                                // [v2.4.16] Speed statistics
-                                val totalTimeMs = System.currentTimeMillis() - statsStartTime
-                                val pcmDurationSec = fullPcmFile.length() / 2 / 16000  // 16kHz mono 16-bit
-                                val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
-                                logToFile("generateWithWhisper: [v2.4.16] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (full decode + whisper)")
                                 logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
                             } else {
                                 logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
@@ -2886,6 +2902,12 @@ class SubtitleGeneratorService : Service() {
 
             logToFile("processWhisperInChunks: [v2.3.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (STRICT mode, no engine switching), offsetMs=$whisperOffsetMs")
 
+            // [v2.4.18] Track 10-minute interval timing for Whisper processing
+            val tenMinStartSamples = 10 * 60 * 16000  // 10 minutes of audio at 16kHz
+            var lastTenMinCheckpoint = 0  // samples at last 10-min checkpoint
+            var tenMinSegmentStartTime = System.currentTimeMillis()
+            var tenMinSegmentIdx = 0
+
             // [v2.1.2] Write crash marker BEFORE first chunk. If native crash kills process,
             // on restart we'll detect this and skip this episode.
             try {
@@ -3041,6 +3063,18 @@ class SubtitleGeneratorService : Service() {
                 chunkIdx++
                 val progress = ((totalSamplesRead.toLong() * 100) / totalSamplesToRead).toInt()
                 callback.onProgressUpdate(progress, 100)
+
+                // [v2.4.18] Log timing every 10 minutes of audio processed
+                if (totalSamplesRead - lastTenMinCheckpoint >= tenMinStartSamples) {
+                    val now = System.currentTimeMillis()
+                    val segmentTimeMs = now - tenMinSegmentStartTime
+                    val audioProcessedSec = totalSamplesRead / 16000
+                    val segmentAudioSec = (totalSamplesRead - lastTenMinCheckpoint) / 16000
+                    logToFile("processWhisperInChunks: [v2.4.18] 10-MIN-CHECKPOINT #${tenMinSegmentIdx}: audioAt=${audioProcessedSec}s, segmentAudio=${segmentAudioSec}s, segmentTime=${segmentTimeMs}ms, speed=${String.format("%.2f", segmentAudioSec.toDouble() / (segmentTimeMs / 1000.0))}x")
+                    lastTenMinCheckpoint = totalSamplesRead
+                    tenMinSegmentStartTime = now
+                    tenMinSegmentIdx++
+                }
             }
 
             // Close PCM input stream
@@ -3837,7 +3871,27 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
+    // [v2.4.18] Build display title from episodeId for notification
+    private fun buildDisplayTitle(episodeId: String, audioUrl: String): String {
+        return try {
+            // episodeId format: "station-date-index" e.g. "henan-private-car-2024-07-23-2"
+            // Extract date from episodeId
+            val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(episodeId)
+            val dateStr = dateMatch?.value ?: ""
+            // Try to get title from database
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+            val episodeInfo = dbHelper.getEpisodeInfo(episodeId)
+            val title = episodeInfo?.title ?: audioUrl.substringAfterLast("/").substringBeforeLast(".")
+            if (dateStr.isNotEmpty()) "$dateStr $title" else title
+        } catch (e: Exception) {
+            episodeId
+        }
+    }
+
     private fun createProgressNotification(progress: Int, taskLabel: String): Notification {
+        // [v2.4.18] Get current task's display title for notification
+        val currentTitle = activeTasks.values.firstOrNull()?.displayTitle ?: ""
+        val notifTitle = if (currentTitle.isNotBlank()) "正在处理音频: $currentTitle" else "正在处理音频"
         val contentIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, PlayerActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
@@ -3851,7 +3905,7 @@ class SubtitleGeneratorService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("正在处理音频")
+            .setContentTitle(notifTitle)
             .setContentText("$taskLabel: ${progress}%")
             .setProgress(100, progress, false)
             .setOngoing(true)

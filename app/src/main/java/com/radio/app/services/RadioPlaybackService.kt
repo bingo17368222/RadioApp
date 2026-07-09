@@ -1713,16 +1713,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // 检查是否已有字幕（避免重复生成）
+        // [v2.4.18] Check if subtitles are COMPLETE (not just existing) — incomplete subtitles need regeneration
         try {
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
-            val existingSubtitles = dbHelper.getTranscripts(episodeId)
-            if (existingSubtitles.isNotEmpty()) {
-                writePreCacheLog("startPreCacheSubtitleGeneration: subtitles already exist for $episodeId, skipping")
+            if (dbHelper.hasCompleteSubtitles(episodeId)) {
+                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.18] complete subtitles exist for $episodeId, skipping")
                 return
             }
         } catch (e: Exception) {
-            writePreCacheLog("startPreCacheSubtitleGeneration: error checking existing subtitles: ${e.message}")
+            writePreCacheLog("startPreCacheSubtitleGeneration: error checking subtitle status: ${e.message}")
         }
 
         writePreCacheLog("startPreCacheSubtitleGeneration: triggering subtitle generation for ${episode.title} ($episodeId)")
@@ -1809,9 +1808,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // [v2.4.14] Skip episodes marked as "no preprocessing needed"
                     if (settings.isNoPreprocess(ep.id)) continue
 
-                    // Check if subtitles already exist
-                    val existingSubtitles = dbHelper.getTranscripts(ep.id)
-                    if (existingSubtitles.isNotEmpty()) continue
+                    // [v2.4.18] Check if subtitles are COMPLETE (not just existing)
+                    // Incomplete subtitles (from crash/OOM) should be regenerated, not skipped
+                    if (dbHelper.hasCompleteSubtitles(ep.id)) continue
 
                     // [v2.4.14] Check if there's a leftover _full.pcm (interrupted generation)
                     // If so, this episode needs resume — prioritize it
