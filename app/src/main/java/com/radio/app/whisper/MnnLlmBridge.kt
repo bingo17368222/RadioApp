@@ -4,8 +4,8 @@ import android.util.Log
 import java.io.File
 
 /**
- * [v2.4.27] Bridge for MNN-LLM offline model inference.
- * Uses JNI to call MNN's Llm API via dlopen/dlsym.
+ * v2.4.27 Bridge for MNN-LLM offline model inference.
+ * Uses JNI to call MNN Llm API via dlopen/dlsym.
  * Requires libMNN.so, libllm.so, libMNN_Express.so, libc++_shared.so in jniLibs.
  */
 class MnnLlmBridge {
