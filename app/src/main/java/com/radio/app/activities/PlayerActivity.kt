@@ -1380,8 +1380,60 @@ class PlayerActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             if (segmentProcessing) return@setOnClickListener
+
+            // [v2.4.22] AI分段: use existing subtitles for content-based segmentation
+            // instead of slow ASR regeneration
             startAiProcessing("segment")
-            bindSubtitleService(episode, "segment")
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@PlayerActivity)
+                    val transcriptCount = dbHelper.getTranscriptCount(episode.id)
+                    val isComplete = dbHelper.hasCompleteSubtitles(episode.id)
+
+                    if (transcriptCount < 3 || !isComplete) {
+                        withContext(Dispatchers.Main) {
+                            finishAiProcessing("segment")
+                            val msg = if (transcriptCount == 0) "无字幕，请先生成字幕" else "字幕不完整($transcriptCount 条)，请先完成字幕生成"
+                            Toast.makeText(this@PlayerActivity, msg, Toast.LENGTH_LONG).show()
+                        }
+                        return@launch
+                    }
+
+                    // Generate content-based segments from subtitles
+                    val dur = playbackService?.getDuration()?.toInt() ?: 0
+                    val segments = if (dur > 0) {
+                        generateContentBasedSegments(episode.id, dur)
+                    } else {
+                        // Fallback: estimate duration from last transcript
+                        val maxEnd = dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
+                        if (maxEnd > 0) generateContentBasedSegments(episode.id, maxEnd)
+                        else emptyList()
+                    }
+
+                    withContext(Dispatchers.Main) {
+                        if (_binding == null) return@withContext
+                        if (segments.isNotEmpty()) {
+                            voiceSegments = segments
+                            segmentAdapter?.setSegments(segments)
+                            binding.recyclerSegments.visibility = View.VISIBLE
+                            // Count dry vs water
+                            val dryCount = segments.count { it.hasVoice }
+                            val waterCount = segments.size - dryCount
+                            Toast.makeText(this@PlayerActivity,
+                                "AI分段完成: ${segments.size}段 (干货${dryCount} 水货${waterCount})",
+                                Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(this@PlayerActivity, "AI分段失败：无法生成分段", Toast.LENGTH_SHORT).show()
+                        }
+                        finishAiProcessing("segment")
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        finishAiProcessing("segment")
+                        Toast.makeText(this@PlayerActivity, "AI分段错误: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
 
         binding.btnSubtitleToggle.setOnClickListener {
