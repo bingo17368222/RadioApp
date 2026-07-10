@@ -55,7 +55,16 @@ class EpisodeAdapter(
         holder.tvTime.text = timeText
 
         val durationMin = episode.duration / 60
-        val segments = episode.voiceSegments?.size ?: 0
+        // v2.4.44: Check DB for segment count if not loaded in memory
+        var segments = episode.voiceSegments?.size ?: 0
+        if (segments == 0) {
+            // Try loading from DB
+            try {
+                val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
+                val dbSegments = dbHelper.getVoiceSegments(episode.id)
+                segments = dbSegments.filter { !it.isSimulated }.size
+            } catch (_: Exception) {}
+        }
         holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 
         // 不喜欢状态 - 按节目ID或名称判断（每天该节目都不喜欢）

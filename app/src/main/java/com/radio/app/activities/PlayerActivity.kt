@@ -1,5 +1,7 @@
 package com.radio.app.activities
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -11,6 +13,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -661,11 +664,28 @@ class PlayerActivity : AppCompatActivity() {
                 if (!audioUrl.isNullOrBlank()) {
                     currentEpisode?.let { episode ->
                         if (isFreshStart) {
-                            // [v2.1.9] If pendingSeekMs from search, use it as start position
-                            val startPos = if (pendingSeekMs > 0) pendingSeekMs else -1L
+                            // v2.4.44: When service was killed (svcStarted=false), restore saved position
+                            // even if isFreshStart=true. isFreshStart is set when user selects episode
+                            // from list, but it's never reset to false. So when service is killed and
+                            // user returns to app, it still thinks it's a fresh start and plays from 0.
+                            val startPos = if (pendingSeekMs > 0) {
+                                pendingSeekMs
+                            } else if (!svcStarted) {
+                                // Service was killed - restore saved position
+                                val savedPos = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
+                                val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
+                                val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
+                                val restorePos = if (cachedPos > 30000 && cachedEpId == episode.id) cachedPos else savedPos
+                                writeJitterLog("[v2.4.44] onServiceConnected: isFreshStart but svcStarted=false, restoring pos=$restorePos (saved=$savedPos, cached=$cachedPos)")
+                                restorePos
+                            } else {
+                                -1L
+                            }
                             writeJitterLog("onServiceConnected: isFreshStart, playEpisode with startPos=$startPos (pendingSeekMs=$pendingSeekMs)")
                             playbackService?.playEpisode(episode, false, startPos)
                             pendingSeekMs = -1L  // [v2.1.9] Clear after use
+                            // v2.4.44: Reset isFreshStart after first play so reconnections restore position
+                            isFreshStart = false
                         } else {
                             // [v2.2.0] If pendingSeekMs from search, use it instead of savedPosition
                             var savedPosition = if (pendingSeekMs > 0) {
@@ -1492,9 +1512,11 @@ class PlayerActivity : AppCompatActivity() {
             startAiProcessing("segment")
             // [v2.4.24] Get duration on main thread BEFORE spawning background thread
             val dur = playbackService?.getDuration()?.toInt() ?: 0
-            // [v2.4.27] Check which AI model to use for segmentation
             val settings = AppSettings.getInstance(this)
+            // [v2.4.27] Check which AI model to use for segmentation
             val aiModel = settings.safeAiModel()
+            // v2.4.44: Record start time for engine/time display
+            val segStartTime = System.currentTimeMillis()
             writeJitterLog("[v2.4.27] btnAiSegment: aiModel=$aiModel")
             Thread {
                 try {
@@ -1554,6 +1576,8 @@ class PlayerActivity : AppCompatActivity() {
                                                 binding.tvAiStatus.text = "MNN分析中: $current/$total ($pct%)"
                                                 binding.progressAi.progress = pct
                                             }
+                                            // v2.4.44: Update notification progress
+                                            updateSegmentNotification(pct)
                                         }
                                     }
                                     writeJitterLog("[v2.4.30] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
@@ -1605,14 +1629,31 @@ class PlayerActivity : AppCompatActivity() {
                     }
                     writeJitterLog("[v2.4.28] btnAiSegment: generated ${segments.size} segments")
 
+                    // v2.4.44: Save segments to database for persistence
+                    try {
+                        val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+                        dbHelper.saveVoiceSegments(episode.id, segments)
+                        // v2.4.44: Update episode segment count in DB
+                        dbHelper.updateEpisodeSegmentCount(episode.id, segments.size)
+                        writeJitterLog("[v2.4.44] btnAiSegment: saved ${segments.size} segments to DB for episode=${episode.id}")
+                    } catch (e: Exception) {
+                        writeJitterLog("[v2.4.44] btnAiSegment: failed to save segments to DB: ${e.message}")
+                    }
+
+                    val segElapsed = System.currentTimeMillis() - segStartTime
+                    val segEngineName = if (aiModel == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+
                     runOnUiThread {
                         if (_binding == null) return@runOnUiThread
                         if (segments.isNotEmpty()) {
                             voiceSegments = segments
                             segmentAdapter?.setSegments(segments)
                             binding.recyclerSegments.visibility = View.VISIBLE
+                            // v2.4.44: Show engine name and elapsed time after "片段列表"
                             val dryCount = segments.count { it.hasVoice }
                             val waterCount = segments.size - dryCount
+                            binding.tvAiStatus.text = "片段列表  分段引擎：$segEngineName (耗时: ${segElapsed / 1000}s)"
+                            binding.tvAiStatus.visibility = View.VISIBLE
                             Toast.makeText(this,
                                 "AI分段完成: ${segments.size}段 (干货${dryCount} 水货${waterCount})",
                                 Toast.LENGTH_LONG).show()
@@ -2387,6 +2428,10 @@ class PlayerActivity : AppCompatActivity() {
         if (taskType == "subtitle") subtitleProcessing = true
         else if (taskType == "segment") segmentProcessing = true
         saveProcessingState()
+        // v2.4.44: Show notification for AI segmentation (like subtitle generation)
+        if (taskType == "segment") {
+            showSegmentNotification(0)
+        }
         if (_binding == null) return
         if (taskType == "subtitle") {
             // [跨进程] 新任务开始时清空广播累积列表，避免残留上一轮字幕
@@ -2417,11 +2462,56 @@ class PlayerActivity : AppCompatActivity() {
             segmentProcessing = false
             if (_binding != null) {
                 binding.progressAi.visibility = View.GONE
-                binding.tvAiStatus.visibility = View.GONE
+                binding.tvAiStatus.visibility = if (voiceSegments.isNotEmpty()) View.VISIBLE else View.GONE
                 binding.btnAiSegment.isEnabled = true
             }
+            // v2.4.44: Cancel segment notification
+            cancelSegmentNotification()
         }
         saveProcessingState()
+    }
+
+    // v2.4.44: AI segmentation notification (foreground-like, like subtitle generation)
+    private val SEGMENT_NOTIFICATION_ID = 20001
+    private val SEGMENT_CHANNEL_ID = "segment_processing"
+
+    private fun showSegmentNotification(progress: Int) {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(SEGMENT_CHANNEL_ID, "AI分段处理", NotificationManager.IMPORTANCE_LOW)
+                nm.createNotificationChannel(channel)
+            }
+            val episode = currentEpisode
+            // Build display title: date + title (like subtitle notification)
+            val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(episode?.id ?: "")
+            val dateStr = dateMatch?.value ?: ""
+            val title = episode?.title ?: episode?.id ?: "未知节目"
+            val notifTitle = if (dateStr.isNotEmpty()) "$dateStr $title" else title
+            val notifContent = "AI分段: ${progress}%"
+
+            val notification = NotificationCompat.Builder(this, SEGMENT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(notifTitle)
+                .setContentText(notifContent)
+                .setProgress(100, progress, progress == 0)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOnlyAlertOnce(true)
+                .build()
+            nm.notify(SEGMENT_NOTIFICATION_ID, notification)
+        } catch (_: Exception) {}
+    }
+
+    private fun updateSegmentNotification(progress: Int) {
+        showSegmentNotification(progress)
+    }
+
+    private fun cancelSegmentNotification() {
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.cancel(SEGMENT_NOTIFICATION_ID)
+        } catch (_: Exception) {}
     }
 
     /**

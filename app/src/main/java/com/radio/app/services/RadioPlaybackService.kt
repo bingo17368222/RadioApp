@@ -3920,13 +3920,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("playback", "[v2.4.35] skipForward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
         }
 
-        // [v2.2.7] Post-breaker cooldown: ONLY enforce min interval if breaker was actually tripped.
-        if (breakerWasTripped && lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
-            if (now - lastSkipDirectionTime < POST_BREAKER_MIN_INTERVAL_MS && lastSkipDirectionTime > 0) {
-                writeServiceLog("playback", "[v2.2.7] skipForward: BLOCKED by post-breaker cooldown (${now - lastSkipDirectionTime}ms < ${POST_BREAKER_MIN_INTERVAL_MS}ms)")
-                return
-            }
-        }
+        // [v2.4.44] REMOVED post-breaker cooldown for skipForward.
+        // With storm detection removed, breaker will never trip, so cooldown is dead code.
 
         // [v2.0.86] After protection window: only basic checks, no rate limiting
         // Episode-change cooldown
@@ -3968,13 +3963,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("playback", "[v2.4.35] skipBackward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
         }
 
-        // [v2.2.7] Post-breaker cooldown: ONLY block if breaker was actually tripped.
-        // Previous code blocked ALL skips for POST_BREAKER_COOLDOWN_MS after every resume,
-        // even when no storm occurred. Now only applies after a real breaker trip.
-        if (breakerWasTripped && lastClientBindTime > 0 && now - lastClientBindTime < POST_BREAKER_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.2.7] skipBackward: BLOCKED by post-breaker cooldown (BLOCK ALL, ${POST_BREAKER_COOLDOWN_MS/1000 - (now - lastClientBindTime)/1000}s remaining)")
-            return
-        }
+        // [v2.4.44] REMOVED post-breaker cooldown for skipBackward.
+        // With storm detection removed, breaker will never trip, so cooldown is dead code.
 
         // Episode-change cooldown
         if (lastEpisodeStartTime > 0 && now - lastEpisodeStartTime < EPISODE_CHANGE_SKIP_COOLDOWN_MS) {
@@ -3982,19 +3972,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // [v2.0.91] Consecutive backward skip protection: more than 3 backward skips within
-        // 10 seconds indicates a storm (misbehaving notification/headset). Block and trip breaker.
-        // Reset counter if more than 10s since the first skip in the current window.
-        if (now - firstBackwardSkipWindowStart > CONSECUTIVE_BACKWARD_WINDOW_MS) {
-            consecutiveBackwardSkips = 0
-            firstBackwardSkipWindowStart = now
-        }
-        consecutiveBackwardSkips++
-        if (consecutiveBackwardSkips > MAX_CONSECUTIVE_BACKWARD_SKIPS) {
-            skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-            writeServiceLog("playback", "[v2.0.91] skipBackward: BLOCKED consecutive backward storm ($consecutiveBackwardSkips in ${now - firstBackwardSkipWindowStart}ms), tripping breaker ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
-            return
-        }
+        // [v2.4.44] REMOVED consecutive backward skip storm detection.
+        // This was blocking legitimate user skips after 4 rapid presses (MAX_CONSECUTIVE_BACKWARD_SKIPS=3).
+        // User reported "skip buttons sometimes unavailable" - this was the cause.
+        // SEEK-LOCK in PlayerActivity now handles position correctly during rapid skips.
+        // The storm detection was originally for misbehaving notification/headset buttons,
+        // but it also blocked intentional rapid seeking by the user.
 
         // [v2.0.91] Strengthened debounce: 1000ms (was 500ms) to prevent rapid repeats
         // [v2.4.36] Reduced debounce from 1000ms to 200ms - 1000ms was dropping too many

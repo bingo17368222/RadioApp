@@ -28,7 +28,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 7
+        private const val DATABASE_VERSION = 8
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -83,6 +83,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         if (oldVersion < 7) {
             db.execSQL("ALTER TABLE transcript_engine ADD COLUMN processing_time_ms INTEGER DEFAULT 0")
             db.execSQL("ALTER TABLE transcript_engine ADD COLUMN audio_duration_ms INTEGER DEFAULT 0")
+        }
+        // v2.4.44: Add segment_count column to episode_info for episode list display
+        if (oldVersion < 8) {
+            db.execSQL("ALTER TABLE episode_info ADD COLUMN segment_count INTEGER DEFAULT 0")
         }
     }
 
@@ -433,6 +437,32 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     fun clearVoiceSegments(episodeId: String) {
         val db = writableDatabase
         db.delete(TABLE_VOICE_SEGMENTS_AI, "episode_id = ?", arrayOf(episodeId))
+    }
+
+    // v2.4.44: Update segment count for an episode (for episode list display)
+    fun updateEpisodeSegmentCount(episodeId: String, count: Int) {
+        try {
+            val db = writableDatabase
+            val values = ContentValues().apply {
+                put("segment_count", count)
+            }
+            db.update(TABLE_EPISODE_INFO, values, "episode_id = ?", arrayOf(episodeId))
+        } catch (_: Exception) {}
+    }
+
+    // v2.4.44: Get segment count for an episode
+    fun getEpisodeSegmentCount(episodeId: String): Int {
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery(
+                "SELECT segment_count FROM $TABLE_EPISODE_INFO WHERE episode_id = ?",
+                arrayOf(episodeId)
+            )
+            cursor.use {
+                if (it.moveToFirst()) return it.getInt(0)
+            }
+        } catch (_: Exception) {}
+        return 0
     }
 
     // ===== Episode Info (v2.2.4) =====

@@ -330,7 +330,8 @@ static struct whisper_full_params* prepare_params(void) {
     ref->detect_language = false;  // already set language="zh", skip detection
     // [v2.4.28] Removed max_tokens=200 (caused incomplete transcriptions) and entropy_thold=1.0
 
-    NLOGI("prepare_params: ready n_threads=%d language=zh strategy=%s prompt_len=%zu flash_attn=true no_ctx=true temp=0",
+    // v2.4.44: Log actual flash_attn value (was hardcoded "true" which was misleading)
+    NLOGI("prepare_params: ready n_threads=%d language=zh strategy=%s prompt_len=%zu flash_attn=false no_ctx=true temp=0",
          threads,
          (strategy == WHISPER_SAMPLING_BEAM_SEARCH) ? "BEAM" : "GREEDY",
          strlen(prompt));

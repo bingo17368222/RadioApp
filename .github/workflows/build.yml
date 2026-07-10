@@ -81,8 +81,11 @@ jobs:
         run: |
           set -o pipefail
           export PATH="/tmp/gradle-7.5/bin:$PATH"
-          # v2.4.43: Force clean build to ensure native C/C++ code is recompiled.
-          # Previous builds used cached .so files, so C++ changes were lost.
+          # v2.4.44: Force NDK/CMake full rebuild by deleting .cxx cache.
+          # gradle clean alone doesn't remove the NDK build cache (.cxx directory).
+          # This caused all C++ changes (flash_attn, threads, chat template) to be
+          # silently ignored across v2.4.40-v2.4.43.
+          rm -rf app/.cxx app/build/.cxx
           gradle clean assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Show Build Log
