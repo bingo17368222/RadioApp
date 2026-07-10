@@ -3097,10 +3097,11 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
-                // [v2.4.34] Cooldown 2s - reverted from 500ms which caused SIGABRT crash
-                // after chunk 0. The 4-thread + 500ms combo crashed, 8-thread + 2s works.
+                // [v2.4.36] Cooldown reduced to 500ms - 2s was wasting 40s total on 20 chunks.
+                // Log showed total time=389s with 2s cooldown; removing it saves ~40s.
+                // No SIGABRT crash in v2.4.35 (context recreation disabled).
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    Thread.sleep(2000)
+                    Thread.sleep(500)
                 }
 
                 totalSamplesRead += samplesToRead

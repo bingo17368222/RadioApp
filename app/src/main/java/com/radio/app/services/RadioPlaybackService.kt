@@ -2384,10 +2384,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun saveCurrentPosition() {
         if (isSeekingToPosition || pendingStartPosition >= 0) return
-        if (System.currentTimeMillis() - lastPositionRestoreTime < 30000) return  // Don't save for 30s after restore
+        // v2.4.36: Reduced from 30000ms to 5000ms - 30s block was too long, causing
+        // positions to not be saved for 30 seconds after starting playback.
+        if (System.currentTimeMillis() - lastPositionRestoreTime < 5000) return
         val ep = currentEpisode ?: return
         val pos = getCurrentPosition()  // [v2.0.62] Use authoritative position
-        if (pos <= 0) return
+        // v2.4.36: Allow saving even at pos=0 - previously pos<=0 was skipped, but
+        // this meant if user started playing from beginning, position was never saved.
+        if (pos < 0) return
         val episodeKey = "${ep.stationId}::${ep.title}"
         // [v2.4.31] Fix: use commit() (synchronous) instead of apply() (asynchronous).
         // apply() only stages the write in memory and defers the disk flush to a background
@@ -3975,7 +3979,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // [v2.0.91] Strengthened debounce: 1000ms (was 500ms) to prevent rapid repeats
-        if (now - lastSkipDirectionTime < 1000L && lastSkipDirectionTime > 0) {
+        // [v2.4.36] Reduced debounce from 1000ms to 200ms - 1000ms was dropping too many
+        // legitimate user skip requests. UI already has 500ms debounce.
+        if (now - lastSkipDirectionTime < 200L && lastSkipDirectionTime > 0) {
             writeServiceLog("playback", "[v2.0.91] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }

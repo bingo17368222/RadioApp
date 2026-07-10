@@ -1335,7 +1335,8 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         val lastSkipClickTime = longArrayOf(0L)
-        val skipDebounceMs = 500L
+        // v2.4.36: Reduced debounce from 500ms to 300ms - 500ms felt sluggish
+        val skipDebounceMs = 300L
         // v2.4.34: Increased reset time from 1500ms to 3000ms - ExoPlayer buffering after seek
         // can take 2-3 seconds, during which old positions are reported
         val resetSeekRunnable = Runnable { isUserSeeking = false }

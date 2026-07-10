@@ -76,88 +76,120 @@ class MnnLlmBridge {
         fun init(modelDir: File, context: Context? = null): Boolean {
             lastError = ""
 
-            val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
-            Log.i(TAG, "init: modelDir=${modelDir.absolutePath}, files=$files")
-
-            // v2.4.31: Get the libs directory (sibling of model dir) - on external storage
-            val extLibsDir = File(modelDir.parentFile, "mnn-libs")
-            Log.i(TAG, "init: extLibsDir=${extLibsDir.absolutePath}, exists=${extLibsDir.exists()}")
-            val libFiles = extLibsDir.listFiles()?.map { it.name } ?: emptyList()
-            Log.i(TAG, "init: libFiles=$libFiles")
-
-            if (!initialized) {
-                // v2.4.35: Copy .so files to internal storage because Android 7+ blocks
-                // dlopen from external storage (/storage/emulated/0/...)
-                // Internal storage path: /data/data/com.radio.app/files/mnn-libs/
-                val internalLibsDir = if (context != null) {
-                    File(context.filesDir, "mnn-libs")
-                } else {
-                    File("/data/data/com.radio.app/files/mnn-libs")
+            // v2.4.36: Write debug log to file for troubleshooting
+            val logFile = java.io.File("/storage/emulated/0/Android/data/com.radio.app/files/logs/subtitle/mnn_init.log")
+            try {
+                logFile.parentFile?.mkdirs()
+                val log = java.io.FileWriter(logFile, true)
+                fun mnnLog(msg: String) {
+                    Log.i(TAG, msg)
+                    log.write("[${System.currentTimeMillis()}] $msg\n")
+                    log.flush()
                 }
 
-                if (!internalLibsDir.exists()) internalLibsDir.mkdirs()
+                val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
+                mnnLog("init: modelDir=${modelDir.absolutePath}, files=$files")
 
-                // Check if we need to copy (if internal dir is empty or missing libllm.so)
-                val needsCopy = !File(internalLibsDir, "libllm.so").exists()
-                if (needsCopy && extLibsDir.exists()) {
-                    Log.i(TAG, "init: copying .so files from ${extLibsDir.absolutePath} to ${internalLibsDir.absolutePath}")
-                    val requiredLibs = listOf(
-                        "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
-                        "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
-                    )
-                    for (libName in requiredLibs) {
-                        val srcFile = File(extLibsDir, libName)
-                        val dstFile = File(internalLibsDir, libName)
-                        if (srcFile.exists() && srcFile.length() > 1000) {
-                            if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
-                                srcFile.inputStream().use { input ->
-                                    dstFile.outputStream().use { output -> input.copyTo(output) }
+                // v2.4.31: Get the libs directory (sibling of model dir) - on external storage
+                val extLibsDir = File(modelDir.parentFile, "mnn-libs")
+                mnnLog("init: extLibsDir=${extLibsDir.absolutePath}, exists=${extLibsDir.exists()}")
+                val libFiles = extLibsDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
+                mnnLog("init: extLibFiles=$libFiles")
+
+                if (!initialized) {
+                    // v2.4.35: Copy .so files to internal storage because Android 7+ blocks
+                    // dlopen from external storage (/storage/emulated/0/...)
+                    val internalLibsDir = if (context != null) {
+                        File(context.filesDir, "mnn-libs")
+                    } else {
+                        File("/data/data/com.radio.app/files/mnn-libs")
+                    }
+                    mnnLog("init: internalLibsDir=${internalLibsDir.absolutePath}")
+
+                    if (!internalLibsDir.exists()) internalLibsDir.mkdirs()
+
+                    // Check if we need to copy (if internal dir is empty or missing libllm.so)
+                    val needsCopy = !File(internalLibsDir, "libllm.so").exists()
+                    mnnLog("init: needsCopy=$needsCopy, extLibsDir.exists=${extLibsDir.exists()}")
+                    if (needsCopy && extLibsDir.exists()) {
+                        mnnLog("init: copying .so files from ${extLibsDir.absolutePath} to ${internalLibsDir.absolutePath}")
+                        val requiredLibs = listOf(
+                            "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
+                            "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
+                        )
+                        for (libName in requiredLibs) {
+                            val srcFile = File(extLibsDir, libName)
+                            val dstFile = File(internalLibsDir, libName)
+                            mnnLog("init: checking $libName: src exists=${srcFile.exists()}, src size=${if (srcFile.exists()) srcFile.length() else 0}")
+                            if (srcFile.exists() && srcFile.length() > 1000) {
+                                if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
+                                    srcFile.inputStream().use { input ->
+                                        dstFile.outputStream().use { output -> input.copyTo(output) }
+                                    }
+                                    dstFile.setExecutable(true, false)
+                                    mnnLog("init: copied $libName (${dstFile.length()} bytes)")
+                                } else {
+                                    mnnLog("init: $libName already copied, same size")
                                 }
-                                // Set executable permission
-                                dstFile.setExecutable(true, false)
-                                Log.i(TAG, "init: copied $libName (${dstFile.length()} bytes)")
+                            } else {
+                                mnnLog("init: ERROR missing $libName in external libs dir")
                             }
-                        } else {
-                            Log.e(TAG, "init: missing $libName in external libs dir")
                         }
                     }
+
+                    val internalFiles = internalLibsDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
+                    mnnLog("init: internalLibs after copy: $internalFiles")
+
+                    mnnLog("init: calling nativeInit(libDir=${internalLibsDir.absolutePath})...")
+                    initialized = nativeInit(internalLibsDir.absolutePath)
+                    mnnLog("init: nativeInit returned $initialized")
+                    if (!initialized) {
+                        lastError = "nativeInit失败: 无法加载MNN运行库(检查mnn-libs目录)"
+                        mnnLog("init: FAILED - $lastError")
+                        log.close()
+                        return false
+                    }
+                    mnnLog("init: nativeInit OK")
+                    log.close()
                 }
 
-                Log.i(TAG, "init: calling nativeInit(libDir=${internalLibsDir.absolutePath})...")
-                initialized = nativeInit(internalLibsDir.absolutePath)
-                if (!initialized) {
-                    lastError = "nativeInit失败: 无法加载MNN运行库(检查mnn-libs目录)"
-                    Log.e(TAG, "init: nativeInit FAILED")
+                val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
+                    ?: File(modelDir, "config.json").takeIf { it.exists() }
+                val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
+
+                mnnLog("init: creating LLM with config: $configPath")
+                llmPtr = nativeCreateLlm(configPath)
+                if (llmPtr == 0L) {
+                    lastError = "createLLM失败: 无法创建LLM实例(config=$configPath)"
+                    mnnLog("init: FAILED - nativeCreateLlm returned 0")
+                    log.close()
                     return false
                 }
-                Log.i(TAG, "init: nativeInit OK")
-            }
+                mnnLog("init: nativeCreateLlm OK, ptr=$llmPtr")
 
-            val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
-                ?: File(modelDir, "config.json").takeIf { it.exists() }
-            val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
+                mnnLog("init: loading model...")
+                val loaded = nativeLoad(llmPtr)
+                if (!loaded) {
+                    lastError = "模型加载失败: load()返回false(模型文件可能损坏)"
+                    mnnLog("init: FAILED - nativeLoad returned false")
+                    nativeFree(llmPtr)
+                    llmPtr = 0L
+                    log.close()
+                    return false
+                }
 
-            Log.i(TAG, "init: creating LLM with config: $configPath")
-            llmPtr = nativeCreateLlm(configPath)
-            if (llmPtr == 0L) {
-                lastError = "createLLM失败: 无法创建LLM实例(config=$configPath)"
-                Log.e(TAG, "init: nativeCreateLlm returned 0")
+                mnnLog("init: MNN LLM ready!")
+                log.close()
+                return true
+            } catch (e: Exception) {
+                Log.e(TAG, "init: EXCEPTION: ${e.message}", e)
+                try {
+                    val log = java.io.FileWriter(logFile, true)
+                    log.write("[${System.currentTimeMillis()}] init: EXCEPTION: ${e.message}\n")
+                    log.close()
+                } catch (_: Exception) {}
                 return false
             }
-            Log.i(TAG, "init: nativeCreateLlm OK, ptr=$llmPtr")
-
-            Log.i(TAG, "init: loading model...")
-            val loaded = nativeLoad(llmPtr)
-            if (!loaded) {
-                lastError = "模型加载失败: load()返回false(模型文件可能损坏)"
-                Log.e(TAG, "init: nativeLoad FAILED")
-                nativeFree(llmPtr)
-                llmPtr = 0L
-                return false
-            }
-
-            Log.i(TAG, "init: MNN LLM ready!")
-            return true
         }
 
         fun generate(prompt: String, maxTokens: Int = 2000): String {
