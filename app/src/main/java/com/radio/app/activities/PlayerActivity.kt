@@ -1969,6 +1969,7 @@ class PlayerActivity : AppCompatActivity() {
             }
             // When isUserSeeking or in stabilization: keep lastDisplayedPositionMs as-is
             // (it was already set to the seek target or jitter baseline)
+            val isPlaying = playbackService?.isPlaying() ?: false
             val displayPos = lastDisplayedPositionMs
             if (displayPos > 0 || !isPlaying) {
                 if (displayPos > 0) {
