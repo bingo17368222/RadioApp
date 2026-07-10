@@ -470,6 +470,14 @@ class PlayerActivity : AppCompatActivity() {
                     val msg = "JITTER-GUARD: same episode playing, only update UI (svcPos=$svcPos, savedPos=$savedPosForCheck)"
                     android.util.Log.d("PlayerActivity", msg)
                     writeJitterLog(msg)
+                    // v2.4.37: Update jitter guard baseline to current service position.
+                    // Without this, the first onPositionChanged callback after switching back
+                    // would compare against the OLD lastDisplayedPositionMs (from before onPause),
+                    // causing the guard to hold the old position and show jitter.
+                    lastDisplayedPositionMs = svcPos
+                    jitterSyncBaseline = svcPos
+                    jitterSyncTimeMs = System.currentTimeMillis()
+                    consecutiveBackwardJumps = 0
                     updateUI()
                     startCacheProgressUpdater()
                     restoreBackgroundResults()

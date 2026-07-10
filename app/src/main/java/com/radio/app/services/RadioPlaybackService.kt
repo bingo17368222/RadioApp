@@ -186,7 +186,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // Issue 3 & 4: Dedicated notification detail logging for diagnosing notification date/update issues
     private fun writeNotifDetailLog(message: String) {
         try {
-            val logDir = java.io.File(getExternalFilesDir(null), "logs/notif_detail")
+            // v2.4.37: Use unified log directory
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "notif_detail")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "notif_detail.log")
             val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
@@ -2360,12 +2361,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             lastPositionRestoreTime = System.currentTimeMillis()
             player?.playWhenReady = false  // Keep paused until seek completes
             player?.seekTo(savedPos)
-            Log.d(TAG, "Restored position: ${savedPos}ms, waiting for seek completion before play, will not save position for 30s")
-            // Safety fallback: if onPositionDiscontinuity never fires, clear flag after 30 seconds
+            Log.d(TAG, "Restored position: ${savedPos}ms, waiting for seek completion before play, will not save position for 5s")
+            // v2.4.37: Reduced from 30s to 5s - 30s was blocking ALL position saves for
+            // 30 seconds after starting playback, even for the 5-second auto-save.
+            // The seek should complete within 2-3 seconds; 5s is enough safety margin.
             positionSaveHandler?.postDelayed({
                 isSeekingToPosition = false
                 Log.d(TAG, "Position restore grace period ended, position saving enabled")
-            }, 30000)
+            }, 5000)
         }
     }
 
@@ -2383,10 +2386,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun saveCurrentPosition() {
-        if (isSeekingToPosition || pendingStartPosition >= 0) return
+        if (isSeekingToPosition || pendingStartPosition >= 0) {
+            // v2.4.37: Log why save is blocked for debugging
+            writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: BLOCKED (isSeekingToPosition=$isSeekingToPosition, pendingStartPosition=$pendingStartPosition)")
+            return
+        }
         // v2.4.36: Reduced from 30000ms to 5000ms - 30s block was too long, causing
         // positions to not be saved for 30 seconds after starting playback.
-        if (System.currentTimeMillis() - lastPositionRestoreTime < 5000) return
+        if (System.currentTimeMillis() - lastPositionRestoreTime < 5000) {
+            writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: BLOCKED (within 5s of restore)")
+            return
+        }
         val ep = currentEpisode ?: return
         val pos = getCurrentPosition()  // [v2.0.62] Use authoritative position
         // v2.4.36: Allow saving even at pos=0 - previously pos<=0 was skipped, but
@@ -2403,6 +2413,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().putLong(episodeKey, pos)
             .putLong(ep.id ?: "", pos).commit()
+        // v2.4.37: Log successful save for debugging
+        writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: SAVED pos=$pos for episode=$episodeKey")
     }
 
     private fun clearSavedPosition() {

@@ -76,8 +76,14 @@ class MnnLlmBridge {
         fun init(modelDir: File, context: Context? = null): Boolean {
             lastError = ""
 
-            // v2.4.36: Write debug log to file for troubleshooting
-            val logFile = java.io.File("/storage/emulated/0/Android/data/com.radio.app/files/logs/subtitle/mnn_init.log")
+            // v2.4.37: Use unified log directory
+            val logDir = if (context != null) {
+                java.io.File(com.radio.app.RadioApplication.getLogDir(context), "subtitle")
+            } else {
+                java.io.File("/storage/emulated/0/RadioApp/logs/subtitle")
+            }
+            try { logDir.mkdirs() } catch (_: Exception) {}
+            val logFile = java.io.File(logDir, "mnn_init.log")
             try {
                 logFile.parentFile?.mkdirs()
                 val log = java.io.FileWriter(logFile, true)

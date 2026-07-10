@@ -1364,7 +1364,9 @@ class OfflineEngineActivity : AppCompatActivity() {
                         try {
                             val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
                                 connectTimeout = 15000
-                                readTimeout = 60000
+                                // v2.4.37: Increased from 60s to 120s - 60s was too short for
+                                // slow China connections, causing truncated downloads
+                                readTimeout = 120000
                                 instanceFollowRedirects = true
                             }
                             val responseCode = connection.responseCode
@@ -1374,10 +1376,15 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 continue
                             }
 
+                            // v2.4.37: Get expected file size from Content-Length
+                            val expectedSize = connection.contentLengthLong
+                            writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) Content-Length=$expectedSize")
+
                             val input = connection.inputStream
                             val output = java.io.FileOutputStream(outFile)
                             val buffer = ByteArray(16384)
                             var bytesRead: Int
+                            var totalRead = 0L
                             while (true) {
                                 if (downloadCancelled) {
                                     input.close(); output.close(); connection.disconnect()
@@ -1386,8 +1393,16 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 bytesRead = input.read(buffer)
                                 if (bytesRead == -1) break
                                 output.write(buffer, 0, bytesRead)
+                                totalRead += bytesRead
                             }
                             input.close(); output.close(); connection.disconnect()
+
+                            // v2.4.37: Verify downloaded file size matches Content-Length
+                            if (expectedSize > 0 && outFile.length() != expectedSize) {
+                                writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) SIZE MISMATCH: expected=$expectedSize actual=${outFile.length()}")
+                                outFile.delete()
+                                continue
+                            }
 
                             if (outFile.length() < 1000) {
                                 writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) too small (${outFile.length()})")
@@ -1455,7 +1470,8 @@ class OfflineEngineActivity : AppCompatActivity() {
     // Issue 13: 写入引擎管理日志到文件，便于排查下载/安装问题
     private fun writeEngineLog(message: String) {
         try {
-            val logDir = File(getExternalFilesDir(null), "logs/engine")
+            // v2.4.37: Use unified log directory
+            val logDir = File(com.radio.app.RadioApplication.getLogDir(this), "engine")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = File(logDir, "engine.log")
             val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
