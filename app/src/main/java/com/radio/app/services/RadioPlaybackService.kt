@@ -1548,6 +1548,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
                 // 同时检查当前播放节目的PCM预解码
                 startPcmPreDecodeIfNeeded()
+                // [Fix] Persist the episode's metadata (date/title) to the episode_info table
+                // now that the background recording has been saved. RadioPlaybackService never
+                // wrote episode_info before, so auto-started subtitle tasks found no date/title.
+                // saveEpisodeInfo fills the current date and a default title if the pre-cache
+                // episode came in without them.
+                try {
+                    com.radio.app.database.RadioDatabaseHelper.getInstance(this).saveEpisodeInfo(episode)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Pre-cache: failed to save episode_info for ${episode.id}: ${e.message}")
+                }
                 // [v2.4.10] 预缓存完成后，自动生成字幕（使用Whisper base模型）
                 startPreCacheSubtitleGeneration(episode)
                 // Download complete, release guard and schedule next pre-cache check
@@ -2379,9 +2389,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val pos = getCurrentPosition()  // [v2.0.62] Use authoritative position
         if (pos <= 0) return
         val episodeKey = "${ep.stationId}::${ep.title}"
+        // [v2.4.31] Fix: use commit() (synchronous) instead of apply() (asynchronous).
+        // apply() only stages the write in memory and defers the disk flush to a background
+        // thread. When the app is backgrounded and the system kills the process under memory
+        // pressure, the pending write is discarded before it ever reaches disk. As a result the
+        // 15-second auto-save frequently fails and playback restarts from zero on next launch.
+        // commit() blocks until the value is persisted to disk, guaranteeing the position
+        // survives a process kill. This mirrors the seekTo() path which already uses commit().
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().putLong(episodeKey, pos)
-            .putLong(ep.id ?: "", pos).apply()
+            .putLong(ep.id ?: "", pos).commit()
     }
 
     private fun clearSavedPosition() {

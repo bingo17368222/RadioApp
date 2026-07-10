@@ -127,8 +127,8 @@ class OfflineEngineActivity : AppCompatActivity() {
                 "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm.mnn.json",
                 "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=tokenizer.txt",
                 "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=config.json",
-                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm_config.json",
-                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=embedding_ids.txt"
+                "https://www.modelscope.cn/api/v1/models/MNN/Qwen1.5-1.8B-Chat-MNN/repo?Revision=master&FilePath=llm_config.json"
+                // v2.4.31: Removed embedding_ids.txt - not required for basic LLM inference
             )
         ),
 
@@ -521,15 +521,45 @@ class OfflineEngineActivity : AppCompatActivity() {
                             }
                         }
                     }
+                    // v2.4.31: Download MNN .so files from GitHub releases
+                    val isMnnEngine = engine.modelDir.contains("mnn", ignoreCase = true)
+                    if (isMnnEngine) {
+                        val libsDir = File(modelsDir, "mnn-libs")
+                        if (!libsDir.exists()) libsDir.mkdirs()
+                        writeEngineLog("downloadModel: [v2.4.31] downloading MNN .so files...")
+                        withContext(Dispatchers.Main) {
+                            btn.text = "下载运行库..."
+                            progressBar?.progress = 90
+                        }
+                        val soSuccess = withContext(Dispatchers.IO) {
+                            downloadAndExtractMnnLibs(libsDir)
+                        }
+                        writeEngineLog("downloadModel: [v2.4.31] MNN .so download result=$soSuccess")
+                        if (!soSuccess) {
+                            writeEngineLog("downloadModel: [v2.4.31] MNN .so download FAILED")
+                            withContext(Dispatchers.Main) {
+                                btn.text = "继续下载"
+                                Toast.makeText(this@OfflineEngineActivity, "MNN运行库下载失败，请重试", Toast.LENGTH_LONG).show()
+                                progressBar?.visibility = View.GONE
+                                bindInstallAction(engine, btn, progressBar, targetDir)
+                            }
+                            return@launch
+                        }
+                    }
+
                     // v2.4.30: Post-download validation - verify ALL required files exist
-                    val requiredFiles = if (engine.modelDir.contains("mnn", ignoreCase = true)) {
+                    val requiredFiles = if (isMnnEngine) {
                         listOf("llm.mnn", "llm.mnn.weight", "config.json")
                     } else {
                         emptyList()
                     }
                     val missingFiles = requiredFiles.filter { !File(targetDir, it).exists() || File(targetDir, it).length() < 1 }
+                    // v2.4.31: For MNN, also check .so files exist
+                    val libsOk = if (isMnnEngine) {
+                        File(modelsDir, "mnn-libs/libllm.so").exists()
+                    } else true
                     val allDownloaded = downloadedCount == engine.multiFileUrls.size
-                    val valid = allDownloaded && missingFiles.isEmpty()
+                    val valid = allDownloaded && missingFiles.isEmpty() && libsOk
 
                     withContext(Dispatchers.Main) {
                         progressBar?.progress = 100
@@ -540,6 +570,15 @@ class OfflineEngineActivity : AppCompatActivity() {
                             progressBar?.visibility = View.GONE
                             btn.setOnClickListener {
                                 targetDir.let { deleteRecursive(it) }
+                                // v2.4.31: Also delete mnn-libs directory for MNN engines
+                                if (isMnnEngine) {
+                                    File(modelsDir, "mnn-libs").let { libsDir ->
+                                        if (libsDir.exists()) {
+                                            deleteRecursive(libsDir)
+                                            writeEngineLog("downloadModel: deleted mnn-libs directory")
+                                        }
+                                    }
+                                }
                                 btn.text = "安装"
                                 Toast.makeText(this@OfflineEngineActivity, "${engine.name} 已删除", Toast.LENGTH_SHORT).show()
                                 bindInstallAction(engine, btn, progressBar, targetDir)
@@ -1259,7 +1298,8 @@ class OfflineEngineActivity : AppCompatActivity() {
         return result
     }
 
-    // [v2.4.28] Check if MNN model directory is valid - all required files must exist
+    // [v2.4.31] Check if MNN model directory is valid - all required files must exist
+    // Also checks that .so files exist in the sibling mnn-libs directory
     private fun isValidMnnModelDir(dir: File): Boolean {
         Log.d(TAG, "isValidMnnModelDir: checking ${dir.absolutePath}, exists=${dir.exists()}, files=${dir.listFiles()?.map { "${it.name}(${it.length()})" }}")
         writeEngineLog("isValidMnnModelDir: checking ${dir.absolutePath}, files=${dir.listFiles()?.map { "${it.name}(${it.length()})" }}")
@@ -1268,14 +1308,105 @@ class OfflineEngineActivity : AppCompatActivity() {
             val hasLlmMnn = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn" && it.length() > 1_000_000 }
             val hasWeight = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn.weight" && it.length() > 100_000_000 }
             val hasConfig = dir.walkTopDown().any { it.isFile && (it.name == "config.json" || it.name == "llm.mnn.json") }
+            // v2.4.31: Also check for .so files in mnn-libs directory
+            val libsDir = File(dir.parentFile, "mnn-libs")
+            val hasLibllm = File(libsDir, "libllm.so").exists()
             if (!hasLlmMnn) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn (>1MB)")
             if (!hasWeight) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn.weight (>100MB)")
             if (!hasConfig) writeEngineLog("isValidMnnModelDir: MISSING config.json or llm.mnn.json")
-            return@run hasLlmMnn && hasWeight && hasConfig
+            if (!hasLibllm) writeEngineLog("isValidMnnModelDir: MISSING libllm.so in mnn-libs")
+            return@run hasLlmMnn && hasWeight && hasConfig && hasLibllm
         }
         Log.d(TAG, "isValidMnnModelDir: result=$result")
         writeEngineLog("isValidMnnModelDir: result=$result")
         return result
+    }
+
+    // v2.4.31: Download MNN .so files from GitHub releases and extract to libsDir
+    private fun downloadAndExtractMnnLibs(libsDir: File): Boolean {
+        try {
+            // Check if already downloaded
+            if (File(libsDir, "libllm.so").exists()) {
+                writeEngineLog("downloadAndExtractMnnLibs: .so files already exist, skipping")
+                return true
+            }
+
+            val zipUrl = "https://github.com/alibaba/MNN/releases/download/3.6.0/mnn_3.6.0_android_armv7_armv8_cpu_opencl_vulkan.zip"
+            writeEngineLog("downloadAndExtractMnnLibs: downloading from $zipUrl")
+
+            val tmpZip = File(libsDir, "mnn_libs.zip")
+            val connection = (java.net.URL(zipUrl).openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 30000
+                readTimeout = 300000  // 5 min for large zip
+                instanceFollowRedirects = true
+            }
+            val responseCode = connection.responseCode
+            if (responseCode != 200) {
+                writeEngineLog("downloadAndExtractMnnLibs: HTTP $responseCode")
+                connection.disconnect()
+                return false
+            }
+
+            val input = connection.inputStream
+            val output = java.io.FileOutputStream(tmpZip)
+            val buffer = ByteArray(16384)
+            var bytesRead: Int
+            while (true) {
+                if (downloadCancelled) {
+                    input.close(); output.close(); connection.disconnect()
+                    return false
+                }
+                bytesRead = input.read(buffer)
+                if (bytesRead == -1) break
+                output.write(buffer, 0, bytesRead)
+            }
+            input.close(); output.close(); connection.disconnect()
+            writeEngineLog("downloadAndExtractMnnLibs: zip downloaded, size=${tmpZip.length()}")
+
+            // Extract arm64-v8a .so files
+            val requiredLibs = listOf(
+                "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
+                "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
+            )
+            val zip = java.util.zip.ZipFile(tmpZip)
+            val entries = zip.entries()
+            var extractedCount = 0
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                if (entry.name.contains("arm64-v8a/") && entry.name.endsWith(".so")) {
+                    val soName = entry.name.substringAfterLast("/")
+                    if (soName in requiredLibs) {
+                        val outFile = File(libsDir, soName)
+                        val zin = zip.getInputStream(entry)
+                        val fout = java.io.FileOutputStream(outFile)
+                        val buf = ByteArray(8192)
+                        var len: Int
+                        while (true) {
+                            len = zin.read(buf)
+                            if (len == -1) break
+                            fout.write(buf, 0, len)
+                        }
+                        fout.close(); zin.close()
+                        extractedCount++
+                        writeEngineLog("downloadAndExtractMnnLibs: extracted $soName (${outFile.length()} bytes)")
+                    }
+                }
+            }
+            zip.close()
+            tmpZip.delete()
+            writeEngineLog("downloadAndExtractMnnLibs: extracted $extractedCount .so files")
+
+            // Verify all required .so files exist
+            val missingLibs = requiredLibs.filter { !File(libsDir, it).exists() }
+            if (missingLibs.isNotEmpty()) {
+                writeEngineLog("downloadAndExtractMnnLibs: MISSING .so files: ${missingLibs.joinToString()}")
+                return false
+            }
+            return true
+        } catch (e: Exception) {
+            writeEngineLog("downloadAndExtractMnnLibs: ERROR: ${e.message}")
+            return false
+        }
     }
 
     private fun getDirTotalSize(dir: File?): Long {

@@ -9,6 +9,18 @@ import com.radio.app.models.PlayProgress
 import com.radio.app.models.Transcript
 import com.radio.app.models.VoiceSegment
 import com.radio.app.models.Episode
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+// [v2.4.31] Engine info bundle returned to PlayerActivity for subtitle title display.
+// Includes the engine name plus the total processing time and audio duration used to
+// compute the speed ratio (倍率 = audio_duration / processing_time).
+data class TranscriptEngineInfo(
+    val engineName: String?,
+    val processingTimeMs: Long,
+    val audioDurationMs: Long
+)
 
 class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelper(
     context, DATABASE_NAME, null, DATABASE_VERSION
@@ -16,7 +28,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 6
+        private const val DATABASE_VERSION = 7
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -37,7 +49,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE $TABLE_TRANSCRIPTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, segment_start INTEGER NOT NULL, segment_end INTEGER NOT NULL, text TEXT NOT NULL)")
         db.execSQL("CREATE INDEX idx_transcripts_episode ON $TABLE_TRANSCRIPTS(episode_id)")
         // [v2.4.12] Store the engine used to generate subtitles for each episode
-        db.execSQL("CREATE TABLE IF NOT EXISTS transcript_engine (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, generated_at INTEGER NOT NULL, is_complete INTEGER DEFAULT 0)")
+        // [v2.4.31] Added processing_time_ms & audio_duration_ms for speed ratio display
+        db.execSQL("CREATE TABLE IF NOT EXISTS transcript_engine (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, generated_at INTEGER NOT NULL, is_complete INTEGER DEFAULT 0, processing_time_ms INTEGER DEFAULT 0, audio_duration_ms INTEGER DEFAULT 0)")
         db.execSQL("CREATE TABLE $TABLE_DISLIKED_EPISODES (episode_id TEXT PRIMARY KEY, title TEXT, station_name TEXT, created_at INTEGER)")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
@@ -65,6 +78,11 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // [v2.4.18] Add is_complete column to existing transcript_engine table
         if (oldVersion < 6) {
             db.execSQL("ALTER TABLE transcript_engine ADD COLUMN is_complete INTEGER DEFAULT 0")
+        }
+        // [v2.4.31] Add processing_time_ms & audio_duration_ms columns for speed ratio display
+        if (oldVersion < 7) {
+            db.execSQL("ALTER TABLE transcript_engine ADD COLUMN processing_time_ms INTEGER DEFAULT 0")
+            db.execSQL("ALTER TABLE transcript_engine ADD COLUMN audio_duration_ms INTEGER DEFAULT 0")
         }
     }
 
@@ -174,6 +192,40 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
         cursor.close()
         return engine
+    }
+
+    // [v2.4.31] Save total processing time & audio duration for an episode's subtitle generation.
+    // Called by SubtitleGeneratorService.onComplete after saveTranscriptEngine so the row already exists.
+    fun saveTranscriptTiming(episodeId: String, processingTimeMs: Long, audioDurationMs: Long) {
+        try {
+            val db = writableDatabase
+            val values = ContentValues().apply {
+                put("processing_time_ms", processingTimeMs)
+                put("audio_duration_ms", audioDurationMs)
+            }
+            db.update("transcript_engine", values, "episode_id = ?", arrayOf(episodeId))
+        } catch (_: Exception) {}
+    }
+
+    // [v2.4.31] Get engine name + timing info for subtitle title display.
+    // Used by PlayerActivity when restoring subtitles from DB (cold start / background restore).
+    fun getTranscriptEngineInfo(episodeId: String): TranscriptEngineInfo {
+        val db = readableDatabase
+        val cursor = db.query(
+            "transcript_engine",
+            arrayOf("engine_name", "processing_time_ms", "audio_duration_ms"),
+            "episode_id = ?", arrayOf(episodeId), null, null, null
+        )
+        var info = TranscriptEngineInfo(null, 0L, 0L)
+        if (cursor.moveToFirst()) {
+            info = TranscriptEngineInfo(
+                if (cursor.isNull(0)) null else cursor.getString(0),
+                if (cursor.isNull(1)) 0L else cursor.getLong(1),
+                if (cursor.isNull(2)) 0L else cursor.getLong(2)
+            )
+        }
+        cursor.close()
+        return info
     }
 
     // [v2.1.3] Delete transcripts for a specific episode
@@ -385,14 +437,30 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     // ===== Episode Info (v2.2.4) =====
 
+    // [Fix] Returns the effective broadcastAt and title for an episode, filling in the
+    // current date and a default title ("广播节目录音_YYYY-MM-DD") when they are blank.
+    // This guarantees episode_info rows always carry a non-empty date and title, even for
+    // episodes auto-created from background/pre-cache recordings that arrived without them.
+    // Uses isNullOrBlank() (rather than isBlank()) because Gson can assign null into a
+    // non-nullable Kotlin String field when deserializing, which would NPE on isBlank().
+    private fun normalizeEpisodeFields(episode: Episode): Pair<String, String> {
+        val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val effectiveBroadcastAt =
+            if (episode.broadcastAt.isNullOrBlank()) currentDate else episode.broadcastAt
+        val effectiveTitle =
+            if (episode.title.isNullOrBlank()) "广播节目录音_$currentDate" else episode.title
+        return Pair(effectiveBroadcastAt, effectiveTitle)
+    }
+
     fun saveEpisodeInfo(episode: Episode) {
         try {
             val db = writableDatabase
+            val (effectiveBroadcastAt, effectiveTitle) = normalizeEpisodeFields(episode)
             val values = ContentValues().apply {
                 put("episode_id", episode.id)
-                put("date", episode.broadcastAt.substringBefore("T").take(10))
-                put("title", episode.title)
-                put("broadcast_at", episode.broadcastAt)
+                put("date", effectiveBroadcastAt.substringBefore("T").take(10))
+                put("title", effectiveTitle)
+                put("broadcast_at", effectiveBroadcastAt)
                 put("duration", episode.duration)
                 put("audio_url", episode.audioUrl)
                 put("station_id", episode.stationId)
@@ -409,11 +477,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             db.beginTransaction()
             try {
                 for (episode in episodes) {
+                    val (effectiveBroadcastAt, effectiveTitle) = normalizeEpisodeFields(episode)
                     val values = ContentValues().apply {
                         put("episode_id", episode.id)
-                        put("date", episode.broadcastAt.substringBefore("T").take(10))
-                        put("title", episode.title)
-                        put("broadcast_at", episode.broadcastAt)
+                        put("date", effectiveBroadcastAt.substringBefore("T").take(10))
+                        put("title", effectiveTitle)
+                        put("broadcast_at", effectiveBroadcastAt)
                         put("duration", episode.duration)
                         put("audio_url", episode.audioUrl)
                         put("station_id", episode.stationId)

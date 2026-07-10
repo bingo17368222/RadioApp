@@ -4,62 +4,30 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.29 Bridge for MNN-LLM offline model inference.
- * Uses JNI to call MNN Llm API via dlopen/dlsym.
- * Requires libMNN.so, libllm.so, libMNN_Express.so, libMNN_Vulkan.so, libMNN_CL.so,
- * libMNNOpenCV.so, libMNNAudio.so, libmnncore.so, libc++_shared.so in jniLibs.
+ * v2.4.31 Bridge for MNN-LLM offline model inference.
+ * MNN .so files are downloaded with the model (NOT in APK).
+ * nativeInit receives libDir path and uses dlopen with full paths.
  */
 class MnnLlmBridge {
     companion object {
         private const val TAG = "MnnLlmBridge"
 
-        // Last error message for UI display
         @Volatile
         var lastError: String = ""
             private set
 
-        // Track which libraries failed to load
-        private val loadErrors = mutableListOf<String>()
-
-        // Load native libraries in dependency order
-        // v2.4.29: Must load ALL dependencies of libllm.so, not just the base ones
+        // Only load our JNI bridge - MNN libs are loaded via dlopen in native code
         init {
-            // libMNN.so has no MNN-specific dependencies
-            tryLib("MNN")
-            // libMNN_Express.so depends on libMNN.so
-            tryLib("MNN_Express")
-            // libMNN_Vulkan.so depends on libMNN.so
-            tryLib("MNN_Vulkan")
-            // libMNN_CL.so depends on libMNN.so
-            tryLib("MNN_CL")
-            // libMNNOpenCV.so depends on libMNN.so + libMNN_Express.so
-            tryLib("MNNOpenCV")
-            // libMNNAudio.so depends on libMNN.so + libMNN_Express.so
-            tryLib("MNNAudio")
-            // libmnncore.so depends on libMNN.so + libjnigraphics.so (system)
-            tryLib("mnncore")
-            // libllm.so depends on ALL of the above
-            tryLib("llm")
-            // Our JNI bridge - depends on nothing at link time (uses dlopen)
-            tryLib("mnn_llm_jni")
-
-            if (loadErrors.isNotEmpty()) {
-                Log.e(TAG, "Failed to load libraries: ${loadErrors.joinToString(", ")}")
-            }
-        }
-
-        private fun tryLib(name: String) {
             try {
-                System.loadLibrary(name)
-                Log.i(TAG, "Loaded lib$name.so")
+                System.loadLibrary("mnn_llm_jni")
+                Log.i(TAG, "Loaded libmnn_llm_jni.so")
             } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load lib$name.so: ${e.message}")
-                loadErrors.add(name)
+                Log.e(TAG, "Failed to load libmnn_llm_jni.so: ${e.message}")
             }
         }
 
         @JvmStatic
-        private external fun nativeInit(): Boolean
+        private external fun nativeInit(libDir: String): Boolean
         @JvmStatic
         private external fun nativeCreateLlm(configPath: String): Long
         @JvmStatic
@@ -75,19 +43,23 @@ class MnnLlmBridge {
         private var llmPtr: Long = 0L
 
         /**
-         * Check if MNN model is installed at the given directory.
+         * Check if MNN model + libs are installed.
          */
         fun isModelInstalled(modelDir: File): Boolean {
             val hasLlmMnn = File(modelDir, "llm.mnn").let { it.exists() && it.length() > 1_000_000 }
             val hasWeight = File(modelDir, "llm.mnn.weight").let { it.exists() && it.length() > 100_000_000 }
             val hasConfig = File(modelDir, "config.json").exists() || File(modelDir, "llm.mnn.json").exists()
-            val installed = hasLlmMnn && hasWeight && hasConfig
+            // v2.4.31: Also check for .so files in the libs subdirectory
+            val libsDir = File(modelDir.parentFile, "mnn-libs")
+            val hasLibllm = File(libsDir, "libllm.so").exists()
+            val installed = hasLlmMnn && hasWeight && hasConfig && hasLibllm
             if (!installed) {
                 val missing = mutableListOf<String>()
                 if (!hasLlmMnn) missing.add("llm.mnn")
                 if (!hasWeight) missing.add("llm.mnn.weight(>100MB)")
                 if (!hasConfig) missing.add("config.json/llm.mnn.json")
-                lastError = "模型文件缺失: ${missing.joinToString(", ")}"
+                if (!hasLibllm) missing.add("libllm.so(MNN运行库)")
+                lastError = "文件缺失: ${missing.joinToString(", ")}"
                 Log.e(TAG, "isModelInstalled: FALSE - missing: ${missing.joinToString(", ")}")
             }
             return installed
@@ -101,28 +73,26 @@ class MnnLlmBridge {
         fun init(modelDir: File): Boolean {
             lastError = ""
 
-            // List all files in model dir for debugging
             val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
             Log.i(TAG, "init: modelDir=${modelDir.absolutePath}, files=$files")
 
+            // v2.4.31: Get the libs directory (sibling of model dir)
+            val libsDir = File(modelDir.parentFile, "mnn-libs")
+            Log.i(TAG, "init: libsDir=${libsDir.absolutePath}, exists=${libsDir.exists()}")
+            val libFiles = libsDir.listFiles()?.map { it.name } ?: emptyList()
+            Log.i(TAG, "init: libFiles=$libFiles")
+
             if (!initialized) {
-                // v2.4.29: Check if all native libraries were loaded
-                if (loadErrors.isNotEmpty()) {
-                    lastError = "原生库加载失败: ${loadErrors.joinToString(", ")}"
-                    Log.e(TAG, "init: cannot proceed, libraries failed to load: $loadErrors")
-                    return false
-                }
-                Log.i(TAG, "init: calling nativeInit()...")
-                initialized = nativeInit()
+                Log.i(TAG, "init: calling nativeInit(libDir=${libsDir.absolutePath})...")
+                initialized = nativeInit(libsDir.absolutePath)
                 if (!initialized) {
-                    lastError = "nativeInit失败: dlopen(libllm.so)失败，请查看native.log"
-                    Log.e(TAG, "init: nativeInit FAILED - check native.log for dlopen error details")
+                    lastError = "nativeInit失败: 无法加载MNN运行库(检查mnn-libs目录)"
+                    Log.e(TAG, "init: nativeInit FAILED")
                     return false
                 }
                 Log.i(TAG, "init: nativeInit OK")
             }
 
-            // Use config file from model directory - check llm.mnn.json first, then config.json
             val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
                 ?: File(modelDir, "config.json").takeIf { it.exists() }
             val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
@@ -131,7 +101,7 @@ class MnnLlmBridge {
             llmPtr = nativeCreateLlm(configPath)
             if (llmPtr == 0L) {
                 lastError = "createLLM失败: 无法创建LLM实例(config=$configPath)"
-                Log.e(TAG, "init: nativeCreateLlm returned 0 for config: $configPath")
+                Log.e(TAG, "init: nativeCreateLlm returned 0")
                 return false
             }
             Log.i(TAG, "init: nativeCreateLlm OK, ptr=$llmPtr")
@@ -139,7 +109,7 @@ class MnnLlmBridge {
             Log.i(TAG, "init: loading model...")
             val loaded = nativeLoad(llmPtr)
             if (!loaded) {
-                lastError = "模型加载失败: load()返回false(模型文件可能损坏或不完整)"
+                lastError = "模型加载失败: load()返回false(模型文件可能损坏)"
                 Log.e(TAG, "init: nativeLoad FAILED")
                 nativeFree(llmPtr)
                 llmPtr = 0L
@@ -150,12 +120,6 @@ class MnnLlmBridge {
             return true
         }
 
-        /**
-         * Generate text from a prompt.
-         * @param prompt Input text
-         * @param maxTokens Maximum tokens to generate (0 = unlimited)
-         * @return Generated text
-         */
         fun generate(prompt: String, maxTokens: Int = 2000): String {
             if (llmPtr == 0L) {
                 Log.e(TAG, "generate: LLM not initialized")
@@ -164,9 +128,6 @@ class MnnLlmBridge {
             return nativeGenerate(llmPtr, prompt, maxTokens)
         }
 
-        /**
-         * Free the LLM instance.
-         */
         fun release() {
             if (llmPtr != 0L) {
                 nativeFree(llmPtr)
@@ -175,9 +136,8 @@ class MnnLlmBridge {
         }
 
         /**
-         * Classify subtitle segments as dry(content) or water(filler) using MNN-LLM.
-         * Processes subtitles in batches to show progress and avoid blocking too long.
-         * @param onProgress callback(current, total) for progress updates
+         * Classify subtitle segments in batches of 1 segment.
+         * v2.4.31: batch size = 1 for faster progress feedback
          */
         fun classifySubtitles(
             subtitles: List<Triple<Long, Long, String>>,
@@ -189,7 +149,6 @@ class MnnLlmBridge {
                 return null
             }
 
-            // Group subtitles into segments
             val groups = mutableListOf<Triple<Long, Long, String>>()
             var currentStart = 0L
             var currentEnd = segmentDurationMs
@@ -210,56 +169,43 @@ class MnnLlmBridge {
 
             if (groups.isEmpty()) return null
 
-            // v2.4.30: Process in batches of 3 segments to show progress and avoid blocking
-            val batchSize = 3
+            // v2.4.31: Process ONE segment at a time for fastest progress feedback
             val allResults = mutableListOf<MnnSegmentResult>()
-            val numBatches = (groups.size + batchSize - 1) / batchSize
+            Log.i(TAG, "classifySubtitles: ${groups.size} segments, batch=1")
 
-            Log.i(TAG, "classifySubtitles: ${groups.size} segments in $numBatches batches")
+            for ((idx, group) in groups.withIndex()) {
+                onProgress?.invoke(idx, groups.size)
 
-            for (batchIdx in 0 until numBatches) {
-                val batchStart = batchIdx * batchSize
-                val batchEnd = minOf(batchStart + batchSize, groups.size)
-                val batch = groups.subList(batchStart, batchEnd)
+                val startTime = group.first / 1000
+                val endTime = group.second / 1000
+                val text = if (group.third.length > 300) group.third.substring(0, 300) + "..." else group.third
 
-                onProgress?.invoke(batchIdx, numBatches)
-                Log.i(TAG, "classifySubtitles: batch ${batchIdx + 1}/$numBatches, segments ${batchStart + 1}-$batchEnd")
+                // v2.4.31: Simpler prompt, fewer tokens
+                val prompt = "判断以下广播内容是「干货」(新闻/资讯/访谈)还是「水货」(广告/音乐/闲聊)。只回答\"干货\"或\"水货\"。\n${startTime}s-${endTime}s: $text"
 
-                val prompt = buildString {
-                    append("你是广播电台内容分析专家。以下是广播节目字幕，按时间段分组。\n")
-                    append("请分析每段内容，判断是「干货」（新闻、资讯、访谈、评论）还是「水货」（广告、音乐、片头片尾、闲聊）。\n")
-                    append("只返回JSON数组，格式：[{\"index\":1,\"type\":\"干货\",\"reason\":\"新闻资讯\"}]\n\n")
-                    append("字幕内容：\n")
-                    for ((i, group) in batch.withIndex()) {
-                        val startTime = group.first / 1000
-                        val endTime = group.second / 1000
-                        val text = if (group.third.length > 500) group.third.substring(0, 500) + "..." else group.third
-                        append("[段落${i + 1}] ${startTime}s-${endTime}s: $text\n")
-                    }
-                }
-
-                val response = generate(prompt, 500)
+                val response = generate(prompt, 50)
                 if (response.isNotBlank()) {
-                    Log.i(TAG, "classifySubtitles: batch ${batchIdx + 1} response length=${response.length}")
-                    val batchResults = parseClassification(response, batch)
-                    // Adjust indices: batch results are relative to batch, need to map to global groups
-                    for ((i, result) in batchResults.withIndex()) {
-                        if (i + batchStart < groups.size) {
-                            val group = groups[i + batchStart]
-                            allResults.add(MnnSegmentResult(
-                                start = group.first,
-                                end = group.second,
-                                isDry = result.isDry,
-                                label = result.label
-                            ))
-                        }
-                    }
+                    val isDry = response.contains("干货")
+                    allResults.add(MnnSegmentResult(
+                        start = group.first,
+                        end = group.second,
+                        isDry = isDry,
+                        label = if (isDry) "干货" else "水货"
+                    ))
+                    Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> ${if (isDry) "干货" else "水货"} (resp=${response.take(20)})")
                 } else {
-                    Log.w(TAG, "classifySubtitles: batch ${batchIdx + 1} returned empty response")
+                    // Default to dry if no response
+                    allResults.add(MnnSegmentResult(
+                        start = group.first,
+                        end = group.second,
+                        isDry = true,
+                        label = "干货"
+                    ))
+                    Log.w(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> empty, defaulting to 干货")
                 }
             }
 
-            onProgress?.invoke(numBatches, numBatches)
+            onProgress?.invoke(groups.size, groups.size)
             Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
             return allResults
         }
@@ -270,45 +216,5 @@ class MnnLlmBridge {
             val isDry: Boolean,
             val label: String
         )
-
-        private fun parseClassification(
-            response: String,
-            groups: List<Triple<Long, Long, String>>
-        ): List<MnnSegmentResult> {
-            val results = mutableListOf<MnnSegmentResult>()
-            try {
-                val jsonStart = response.indexOf('[')
-                val jsonEnd = response.lastIndexOf(']')
-                if (jsonStart < 0 || jsonEnd < 0) {
-                    Log.e(TAG, "parseClassification: no JSON array in response: ${response.take(200)}")
-                    return emptyList()
-                }
-
-                val jsonStr = response.substring(jsonStart, jsonEnd + 1)
-                val jsonArray = org.json.JSONArray(jsonStr)
-
-                for (i in 0 until jsonArray.length()) {
-                    val item = jsonArray.getJSONObject(i)
-                    val index = item.optInt("index", i + 1) - 1
-                    val type = item.optString("type", "")
-                    val isDry = type.contains("干货")
-
-                    if (index in groups.indices) {
-                        val group = groups[index]
-                        results.add(MnnSegmentResult(
-                            start = group.first,
-                            end = group.second,
-                            isDry = isDry,
-                            label = if (isDry) "干货" else "水货"
-                        ))
-                    }
-                }
-
-                Log.i(TAG, "parseClassification: ${results.size} results (${results.count { it.isDry }} dry, ${results.count { !it.isDry }} water)")
-            } catch (e: Exception) {
-                Log.e(TAG, "parseClassification: failed: ${e.message}")
-            }
-            return results
-        }
     }
 }

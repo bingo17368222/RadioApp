@@ -198,13 +198,15 @@ class PlayerActivity : AppCompatActivity() {
                         subtitleAdapter?.setTranscripts(subtitleTranscripts)
                         binding.subtitleView.visibility = View.GONE
                         // [v2.4.12] Show subtitle title with engine info
+                        // [v2.4.31] Append total processing time (总耗时) and speed ratio (倍率)
                         val engineName = intent.getStringExtra("engineName") ?: ""
+                        val procTimeMs = intent.getLongExtra("processingTimeMs", 0L)
+                        val audioDurMs = intent.getLongExtra("audioDurationMs", 0L)
                         if (engineName.isNotBlank()) {
-                            binding.tvSubtitleTitle.text = "字幕  生成所用引擎：$engineName"
+                            binding.tvSubtitleTitle.text = formatSubtitleTitle(engineName, procTimeMs, audioDurMs)
                         } else if (episode != null) {
-                            val dbEngine = RadioDatabaseHelper.getInstance(this@PlayerActivity).getTranscriptEngine(episode.id)
-                            binding.tvSubtitleTitle.text = if (!dbEngine.isNullOrBlank())
-                                "字幕  生成所用引擎：$dbEngine" else "字幕"
+                            val info = RadioDatabaseHelper.getInstance(this@PlayerActivity).getTranscriptEngineInfo(episode.id)
+                            binding.tvSubtitleTitle.text = formatSubtitleTitle(info.engineName, info.processingTimeMs, info.audioDurationMs)
                         } else {
                             binding.tvSubtitleTitle.text = "字幕"
                         }
@@ -1332,14 +1334,22 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
+        // v2.4.31: Add isUserSeeking protection around segment jump operations, mirroring the
+        // skip forward/backward buttons added in v2.4.30. jumpToPrevSegment/jumpToNextSegment
+        // perform a seek (often backward), which the monotonic jitter guard in onPositionChanged
+        // treats as a spurious backward jump and fights, causing the displayed position to jitter.
+        // Setting isUserSeeking=true lets the jitter guard accept the seek, and we reset it after
+        // 1500ms so normal anti-jitter protection resumes.
         binding.btnPrevSegment.setOnClickListener {
             if (playbackService == null) {
                 writeEpisodeLog("btnPrevSegment: playbackService is null, cannot jump")
                 Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            writeEpisodeLog("btnPrevSegment: calling jumpToPrevSegment")
+            isUserSeeking = true
+            writeJitterLog("[v2.4.31] btnPrevSegment: isUserSeeking=true, calling jumpToPrevSegment")
             playbackService?.jumpToPrevSegment()
+            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
         }
         binding.btnNextSegment.setOnClickListener {
             if (playbackService == null) {
@@ -1347,8 +1357,10 @@ class PlayerActivity : AppCompatActivity() {
                 Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            writeEpisodeLog("btnNextSegment: calling jumpToNextSegment")
+            isUserSeeking = true
+            writeJitterLog("[v2.4.31] btnNextSegment: isUserSeeking=true, calling jumpToNextSegment")
             playbackService?.jumpToNextSegment()
+            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
         }
         // v2.4.30: Add isUserSeeking protection around skip operations to prevent jitter guard from fighting
         binding.btnSkipForward.setOnClickListener {
@@ -2251,6 +2263,26 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    // [v2.4.31] Build the subtitle title string, appending total processing time (总耗时) and
+    // speed ratio (倍率 = audio_duration / processing_time) after the engine name.
+    // Example output: "字幕  生成所用引擎：Whisper Tiny (总耗时: 238s, 倍率: 1.1x)"
+    // If processing time is unknown (0), only the engine name is shown.
+    private fun formatSubtitleTitle(engineName: String?, processingTimeMs: Long, audioDurationMs: Long): String {
+        if (engineName.isNullOrBlank()) return "字幕"
+        var title = "字幕  生成所用引擎：$engineName"
+        if (processingTimeMs > 0) {
+            val procSec = processingTimeMs / 1000
+            title += " (总耗时: ${procSec}s"
+            if (audioDurationMs > 0 && procSec > 0) {
+                val audioSec = audioDurationMs / 1000.0
+                val ratio = audioSec / procSec
+                title += ", 倍率: ${String.format("%.1f", ratio)}x"
+            }
+            title += ")"
+        }
+        return title
+    }
+
     private fun startAiProcessing(taskType: String) {
         if (taskType == "subtitle") subtitleProcessing = true
         else if (taskType == "segment") segmentProcessing = true
@@ -2861,9 +2893,9 @@ class PlayerActivity : AppCompatActivity() {
                         subtitleBroadcastList.addAll(dbTranscripts)
                         subtitleAdapter?.setTranscripts(subtitleTranscripts)
                         // [v2.4.12] Show engine info in subtitle title
-                        val retryEngineName = dbHelper.getTranscriptEngine(ep.id)
-                        binding.tvSubtitleTitle.text = if (!retryEngineName.isNullOrBlank())
-                            "字幕  生成所用引擎：$retryEngineName" else "字幕"
+                        // [v2.4.31] Append total processing time & speed ratio from DB
+                        val retryInfo = dbHelper.getTranscriptEngineInfo(ep.id)
+                        binding.tvSubtitleTitle.text = formatSubtitleTitle(retryInfo.engineName, retryInfo.processingTimeMs, retryInfo.audioDurationMs)
                         binding.tvSubtitleTitle.visibility = View.VISIBLE
                         binding.recyclerSubtitles.visibility = View.VISIBLE
                     }
@@ -2904,9 +2936,9 @@ class PlayerActivity : AppCompatActivity() {
             subtitleBroadcastList.addAll(dbTranscripts)
             subtitleAdapter?.setTranscripts(subtitleTranscripts)
             // [v2.4.12] Show engine info in subtitle title
-            val engineName = dbHelper.getTranscriptEngine(episode.id)
-            binding.tvSubtitleTitle.text = if (!engineName.isNullOrBlank())
-                "字幕  生成所用引擎：$engineName" else "字幕"
+            // [v2.4.31] Append total processing time & speed ratio from DB
+            val engineInfo = dbHelper.getTranscriptEngineInfo(episode.id)
+            binding.tvSubtitleTitle.text = formatSubtitleTitle(engineInfo.engineName, engineInfo.processingTimeMs, engineInfo.audioDurationMs)
             binding.tvSubtitleTitle.visibility = View.VISIBLE
             binding.recyclerSubtitles.visibility = View.VISIBLE
             // Keep segments visible too (do not touch recyclerSegments visibility).

@@ -1,5 +1,7 @@
-// [v2.4.28] MNN-LLM JNI bridge - loads libllm.so dynamically and calls Llm API
+// [v2.4.31] MNN-LLM JNI bridge - loads libllm.so dynamically from a given directory
 // Uses dlopen/dlsym with raw C++ mangled names to avoid needing MNN headers at compile time
+// v2.4.31: MNN .so files are NO LONGER in the APK - they are downloaded with the model
+//          nativeInit accepts a directory path and uses dlopen with full paths
 #include <jni.h>
 #include <dlfcn.h>
 #include <string>
@@ -16,7 +18,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-// [v2.4.28] File-based logging for debugging MNN load failures
+// File-based logging for debugging MNN load failures
 static int g_log_fd = -1;
 static void mnn_log(const char* msg) {
     LOGI("%s", msg);
@@ -52,24 +54,55 @@ namespace MNN { namespace Transformer {
 class Llm;
 }}
 
-// Function pointer types matching C++ ABI (this pointer is first param for member functions)
+// Function pointer types matching C++ ABI
 typedef MNN::Transformer::Llm* (*CreateLLMFunc)(const std::string&);
 typedef void (*DestroyFunc)(MNN::Transformer::Llm*);
 typedef bool (*LoadFunc)(MNN::Transformer::Llm*);
 typedef bool (*SetConfigFunc)(MNN::Transformer::Llm*, const std::string&);
 typedef void (*ResponseStrFunc)(MNN::Transformer::Llm*, const std::string&, std::ostream*, const char*, int);
 
+// Keep handles to all loaded libraries so they stay resident
+static void* g_libMNN = nullptr;
+static void* g_libMNN_Express = nullptr;
+static void* g_libMNN_Vulkan = nullptr;
+static void* g_libMNN_CL = nullptr;
+static void* g_libMNNOpenCV = nullptr;
+static void* g_libMNNAudio = nullptr;
+static void* g_libmnncore = nullptr;
 static void* g_libllm = nullptr;
+
 static CreateLLMFunc g_createLLM = nullptr;
 static DestroyFunc g_destroy = nullptr;
 static LoadFunc g_load = nullptr;
 static SetConfigFunc g_set_config = nullptr;
 static ResponseStrFunc g_response = nullptr;
 
+// Helper: dlopen from a specific directory with full path
+static void* dlopen_from_dir(const char* dir, const char* libname) {
+    std::string fullpath = std::string(dir) + "/" + libname;
+    mnn_logf("dlopen_from_dir: %s", fullpath.c_str());
+    // Check file exists
+    struct stat st;
+    if (stat(fullpath.c_str(), &st) != 0) {
+        mnn_logf("dlopen_from_dir: file NOT FOUND: %s", fullpath.c_str());
+        return nullptr;
+    }
+    mnn_logf("dlopen_from_dir: file exists, size=%ld bytes", st.st_size);
+    void* handle = dlopen(fullpath.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        mnn_logf("dlopen_from_dir: FAILED: %s", dlerror() ?: "unknown");
+    } else {
+        mnn_logf("dlopen_from_dir: OK, handle=%p", handle);
+    }
+    return handle;
+}
+
 extern "C" {
 
+// v2.4.31: nativeInit now accepts a libDir parameter (directory where MNN .so files are downloaded)
+// Falls back to system loadLibrary if libDir is empty (for backward compatibility)
 JNIEXPORT jboolean JNICALL
-Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz) {
+Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
         return JNI_TRUE;
@@ -77,33 +110,76 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz) {
 
     mnn_log("nativeInit: starting...");
 
-    // Try to load libllm.so
-    g_libllm = dlopen("libllm.so", RTLD_NOW | RTLD_LOCAL);
-    if (!g_libllm) {
-        const char* err = dlerror();
-        mnn_logf("nativeInit: dlopen(\"libllm.so\") FAILED: %s", err ? err : "unknown");
-        // Try alternative: maybe need to load dependencies first
-        mnn_log("nativeInit: trying to load dependencies first...");
-        void* libMNN = dlopen("libMNN.so", RTLD_NOW | RTLD_LOCAL);
-        if (!libMNN) {
-            mnn_logf("nativeInit: dlopen(\"libMNN.so\") FAILED: %s", dlerror() ?: "unknown");
-        } else {
-            mnn_log("nativeInit: libMNN.so loaded OK");
+    // Get libDir parameter
+    const char* libDirC = nullptr;
+    std::string libDir;
+    if (libDir != nullptr) {
+        libDirC = env->GetStringUTFChars(libDir, nullptr);
+        libDir = libDirC ? libDirC : "";
+        env->ReleaseStringUTFChars(libDir, libDirC);
+    }
+    mnn_logf("nativeInit: libDir=%s", libDir.c_str());
+
+    if (!libDir.empty()) {
+        // v2.4.31: Load from downloaded directory
+        mnn_log("nativeInit: loading from downloaded directory...");
+
+        // Load in dependency order
+        g_libMNN = dlopen_from_dir(libDir.c_str(), "libMNN.so");
+        if (!g_libMNN) {
+            mnn_log("nativeInit: FAILED - cannot load libMNN.so");
+            return JNI_FALSE;
         }
-        void* libExpr = dlopen("libMNN_Express.so", RTLD_NOW | RTLD_LOCAL);
-        if (!libExpr) {
-            mnn_logf("nativeInit: dlopen(\"libMNN_Express.so\") FAILED: %s", dlerror() ?: "unknown");
-        } else {
-            mnn_log("nativeInit: libMNN_Express.so loaded OK");
+
+        g_libMNN_Express = dlopen_from_dir(libDir.c_str(), "libMNN_Express.so");
+        if (!g_libMNN_Express) {
+            mnn_log("nativeInit: WARNING - cannot load libMNN_Express.so (may not be needed)");
         }
-        // Retry libllm.so
+
+        g_libMNN_Vulkan = dlopen_from_dir(libDir.c_str(), "libMNN_Vulkan.so");
+        if (!g_libMNN_Vulkan) {
+            mnn_log("nativeInit: WARNING - cannot load libMNN_Vulkan.so (may not be needed)");
+        }
+
+        g_libMNN_CL = dlopen_from_dir(libDir.c_str(), "libMNN_CL.so");
+        if (!g_libMNN_CL) {
+            mnn_log("nativeInit: WARNING - cannot load libMNN_CL.so (may not be needed)");
+        }
+
+        g_libMNNOpenCV = dlopen_from_dir(libDir.c_str(), "libMNNOpenCV.so");
+        if (!g_libMNNOpenCV) {
+            mnn_log("nativeInit: WARNING - cannot load libMNNOpenCV.so (may not be needed)");
+        }
+
+        g_libMNNAudio = dlopen_from_dir(libDir.c_str(), "libMNNAudio.so");
+        if (!g_libMNNAudio) {
+            mnn_log("nativeInit: WARNING - cannot load libMNNAudio.so (may not be needed)");
+        }
+
+        g_libmnncore = dlopen_from_dir(libDir.c_str(), "libmnncore.so");
+        if (!g_libmnncore) {
+            mnn_log("nativeInit: WARNING - cannot load libmnncore.so (may not be needed)");
+        }
+
+        // Now load libllm.so (depends on all above)
+        g_libllm = dlopen_from_dir(libDir.c_str(), "libllm.so");
+        if (!g_libllm) {
+            mnn_log("nativeInit: FAILED - cannot load libllm.so");
+            return JNI_FALSE;
+        }
+    } else {
+        // Fallback: try system loadLibrary path (for backward compatibility)
+        mnn_log("nativeInit: no libDir, trying system path...");
+        g_libMNN = dlopen("libMNN.so", RTLD_NOW | RTLD_LOCAL);
+        g_libMNN_Express = dlopen("libMNN_Express.so", RTLD_NOW | RTLD_LOCAL);
         g_libllm = dlopen("libllm.so", RTLD_NOW | RTLD_LOCAL);
         if (!g_libllm) {
-            mnn_logf("nativeInit: retry dlopen(\"libllm.so\") FAILED: %s", dlerror() ?: "unknown");
+            mnn_logf("nativeInit: dlopen(\"libllm.so\") FAILED: %s", dlerror() ?: "unknown");
             return JNI_FALSE;
         }
     }
-    mnn_logf("nativeInit: dlopen(\"libllm.so\") OK, handle=%p", g_libllm);
+
+    mnn_logf("nativeInit: libllm.so loaded, handle=%p", g_libllm);
 
     // Resolve symbols
     g_createLLM = (CreateLLMFunc)dlsym(g_libllm,
@@ -120,20 +196,8 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz) {
     mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p",
              g_createLLM, g_destroy, g_load, g_set_config, g_response);
 
-    if (!g_createLLM) {
-        mnn_log("nativeInit: FAILED - createLLM symbol not found");
-        return JNI_FALSE;
-    }
-    if (!g_destroy) {
-        mnn_log("nativeInit: FAILED - destroy symbol not found");
-        return JNI_FALSE;
-    }
-    if (!g_load) {
-        mnn_log("nativeInit: FAILED - load symbol not found");
-        return JNI_FALSE;
-    }
-    if (!g_response) {
-        mnn_log("nativeInit: FAILED - response symbol not found");
+    if (!g_createLLM || !g_destroy || !g_load || !g_response) {
+        mnn_log("nativeInit: FAILED - one or more symbols not found");
         return JNI_FALSE;
     }
 
@@ -153,7 +217,6 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeCreateLlm(JNIEnv* env, jclass claz
 
     mnn_logf("nativeCreateLlm: configPath=%s", configPathStr.c_str());
 
-    // Check if the config file exists
     struct stat st;
     if (stat(configPathStr.c_str(), &st) != 0) {
         mnn_logf("nativeCreateLlm: config file does NOT exist: %s", configPathStr.c_str());
@@ -198,8 +261,6 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     mnn_logf("nativeGenerate: prompt length=%zu, maxTokens=%d", promptCpp.size(), maxTokens);
 
     std::ostringstream oss;
-    // response() does prefill + generation in one call.
-    // max_new_tokens controls how many tokens to generate (-1 = until stop token)
     int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
     g_response(llm, promptCpp, &oss, nullptr, max_new);
 

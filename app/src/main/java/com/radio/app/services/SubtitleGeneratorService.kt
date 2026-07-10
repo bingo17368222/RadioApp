@@ -71,6 +71,14 @@ class SubtitleGeneratorService : Service() {
     @Volatile
     private var currentModelName: String = ""
 
+    // [v2.4.31] Track total processing time and audio duration for speed ratio display.
+    // Set by processWhisperInChunks right before onComplete; read by the wrapped
+    // SubtitleCallback.onComplete to include in the completion broadcast + DB record.
+    @Volatile
+    private var currentProcessingTimeMs: Long = 0
+    @Volatile
+    private var currentAudioDurationMs: Long = 0
+
     // [v2.4.20] Resume mode flag: when true, append new transcripts instead of deleting old ones
     @Volatile
     private var isResumeMode: Boolean = false
@@ -460,6 +468,11 @@ class SubtitleGeneratorService : Service() {
         val logFile = prepareTaskLogFile("subtitle", episodeId)
         val ctx = TaskContext(taskId, episodeId, "SUBTITLE", logFile)
         ctx.audioUrl = audioUrl  // [v2.3.9] Save for re-generation on ASR change
+        // [Fix] Auto-started (pre-cache/background) tasks arrive here via Intent carrying only
+        // episodeId + audioUrl, so episode_info may be missing or have an empty date/title.
+        // Make sure the row exists with a date and title before building the display title,
+        // otherwise the episode shows "no date/title" while 后台音频处理中 is running.
+        ensureEpisodeInfo(episodeId, audioUrl)
         // [v2.4.18] Build display title (date + title) for notification
         ctx.displayTitle = buildDisplayTitle(episodeId, audioUrl)
         if (activeTasks.putIfAbsent(episodeId, ctx) != null) {
@@ -552,6 +565,10 @@ class SubtitleGeneratorService : Service() {
                         val engineName = if (currentModelName.isNotBlank()) currentModelName else "Unknown"
                         dbHelper.saveTranscriptEngine(episodeId, engineName)
                         logToFile("onComplete: [v2.4.12] saved engine name '$engineName' for $episodeId")
+                        // [v2.4.31] Persist total processing time & audio duration so the speed
+                        // ratio can be shown even when PlayerActivity restores from DB later.
+                        dbHelper.saveTranscriptTiming(episodeId, currentProcessingTimeMs, currentAudioDurationMs)
+                        logToFile("onComplete: [v2.4.31] saved timing for $episodeId: processingTime=${currentProcessingTimeMs}ms, audioDuration=${currentAudioDurationMs}ms")
                         logToFile("onComplete: [v2.2.6] ${if (isResumeMode) "appended" else "replaced with"} ${transcripts.size} new transcripts for $episodeId")
                         // [v2.4.18] Mark subtitles as complete so patrol skips this episode
                         dbHelper.markSubtitlesComplete(episodeId)
@@ -568,7 +585,10 @@ class SubtitleGeneratorService : Service() {
                     "com.radio.app.SUBTITLE_COMPLETE",
                     mapOf(
                         "episodeId" to episodeId,
-                        "engineName" to (if (currentModelName.isNotBlank()) currentModelName else "")
+                        "engineName" to (if (currentModelName.isNotBlank()) currentModelName else ""),
+                        // [v2.4.31] Total processing time & audio duration for speed ratio display
+                        "processingTimeMs" to currentProcessingTimeMs,
+                        "audioDurationMs" to currentAudioDurationMs
                     )
                 )
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
@@ -584,6 +604,10 @@ class SubtitleGeneratorService : Service() {
                     ctx.log("Task cancelled before start")
                     return@execute
                 }
+                // [v2.4.31] Reset timing tracking for this subtitle task so a previous run's
+                // values (or a Vosk run that doesn't set them) don't leak into the UI/DB.
+                currentProcessingTimeMs = 0
+                currentAudioDurationMs = 0
 
                 // 根据ASR引擎设置选择模型
                 // [v2.0.86] Issue 4 Fix: STRICTLY respect user's ASR selection - NO auto-switching.
@@ -2683,6 +2707,9 @@ class SubtitleGeneratorService : Service() {
         // [v2.0.66] Issue 6: Set model name for broadcast
         // [v2.4.2] Use friendly name instead of raw filename
         currentModelName = getFriendlyModelName(modelPath)
+        // [v2.4.31] Record the start time of Whisper processing to compute total processing
+        // time (总耗时) and the speed ratio (倍率 = audio_duration / processing_time) for display.
+        val processingStartTime = System.currentTimeMillis()
 
         try {
             val bridge = com.radio.app.whisper.WhisperBridge()
@@ -3080,6 +3107,15 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
+                // [v2.4.31] Cooldown 500ms after each chunk to let the CPU cool down and prevent
+                // thermal throttling. Placed AFTER this chunk's whisper_full() result has been
+                // processed (segments saved to DB via callback) and BEFORE the next iteration's
+                // whisper context recreation check. Skip the sleep if the task was cancelled.
+                if (!ctx.cancelled.get() && !globalCancelled.get()) {
+                    logToFile("processWhisperInChunks: [v2.4.31] cooldown 500ms after chunk $chunkIdx")
+                    Thread.sleep(500)
+                }
+
                 totalSamplesRead += samplesToRead
                 chunkIdx++
                 val progress = ((totalSamplesRead.toLong() * 100) / totalSamplesToRead).toInt()
@@ -3122,6 +3158,15 @@ class SubtitleGeneratorService : Service() {
                 callback.onError("$detail")
                 return false
             }
+            // [v2.4.31] Record total processing time and audio duration for speed ratio display.
+            // processing_time = wall-clock time of this run; audio_duration = samples processed
+            // in THIS run (excludes resume-skipped samples so the ratio stays accurate).
+            // speed ratio (倍率) = audio_duration / processing_time.
+            currentProcessingTimeMs = System.currentTimeMillis() - processingStartTime
+            currentAudioDurationMs = (totalSamplesRead - resumeFromSample).toLong() * 1000L / 16000L
+            val ratioStr = if (currentProcessingTimeMs > 0)
+                String.format("%.2f", currentAudioDurationMs.toDouble() / currentProcessingTimeMs) else "N/A"
+            logToFile("processWhisperInChunks: [v2.4.31] timing: processingTime=${currentProcessingTimeMs}ms (${currentProcessingTimeMs / 1000}s), audioDuration=${currentAudioDurationMs}ms (${currentAudioDurationMs / 1000}s), ratio=${ratioStr}x")
             callback.onComplete(allTranscripts)
             return true
 
@@ -3889,6 +3934,44 @@ class SubtitleGeneratorService : Service() {
             if (remainingTask != null) {
                 updateProgressNotification(remainingTask.lastReportedProgress, remainingTask.taskType)
             }
+        }
+    }
+
+    // [Fix] Ensure episode_info has a non-empty date and title before subtitle generation
+    // proceeds. Auto-started (pre-cache/background) tasks are launched via Intent with only
+    // episodeId + audioUrl, so the episode_info row may be missing entirely or exist with an
+    // empty date/title. When that happens we fill in the current date and a default title
+    // ("广播节目录音_YYYY-MM-DD") so the episode always shows a date and title, and so the
+    // notification display title (buildDisplayTitle) and the episode list render correctly.
+    private fun ensureEpisodeInfo(episodeId: String, audioUrl: String) {
+        try {
+            val dbHelper = RadioDatabaseHelper.getInstance(this)
+            val existing = dbHelper.getEpisodeInfo(episodeId)
+            val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            if (existing == null) {
+                // No episode_info row at all — create one with default date/title.
+                val ep = com.radio.app.models.Episode().apply {
+                    this.id = episodeId
+                    this.title = "广播节目录音_$currentDate"
+                    this.broadcastAt = currentDate
+                    this.audioUrl = audioUrl
+                }
+                dbHelper.saveEpisodeInfo(ep)
+                logToFile("ensureEpisodeInfo: created missing episode_info for $episodeId (title=广播节目录音_$currentDate, date=$currentDate)")
+            } else {
+                val dateBlank = existing.broadcastAt.isNullOrBlank()
+                val titleBlank = existing.title.isNullOrBlank()
+                if (dateBlank || titleBlank) {
+                    // Row exists but is missing date and/or title — fill them in, preserving
+                    // any already-present metadata (station, duration, etc.).
+                    if (dateBlank) existing.broadcastAt = currentDate
+                    if (titleBlank) existing.title = "广播节目录音_$currentDate"
+                    dbHelper.saveEpisodeInfo(existing)
+                    logToFile("ensureEpisodeInfo: filled missing date/title for $episodeId (title=${existing.title}, broadcastAt=${existing.broadcastAt})")
+                }
+            }
+        } catch (e: Exception) {
+            logToFile("ensureEpisodeInfo: failed for $episodeId: ${e.message}")
         }
     }
 
