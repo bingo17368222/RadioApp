@@ -3107,10 +3107,10 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
-                // [v2.4.33] Cooldown 500ms - shorter because thread count fix (4 threads)
-                // should reduce thermal throttling. The 2s cooldown was wasting 30s total.
+                // [v2.4.34] Cooldown 2s - reverted from 500ms which caused SIGABRT crash
+                // after chunk 0. The 4-thread + 500ms combo crashed, 8-thread + 2s works.
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    Thread.sleep(500)
+                    Thread.sleep(2000)
                 }
 
                 totalSamplesRead += samplesToRead

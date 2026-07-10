@@ -274,12 +274,11 @@ static struct whisper_full_params* prepare_params(void) {
             "接下来我们会详细讨论。"
             "感谢大家的收听。";
     } else if (mode == 2) {
-        // SPEED (tiny): greedy, limited threads, short prompt
-        // v2.4.33: Limit to 4 threads - using all cores on big.LITTLE ARM
-        // causes scheduler to use slow efficiency cores, actually slowing down.
-        // Chunk 0 was taking 57s with 8 threads; 4 threads should be faster.
+        // SPEED (tiny): greedy, max threads, short prompt
+        // v2.4.34: Reverted from 4 threads back to dynamic - 4 threads caused SIGABRT crash
         strategy = WHISPER_SAMPLING_GREEDY;
-        threads = 4;
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        threads = (int)(cores > 8 ? 8 : (cores < 2 ? 2 : cores));
         prompt = "以下是普通话的句子。";
     } else {
         // BALANCED (base): greedy, moderate threads, medium prompt

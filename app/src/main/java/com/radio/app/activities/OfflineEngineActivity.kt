@@ -1325,14 +1325,15 @@ class OfflineEngineActivity : AppCompatActivity() {
         return result
     }
 
-    // v2.4.33: Download MNN .so files individually from our own GitHub release
-    // Uses our own repo's release assets - more reliable than MNN's large zip
+    // v2.4.34: Download MNN .so files using jsDelivr CDN (works in China)
+    // Falls back to GitHub direct if jsDelivr fails
     private fun downloadAndExtractMnnLibs(libsDir: File): Boolean {
         try {
             if (!libsDir.exists()) libsDir.mkdirs()
 
-            // v2.4.33: Download individual .so files from our own repo release
-            val baseUrl = "https://github.com/bingo17368222/RadioApp/releases/download/mnn-libs-v1"
+            // v2.4.34: jsDelivr CDN has China CDN nodes - much faster than GitHub direct
+            val baseUrl = "https://cdn.jsdelivr.net/gh/bingo17368222/RadioApp@main/mnn_libs"
+            val fallbackUrl = "https://github.com/bingo17368222/RadioApp/releases/download/mnn-libs-v1"
             val requiredLibs = listOf(
                 "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
                 "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
@@ -1343,66 +1344,71 @@ class OfflineEngineActivity : AppCompatActivity() {
                 if (downloadCancelled) return false
 
                 val outFile = File(libsDir, libName)
-                // v2.4.33: Skip if already downloaded
                 if (outFile.exists() && outFile.length() > 1000) {
                     writeEngineLog("downloadAndExtractMnnLibs: $libName already exists (${outFile.length()} bytes), skipping")
                     downloadedCount++
                     continue
                 }
 
-                val url = "$baseUrl/$libName"
-                writeEngineLog("downloadAndExtractMnnLibs: downloading $libName from $url")
-
+                // v2.4.34: Try jsDelivr CDN first, then GitHub release
+                val urls = listOf("$baseUrl/$libName", "$fallbackUrl/$libName")
                 var success = false
-                val maxRetries = 3
-                for (attempt in 1..maxRetries) {
+                for ((urlIdx, url) in urls.withIndex()) {
                     if (downloadCancelled) return false
-                    try {
-                        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
-                            connectTimeout = 15000
-                            readTimeout = 60000
-                            instanceFollowRedirects = true
-                        }
-                        val responseCode = connection.responseCode
-                        if (responseCode != 200) {
-                            writeEngineLog("downloadAndExtractMnnLibs: $libName HTTP $responseCode (attempt $attempt)")
-                            connection.disconnect()
-                            continue
-                        }
+                    val source = if (urlIdx == 0) "jsDelivr" else "GitHub"
+                    writeEngineLog("downloadAndExtractMnnLibs: downloading $libName from $source")
 
-                        val input = connection.inputStream
-                        val output = java.io.FileOutputStream(outFile)
-                        val buffer = ByteArray(16384)
-                        var bytesRead: Int
-                        while (true) {
-                            if (downloadCancelled) {
-                                input.close(); output.close(); connection.disconnect()
-                                return false
+                    val maxRetries = 3
+                    for (attempt in 1..maxRetries) {
+                        if (downloadCancelled) return false
+                        try {
+                            val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                                connectTimeout = 15000
+                                readTimeout = 60000
+                                instanceFollowRedirects = true
                             }
-                            bytesRead = input.read(buffer)
-                            if (bytesRead == -1) break
-                            output.write(buffer, 0, bytesRead)
-                        }
-                        input.close(); output.close(); connection.disconnect()
+                            val responseCode = connection.responseCode
+                            if (responseCode != 200) {
+                                writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) HTTP $responseCode (attempt $attempt)")
+                                connection.disconnect()
+                                continue
+                            }
 
-                        if (outFile.length() < 1000) {
-                            writeEngineLog("downloadAndExtractMnnLibs: $libName too small (${outFile.length()})")
-                            outFile.delete()
-                            continue
-                        }
+                            val input = connection.inputStream
+                            val output = java.io.FileOutputStream(outFile)
+                            val buffer = ByteArray(16384)
+                            var bytesRead: Int
+                            while (true) {
+                                if (downloadCancelled) {
+                                    input.close(); output.close(); connection.disconnect()
+                                    return false
+                                }
+                                bytesRead = input.read(buffer)
+                                if (bytesRead == -1) break
+                                output.write(buffer, 0, bytesRead)
+                            }
+                            input.close(); output.close(); connection.disconnect()
 
-                        writeEngineLog("downloadAndExtractMnnLibs: $libName downloaded OK (${outFile.length()} bytes)")
-                        success = true
-                        downloadedCount++
-                        break
-                    } catch (e: Exception) {
-                        writeEngineLog("downloadAndExtractMnnLibs: $libName attempt $attempt failed: ${e.message}")
+                            if (outFile.length() < 1000) {
+                                writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) too small (${outFile.length()})")
+                                outFile.delete()
+                                continue
+                            }
+
+                            writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) downloaded OK (${outFile.length()} bytes)")
+                            success = true
+                            downloadedCount++
+                            break
+                        } catch (e: Exception) {
+                            writeEngineLog("downloadAndExtractMnnLibs: $libName ($source) attempt $attempt failed: ${e.message}")
+                        }
+                        if (attempt < maxRetries) Thread.sleep(2000L * attempt)
                     }
-                    if (attempt < maxRetries) Thread.sleep(2000L * attempt)
+                    if (success) break
                 }
 
                 if (!success) {
-                    writeEngineLog("downloadAndExtractMnnLibs: FAILED to download $libName after $maxRetries attempts")
+                    writeEngineLog("downloadAndExtractMnnLibs: FAILED to download $libName from all sources")
                     return false
                 }
             }

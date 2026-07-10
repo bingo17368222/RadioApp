@@ -1334,10 +1334,10 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
-        // v2.4.32: Add debounce to prevent rapid-fire clicking (user was clicking 4x/second)
-        // and add isUserSeeking protection to prevent jitter guard from fighting seeks
         val lastSkipClickTime = longArrayOf(0L)
         val skipDebounceMs = 500L
+        // v2.4.34: Increased reset time from 1500ms to 3000ms - ExoPlayer buffering after seek
+        // can take 2-3 seconds, during which old positions are reported
         val resetSeekRunnable = Runnable { isUserSeeking = false }
 
         fun shouldSkip(): Boolean {
@@ -1347,53 +1347,35 @@ class PlayerActivity : AppCompatActivity() {
             return true
         }
 
-        binding.btnPrevSegment.setOnClickListener {
+        fun performSeek(action: () -> Unit, btnName: String) {
             if (playbackService == null) {
                 Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
+                return
             }
-            if (!shouldSkip()) return@setOnClickListener
+            if (!shouldSkip()) return
             isUserSeeking = true
-            writeJitterLog("[v2.4.32] btnPrevSegment: isUserSeeking=true")
-            playbackService?.jumpToPrevSegment()
+            // v2.4.34: Update lastDisplayedPositionMs to current service position
+            // so jitter guard doesn't fight the seek position
+            val svcPos = playbackService?.getCurrentPosition() ?: 0L
+            lastDisplayedPositionMs = svcPos
+            consecutiveBackwardJumps = 0
+            writeJitterLog("[v2.4.34] $btnName: isUserSeeking=true, svcPos=$svcPos")
+            action()
             window.decorView.removeCallbacks(resetSeekRunnable)
-            window.decorView.postDelayed(resetSeekRunnable, 1500L)
+            window.decorView.postDelayed(resetSeekRunnable, 3000L)
+        }
+
+        binding.btnPrevSegment.setOnClickListener {
+            performSeek({ playbackService?.jumpToPrevSegment() }, "btnPrevSegment")
         }
         binding.btnNextSegment.setOnClickListener {
-            if (playbackService == null) {
-                Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (!shouldSkip()) return@setOnClickListener
-            isUserSeeking = true
-            writeJitterLog("[v2.4.32] btnNextSegment: isUserSeeking=true")
-            playbackService?.jumpToNextSegment()
-            window.decorView.removeCallbacks(resetSeekRunnable)
-            window.decorView.postDelayed(resetSeekRunnable, 1500L)
+            performSeek({ playbackService?.jumpToNextSegment() }, "btnNextSegment")
         }
         binding.btnSkipForward.setOnClickListener {
-            if (playbackService == null) {
-                Toast.makeText(this, "播放服务未就绪", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (!shouldSkip()) return@setOnClickListener
-            isUserSeeking = true
-            writeJitterLog("[v2.4.32] btnSkipForward: isUserSeeking=true")
-            playbackService?.skipForward()
-            window.decorView.removeCallbacks(resetSeekRunnable)
-            window.decorView.postDelayed(resetSeekRunnable, 1500L)
+            performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
-            if (playbackService == null) {
-                Toast.makeText(this, "播放服务未就绪", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (!shouldSkip()) return@setOnClickListener
-            isUserSeeking = true
-            writeJitterLog("[v2.4.32] btnSkipBackward: isUserSeeking=true")
-            playbackService?.skipBackward()
-            window.decorView.removeCallbacks(resetSeekRunnable)
-            window.decorView.postDelayed(resetSeekRunnable, 1500L)
+            performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
         }
         binding.btnClose.setOnClickListener {
             writeJitterLog("btnClose: calling finish() to exit to MainActivity")
@@ -1579,15 +1561,16 @@ class PlayerActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true; isUserSeeking = true }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDragging = false
-                // v2.4.33: Keep isUserSeeking=true for 2s after release to prevent
+                // v2.4.34: Keep isUserSeeking=true for 3s after release to prevent
                 // jitter guard from fighting the seek position update
                 seekBar?.let {
                     val targetPos = it.progress.toLong()
                     lastDisplayedPositionMs = targetPos
+                    consecutiveBackwardJumps = 0
                     playbackService?.seekTo(targetPos)
                 }
                 window.decorView.removeCallbacks(resetSeekRunnable)
-                window.decorView.postDelayed(resetSeekRunnable, 2000L)
+                window.decorView.postDelayed(resetSeekRunnable, 3000L)
             }
         })
     }
