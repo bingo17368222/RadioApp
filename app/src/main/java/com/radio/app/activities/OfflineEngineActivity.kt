@@ -394,18 +394,35 @@ class OfflineEngineActivity : AppCompatActivity() {
         return listOf(originalUrl)
     }
 
-    // [v2.4.21] Download a single file with resume support for MNN multi-file downloads
+    // [v2.4.29] Download a single file with retry and proper resume support
     private fun downloadSingleFile(url: String, outFile: File, engine: EngineInfo, btn: Button, progressBar: ProgressBar?): Boolean {
+        // Skip if already downloaded successfully
+        if (outFile.exists() && outFile.length() > 100) {
+            writeEngineLog("downloadSingleFile: already exists, skipping: ${outFile.name} (${outFile.length()} bytes)")
+            return true
+        }
+
+        val maxRetries = 3
+        for (attempt in 1..maxRetries) {
+            if (downloadCancelled) return false
+            writeEngineLog("downloadSingleFile: attempt $attempt/$maxRetries for ${outFile.name}")
+            val success = downloadSingleFileAttempt(url, outFile, attempt)
+            if (success) return true
+            if (downloadCancelled) return false
+            // Wait before retry
+            try { Thread.sleep(2000L * attempt) } catch (_: InterruptedException) {}
+        }
+        writeEngineLog("downloadSingleFile: FAILED after $maxRetries attempts: ${outFile.name}")
+        return false
+    }
+
+    private fun downloadSingleFileAttempt(url: String, outFile: File, attempt: Int): Boolean {
         try {
-            if (outFile.exists() && outFile.length() > 100) {
-                writeEngineLog("downloadSingleFile: already exists, skipping: ${outFile.name} (${outFile.length()} bytes)")
-                return true
-            }
             val tmpFile = File(outFile.parentFile, outFile.name + ".tmp")
             val existingBytes = if (tmpFile.exists()) tmpFile.length() else 0L
             val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
                 connectTimeout = 30000
-                readTimeout = 60000
+                readTimeout = 120000  // v2.4.29: increased from 60s to 120s for large files
                 if (existingBytes > 0) {
                     setRequestProperty("Range", "bytes=$existingBytes-")
                 }
@@ -416,12 +433,23 @@ class OfflineEngineActivity : AppCompatActivity() {
                 connection.disconnect()
                 return false
             }
-            val totalSize = connection.contentLengthLong + existingBytes
+
+            // v2.4.29: If server returned 200 (not 206) but we have existing bytes,
+            // the server doesn't support range - start fresh to avoid corruption
+            val isResume = responseCode == 206 && existingBytes > 0
+            val output = if (isResume) {
+                java.io.FileOutputStream(tmpFile, true)
+            } else {
+                // Start fresh - delete old tmp file
+                if (tmpFile.exists()) tmpFile.delete()
+                java.io.FileOutputStream(tmpFile, false)
+            }
+            val effectiveExisting = if (isResume) existingBytes else 0L
+
             val input = connection.inputStream
-            val output = java.io.FileOutputStream(tmpFile, existingBytes > 0)
-            val buffer = ByteArray(8192)
+            val buffer = ByteArray(16384)  // v2.4.29: larger buffer for better throughput
             var bytesRead: Int
-            var totalRead = existingBytes
+            var totalRead = effectiveExisting
             while (true) {
                 if (downloadCancelled) {
                     input.close(); output.close(); connection.disconnect()
@@ -441,7 +469,7 @@ class OfflineEngineActivity : AppCompatActivity() {
             writeEngineLog("downloadSingleFile: COMPLETE: ${outFile.name} (${outFile.length()} bytes)")
             return true
         } catch (e: Exception) {
-            writeEngineLog("downloadSingleFile: ERROR for ${outFile.name}: ${e.message}")
+            writeEngineLog("downloadSingleFile: ERROR (attempt $attempt) for ${outFile.name}: ${e.message}")
             return false
         }
     }

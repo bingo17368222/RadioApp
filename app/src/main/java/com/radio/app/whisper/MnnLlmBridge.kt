@@ -4,9 +4,10 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.28 Bridge for MNN-LLM offline model inference.
+ * v2.4.29 Bridge for MNN-LLM offline model inference.
  * Uses JNI to call MNN Llm API via dlopen/dlsym.
- * Requires libMNN.so, libllm.so, libMNN_Express.so, libc++_shared.so in jniLibs.
+ * Requires libMNN.so, libllm.so, libMNN_Express.so, libMNN_Vulkan.so, libMNN_CL.so,
+ * libMNNOpenCV.so, libMNNAudio.so, libmnncore.so, libc++_shared.so in jniLibs.
  */
 class MnnLlmBridge {
     companion object {
@@ -17,31 +18,43 @@ class MnnLlmBridge {
         var lastError: String = ""
             private set
 
+        // Track which libraries failed to load
+        private val loadErrors = mutableListOf<String>()
+
         // Load native libraries in dependency order
+        // v2.4.29: Must load ALL dependencies of libllm.so, not just the base ones
         init {
-            try {
-                System.loadLibrary("MNN")
-                Log.i(TAG, "Loaded libMNN.so")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load libMNN.so: ${e.message}")
+            // libMNN.so has no MNN-specific dependencies
+            tryLib("MNN")
+            // libMNN_Express.so depends on libMNN.so
+            tryLib("MNN_Express")
+            // libMNN_Vulkan.so depends on libMNN.so
+            tryLib("MNN_Vulkan")
+            // libMNN_CL.so depends on libMNN.so
+            tryLib("MNN_CL")
+            // libMNNOpenCV.so depends on libMNN.so + libMNN_Express.so
+            tryLib("MNNOpenCV")
+            // libMNNAudio.so depends on libMNN.so + libMNN_Express.so
+            tryLib("MNNAudio")
+            // libmnncore.so depends on libMNN.so + libjnigraphics.so (system)
+            tryLib("mnncore")
+            // libllm.so depends on ALL of the above
+            tryLib("llm")
+            // Our JNI bridge - depends on nothing at link time (uses dlopen)
+            tryLib("mnn_llm_jni")
+
+            if (loadErrors.isNotEmpty()) {
+                Log.e(TAG, "Failed to load libraries: ${loadErrors.joinToString(", ")}")
             }
+        }
+
+        private fun tryLib(name: String) {
             try {
-                System.loadLibrary("MNN_Express")
-                Log.i(TAG, "Loaded libMNN_Express.so")
+                System.loadLibrary(name)
+                Log.i(TAG, "Loaded lib$name.so")
             } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load libMNN_Express.so: ${e.message}")
-            }
-            try {
-                System.loadLibrary("llm")
-                Log.i(TAG, "Loaded libllm.so")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load libllm.so: ${e.message}")
-            }
-            try {
-                System.loadLibrary("mnn_llm_jni")
-                Log.i(TAG, "Loaded libmnn_llm_jni.so")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "Failed to load libmnn_llm_jni.so: ${e.message}")
+                Log.e(TAG, "Failed to load lib$name.so: ${e.message}")
+                loadErrors.add(name)
             }
         }
 
@@ -93,11 +106,17 @@ class MnnLlmBridge {
             Log.i(TAG, "init: modelDir=${modelDir.absolutePath}, files=$files")
 
             if (!initialized) {
+                // v2.4.29: Check if all native libraries were loaded
+                if (loadErrors.isNotEmpty()) {
+                    lastError = "原生库加载失败: ${loadErrors.joinToString(", ")}"
+                    Log.e(TAG, "init: cannot proceed, libraries failed to load: $loadErrors")
+                    return false
+                }
                 Log.i(TAG, "init: calling nativeInit()...")
                 initialized = nativeInit()
                 if (!initialized) {
-                    lastError = "nativeInit失败: 无法加载MNN原生库(libllm.so)"
-                    Log.e(TAG, "init: nativeInit FAILED - native libraries may not be packaged in APK")
+                    lastError = "nativeInit失败: dlopen(libllm.so)失败，请查看native.log"
+                    Log.e(TAG, "init: nativeInit FAILED - check native.log for dlopen error details")
                     return false
                 }
                 Log.i(TAG, "init: nativeInit OK")
