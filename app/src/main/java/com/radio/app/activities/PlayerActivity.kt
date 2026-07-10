@@ -1360,8 +1360,7 @@ class PlayerActivity : AppCompatActivity() {
             isUserSeeking = true
             writeJitterLog("[v2.4.30] btnSkipForward: isUserSeeking=true, calling skipForward")
             playbackService?.skipForward()
-            // Reset isUserSeeking after 1.5s to allow jitter guard to resume
-            mainHandler.postDelayed({ isUserSeeking = false }, 1500L)
+            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
         }
         binding.btnSkipBackward.setOnClickListener {
             if (playbackService == null) {
@@ -1372,7 +1371,7 @@ class PlayerActivity : AppCompatActivity() {
             isUserSeeking = true
             writeJitterLog("[v2.4.30] btnSkipBackward: isUserSeeking=true, calling skipBackward")
             playbackService?.skipBackward()
-            mainHandler.postDelayed({ isUserSeeking = false }, 1500L)
+            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
         }
         binding.btnClose.setOnClickListener {
             writeJitterLog("btnClose: calling finish() to exit to MainActivity")
