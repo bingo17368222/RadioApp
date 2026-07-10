@@ -703,6 +703,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         maxKnownPosition = pendingStartPosition
                                         player?.seekTo(pendingStartPosition)
                                         positionRestoreRequested = false
+                                        // v2.4.43: CRITICAL FIX - Clear pendingStartPosition!
+                                        // Without this, saveCurrentPosition() was BLOCKED forever
+                                        // because it checks `pendingStartPosition >= 0`.
+                                        // This was the root cause of issue 5: position never saved.
+                                        writeServiceLog("playback", "[v2.4.43] STATE_READY: clearing pendingStartPosition (was $pendingStartPosition)")
+                                        pendingStartPosition = -1L
                                     }
                                     player?.playWhenReady = true
                                     playbackInitializing = false

@@ -29,7 +29,10 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          # v2.4.43: Include C/C++ source files in cache key.
+          # Previous key only had *.gradle* files, so C++ changes
+          # (flash_attn, threads, chat template) were NEVER recompiled.
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/*.c', '**/*.cpp', '**/*.h', '**/CMakeLists.txt') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
 
@@ -78,7 +81,9 @@ jobs:
         run: |
           set -o pipefail
           export PATH="/tmp/gradle-7.5/bin:$PATH"
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          # v2.4.43: Force clean build to ensure native C/C++ code is recompiled.
+          # Previous builds used cached .so files, so C++ changes were lost.
+          gradle clean assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Show Build Log
         if: always() && !cancelled()

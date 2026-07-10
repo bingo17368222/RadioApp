@@ -864,12 +864,17 @@ class PlayerActivity : AppCompatActivity() {
                     val deltaFromTarget = kotlin.math.abs(position - seekTargetPositionMs)
                     if (deltaFromTarget <= 5000L) {
                         // Position is close to target - seek complete, accept it
-                        if (position != lastDisplayedPositionMs) {
-                            writeJitterLog("[v2.4.41] SEEK-LOCK: accept pos=$position (target=$seekTargetPositionMs, delta=${deltaFromTarget}ms) - seek complete")
-                        }
+                        writeJitterLog("[v2.4.43] SEEK-LOCK: accept pos=$position (target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
                         lastDisplayedPositionMs = position
                         displayPosition = position
                         seekTargetPositionMs = -1L  // Clear target
+                        // v2.4.43: Also update stabilization baseline to the accepted position.
+                        // Without this, the next onPositionChanged callback (which might have
+                        // seekTargetPositionMs=-1) would fall through to STAB-HOLD with the
+                        // OLD baseline (e.g., 0 from episode start), and block the position
+                        // even though it's correct.
+                        jitterSyncBaseline = position
+                        jitterSyncTimeMs = now
                         consecutiveBackwardJumps = 0
                     } else {
                         // Position is far from target - ExoPlayer is still buffering
@@ -877,7 +882,7 @@ class PlayerActivity : AppCompatActivity() {
                         displayPosition = lastDisplayedPositionMs
                         // Log occasionally
                         if (consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.4.41] SEEK-LOCK: hold at $lastDisplayedPositionMs (ignoring pos=$position, target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
+                            writeJitterLog("[v2.4.43] SEEK-LOCK: hold at $lastDisplayedPositionMs (ignoring pos=$position, target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
                         }
                         consecutiveBackwardJumps++
                     }
