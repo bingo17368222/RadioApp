@@ -110,89 +110,54 @@ class MnnLlmBridge {
                 mnnLog("init: extLibFiles=$libFiles")
 
                 if (!initialized) {
-                    // v2.4.35: Copy .so files to internal storage because Android 7+ blocks
-                    // dlopen from external storage (/storage/emulated/0/...)
-                    val internalLibsDir = if (context != null) {
-                        File(context.filesDir, "mnn-libs")
-                    } else {
-                        File("/data/data/com.radio.app/files/mnn-libs")
-                    }
-                    mnnLog("init: internalLibsDir=${internalLibsDir.absolutePath}")
+                    // v2.4.48: .so files are now bundled in APK jniLibs.
+                    // Try nativeInit with empty path first (uses default dlopen search).
+                    mnnLog("init: using bundled .so files (v2.4.48), calling nativeInit('')...")
+                    initialized = nativeInit("")
+                    mnnLog("init: nativeInit('') returned $initialized")
 
-                    if (!internalLibsDir.exists()) internalLibsDir.mkdirs()
-
-                    // Check if we need to copy (if internal dir is empty or missing libllm.so)
-                    // v2.4.38: Also re-copy if any .so file size doesn't match known-good size
-                    val knownGoodSizes = mapOf(
-                        "libMNN.so" to 2410968L,
-                        "libMNN_Express.so" to 747344L,
-                        "libMNN_Vulkan.so" to 775696L,
-                        "libMNN_CL.so" to 2212056L,
-                        "libMNNOpenCV.so" to 264424L,
-                        "libMNNAudio.so" to 70952L,
-                        "libmnncore.so" to 22816L,
-                        "libllm.so" to 1257112L
-                    )
-                    var needsCopy = !File(internalLibsDir, "libllm.so").exists()
-                    // Check if any existing file has wrong size
-                    if (!needsCopy) {
-                        for ((name, expectedSize) in knownGoodSizes) {
-                            val f = File(internalLibsDir, name)
-                            if (!f.exists() || f.length() != expectedSize) {
-                                needsCopy = true
-                                mnnLog("init: $name needs re-copy (exists=${f.exists()}, size=${if (f.exists()) f.length() else 0}, expected=$expectedSize)")
-                                break
-                            }
-                        }
-                    }
-                    mnnLog("init: needsCopy=$needsCopy, extLibsDir.exists=${extLibsDir.exists()}")
-                    if (needsCopy && extLibsDir.exists()) {
-                        mnnLog("init: copying .so files from ${extLibsDir.absolutePath} to ${internalLibsDir.absolutePath}")
-                        // v2.4.38: Delete existing internal files that have wrong size
-                        for ((libName, expectedSize) in knownGoodSizes) {
-                            val existing = File(internalLibsDir, libName)
-                            if (existing.exists() && existing.length() != expectedSize) {
-                                mnnLog("init: deleting corrupted $libName (size=${existing.length()}, expected=$expectedSize)")
-                                existing.delete()
-                            }
-                        }
-                        val requiredLibs = listOf(
-                            "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
-                            "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
-                        )
-                        for (libName in requiredLibs) {
-                            val srcFile = File(extLibsDir, libName)
-                            val dstFile = File(internalLibsDir, libName)
-                            mnnLog("init: checking $libName: src exists=${srcFile.exists()}, src size=${if (srcFile.exists()) srcFile.length() else 0}")
-                            if (srcFile.exists() && srcFile.length() > 1000) {
-                                if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
-                                    srcFile.inputStream().use { input ->
-                                        dstFile.outputStream().use { output -> input.copyTo(output) }
-                                    }
-                                    dstFile.setExecutable(true, false)
-                                    mnnLog("init: copied $libName (${dstFile.length()} bytes)")
-                                } else {
-                                    mnnLog("init: $libName already copied, same size")
-                                }
-                            } else {
-                                mnnLog("init: ERROR missing $libName in external libs dir")
-                            }
-                        }
-                    }
-
-                    val internalFiles = internalLibsDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
-                    mnnLog("init: internalLibs after copy: $internalFiles")
-
-                    mnnLog("init: calling nativeInit(libDir=${internalLibsDir.absolutePath})...")
-                    initialized = nativeInit(internalLibsDir.absolutePath)
-                    mnnLog("init: nativeInit returned $initialized")
                     if (!initialized) {
-                        lastError = "nativeInit失败: 无法加载MNN运行库(检查mnn-libs目录)"
+                        // Fallback: try loading from internal storage (old method)
+                        mnnLog("init: bundled load failed, trying external storage copy...")
+                        val internalLibsDir = if (context != null) {
+                            File(context.filesDir, "mnn-libs")
+                        } else {
+                            File("/data/data/com.radio.app/files/mnn-libs")
+                        }
+                        mnnLog("init: internalLibsDir=${internalLibsDir.absolutePath}")
+                        if (!internalLibsDir.exists()) internalLibsDir.mkdirs()
+
+                        if (extLibsDir.exists()) {
+                            val requiredLibs = listOf(
+                                "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
+                                "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
+                            )
+                            for (libName in requiredLibs) {
+                                val srcFile = File(extLibsDir, libName)
+                                val dstFile = File(internalLibsDir, libName)
+                                if (srcFile.exists() && srcFile.length() > 1000) {
+                                    if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
+                                        srcFile.inputStream().use { input ->
+                                            dstFile.outputStream().use { output -> input.copyTo(output) }
+                                        }
+                                        dstFile.setExecutable(true, false)
+                                        mnnLog("init: copied $libName (${dstFile.length()} bytes)")
+                                    }
+                                }
+                            }
+                        }
+
+                        mnnLog("init: calling nativeInit(libDir=${internalLibsDir.absolutePath})...")
+                        initialized = nativeInit(internalLibsDir.absolutePath)
+                        mnnLog("init: nativeInit returned $initialized")
+                    }
+
+                    if (!initialized) {
+                        lastError = "nativeInit失败: 无法加载MNN运行库"
                         mnnLog("init: FAILED - $lastError")
                         log.close()
                         return false
                     }
-                    // v2.4.39: Don't close log here - mnnLog() is still used below
                     mnnLog("init: nativeInit OK")
                 }
 

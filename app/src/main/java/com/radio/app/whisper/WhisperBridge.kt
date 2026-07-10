@@ -23,7 +23,45 @@ class WhisperBridge {
 
         fun loadNativeLibraries(codeCacheDir: java.io.File, modelsDir: java.io.File?): Boolean {
             if (loaded) return true
+            // v2.4.48: .so files are now bundled in APK jniLibs. Use System.loadLibrary directly.
             val soFiles = listOf(
+                "ggml-base-whisper",
+                "ggml-cpu-whisper",
+                "ggml-whisper",
+                "whisper"
+            )
+            var allLoaded = true
+            for (soName in soFiles) {
+                try {
+                    System.loadLibrary(soName)
+                    Log.d(TAG, "Loaded bundled: lib$soName.so")
+                } catch (e: UnsatisfiedLinkError) {
+                    if (e.message?.contains("already loaded") != true) {
+                        Log.e(TAG, "Failed to load lib$soName.so: ${e.message}")
+                        allLoaded = false
+                    }
+                }
+            }
+            if (allLoaded) {
+                whisperSoPath = "libwhisper.so"  // dlopen will find it via default search path
+                try {
+                    System.loadLibrary("whisper_jni")
+                    Log.d(TAG, "Loaded JNI bridge: libwhisper_jni.so")
+                } catch (e: UnsatisfiedLinkError) {
+                    if (e.message?.contains("already loaded") != true) {
+                        Log.e(TAG, "Failed to load libwhisper_jni.so: ${e.message}")
+                        allLoaded = false
+                    }
+                }
+            }
+            if (allLoaded) {
+                loaded = true
+                Log.d(TAG, "All native libraries loaded (bundled), whisperSoPath=$whisperSoPath")
+                return true
+            }
+            // v2.4.48: Fallback to old method if bundled libs not found
+            Log.w(TAG, "Bundled libs failed, trying external storage...")
+            val externalSoFiles = listOf(
                 "libggml-base-whisper.so",
                 "libggml-cpu-whisper.so",
                 "libggml-whisper.so",
@@ -34,12 +72,12 @@ class WhisperBridge {
 
             for (searchDir in searchDirs) {
                 val foundFiles = mutableMapOf<String, java.io.File>()
-                searchDir.walkTopDown().filter { it.isFile && it.name in soFiles }.forEach {
+                searchDir.walkTopDown().filter { it.isFile && it.name in externalSoFiles }.forEach {
                     foundFiles[it.name] = it
                 }
                 if (foundFiles.containsKey("libwhisper.so")) {
-                    var allLoaded = true
-                    for (soName in soFiles) {
+                    allLoaded = true
+                    for (soName in externalSoFiles) {
                         val soFile = foundFiles[soName] ?: continue
                         try {
                             val targetFile = java.io.File(codeCacheDir, soName)

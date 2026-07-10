@@ -171,11 +171,20 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
             return JNI_FALSE;
         }
     } else {
-        // Fallback: try system loadLibrary path (for backward compatibility)
-        mnn_log("nativeInit: no libDir, trying system path...");
+        // v2.4.48: .so files bundled in APK jniLibs. Use default dlopen search.
+        mnn_log("nativeInit: no libDir, loading bundled .so via system path...");
         g_libMNN = dlopen("libMNN.so", RTLD_NOW | RTLD_LOCAL);
+        if (!g_libMNN) {
+            mnn_logf("nativeInit: dlopen(\"libMNN.so\") FAILED: %s", dlerror() ?: "unknown");
+            return JNI_FALSE;
+        }
         g_libMNN_Express = dlopen("libMNN_Express.so", RTLD_NOW | RTLD_LOCAL);
-        g_libllm = dlopen("libllm.so", RTLD_NOW | RTLD_LOCAL);
+        g_libMNN_Vulkan = dlopen("libMNN_Vulkan.so", RTLD_NOW | RTLD_LOCAL);
+        g_libMNN_CL = dlopen("libMNN_CL.so", RTLD_NOW | RTLD_LOCAL);
+        g_libMNNOpenCV = dlopen("libMNNOpenCV.so", RTLD_NOW | RTLD_LOCAL);
+        g_libMNNAudio = dlopen("libMNNAudio.so", RTLD_NOW | RTLD_LOCAL);
+        g_libmnncore = dlopen("libmnncore.so", RTLD_NOW | RTLD_LOCAL);
+        g_libllm = dlopen("libllm.so", RTLD_NOW | RTLD_GLOBAL);
         if (!g_libllm) {
             mnn_logf("nativeInit: dlopen(\"libllm.so\") FAILED: %s", dlerror() ?: "unknown");
             return JNI_FALSE;
