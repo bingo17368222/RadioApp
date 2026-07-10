@@ -147,6 +147,10 @@ class SubtitleGeneratorService : Service() {
     // where heap drops to 0-1MB and whisper_full() silently returns 0 segments.
     private val whisperLock = Object()
     @Volatile private var whisperInUse = false
+    // v2.4.38: Prevent concurrent whisper processing.
+    // Log showed two processWhisperInChunks running simultaneously,
+    // causing extreme slowdown (chunk took 124s instead of 14s).
+    @Volatile private var whisperProcessingActive = false
 
     override fun onCreate() {
         super.onCreate()
@@ -2481,6 +2485,15 @@ class SubtitleGeneratorService : Service() {
     private fun generateWithWhisper(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
+        // v2.4.38: Prevent concurrent whisper processing.
+        // Log showed two processWhisperInChunks running simultaneously,
+        // causing chunk times of 124s instead of 14s.
+        if (whisperProcessingActive) {
+            logToFile("generateWithWhisper: [v2.4.38] SKIPPED - another whisper processing is active")
+            ctx.log("Whisper处理跳过：另一个处理正在进行中")
+            return false
+        }
+        whisperProcessingActive = true
         logToFile("generateWithWhisper: START [v2.1.2], episodeId=$episodeId, audioUrl=$audioUrl")
 
         // [v2.1.2] Check if this episode caused a native crash recently.
@@ -2689,6 +2702,9 @@ class SubtitleGeneratorService : Service() {
                 callback.onError("Whisper处理失败: $detail")
             }
             return false
+        } finally {
+            // v2.4.38: Always clear the processing flag
+            whisperProcessingActive = false
         }
     }
 
@@ -3097,11 +3113,12 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
-                // [v2.4.36] Cooldown reduced to 500ms - 2s was wasting 40s total on 20 chunks.
-                // Log showed total time=389s with 2s cooldown; removing it saves ~40s.
-                // No SIGABRT crash in v2.4.35 (context recreation disabled).
+                // [v2.4.38] Cooldown 2s - prevents thermal throttling.
+                // Log showed: with 500ms cooldown, chunk times varied from 8s to 124s.
+                // With 2s cooldown, v2.4.35 completed all 20 chunks at 0.77x consistently.
+                // The concurrency guard (v2.4.38) also prevents the 124s extreme slowdown.
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    Thread.sleep(500)
+                    Thread.sleep(2000)
                 }
 
                 totalSamplesRead += samplesToRead

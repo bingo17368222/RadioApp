@@ -115,10 +115,40 @@ class MnnLlmBridge {
                     if (!internalLibsDir.exists()) internalLibsDir.mkdirs()
 
                     // Check if we need to copy (if internal dir is empty or missing libllm.so)
-                    val needsCopy = !File(internalLibsDir, "libllm.so").exists()
+                    // v2.4.38: Also re-copy if any .so file size doesn't match known-good size
+                    val knownGoodSizes = mapOf(
+                        "libMNN.so" to 2410968L,
+                        "libMNN_Express.so" to 747344L,
+                        "libMNN_Vulkan.so" to 775696L,
+                        "libMNN_CL.so" to 2212056L,
+                        "libMNNOpenCV.so" to 264424L,
+                        "libMNNAudio.so" to 70952L,
+                        "libmnncore.so" to 22816L,
+                        "libllm.so" to 1257112L
+                    )
+                    var needsCopy = !File(internalLibsDir, "libllm.so").exists()
+                    // Check if any existing file has wrong size
+                    if (!needsCopy) {
+                        for ((name, expectedSize) in knownGoodSizes) {
+                            val f = File(internalLibsDir, name)
+                            if (!f.exists() || f.length() != expectedSize) {
+                                needsCopy = true
+                                mnnLog("init: $name needs re-copy (exists=${f.exists()}, size=${if (f.exists()) f.length() else 0}, expected=$expectedSize)")
+                                break
+                            }
+                        }
+                    }
                     mnnLog("init: needsCopy=$needsCopy, extLibsDir.exists=${extLibsDir.exists()}")
                     if (needsCopy && extLibsDir.exists()) {
                         mnnLog("init: copying .so files from ${extLibsDir.absolutePath} to ${internalLibsDir.absolutePath}")
+                        // v2.4.38: Delete existing internal files that have wrong size
+                        for ((libName, expectedSize) in knownGoodSizes) {
+                            val existing = File(internalLibsDir, libName)
+                            if (existing.exists() && existing.length() != expectedSize) {
+                                mnnLog("init: deleting corrupted $libName (size=${existing.length()}, expected=$expectedSize)")
+                                existing.delete()
+                            }
+                        }
                         val requiredLibs = listOf(
                             "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
                             "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"

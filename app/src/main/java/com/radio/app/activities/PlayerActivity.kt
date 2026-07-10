@@ -3003,6 +3003,14 @@ class PlayerActivity : AppCompatActivity() {
                     writeJitterLog("onNewIntent: synced to service episode: ${svcEpisode.title}")
                 } else {
                     writeJitterLog("onNewIntent: service playing same episode or no episode, just update UI")
+                    // v2.4.38: Update jitter guard baseline to current service position.
+                    // Same fix as onServiceConnected - without this, the jitter guard
+                    // compares against the stale pre-onPause position, causing jitter.
+                    val svcPos = playbackService?.getCurrentPosition() ?: 0L
+                    lastDisplayedPositionMs = svcPos
+                    jitterSyncBaseline = svcPos
+                    jitterSyncTimeMs = System.currentTimeMillis()
+                    consecutiveBackwardJumps = 0
                     updateUI()
                 }
             } else {

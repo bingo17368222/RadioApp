@@ -1339,15 +1339,36 @@ class OfflineEngineActivity : AppCompatActivity() {
                 "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
             )
 
+            // v2.4.38: Known-good file sizes for verification.
+            // If existing file doesn't match, delete and re-download.
+            val knownGoodSizes = mapOf(
+                "libMNN.so" to 2410968L,
+                "libMNN_Express.so" to 747344L,
+                "libMNN_Vulkan.so" to 775696L,
+                "libMNN_CL.so" to 2212056L,
+                "libMNNOpenCV.so" to 264424L,
+                "libMNNAudio.so" to 70952L,
+                "libmnncore.so" to 22816L,
+                "libllm.so" to 1257112L
+            )
+
             var downloadedCount = 0
             for (libName in requiredLibs) {
                 if (downloadCancelled) return false
 
                 val outFile = File(libsDir, libName)
-                if (outFile.exists() && outFile.length() > 1000) {
-                    writeEngineLog("downloadAndExtractMnnLibs: $libName already exists (${outFile.length()} bytes), skipping")
+                // v2.4.38: Verify file size against known-good size.
+                // The v2.4.36 truncated libMNN_CL.so (2120998 vs 2212056) was
+                // being skipped because it "already exists". Now we verify.
+                val expectedSize = knownGoodSizes[libName] ?: 1000L
+                if (outFile.exists() && outFile.length() == expectedSize) {
+                    writeEngineLog("downloadAndExtractMnnLibs: $libName verified OK (${outFile.length()} bytes)")
                     downloadedCount++
                     continue
+                }
+                if (outFile.exists() && outFile.length() != expectedSize) {
+                    writeEngineLog("downloadAndExtractMnnLibs: $libName SIZE MISMATCH (expected=$expectedSize actual=${outFile.length()}), re-downloading")
+                    outFile.delete()
                 }
 
                 // v2.4.34: Try jsDelivr CDN first, then GitHub release
