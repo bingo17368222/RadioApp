@@ -3130,12 +3130,14 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
-                // [v2.4.38] Cooldown 2s - prevents thermal throttling.
-                // Log showed: with 500ms cooldown, chunk times varied from 8s to 124s.
-                // With 2s cooldown, v2.4.35 completed all 20 chunks at 0.77x consistently.
-                // The concurrency guard (v2.4.38) also prevents the 124s extreme slowdown.
+                // [v2.4.41] Cooldown reduced from 2s to 300ms.
+                // v2.4.38 used 2s to prevent thermal throttling with 8 threads.
+                // v2.4.40 reduced threads to 2, which generates 4x less heat.
+                // With 2 threads, 300ms is sufficient to prevent throttling.
+                // 2s cooldown was wasting: 120 chunks * 2s = 240s = 4min of pure sleeping.
+                // Expected speed improvement: from ~0.77x to ~1.3x.
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    Thread.sleep(2000)
+                    Thread.sleep(300)
                 }
 
                 totalSamplesRead += samplesToRead

@@ -84,6 +84,9 @@ class PlayerActivity : AppCompatActivity() {
     // backward jumps are legitimate and should NOT be blocked.
     private var lastJitterEpisodeId: String? = null
     private var isUserSeeking = false
+    // [v2.4.41] Seek target position and reset runnable (class-level for cross-method access)
+    private var seekTargetPositionMs = -1L  // -1 = no active seek target
+    private val resetSeekRunnable = Runnable { isUserSeeking = false; seekTargetPositionMs = -1L }
     // [v2.0.72] Issue 1 Fix: Post-sync stabilization. After onResume/onServiceConnected syncs to
     // service position, ExoPlayer may deliver a series of decreasing positions as it re-buffers.
     // [v2.0.76] Issue 1 Fix: Jitter guard stabilization.
@@ -841,46 +844,74 @@ class PlayerActivity : AppCompatActivity() {
                     }
                 }
 
-                // [v2.0.76] Issue 1 Fix: Jitter guard - multiple layers of protection against backward jumps:
-                // 1. During stabilization (5s after onResume/episode change): NEVER accept ANY backward jump
-                // 2. Position=0 or near-0 (<5s) is NEVER accepted as backward if last position >30s (player reset/buffering)
-                // 3. After stabilization: only accept backward jumps >=300s (genuine episode switch/seek)
-                // 4. After user presses pause, ignore isPlaying race conditions for 2s
+                // [v2.4.41] COMPLETE REWRITE of jitter guard.
+                // Old approach: detect backward jumps and HOLD them. Failed because:
+                //   - During isUserSeeking, ALL positions were accepted (including 0, old pos)
+                //   - Stabilization was too short (1s) for app switch-back
+                //   - Couldn't distinguish transitional ExoPlayer positions from real ones
+                //
+                // New approach: "Seek Position Lock"
+                // 1. During user seek (isUserSeeking + seekTargetPositionMs):
+                //    Only accept positions within ±5s of the target. HOLD everything else.
+                // 2. During stabilization (app switch-back):
+                //    Only accept positions within ±30s of baseline. HOLD everything else.
+                // 3. After stabilization: accept forward progress and large backward jumps (>=300s)
                 val inStabilization = (now - jitterSyncTimeMs) < jitterStabilizeMs
                 val recentPause = (now - lastPauseIntentTimeMs) < 2000L
-                val isPositionNearZero = position < 5000L && lastDisplayedPositionMs > 30000L
 
-                // [v2.4.16] Fix: If this is a stale callback enqueued before onResume, skip it
-                // to prevent progress from flickering back to old position
-                if (lastOnResumeTimestampMs > 0 && now - lastOnResumeTimestampMs < 500L
-                    && position < lastDisplayedPositionMs - 2000 && !isUserSeeking) {
-                    writeJitterLog("[v2.4.16] onPositionChanged: skipping stale callback pos=$position < lastPos=$lastDisplayedPositionMs (within 500ms of onResume)")
-                    return@runOnUiThread
-                }
-
-                if (position < lastDisplayedPositionMs - 2000 && !isUserSeeking) {
+                // [v2.4.41] SEEK LOCK: During user seek, only accept positions near target
+                if (isUserSeeking && seekTargetPositionMs >= 0) {
+                    val deltaFromTarget = kotlin.math.abs(position - seekTargetPositionMs)
+                    if (deltaFromTarget <= 5000L) {
+                        // Position is close to target - seek complete, accept it
+                        if (position != lastDisplayedPositionMs) {
+                            writeJitterLog("[v2.4.41] SEEK-LOCK: accept pos=$position (target=$seekTargetPositionMs, delta=${deltaFromTarget}ms) - seek complete")
+                        }
+                        lastDisplayedPositionMs = position
+                        displayPosition = position
+                        seekTargetPositionMs = -1L  // Clear target
+                        consecutiveBackwardJumps = 0
+                    } else {
+                        // Position is far from target - ExoPlayer is still buffering
+                        // HOLD at last displayed position (which was set to target in performSeek)
+                        displayPosition = lastDisplayedPositionMs
+                        // Log occasionally
+                        if (consecutiveBackwardJumps % 5 == 0) {
+                            writeJitterLog("[v2.4.41] SEEK-LOCK: hold at $lastDisplayedPositionMs (ignoring pos=$position, target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
+                        }
+                        consecutiveBackwardJumps++
+                    }
+                } else if (inStabilization) {
+                    // [v2.4.41] STABILIZATION: During app switch-back, only accept positions
+                    // close to the baseline (±30s). This prevents both forward and backward jitter.
+                    val deltaFromBaseline = kotlin.math.abs(position - jitterSyncBaseline)
+                    if (deltaFromBaseline <= 30000L) {
+                        // Position is close to baseline - accept it
+                        lastDisplayedPositionMs = position
+                        displayPosition = position
+                        consecutiveBackwardJumps = 0
+                    } else {
+                        // Position is far from baseline - HOLD
+                        displayPosition = lastDisplayedPositionMs
+                        if (consecutiveBackwardJumps == 0 || consecutiveBackwardJumps % 5 == 0) {
+                            writeJitterLog("[v2.4.41] STAB-HOLD: keep $lastDisplayedPositionMs (ignoring pos=$position, baseline=$jitterSyncBaseline, delta=${deltaFromBaseline}ms, stabRemaining=${jitterStabilizeMs - (now - jitterSyncTimeMs)}ms)")
+                        }
+                        consecutiveBackwardJumps++
+                    }
+                } else if (position < lastDisplayedPositionMs - 2000 && !isUserSeeking) {
+                    // [v2.4.41] Post-stabilization backward jump handling
                     val backwardDelta = lastDisplayedPositionMs - position
-                    consecutiveBackwardJumps++
+                    val isPositionNearZero = position < 5000L && lastDisplayedPositionMs > 30000L
 
-                    // [v2.0.76] Never accept position=0 as legitimate backward jump (player reset artifact)
-                    // Never accept any backward jump during stabilization regardless of size/consec count
                     if (isPositionNearZero) {
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 10 == 0) {
-                            writeJitterLog("[v2.0.76] ZERO-BLOCK: keeping $lastDisplayedPositionMs (ignoring near-zero pos=$position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps)")
+                            writeJitterLog("[v2.4.41] ZERO-BLOCK: keeping $lastDisplayedPositionMs (ignoring near-zero pos=$position, delta=${backwardDelta}ms)")
                         }
-                    // [v2.0.86] During stabilization: HOLD all backward jumps (v2.0.81 approach).
-                    // v2.0.84 added STAB-ACCEPT for consec>3, but with the new skip protection
-                    // (0 skips execute during blackout+breaker), no backward jumps should be
-                    // reported during stabilization anyway. If any leak through, HOLD them.
-                    } else if (inStabilization) {
-                        displayPosition = lastDisplayedPositionMs
-                        if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.0.86] STAB-HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, stabRemaining=${jitterStabilizeMs - (now - jitterSyncTimeMs)}ms)")
-                        }
+                        consecutiveBackwardJumps++
                     } else if (backwardDelta >= 300_000L && !recentPause) {
                         // Genuine large backward jump: episode switch or user seek to earlier position
-                        writeJitterLog("[v2.0.76] LEGIT-BACK: accepting $lastDisplayedPositionMs->$position (delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps)")
+                        writeJitterLog("[v2.4.41] LEGIT-BACK: accepting $lastDisplayedPositionMs->$position (delta=${backwardDelta}ms)")
                         lastDisplayedPositionMs = position
                         displayPosition = position
                         jitterSyncTimeMs = now
@@ -889,16 +920,16 @@ class PlayerActivity : AppCompatActivity() {
                     } else {
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 10 == 0) {
-                            writeJitterLog("[v2.0.76] HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms, consec=$consecutiveBackwardJumps, recentPause=$recentPause)")
+                            writeJitterLog("[v2.4.41] HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms)")
                         }
+                        consecutiveBackwardJumps++
                     }
-                } else if (position >= lastDisplayedPositionMs - 2000 || isUserSeeking) {
-                    if (position > lastDisplayedPositionMs) {
-                        if (consecutiveBackwardJumps > 0) {
-                            writeJitterLog("[v2.0.76] FORWARD after $consecutiveBackwardJumps backward jumps: $lastDisplayedPositionMs->$position")
-                        }
-                        consecutiveBackwardJumps = 0
+                } else {
+                    // [v2.4.41] Normal forward progress - accept
+                    if (position > lastDisplayedPositionMs && consecutiveBackwardJumps > 0) {
+                        writeJitterLog("[v2.4.41] FORWARD after $consecutiveBackwardJumps holds: $lastDisplayedPositionMs->$position")
                     }
+                    consecutiveBackwardJumps = 0
                     lastDisplayedPositionMs = position
                     displayPosition = position
                 }
@@ -1220,7 +1251,16 @@ class PlayerActivity : AppCompatActivity() {
         segmentAdapter?.setOnSegmentClickListener(object : VoiceSegmentAdapter.OnSegmentClickListener {
             override fun onSegmentClick(position: Int, segment: VoiceSegment) {
                 // Feature C: click to seek
-                playbackService?.seekTo(segment.start)
+                // v2.4.41: Use seek lock to prevent jitter
+                val targetPos = segment.start
+                isUserSeeking = true
+                seekTargetPositionMs = targetPos
+                lastDisplayedPositionMs = targetPos
+                consecutiveBackwardJumps = 0
+                writeJitterLog("[v2.4.41] onSegmentClick: seekTarget=$targetPos")
+                playbackService?.seekTo(targetPos)
+                window.decorView.removeCallbacks(resetSeekRunnable)
+                window.decorView.postDelayed(resetSeekRunnable, 5000L)
             }
             override fun onSegmentLongClick(position: Int, segment: VoiceSegment) {
                 val isDry = !segment.isEffectiveDry()
@@ -1347,7 +1387,7 @@ class PlayerActivity : AppCompatActivity() {
         val skipDebounceMs = 300L
         // v2.4.34: Increased reset time from 1500ms to 3000ms - ExoPlayer buffering after seek
         // can take 2-3 seconds, during which old positions are reported
-        val resetSeekRunnable = Runnable { isUserSeeking = false }
+        // v2.4.41: resetSeekRunnable is now a class-level field (used in multiple methods)
 
         fun shouldSkip(): Boolean {
             val now = System.currentTimeMillis()
@@ -1363,17 +1403,28 @@ class PlayerActivity : AppCompatActivity() {
             }
             if (!shouldSkip()) return
             isUserSeeking = true
-            // v2.4.34: Update lastDisplayedPositionMs to current service position
-            // so jitter guard doesn't fight the seek position
-            val svcPos = playbackService?.getCurrentPosition() ?: 0L
-            lastDisplayedPositionMs = svcPos
+            // v2.4.41: Record current position BEFORE seek for target calculation
+            val svcPosBefore = playbackService?.getCurrentPosition() ?: 0L
             consecutiveBackwardJumps = 0
-            writeJitterLog("[v2.4.34] $btnName: isUserSeeking=true, svcPos=$svcPos")
+            writeJitterLog("[v2.4.41] $btnName: isUserSeeking=true, svcPosBefore=$svcPosBefore")
             action()
+            // v2.4.41: After seek action, get the NEW position as the seek target.
+            // ExoPlayer updates its position immediately after seekTo(), even before buffering completes.
+            // This is the position we want to lock onto.
+            val svcPosAfter = playbackService?.getCurrentPosition() ?: 0L
+            if (svcPosAfter > 0) {
+                seekTargetPositionMs = svcPosAfter
+                lastDisplayedPositionMs = svcPosAfter  // Show target position immediately
+                writeJitterLog("[v2.4.41] $btnName: seekTarget=$svcPosAfter (was $svcPosBefore)")
+            } else {
+                // Service reports 0 - keep target as svcPosBefore (fallback)
+                seekTargetPositionMs = svcPosBefore
+                writeJitterLog("[v2.4.41] $btnName: svcPosAfter=0, using svcPosBefore=$svcPosBefore as target")
+            }
             window.decorView.removeCallbacks(resetSeekRunnable)
-            // v2.4.40: Increased from 3s to 5s - ExoPlayer needs more time to buffer
-            // on slow connections. 3s was too short, causing jitter guard to kick in
-            // before buffering completed.
+            // v2.4.41: Keep 5s window. SEEK-LOCK will clear target as soon as
+            // ExoPlayer reports a position close to target (seek complete).
+            // 5s is the maximum time to wait for buffering.
             window.decorView.postDelayed(resetSeekRunnable, 5000L)
         }
 
@@ -1501,7 +1552,9 @@ class PlayerActivity : AppCompatActivity() {
                                     writeJitterLog("[v2.4.30] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
 
                                     if (results != null && results.isNotEmpty()) {
-                                        segments = results.map { r ->
+                                        // v2.4.41: Merge consecutive segments of the same type
+                                        // (same as keyword-based path in generateContentBasedSegments)
+                                        val rawSegments = results.map { r ->
                                             VoiceSegment().apply {
                                                 this.start = r.start
                                                 this.end = r.end
@@ -1510,6 +1563,23 @@ class PlayerActivity : AppCompatActivity() {
                                                 this.isSimulated = false
                                             }
                                         }
+                                        val mergedSegments = mutableListOf<VoiceSegment>()
+                                        for (seg in rawSegments) {
+                                            val last = mergedSegments.lastOrNull()
+                                            if (last != null && last.hasVoice == seg.hasVoice) {
+                                                last.end = seg.end
+                                            } else {
+                                                mergedSegments.add(VoiceSegment().apply {
+                                                    this.start = seg.start
+                                                    this.end = seg.end
+                                                    this.hasVoice = seg.hasVoice
+                                                    this.label = seg.label
+                                                    this.isSimulated = false
+                                                })
+                                            }
+                                        }
+                                        segments = mergedSegments
+                                        writeJitterLog("[v2.4.41] btnAiSegment: MNN merged ${rawSegments.size} → ${mergedSegments.size} segments (dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}})")
                                     } else {
                                         writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM returned no results")
                                         runOnUiThread { Toast.makeText(this, "MNN分析无结果，请检查日志", Toast.LENGTH_LONG).show() }
@@ -1573,16 +1643,17 @@ class PlayerActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true; isUserSeeking = true }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDragging = false
-                // v2.4.34: Keep isUserSeeking=true for 3s after release to prevent
-                // jitter guard from fighting the seek position update
+                // v2.4.41: Set seek target to lock position during buffering
                 seekBar?.let {
                     val targetPos = it.progress.toLong()
+                    seekTargetPositionMs = targetPos
                     lastDisplayedPositionMs = targetPos
                     consecutiveBackwardJumps = 0
+                    writeJitterLog("[v2.4.41] seekBar: seekTarget=$targetPos")
                     playbackService?.seekTo(targetPos)
                 }
                 window.decorView.removeCallbacks(resetSeekRunnable)
-                window.decorView.postDelayed(resetSeekRunnable, 3000L)
+                window.decorView.postDelayed(resetSeekRunnable, 5000L)
             }
         })
     }
@@ -1867,8 +1938,15 @@ class PlayerActivity : AppCompatActivity() {
         // [v2.1.5] Execute pending seek from search result
         if (pendingSeekMs > 0 && playbackService?.isPrepared() == true) {
             writeJitterLog("updateUI: executing pending seek to $pendingSeekMs ms")
+            // v2.4.41: Use seek lock
+            seekTargetPositionMs = pendingSeekMs
+            lastDisplayedPositionMs = pendingSeekMs
+            isUserSeeking = true
+            consecutiveBackwardJumps = 0
             playbackService?.seekTo(pendingSeekMs)
             pendingSeekMs = -1L
+            window.decorView.removeCallbacks(resetSeekRunnable)
+            window.decorView.postDelayed(resetSeekRunnable, 5000L)
         }
         // 同步seekbar位置
         if (playbackService?.isPrepared() == true) {
@@ -2848,12 +2926,14 @@ class PlayerActivity : AppCompatActivity() {
         // Check if service was already connected and had valid position BEFORE this onResume.
         // If so (normal background→foreground, Activity not destroyed), the callback was updating
         // lastDisplayedPositionMs continuously in the background, so the position is already
-        // accurate. Use a SHORT stabilization (1s) instead of 5s to avoid "frozen progress" feel.
+        // accurate. Use a SHORT stabilization (3s) instead of 5s to avoid "frozen progress" feel.
+        // v2.4.41: Increased from 1s to 3s. 1s was too short - ExoPlayer may report
+        // stale/zero positions for 2-3 seconds after coming back from background.
         // If service is NOT ready or position is 0 (fresh activity/recreate), use full 5s stabilization.
         val svcPos = if (serviceBound && playbackService != null) playbackService?.getCurrentPosition() ?: 0L else 0L
         val svcDur = if (serviceBound && playbackService != null) playbackService?.getDuration() ?: 0L else 0L
         val wasAlreadyConnected = serviceBound && svcPos > 2000
-        jitterStabilizeMs = if (wasAlreadyConnected) 1000L else JITTER_STABILIZE_MS_DEFAULT
+        jitterStabilizeMs = if (wasAlreadyConnected) 3000L else JITTER_STABILIZE_MS_DEFAULT  // v2.4.41: 1s→3s
         jitterSyncTimeMs = syncTime
         consecutiveBackwardJumps = 0
         writeJitterLog("[v2.3.1] onResume: stabilization STARTED (${jitterStabilizeMs}ms), svcPos=$svcPos, cachedPos=$cachedPos, cachedEpId=$cachedEpId, serviceBound=$serviceBound, wasAlreadyConnected=$wasAlreadyConnected")
@@ -3082,9 +3162,16 @@ class PlayerActivity : AppCompatActivity() {
                 restoreBackgroundResults()
                 // [v2.1.8] If same episode, seek immediately
                 if (pendingSeekMs > 0) {
+                    // v2.4.41: Use seek lock
+                    seekTargetPositionMs = pendingSeekMs
+                    lastDisplayedPositionMs = pendingSeekMs
+                    isUserSeeking = true
+                    consecutiveBackwardJumps = 0
                     playbackService?.seekTo(pendingSeekMs)
                     writeJitterLog("onNewIntent: same episode, executing seek to $pendingSeekMs ms")
                     pendingSeekMs = -1L
+                    window.decorView.removeCallbacks(resetSeekRunnable)
+                    window.decorView.postDelayed(resetSeekRunnable, 5000L)
                 }
             } else {
                 // [v2.1.8] Different episode - MUST call playEpisode to switch
@@ -3310,7 +3397,16 @@ class PlayerActivity : AppCompatActivity() {
 
             // Feature C: click to seek
             holder.itemView.setOnClickListener {
-                playbackService?.seekTo(transcript.startTime)
+                // v2.4.41: Use seek lock to prevent jitter
+                val targetPos = transcript.startTime
+                isUserSeeking = true
+                seekTargetPositionMs = targetPos
+                lastDisplayedPositionMs = targetPos
+                consecutiveBackwardJumps = 0
+                writeJitterLog("[v2.4.41] transcriptClick: seekTarget=$targetPos")
+                playbackService?.seekTo(targetPos)
+                window.decorView.removeCallbacks(resetSeekRunnable)
+                window.decorView.postDelayed(resetSeekRunnable, 5000L)
             }
         }
 

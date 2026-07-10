@@ -289,6 +289,16 @@ class MnnLlmBridge {
             val allResults = mutableListOf<MnnSegmentResult>()
             Log.i(TAG, "classifySubtitles: ${groups.size} segments, batch=1")
 
+            // v2.4.41: Write classification results to mnn_classify.log for debugging
+            val classifyLogFile = java.io.File("/storage/emulated/0/RadioApp/logs/subtitle/mnn_classify.log")
+            try { classifyLogFile.parentFile?.mkdirs() } catch (_: Exception) {}
+            val classifyLog = try {
+                java.io.FileWriter(classifyLogFile, true)
+            } catch (_: Exception) { null }
+            try {
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: START, ${groups.size} segments\n")
+            } catch (_: Exception) {}
+
             for ((idx, group) in groups.withIndex()) {
                 onProgress?.invoke(idx, groups.size)
 
@@ -302,6 +312,11 @@ class MnnLlmBridge {
                 val response = generate(prompt, 50)
                 // v2.4.40: Log full response for debugging MNN classification
                 Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} response='${response.take(50)}' textLen=${text.length}")
+                // v2.4.41: Also write to file log
+                try {
+                    classifyLog?.write("[${System.currentTimeMillis()}] seg ${idx+1}/${groups.size}: textLen=${text.length}, text='${text.take(80)}', response='${response.take(80)}'\n")
+                    classifyLog?.flush()
+                } catch (_: Exception) {}
                 if (response.isNotBlank()) {
                     val isDry = response.contains("干货")
                     val isWater = response.contains("水货")
@@ -329,6 +344,11 @@ class MnnLlmBridge {
 
             onProgress?.invoke(groups.size, groups.size)
             Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
+            // v2.4.41: Close classify log
+            try {
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: END, ${allResults.size} results, dry=${allResults.count{it.isDry}}, water=${allResults.count{!it.isDry}}\n")
+                classifyLog?.close()
+            } catch (_: Exception) {}
             return allResults
         }
 
