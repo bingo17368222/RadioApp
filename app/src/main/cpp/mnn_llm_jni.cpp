@@ -112,57 +112,57 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
 
     // Get libDir parameter
     const char* libDirC = nullptr;
-    std::string libDir;
+    std::string libDirStr;
     if (libDir != nullptr) {
         libDirC = env->GetStringUTFChars(libDir, nullptr);
-        libDir = libDirC ? libDirC : "";
+        libDirStr = libDirC ? libDirC : "";
         env->ReleaseStringUTFChars(libDir, libDirC);
     }
-    mnn_logf("nativeInit: libDir=%s", libDir.c_str());
+    mnn_logf("nativeInit: libDir=%s", libDirStr.c_str());
 
-    if (!libDir.empty()) {
+    if (!libDirStr.empty()) {
         // v2.4.31: Load from downloaded directory
         mnn_log("nativeInit: loading from downloaded directory...");
 
         // Load in dependency order
-        g_libMNN = dlopen_from_dir(libDir.c_str(), "libMNN.so");
+        g_libMNN = dlopen_from_dir(libDirStr.c_str(), "libMNN.so");
         if (!g_libMNN) {
             mnn_log("nativeInit: FAILED - cannot load libMNN.so");
             return JNI_FALSE;
         }
 
-        g_libMNN_Express = dlopen_from_dir(libDir.c_str(), "libMNN_Express.so");
+        g_libMNN_Express = dlopen_from_dir(libDirStr.c_str(), "libMNN_Express.so");
         if (!g_libMNN_Express) {
             mnn_log("nativeInit: WARNING - cannot load libMNN_Express.so (may not be needed)");
         }
 
-        g_libMNN_Vulkan = dlopen_from_dir(libDir.c_str(), "libMNN_Vulkan.so");
+        g_libMNN_Vulkan = dlopen_from_dir(libDirStr.c_str(), "libMNN_Vulkan.so");
         if (!g_libMNN_Vulkan) {
             mnn_log("nativeInit: WARNING - cannot load libMNN_Vulkan.so (may not be needed)");
         }
 
-        g_libMNN_CL = dlopen_from_dir(libDir.c_str(), "libMNN_CL.so");
+        g_libMNN_CL = dlopen_from_dir(libDirStr.c_str(), "libMNN_CL.so");
         if (!g_libMNN_CL) {
             mnn_log("nativeInit: WARNING - cannot load libMNN_CL.so (may not be needed)");
         }
 
-        g_libMNNOpenCV = dlopen_from_dir(libDir.c_str(), "libMNNOpenCV.so");
+        g_libMNNOpenCV = dlopen_from_dir(libDirStr.c_str(), "libMNNOpenCV.so");
         if (!g_libMNNOpenCV) {
             mnn_log("nativeInit: WARNING - cannot load libMNNOpenCV.so (may not be needed)");
         }
 
-        g_libMNNAudio = dlopen_from_dir(libDir.c_str(), "libMNNAudio.so");
+        g_libMNNAudio = dlopen_from_dir(libDirStr.c_str(), "libMNNAudio.so");
         if (!g_libMNNAudio) {
             mnn_log("nativeInit: WARNING - cannot load libMNNAudio.so (may not be needed)");
         }
 
-        g_libmnncore = dlopen_from_dir(libDir.c_str(), "libmnncore.so");
+        g_libmnncore = dlopen_from_dir(libDirStr.c_str(), "libmnncore.so");
         if (!g_libmnncore) {
             mnn_log("nativeInit: WARNING - cannot load libmnncore.so (may not be needed)");
         }
 
         // Now load libllm.so (depends on all above)
-        g_libllm = dlopen_from_dir(libDir.c_str(), "libllm.so");
+        g_libllm = dlopen_from_dir(libDirStr.c_str(), "libllm.so");
         if (!g_libllm) {
             mnn_log("nativeInit: FAILED - cannot load libllm.so");
             return JNI_FALSE;
