@@ -1554,7 +1554,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // saveEpisodeInfo fills the current date and a default title if the pre-cache
                 // episode came in without them.
                 try {
-                    com.radio.app.database.RadioDatabaseHelper.getInstance(this).saveEpisodeInfo(episode)
+                    com.radio.app.database.RadioDatabaseHelper.getInstance(this@RadioPlaybackService).saveEpisodeInfo(episode)
                 } catch (e: Exception) {
                     Log.w(TAG, "Pre-cache: failed to save episode_info for ${episode.id}: ${e.message}")
                 }
