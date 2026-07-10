@@ -817,21 +817,24 @@ class PlayerActivity : AppCompatActivity() {
         override fun onStateChanged(playing: Boolean) {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
+                // v2.4.47: CRITICAL FIX - Suppress ALL button state changes during user seeking.
+                // User correctly identified that seek causes ExoPlayer to briefly report
+                // isPlaying=false (buffering) then isPlaying=true, which toggles the
+                // play/pause button icon and "播放中" text, causing visual flicker.
+                // During a seek, we know playback is still active, so don't change button state.
+                if (isUserSeeking) {
+                    writeJitterLog("[v2.4.47] onStateChanged: SUPPRESSED (isUserSeeking, playing=$playing)")
+                    return@runOnUiThread
+                }
                 updatePlayPauseButton(playing)
                 if (playing) {
                     hasError = false
                     hasErrorToastShown = false
-                    binding.tvAiProgress.visibility = View.GONE
+                    binding.tvAiProgress.visibility = View.INVISIBLE
                     // Clear playback-in-progress flag once playback is confirmed started
                     setPlaybackInProgress(this@PlayerActivity, null)
                 }
                 binding.tvLiveIndicator.text = if (hasError) "播放失败" else if (playing) "播放中" else "已暂停"
-                // v2.4.46: FIX JITTER ROOT CAUSE - User correctly identified that the
-                // "播放中" button was toggling between VISIBLE and GONE at high frequency.
-                // Each seek causes ExoPlayer to briefly pause (isPlaying=false → GONE) then
-                // resume (isPlaying=true → VISIBLE), causing layout shifts that make
-                // elements below jump up and down = visual jitter.
-                // Fix: Use INVISIBLE instead of GONE so the element always occupies space.
                 binding.tvLiveIndicator.visibility = if (playing || hasError) View.VISIBLE else View.INVISIBLE
             }
         }
@@ -974,7 +977,10 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBar.progress = pos
                     binding.tvCurrentTime.text = "${formatTime(pos)} / ${formatTime(dur)}"
                     binding.tvTotalTime.text = formatTime(dur)
-                    binding.tvLiveIndicator.text = "播放中"
+                    // v2.4.47: Don't touch tvLiveIndicator during seeking (causes flicker)
+                    if (!isUserSeeking) {
+                        binding.tvLiveIndicator.text = "播放中"
+                    }
                     // 同步字幕显示
                     binding.subtitleView.setCurrentPosition(position)
                 } else if (playbackService?.isLive() == true) {
@@ -991,11 +997,11 @@ class PlayerActivity : AppCompatActivity() {
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
                 if (hasError) return@runOnUiThread
+                // v2.4.47: Don't update buffer UI during user seeking (causes flicker)
+                if (isUserSeeking) return@runOnUiThread
                 binding.tvAiProgress.text = "播放: ${percent}%"
-                // v2.4.46: Use INVISIBLE to prevent layout shift jitter
                 binding.tvAiProgress.visibility = if (percent >= 100) View.INVISIBLE else View.VISIBLE
                 binding.progressBuffer.progress = percent
-                // v2.4.46: Use INVISIBLE to prevent layout shift jitter
                 binding.progressBuffer.visibility = if (percent >= 100) View.INVISIBLE else View.VISIBLE
             }
         }
@@ -1996,7 +2002,10 @@ class PlayerActivity : AppCompatActivity() {
             binding.tvEpisodeNavHint.text = " [直播] "
         }
         // 更新播放/暂停按钮
-        playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
+        // v2.4.47: Don't update button during user seeking (causes flicker)
+        if (!isUserSeeking) {
+            playbackService?.let { updatePlayPauseButton(it.isPlaying()) }
+        }
         // [v2.1.5] Execute pending seek from search result
         if (pendingSeekMs > 0 && playbackService?.isPrepared() == true) {
             writeJitterLog("updateUI: executing pending seek to $pendingSeekMs ms")
@@ -2044,8 +2053,11 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(displayPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
                 }
             }
-            binding.tvLiveIndicator.text = if (playbackService?.isPlaying() == true) "播放中" else "已暂停"
-            binding.tvLiveIndicator.visibility = View.VISIBLE
+            // v2.4.47: Don't update tvLiveIndicator during seeking (causes flicker)
+            if (!isUserSeeking) {
+                binding.tvLiveIndicator.text = if (playbackService?.isPlaying() == true) "播放中" else "已暂停"
+                binding.tvLiveIndicator.visibility = View.VISIBLE
+            }
         }
         // Show playback progress percentage in the middle (tv_ai_progress)
         if (playbackService?.isPrepared() == true) {
