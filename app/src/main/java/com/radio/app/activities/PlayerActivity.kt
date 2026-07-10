@@ -1579,13 +1579,15 @@ class PlayerActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true; isUserSeeking = true }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDragging = false
-                isUserSeeking = false
+                // v2.4.33: Keep isUserSeeking=true for 2s after release to prevent
+                // jitter guard from fighting the seek position update
                 seekBar?.let {
                     val targetPos = it.progress.toLong()
-                    // [v2.0.46] Update lastDisplayedPositionMs so monotonic guard accepts the seek position
                     lastDisplayedPositionMs = targetPos
                     playbackService?.seekTo(targetPos)
                 }
+                window.decorView.removeCallbacks(resetSeekRunnable)
+                window.decorView.postDelayed(resetSeekRunnable, 2000L)
             }
         })
     }

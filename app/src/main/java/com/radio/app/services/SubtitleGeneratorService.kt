@@ -3107,12 +3107,10 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
-                // [v2.4.32] Cooldown 2s after each chunk to let the CPU cool down
-                // The 500ms cooldown in v2.4.31 was not enough - chunk 14 still took 40s
-                // (2x slower than chunk 0) due to thermal throttling.
+                // [v2.4.33] Cooldown 500ms - shorter because thread count fix (4 threads)
+                // should reduce thermal throttling. The 2s cooldown was wasting 30s total.
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    logToFile("processWhisperInChunks: [v2.4.32] cooldown 2000ms after chunk $chunkIdx")
-                    Thread.sleep(2000)
+                    Thread.sleep(500)
                 }
 
                 totalSamplesRead += samplesToRead
