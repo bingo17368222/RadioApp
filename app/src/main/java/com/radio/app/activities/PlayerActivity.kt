@@ -1350,8 +1350,30 @@ class PlayerActivity : AppCompatActivity() {
             writeEpisodeLog("btnNextSegment: calling jumpToNextSegment")
             playbackService?.jumpToNextSegment()
         }
-        binding.btnSkipForward.setOnClickListener { playbackService?.skipForward() }
-        binding.btnSkipBackward.setOnClickListener { playbackService?.skipBackward() }
+        // v2.4.30: Add isUserSeeking protection around skip operations to prevent jitter guard from fighting
+        binding.btnSkipForward.setOnClickListener {
+            if (playbackService == null) {
+                writeJitterLog("[v2.4.30] btnSkipForward: service not bound, ignoring")
+                Toast.makeText(this, "播放服务未就绪", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            isUserSeeking = true
+            writeJitterLog("[v2.4.30] btnSkipForward: isUserSeeking=true, calling skipForward")
+            playbackService?.skipForward()
+            // Reset isUserSeeking after 1.5s to allow jitter guard to resume
+            mainHandler.postDelayed({ isUserSeeking = false }, 1500L)
+        }
+        binding.btnSkipBackward.setOnClickListener {
+            if (playbackService == null) {
+                writeJitterLog("[v2.4.30] btnSkipBackward: service not bound, ignoring")
+                Toast.makeText(this, "播放服务未就绪", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            isUserSeeking = true
+            writeJitterLog("[v2.4.30] btnSkipBackward: isUserSeeking=true, calling skipBackward")
+            playbackService?.skipBackward()
+            mainHandler.postDelayed({ isUserSeeking = false }, 1500L)
+        }
         binding.btnClose.setOnClickListener {
             writeJitterLog("btnClose: calling finish() to exit to MainActivity")
             finish()
@@ -1447,12 +1469,21 @@ class PlayerActivity : AppCompatActivity() {
                                 } else {
                                     val transcripts = dbHelper.getTranscripts(episode.id)
                                     val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
-                                    writeJitterLog("[v2.4.28] btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM")
+                                    writeJitterLog("[v2.4.30] btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM (batched)")
 
-                                    runOnUiThread { Toast.makeText(this, "MNN模型分析中，请稍候...", Toast.LENGTH_SHORT).show() }
+                                    runOnUiThread { Toast.makeText(this, "MNN分析中(分批处理)...", Toast.LENGTH_SHORT).show() }
 
-                                    val results = MnnLlmBridge.classifySubtitles(subtitleData)
-                                    writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
+                                    val results = MnnLlmBridge.classifySubtitles(subtitleData) { current, total ->
+                                        val pct = if (total > 0) current * 100 / total else 0
+                                        writeJitterLog("[v2.4.30] btnAiSegment: MNN progress $current/$total ($pct%)")
+                                        runOnUiThread {
+                                            if (_binding != null) {
+                                                binding.tvAiStatus.text = "MNN分析中: $current/$total ($pct%)"
+                                                binding.progressAi.progress = pct
+                                            }
+                                        }
+                                    }
+                                    writeJitterLog("[v2.4.30] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
 
                                     if (results != null && results.isNotEmpty()) {
                                         segments = results.map { r ->

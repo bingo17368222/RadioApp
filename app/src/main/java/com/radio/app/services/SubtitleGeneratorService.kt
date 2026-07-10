@@ -2852,17 +2852,15 @@ class SubtitleGeneratorService : Service() {
             // running simultaneously, exhausting Java heap to 0-1MB, causing silent failures where
             // whisper_full() returned 0 but produced 0 segments due to OOM.
             // 10s chunks provide better speech context, and we also add concurrency guard below.
-            // [v2.4.0] Use 30-second chunks (480000 samples). This is Whisper's native chunk size.
-            // [v2.4.6] Dynamic chunk size based on model size to prevent base/small crashes.
-            // - tiny (74MB): 30s chunks are fine
-            // - base (141MB): 20s chunks reduce peak native memory by 33%
-            // - small (465MB): 15s chunks reduce peak native memory by 50%
-            // Base model was crashing during chunk 1 with 30s chunks due to native memory exhaustion.
-            // modelSizeMB already calculated above (line 2567)
+            // [v2.4.30] Smaller chunks for all models to reduce per-chunk processing time
+            // and mitigate CPU thermal throttling on phones.
+            // - tiny (74MB): 20s chunks (was 30s)
+            // - base (141MB): 15s chunks (was 20s)
+            // - small (465MB): 10s chunks (was 15s)
             val chunkSize = when {
-                modelSizeMB > 300 -> 15 * 16000  // small/medium: 15s (240000 samples)
-                modelSizeMB > 100 -> 20 * 16000  // base: 20s (320000 samples)
-                else -> 30 * 16000  // tiny: 30s (480000 samples)
+                modelSizeMB > 300 -> 10 * 16000  // small/medium: 10s (160000 samples)
+                modelSizeMB > 100 -> 15 * 16000  // base: 15s (240000 samples)
+                else -> 20 * 16000  // tiny: 20s (320000 samples)
             }
             // [v2.4.23] All models use SPEED mode (greedy) for faster processing
             // Previously tiny used ACCURACY(beam5) which was 3x slower (0.86x vs 2.71x speed)
@@ -2989,11 +2987,8 @@ class SubtitleGeneratorService : Service() {
                 var chunkSuccess = false
                 var chunkErrorCode = 0
 
-                // [v2.4.28] Recreate whisper context every 3 chunks to prevent progressive slowdown
-                // The whisper context accumulates internal state (KV cache, segment history) which
-                // causes processing time to increase from 8s to 54s per chunk over time.
-                // Recreating the context resets this state, maintaining consistent speed.
-                if (chunkIdx > 0 && chunkIdx % 3 == 0) {
+                // [v2.4.30] Recreate whisper context every 2 chunks to prevent slowdown
+                if (chunkIdx > 0 && chunkIdx % 2 == 0) {
                     logToFile("processWhisperInChunks: [v2.4.28] recreating whisper context at chunk $chunkIdx to prevent slowdown")
                     try {
                         bridge.setOptMode(optMode)

@@ -461,8 +461,9 @@ class OfflineEngineActivity : AppCompatActivity() {
                 totalRead += bytesRead
             }
             input.close(); output.close(); connection.disconnect()
-            if (totalRead < 100) {
-                writeEngineLog("downloadSingleFile: too small (${totalRead} bytes), likely failed: ${outFile.name}")
+            // v2.4.30: Lower minimum from 100 to 1 byte - small files like embedding_ids.txt can be < 100 bytes
+            if (totalRead < 1) {
+                writeEngineLog("downloadSingleFile: empty file (0 bytes), likely failed: ${outFile.name}")
                 return false
             }
             tmpFile.renameTo(outFile)
@@ -520,10 +521,20 @@ class OfflineEngineActivity : AppCompatActivity() {
                             }
                         }
                     }
+                    // v2.4.30: Post-download validation - verify ALL required files exist
+                    val requiredFiles = if (engine.modelDir.contains("mnn", ignoreCase = true)) {
+                        listOf("llm.mnn", "llm.mnn.weight", "config.json")
+                    } else {
+                        emptyList()
+                    }
+                    val missingFiles = requiredFiles.filter { !File(targetDir, it).exists() || File(targetDir, it).length() < 1 }
+                    val allDownloaded = downloadedCount == engine.multiFileUrls.size
+                    val valid = allDownloaded && missingFiles.isEmpty()
+
                     withContext(Dispatchers.Main) {
                         progressBar?.progress = 100
-                        if (downloadedCount == engine.multiFileUrls.size) {
-                            writeEngineLog("downloadModel: multi-file download COMPLETE, all ${downloadedCount} files downloaded")
+                        if (valid) {
+                            writeEngineLog("downloadModel: multi-file download COMPLETE, all ${downloadedCount} files downloaded and validated")
                             btn.text = "已安装(点击删除)"
                             Toast.makeText(this@OfflineEngineActivity, "${engine.name} 下载完成", Toast.LENGTH_SHORT).show()
                             progressBar?.visibility = View.GONE
@@ -534,9 +545,10 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 bindInstallAction(engine, btn, progressBar, targetDir)
                             }
                         } else {
-                            writeEngineLog("downloadModel: multi-file download INCOMPLETE, only $downloadedCount/${engine.multiFileUrls.size} files")
+                            val reason = if (!allDownloaded) "只下载了${downloadedCount}/${engine.multiFileUrls.size}个文件" else "缺失文件: ${missingFiles.joinToString()}"
+                            writeEngineLog("downloadModel: multi-file download INCOMPLETE: $reason")
                             btn.text = "继续下载"
-                            Toast.makeText(this@OfflineEngineActivity, "下载不完整 ($downloadedCount/${engine.multiFileUrls.size})", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@OfflineEngineActivity, "下载不完整: $reason", Toast.LENGTH_LONG).show()
                             progressBar?.visibility = View.GONE
                             bindInstallAction(engine, btn, progressBar, targetDir)
                         }

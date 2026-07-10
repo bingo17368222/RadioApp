@@ -176,11 +176,13 @@ class MnnLlmBridge {
 
         /**
          * Classify subtitle segments as dry(content) or water(filler) using MNN-LLM.
-         * Feeds all subtitles to the model and asks it to classify each segment.
+         * Processes subtitles in batches to show progress and avoid blocking too long.
+         * @param onProgress callback(current, total) for progress updates
          */
         fun classifySubtitles(
             subtitles: List<Triple<Long, Long, String>>,
-            segmentDurationMs: Long = 3 * 60 * 1000L
+            segmentDurationMs: Long = 3 * 60 * 1000L,
+            onProgress: ((Int, Int) -> Unit)? = null
         ): List<MnnSegmentResult>? {
             if (llmPtr == 0L) {
                 Log.e(TAG, "classifySubtitles: LLM not initialized")
@@ -208,32 +210,58 @@ class MnnLlmBridge {
 
             if (groups.isEmpty()) return null
 
-            // Build prompt
-            val prompt = buildString {
-                append("你是广播电台内容分析专家。以下是广播节目字幕，按时间段分组。\n")
-                append("请分析每段内容，判断是「干货」（新闻、资讯、访谈、评论）还是「水货」（广告、音乐、片头片尾、闲聊）。\n")
-                append("只返回JSON数组，格式：[{\"index\":1,\"type\":\"干货\",\"reason\":\"新闻资讯\"}]\n\n")
-                append("字幕内容：\n")
-                for ((i, group) in groups.withIndex()) {
-                    val startTime = group.first / 1000
-                    val endTime = group.second / 1000
-                    val text = if (group.third.length > 500) group.third.substring(0, 500) + "..." else group.third
-                    append("[段落${i + 1}] ${startTime}s-${endTime}s: $text\n")
+            // v2.4.30: Process in batches of 3 segments to show progress and avoid blocking
+            val batchSize = 3
+            val allResults = mutableListOf<MnnSegmentResult>()
+            val numBatches = (groups.size + batchSize - 1) / batchSize
+
+            Log.i(TAG, "classifySubtitles: ${groups.size} segments in $numBatches batches")
+
+            for (batchIdx in 0 until numBatches) {
+                val batchStart = batchIdx * batchSize
+                val batchEnd = minOf(batchStart + batchSize, groups.size)
+                val batch = groups.subList(batchStart, batchEnd)
+
+                onProgress?.invoke(batchIdx, numBatches)
+                Log.i(TAG, "classifySubtitles: batch ${batchIdx + 1}/$numBatches, segments ${batchStart + 1}-$batchEnd")
+
+                val prompt = buildString {
+                    append("你是广播电台内容分析专家。以下是广播节目字幕，按时间段分组。\n")
+                    append("请分析每段内容，判断是「干货」（新闻、资讯、访谈、评论）还是「水货」（广告、音乐、片头片尾、闲聊）。\n")
+                    append("只返回JSON数组，格式：[{\"index\":1,\"type\":\"干货\",\"reason\":\"新闻资讯\"}]\n\n")
+                    append("字幕内容：\n")
+                    for ((i, group) in batch.withIndex()) {
+                        val startTime = group.first / 1000
+                        val endTime = group.second / 1000
+                        val text = if (group.third.length > 500) group.third.substring(0, 500) + "..." else group.third
+                        append("[段落${i + 1}] ${startTime}s-${endTime}s: $text\n")
+                    }
+                }
+
+                val response = generate(prompt, 500)
+                if (response.isNotBlank()) {
+                    Log.i(TAG, "classifySubtitles: batch ${batchIdx + 1} response length=${response.length}")
+                    val batchResults = parseClassification(response, batch)
+                    // Adjust indices: batch results are relative to batch, need to map to global groups
+                    for ((i, result) in batchResults.withIndex()) {
+                        if (i + batchStart < groups.size) {
+                            val group = groups[i + batchStart]
+                            allResults.add(MnnSegmentResult(
+                                start = group.first,
+                                end = group.second,
+                                isDry = result.isDry,
+                                label = result.label
+                            ))
+                        }
+                    }
+                } else {
+                    Log.w(TAG, "classifySubtitles: batch ${batchIdx + 1} returned empty response")
                 }
             }
 
-            Log.i(TAG, "classifySubtitles: ${groups.size} segments, prompt length=${prompt.length}")
-
-            val response = generate(prompt, 2000)
-            if (response.isBlank()) {
-                Log.e(TAG, "classifySubtitles: empty response from MNN-LLM")
-                return null
-            }
-
-            Log.i(TAG, "classifySubtitles: response length=${response.length}, preview=${response.take(200)}")
-
-            // Parse JSON array from response
-            return parseClassification(response, groups)
+            onProgress?.invoke(numBatches, numBatches)
+            Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
+            return allResults
         }
 
         data class MnnSegmentResult(
