@@ -1,12 +1,14 @@
 package com.radio.app.whisper
 
+import android.content.Context
 import android.util.Log
 import java.io.File
 
 /**
- * v2.4.31 Bridge for MNN-LLM offline model inference.
+ * v2.4.35 Bridge for MNN-LLM offline model inference.
  * MNN .so files are downloaded with the model (NOT in APK).
- * nativeInit receives libDir path and uses dlopen with full paths.
+ * v2.4.35: .so files are copied to internal storage before dlopen,
+ * because Android 7+ blocks dlopen from external storage.
  */
 class MnnLlmBridge {
     companion object {
@@ -68,23 +70,61 @@ class MnnLlmBridge {
         /**
          * Initialize the MNN-LLM engine.
          * @param modelDir Directory containing llm.mnn, llm.mnn.weight, config.json etc.
+         * @param context Application context for accessing internal storage.
          * @return true if initialization succeeded
          */
-        fun init(modelDir: File): Boolean {
+        fun init(modelDir: File, context: Context? = null): Boolean {
             lastError = ""
 
             val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
             Log.i(TAG, "init: modelDir=${modelDir.absolutePath}, files=$files")
 
-            // v2.4.31: Get the libs directory (sibling of model dir)
-            val libsDir = File(modelDir.parentFile, "mnn-libs")
-            Log.i(TAG, "init: libsDir=${libsDir.absolutePath}, exists=${libsDir.exists()}")
-            val libFiles = libsDir.listFiles()?.map { it.name } ?: emptyList()
+            // v2.4.31: Get the libs directory (sibling of model dir) - on external storage
+            val extLibsDir = File(modelDir.parentFile, "mnn-libs")
+            Log.i(TAG, "init: extLibsDir=${extLibsDir.absolutePath}, exists=${extLibsDir.exists()}")
+            val libFiles = extLibsDir.listFiles()?.map { it.name } ?: emptyList()
             Log.i(TAG, "init: libFiles=$libFiles")
 
             if (!initialized) {
-                Log.i(TAG, "init: calling nativeInit(libDir=${libsDir.absolutePath})...")
-                initialized = nativeInit(libsDir.absolutePath)
+                // v2.4.35: Copy .so files to internal storage because Android 7+ blocks
+                // dlopen from external storage (/storage/emulated/0/...)
+                // Internal storage path: /data/data/com.radio.app/files/mnn-libs/
+                val internalLibsDir = if (context != null) {
+                    File(context.filesDir, "mnn-libs")
+                } else {
+                    File("/data/data/com.radio.app/files/mnn-libs")
+                }
+
+                if (!internalLibsDir.exists()) internalLibsDir.mkdirs()
+
+                // Check if we need to copy (if internal dir is empty or missing libllm.so)
+                val needsCopy = !File(internalLibsDir, "libllm.so").exists()
+                if (needsCopy && extLibsDir.exists()) {
+                    Log.i(TAG, "init: copying .so files from ${extLibsDir.absolutePath} to ${internalLibsDir.absolutePath}")
+                    val requiredLibs = listOf(
+                        "libMNN.so", "libMNN_Express.so", "libMNN_Vulkan.so", "libMNN_CL.so",
+                        "libMNNOpenCV.so", "libMNNAudio.so", "libmnncore.so", "libllm.so"
+                    )
+                    for (libName in requiredLibs) {
+                        val srcFile = File(extLibsDir, libName)
+                        val dstFile = File(internalLibsDir, libName)
+                        if (srcFile.exists() && srcFile.length() > 1000) {
+                            if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
+                                srcFile.inputStream().use { input ->
+                                    dstFile.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                // Set executable permission
+                                dstFile.setExecutable(true, false)
+                                Log.i(TAG, "init: copied $libName (${dstFile.length()} bytes)")
+                            }
+                        } else {
+                            Log.e(TAG, "init: missing $libName in external libs dir")
+                        }
+                    }
+                }
+
+                Log.i(TAG, "init: calling nativeInit(libDir=${internalLibsDir.absolutePath})...")
+                initialized = nativeInit(internalLibsDir.absolutePath)
                 if (!initialized) {
                     lastError = "nativeInit失败: 无法加载MNN运行库(检查mnn-libs目录)"
                     Log.e(TAG, "init: nativeInit FAILED")

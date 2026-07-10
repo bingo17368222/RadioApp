@@ -2881,13 +2881,15 @@ class SubtitleGeneratorService : Service() {
             // 10s chunks provide better speech context, and we also add concurrency guard below.
             // [v2.4.30] Smaller chunks for all models to reduce per-chunk processing time
             // and mitigate CPU thermal throttling on phones.
-            // - tiny (74MB): 20s chunks (was 30s)
-            // - base (141MB): 15s chunks (was 20s)
-            // - small (465MB): 10s chunks (was 15s)
+            // [v2.4.35] Reduce chunk sizes further - SIGABRT crash after chunk 0 suggests
+            // memory pressure. Smaller chunks = less native memory per whisper_full() call.
+            // - tiny (74MB): 15s chunks (was 20s)
+            // - base (141MB): 10s chunks (was 15s)
+            // - small (465MB): 10s chunks (was 10s)
             val chunkSize = when {
                 modelSizeMB > 300 -> 10 * 16000  // small/medium: 10s (160000 samples)
-                modelSizeMB > 100 -> 15 * 16000  // base: 15s (240000 samples)
-                else -> 20 * 16000  // tiny: 20s (320000 samples)
+                modelSizeMB > 100 -> 10 * 16000  // base: 10s (160000 samples)
+                else -> 15 * 16000  // tiny: 15s (240000 samples)
             }
             // [v2.4.23] All models use SPEED mode (greedy) for faster processing
             // Previously tiny used ACCURACY(beam5) which was 3x slower (0.86x vs 2.71x speed)
@@ -3014,23 +3016,11 @@ class SubtitleGeneratorService : Service() {
                 var chunkSuccess = false
                 var chunkErrorCode = 0
 
-                // [v2.4.30] Recreate whisper context every 2 chunks to prevent slowdown
-                if (chunkIdx > 0 && chunkIdx % 2 == 0) {
-                    logToFile("processWhisperInChunks: [v2.4.28] recreating whisper context at chunk $chunkIdx to prevent slowdown")
-                    try {
-                        bridge.setOptMode(optMode)
-                        val newCtxPtr = bridge.initFromFile(modelPath)
-                        if (newCtxPtr != 0L) {
-                            try { bridge.free(ctxPtr) } catch (_: Exception) {}
-                            ctxPtr = newCtxPtr
-                            logToFile("processWhisperInChunks: [v2.4.28] context recreated, new ctxPtr=$ctxPtr")
-                        } else {
-                            logToFile("processWhisperInChunks: [v2.4.28] WARNING: context recreation returned 0, keeping old context")
-                        }
-                    } catch (e: Exception) {
-                        logToFile("processWhisperInChunks: [v2.4.28] WARNING: context recreation failed: ${e.message}, keeping old context")
-                    }
-                }
+                // [v2.4.35] DISABLED context recreation - it was causing SIGABRT crashes.
+                // The crash occurs during bridge.free() when the whisper context is freed
+                // while another thread might still be using it. Instead, let the context
+                // accumulate state - the slowdown is acceptable compared to crashing.
+                // if (chunkIdx > 0 && chunkIdx % 2 == 0) { ... }
 
                 try {
                     // [v2.1.9] Add logging right before JNI call to pinpoint crash location

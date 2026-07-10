@@ -1463,7 +1463,7 @@ class PlayerActivity : AppCompatActivity() {
                             runOnUiThread { Toast.makeText(this, "正在加载MNN离线模型...", Toast.LENGTH_SHORT).show() }
                             try {
                                 writeJitterLog("[v2.4.28] btnAiSegment: initializing MnnLlmBridge...")
-                                val initOk = MnnLlmBridge.init(mnnModelDir)
+                                val initOk = MnnLlmBridge.init(mnnModelDir, this@PlayerActivity)
                                 writeJitterLog("[v2.4.28] btnAiSegment: MnnLlmBridge.init result=$initOk")
                                 if (!initOk) {
                                     val err = MnnLlmBridge.lastError
@@ -3083,8 +3083,10 @@ class PlayerActivity : AppCompatActivity() {
             val pos = playbackService?.getCurrentPosition() ?: 0L
             val dur = playbackService?.getDuration() ?: 0L
             val epId = currentEpisode?.id ?: ""
-            // Only cache if: player is prepared, position > 5s (not at beginning), duration valid, episode known
-            if (isPrepared && pos > 5000 && dur > 30000 && epId.isNotBlank()) {
+            // v2.4.35: Cache position even at 0 seconds - previously required pos > 5000
+            // which meant if user was at the beginning, position was never cached.
+            // Now only skip if not prepared or episode unknown.
+            if (isPrepared && epId.isNotBlank()) {
                 lastDisplayedPositionMs = pos
                 getSharedPreferences("player_position_cache", MODE_PRIVATE).edit()
                     .putLong("cached_position", pos)

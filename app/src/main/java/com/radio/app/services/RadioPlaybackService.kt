@@ -3894,24 +3894,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val inBreaker = now < skipCircuitBreakerUntil
 
         if (inBlackout || inBreaker) {
-            // Count request during protection window
-            if (inPostResumeProtection) {
-                skipRequestCount++
-                if (skipRequestCount >= STORM_REQUEST_THRESHOLD && !inBreaker) {
-                    skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-                    writeServiceLog("playback", "[v2.0.88] skipForward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
-                    return
-                }
-                // [v2.0.88] SELF-EXTENDING: extend breaker on each new request during breaker
-                if (inBreaker) {
-                    skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-                    writeServiceLog("playback", "[v2.0.88] skipForward: BLOCKED by breaker, EXTENDED to +${SKIP_CIRCUIT_BREAKER_MS/1000}s (reqCount=$skipRequestCount)")
-                    return
-                }
-            }
-            val reason = if (inBlackout) "blackout (${now - lastClientBindTime}ms)" else "circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)"
-            writeServiceLog("playback", "[v2.0.88] skipForward: BLOCKED by $reason (reqCount=$skipRequestCount)")
-            return
+            // v2.4.35: Log but still allow - the blackout was blocking ALL user skips
+            writeServiceLog("playback", "[v2.4.35] skipForward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
         }
 
         // [v2.2.7] Post-breaker cooldown: ONLY enforce min interval if breaker was actually tripped.
@@ -3957,23 +3941,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val inBreaker = now < skipCircuitBreakerUntil
 
         if (inBlackout || inBreaker) {
-            if (inPostResumeProtection) {
-                skipRequestCount++
-                if (skipRequestCount >= STORM_REQUEST_THRESHOLD && !inBreaker) {
-                    skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-                    breakerWasTripped = true  // [v2.2.7] Mark that breaker was actually triggered
-                    writeServiceLog("playback", "[v2.0.91] skipBackward: CIRCUIT BREAKER TRIPPED by $skipRequestCount requests, blocking ${SKIP_CIRCUIT_BREAKER_MS/1000}s")
-                    return
-                }
-                if (inBreaker) {
-                    skipCircuitBreakerUntil = now + SKIP_CIRCUIT_BREAKER_MS
-                    writeServiceLog("playback", "[v2.0.91] skipBackward: BLOCKED by breaker, EXTENDED to +${SKIP_CIRCUIT_BREAKER_MS/1000}s (reqCount=$skipRequestCount)")
-                    return
-                }
-            }
-            val reason = if (inBlackout) "blackout (${now - lastClientBindTime}ms)" else "circuit breaker (${(skipCircuitBreakerUntil - now)/1000}s remaining)"
-            writeServiceLog("playback", "[v2.0.91] skipBackward: BLOCKED by $reason (reqCount=$skipRequestCount)")
-            return
+            // v2.4.35: Log but still allow - the blackout was blocking ALL user skips
+            // for 5 seconds after switching back to app, making buttons appear "unavailable"
+            writeServiceLog("playback", "[v2.4.35] skipBackward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
         }
 
         // [v2.2.7] Post-breaker cooldown: ONLY block if breaker was actually tripped.
