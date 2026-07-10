@@ -2634,6 +2634,14 @@ class SubtitleGeneratorService : Service() {
                             val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
                             logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
+                            // v2.4.39: PCM decode takes 130-370s. During that time, the service
+                            // may have been killed and restarted by Android, setting globalCancelled=true.
+                            // If this task's ctx is not cancelled, clear globalCancelled so the
+                            // while loop in processWhisperInChunks can execute.
+                            if (!ctx.cancelled.get()) {
+                                logToFile("generateWithWhisper: [v2.4.39] clearing globalCancelled (was ${globalCancelled.get()}) before Whisper processing")
+                                globalCancelled.set(false)
+                            }
                             val whisperStartTime = System.currentTimeMillis()  // [v2.4.18] Track Whisper processing time
                             val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample)  // [v2.4.20] pass resumeFromSample
                             val whisperTimeMs = System.currentTimeMillis() - whisperStartTime

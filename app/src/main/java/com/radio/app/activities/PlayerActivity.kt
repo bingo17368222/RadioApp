@@ -2680,8 +2680,29 @@ class PlayerActivity : AppCompatActivity() {
                 segments.add(seg)
             }
 
-            writeJitterLog("[v2.4.25] generateContentBasedSegments: ${segments.size} segments from ${transcripts.size} transcripts, dry=${segments.count{it.hasVoice}}, water=${segments.count{!it.hasVoice}}")
-            return segments
+            // v2.4.39: Merge consecutive segments of the same type (dry/dry or water/water)
+            // into larger segments. This reduces the number of 3-minute fragments and creates
+            // more meaningful content blocks.
+            val mergedSegments = mutableListOf<VoiceSegment>()
+            for (seg in segments) {
+                val last = mergedSegments.lastOrNull()
+                if (last != null && last.hasVoice == seg.hasVoice) {
+                    // Merge: extend the last segment's end to this segment's end
+                    last.end = seg.end
+                } else {
+                    // Different type or first segment: add as new
+                    mergedSegments.add(VoiceSegment().apply {
+                        this.start = seg.start
+                        this.end = seg.end
+                        this.hasVoice = seg.hasVoice
+                        this.label = seg.label
+                        this.isSimulated = false
+                    })
+                }
+            }
+
+            writeJitterLog("[v2.4.25] generateContentBasedSegments: ${mergedSegments.size} segments (merged from ${segments.size}) from ${transcripts.size} transcripts, dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}}")
+            return mergedSegments
         } catch (e: Exception) {
             writeJitterLog("[v2.4.25] generateContentBasedSegments failed: ${e.message}")
             return emptyList()

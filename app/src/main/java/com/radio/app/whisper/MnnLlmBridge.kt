@@ -185,8 +185,8 @@ class MnnLlmBridge {
                         log.close()
                         return false
                     }
+                    // v2.4.39: Don't close log here - mnnLog() is still used below
                     mnnLog("init: nativeInit OK")
-                    log.close()
                 }
 
                 val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
@@ -215,6 +215,7 @@ class MnnLlmBridge {
                 }
 
                 mnnLog("init: MNN LLM ready!")
+                // v2.4.39: Close log at the very end of successful init
                 log.close()
                 return true
             } catch (e: Exception) {
