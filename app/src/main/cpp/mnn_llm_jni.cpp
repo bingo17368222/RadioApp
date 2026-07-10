@@ -103,6 +103,9 @@ extern "C" {
 // Falls back to system loadLibrary if libDir is empty (for backward compatibility)
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
+    // v2.4.46: Compile-time version marker
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.46 compiled at " __DATE__ " " __TIME__);
+
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
         return JNI_TRUE;

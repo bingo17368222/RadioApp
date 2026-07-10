@@ -3667,7 +3667,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     it.seekTo(startPositionMs)
                     // [v2.0.54] Clear positionRestoreRequested so STATE_READY doesn't seek again
                     positionRestoreRequested = false
-                    writeServiceLog("playback", "[v2.2.2] playEpisode: prepared + seekTo($startPositionMs), playWhenReady=true")
+                    // v2.4.46: CRITICAL FIX - Also clear pendingStartPosition!
+                    // Without this, saveCurrentPosition() was BLOCKED forever.
+                    // The seek was done before prepare, so STATE_READY won't enter the
+                    // positionRestoreRequested branch to clear it. 835 saves were blocked.
+                    pendingStartPosition = -1L
+                    writeServiceLog("playback", "[v2.4.46] playEpisode: prepared + seekTo($startPositionMs), cleared pendingStartPosition")
                 } else {
                     it.playWhenReady = true
                     it.prepare()

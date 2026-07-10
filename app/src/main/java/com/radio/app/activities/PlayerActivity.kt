@@ -826,7 +826,13 @@ class PlayerActivity : AppCompatActivity() {
                     setPlaybackInProgress(this@PlayerActivity, null)
                 }
                 binding.tvLiveIndicator.text = if (hasError) "播放失败" else if (playing) "播放中" else "已暂停"
-                binding.tvLiveIndicator.visibility = if (playing || hasError) View.VISIBLE else View.GONE
+                // v2.4.46: FIX JITTER ROOT CAUSE - User correctly identified that the
+                // "播放中" button was toggling between VISIBLE and GONE at high frequency.
+                // Each seek causes ExoPlayer to briefly pause (isPlaying=false → GONE) then
+                // resume (isPlaying=true → VISIBLE), causing layout shifts that make
+                // elements below jump up and down = visual jitter.
+                // Fix: Use INVISIBLE instead of GONE so the element always occupies space.
+                binding.tvLiveIndicator.visibility = if (playing || hasError) View.VISIBLE else View.INVISIBLE
             }
         }
 
@@ -986,9 +992,11 @@ class PlayerActivity : AppCompatActivity() {
                 if (_binding == null) return@runOnUiThread
                 if (hasError) return@runOnUiThread
                 binding.tvAiProgress.text = "播放: ${percent}%"
-                binding.tvAiProgress.visibility = if (percent >= 100) View.GONE else View.VISIBLE
+                // v2.4.46: Use INVISIBLE to prevent layout shift jitter
+                binding.tvAiProgress.visibility = if (percent >= 100) View.INVISIBLE else View.VISIBLE
                 binding.progressBuffer.progress = percent
-                binding.progressBuffer.visibility = if (percent >= 100) View.GONE else View.VISIBLE
+                // v2.4.46: Use INVISIBLE to prevent layout shift jitter
+                binding.progressBuffer.visibility = if (percent >= 100) View.INVISIBLE else View.VISIBLE
             }
         }
 

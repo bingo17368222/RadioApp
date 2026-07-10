@@ -29,12 +29,9 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          # v2.4.43: Include C/C++ source files in cache key.
-          # Previous key only had *.gradle* files, so C++ changes
-          # (flash_attn, threads, chat template) were NEVER recompiled.
+          # v2.4.46: Removed restore-keys fallback to prevent old .so from being restored.
+          # The exact key includes C/C++ source files, so any C++ change creates a new cache.
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/*.c', '**/*.cpp', '**/*.h', '**/CMakeLists.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Setup Android SDK
         run: |
@@ -81,15 +78,25 @@ jobs:
         run: |
           set -o pipefail
           export PATH="/tmp/gradle-7.5/bin:$PATH"
-          # v2.4.45: Force NDK/CMake full rebuild.
-          # Previous attempts (rm -rf .cxx, gradle clean) were insufficient because
-          # Gradle's build cache was restoring the old .so output.
-          # --no-build-cache disables the Gradle build cache.
-          # --rerun-tasks forces all tasks to re-run (ignores up-to-date checks).
-          # touch updates timestamps so CMake detects source changes.
+          # v2.4.46: Force NDK/CMake full rebuild with multiple cache-clearing strategies.
           find app/src/main/cpp -name "*.c" -o -name "*.cpp" -o -name "*.h" | xargs touch 2>/dev/null || true
           rm -rf app/.cxx app/build/.cxx app/build/intermediates/cxx app/build/intermediates/merged_native_libs
+          # Also clear any cached .so from Gradle's native build cache
+          rm -rf ~/.gradle/caches/transforms-* ~/.gradle/caches/4.*/*/native* 2>/dev/null || true
           gradle clean assembleDebug --no-daemon --no-build-cache --rerun-tasks --stacktrace 2>&1 | tee build.log
+
+      - name: Verify Native Libs Recompiled
+        run: |
+          echo "=== Checking .so file timestamps ==="
+          find app/build -name "libwhisper_jni.so" -o -name "libmnn_llm_jni.so" | while read f; do
+            echo "$f: $(stat -c '%y' "$f" 2>/dev/null || echo 'NOT FOUND')"
+          done
+          echo "=== Checking CMake build log for compile commands ==="
+          grep -i "whisper_jni.c\|mnn_llm_jni.cpp" build.log | grep -i "compil\|Building" | head -10 || echo "No compile commands found in build log"
+          echo "=== Checking if COMPILE MARKER exists in .so ==="
+          for so in $(find app/build -name "libwhisper_jni.so" 2>/dev/null); do
+            strings "$so" 2>/dev/null | grep "COMPILE MARKER" || echo "MARKER NOT FOUND in $so - OLD .so!"
+          done
 
       - name: Show Build Log
         if: always() && !cancelled()

@@ -223,6 +223,10 @@ JNIEXPORT jlong JNICALL
 Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz, jstring model_path) {
     register_crash_handlers();
 
+    // v2.4.46: Compile-time version marker to verify .so is from current source.
+    // If this line doesn't appear in native.log, the OLD .so is being loaded.
+    NLOGI("whisper_jni COMPILE MARKER: v2.4.46 compiled at " __DATE__ " " __TIME__);
+
     if (!load_whisper_funcs()) {
         NLOGE("initFromFile: load_whisper_funcs failed");
         return 0;
