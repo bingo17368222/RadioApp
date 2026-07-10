@@ -2939,6 +2939,14 @@ class SubtitleGeneratorService : Service() {
             // [v2.4.20] Resume support: skip already-processed samples
             var totalSamplesRead = resumeFromSample
             val totalSamplesToRead = bytesToRead / 2  // 2 bytes per sample
+            // v2.4.40: Critical fix - resumeFromSample from a PREVIOUS episode can be larger
+            // than the current episode's PCM file. This causes the while loop to never execute
+            // (totalSamplesRead >= totalSamplesToRead), producing 0 transcripts from 0 chunks.
+            if (resumeFromSample > 0 && resumeFromSample >= totalSamplesToRead) {
+                logToFile("processWhisperInChunks: [v2.4.40] RESUME RESET: resumeFromSample ($resumeFromSample) >= totalSamplesToRead ($totalSamplesToRead), starting from beginning")
+                resumeFromSample = 0
+                totalSamplesRead = 0
+            }
             if (resumeFromSample > 0) {
                 // Skip the first resumeFromSample samples (2 bytes each)
                 val skipBytes = resumeFromSample.toLong() * 2

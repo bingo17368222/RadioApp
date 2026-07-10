@@ -87,10 +87,17 @@ class MnnLlmBridge {
             try {
                 logFile.parentFile?.mkdirs()
                 val log = java.io.FileWriter(logFile, true)
+                // v2.4.40: Make mnnLog exception-safe so it doesn't propagate IOException
+                // and cause init() to fail. The "Stream closed" exception was happening
+                // on the first init() call, causing MNN to fail on first attempt.
                 fun mnnLog(msg: String) {
                     Log.i(TAG, msg)
-                    log.write("[${System.currentTimeMillis()}] $msg\n")
-                    log.flush()
+                    try {
+                        log.write("[${System.currentTimeMillis()}] $msg\n")
+                        log.flush()
+                    } catch (_: Exception) {
+                        // Ignore log write errors
+                    }
                 }
 
                 val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
@@ -293,15 +300,21 @@ class MnnLlmBridge {
                 val prompt = "判断以下广播内容是「干货」(新闻/资讯/访谈)还是「水货」(广告/音乐/闲聊)。只回答\"干货\"或\"水货\"。\n${startTime}s-${endTime}s: $text"
 
                 val response = generate(prompt, 50)
+                // v2.4.40: Log full response for debugging MNN classification
+                Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} response='${response.take(50)}' textLen=${text.length}")
                 if (response.isNotBlank()) {
                     val isDry = response.contains("干货")
+                    val isWater = response.contains("水货")
+                    // v2.4.40: If response doesn't contain either keyword, default to 干货
+                    // (previously defaulted to 水货 which caused all segments to be 水货)
+                    val finalIsDry = if (!isDry && !isWater) true else isDry
                     allResults.add(MnnSegmentResult(
                         start = group.first,
                         end = group.second,
-                        isDry = isDry,
-                        label = if (isDry) "干货" else "水货"
+                        isDry = finalIsDry,
+                        label = if (finalIsDry) "干货" else "水货"
                     ))
-                    Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> ${if (isDry) "干货" else "水货"} (resp=${response.take(20)})")
+                    Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> ${if (finalIsDry) "干货" else "水货"} (resp=${response.take(30)})")
                 } else {
                     // Default to dry if no response
                     allResults.add(MnnSegmentResult(

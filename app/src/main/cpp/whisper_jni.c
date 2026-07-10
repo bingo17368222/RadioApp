@@ -240,8 +240,8 @@ Java_com_radio_app_whisper_WhisperBridge_initFromFile(JNIEnv* env, jobject thiz,
         cparams = ctx_params_func();
     }
     cparams.use_gpu = false;
-    cparams.flash_attn = true;  // [v2.4.21] Enable flash attention for CPU speedup (~15%)
-    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false, flash_attn=true)", path);
+    cparams.flash_attn = false;  // [v2.4.40] Disabled - flash_attn on CPU produced 0 segments
+    NLOGI("initFromFile: loading model from \"%s\" (use_gpu=false, flash_attn=false)", path);
     struct whisper_context* ctx = init_func(path, cparams);
     (*env)->ReleaseStringUTFChars(env, model_path, path);
     NLOGI("initFromFile: ctx=%p", (void*)ctx);
@@ -274,11 +274,12 @@ static struct whisper_full_params* prepare_params(void) {
             "接下来我们会详细讨论。"
             "感谢大家的收听。";
     } else if (mode == 2) {
-        // SPEED (tiny): greedy, max threads, short prompt
-        // v2.4.34: Reverted from 4 threads back to dynamic - 4 threads caused SIGABRT crash
+        // SPEED (tiny): greedy, 2 threads, short prompt
+        // v2.4.40: Reduced from dynamic (up to 8) to 2 threads.
+        // 8 threads caused severe thermal throttling: chunks 4-8 took 100-175s
+        // instead of 10-15s. 2 threads = consistent speed, no throttling.
         strategy = WHISPER_SAMPLING_GREEDY;
-        long cores = sysconf(_SC_NPROCESSORS_ONLN);
-        threads = (int)(cores > 8 ? 8 : (cores < 2 ? 2 : cores));
+        threads = 2;
         prompt = "以下是普通话的句子。";
     } else {
         // BALANCED (base): greedy, moderate threads, medium prompt

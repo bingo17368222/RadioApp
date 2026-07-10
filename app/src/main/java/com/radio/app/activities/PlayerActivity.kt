@@ -1371,7 +1371,10 @@ class PlayerActivity : AppCompatActivity() {
             writeJitterLog("[v2.4.34] $btnName: isUserSeeking=true, svcPos=$svcPos")
             action()
             window.decorView.removeCallbacks(resetSeekRunnable)
-            window.decorView.postDelayed(resetSeekRunnable, 3000L)
+            // v2.4.40: Increased from 3s to 5s - ExoPlayer needs more time to buffer
+            // on slow connections. 3s was too short, causing jitter guard to kick in
+            // before buffering completed.
+            window.decorView.postDelayed(resetSeekRunnable, 5000L)
         }
 
         binding.btnPrevSegment.setOnClickListener {
