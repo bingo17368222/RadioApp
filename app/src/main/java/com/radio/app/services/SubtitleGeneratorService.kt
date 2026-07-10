@@ -3107,13 +3107,12 @@ class SubtitleGeneratorService : Service() {
                     break
                 }
 
-                // [v2.4.31] Cooldown 500ms after each chunk to let the CPU cool down and prevent
-                // thermal throttling. Placed AFTER this chunk's whisper_full() result has been
-                // processed (segments saved to DB via callback) and BEFORE the next iteration's
-                // whisper context recreation check. Skip the sleep if the task was cancelled.
+                // [v2.4.32] Cooldown 2s after each chunk to let the CPU cool down
+                // The 500ms cooldown in v2.4.31 was not enough - chunk 14 still took 40s
+                // (2x slower than chunk 0) due to thermal throttling.
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    logToFile("processWhisperInChunks: [v2.4.31] cooldown 500ms after chunk $chunkIdx")
-                    Thread.sleep(500)
+                    logToFile("processWhisperInChunks: [v2.4.32] cooldown 2000ms after chunk $chunkIdx")
+                    Thread.sleep(2000)
                 }
 
                 totalSamplesRead += samplesToRead

@@ -524,7 +524,10 @@ class OfflineEngineActivity : AppCompatActivity() {
                     // v2.4.31: Download MNN .so files from GitHub releases
                     val isMnnEngine = engine.modelDir.contains("mnn", ignoreCase = true)
                     if (isMnnEngine) {
-                        val libsDir = File(modelsDir, "mnn-libs")
+                        // v2.4.32: Fix path - must be sibling of modelDir, NOT sibling of modelsDir
+                        // modelDir = models/mnn-llm/Qwen1.5-1.8B-Chat-MNN
+                        // libsDir must be models/mnn-llm/mnn-libs (same as isValidMnnModelDir checks)
+                        val libsDir = File(targetDir.parentFile, "mnn-libs")
                         if (!libsDir.exists()) libsDir.mkdirs()
                         writeEngineLog("downloadModel: [v2.4.31] downloading MNN .so files...")
                         withContext(Dispatchers.Main) {
@@ -556,7 +559,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                     val missingFiles = requiredFiles.filter { !File(targetDir, it).exists() || File(targetDir, it).length() < 1 }
                     // v2.4.31: For MNN, also check .so files exist
                     val libsOk = if (isMnnEngine) {
-                        File(modelsDir, "mnn-libs/libllm.so").exists()
+                        File(targetDir.parentFile, "mnn-libs/libllm.so").exists()
                     } else true
                     val allDownloaded = downloadedCount == engine.multiFileUrls.size
                     val valid = allDownloaded && missingFiles.isEmpty() && libsOk
@@ -572,7 +575,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                                 targetDir.let { deleteRecursive(it) }
                                 // v2.4.31: Also delete mnn-libs directory for MNN engines
                                 if (isMnnEngine) {
-                                    File(modelsDir, "mnn-libs").let { libsDir ->
+                                    File(targetDir.parentFile, "mnn-libs").let { libsDir ->
                                         if (libsDir.exists()) {
                                             deleteRecursive(libsDir)
                                             writeEngineLog("downloadModel: deleted mnn-libs directory")
@@ -1322,7 +1325,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         return result
     }
 
-    // v2.4.31: Download MNN .so files from GitHub releases and extract to libsDir
+    // v2.4.32: Download MNN .so files with multiple China mirrors
     private fun downloadAndExtractMnnLibs(libsDir: File): Boolean {
         try {
             // Check if already downloaded
@@ -1331,37 +1334,65 @@ class OfflineEngineActivity : AppCompatActivity() {
                 return true
             }
 
-            val zipUrl = "https://github.com/alibaba/MNN/releases/download/3.6.0/mnn_3.6.0_android_armv7_armv8_cpu_opencl_vulkan.zip"
-            writeEngineLog("downloadAndExtractMnnLibs: downloading from $zipUrl")
+            // v2.4.32: Try multiple mirrors for China users
+            val mirrorUrls = listOf(
+                "https://mirror.ghproxy.com/https://github.com/alibaba/MNN/releases/download/3.6.0/mnn_3.6.0_android_armv7_armv8_cpu_opencl_vulkan.zip",
+                "https://ghproxy.net/https://github.com/alibaba/MNN/releases/download/3.6.0/mnn_3.6.0_android_armv7_armv8_cpu_opencl_vulkan.zip",
+                "https://github.com/alibaba/MNN/releases/download/3.6.0/mnn_3.6.0_android_armv7_armv8_cpu_opencl_vulkan.zip"
+            )
 
             val tmpZip = File(libsDir, "mnn_libs.zip")
-            val connection = (java.net.URL(zipUrl).openConnection() as java.net.HttpURLConnection).apply {
-                connectTimeout = 30000
-                readTimeout = 300000  // 5 min for large zip
-                instanceFollowRedirects = true
-            }
-            val responseCode = connection.responseCode
-            if (responseCode != 200) {
-                writeEngineLog("downloadAndExtractMnnLibs: HTTP $responseCode")
-                connection.disconnect()
-                return false
+            var downloadSuccess = false
+            for ((idx, url) in mirrorUrls.withIndex()) {
+                if (downloadCancelled) return false
+                writeEngineLog("downloadAndExtractMnnLibs: [v2.4.32] trying mirror ${idx + 1}/${mirrorUrls.size}: ${url.take(80)}...")
+                try {
+                    val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                        connectTimeout = 15000
+                        readTimeout = 300000
+                        instanceFollowRedirects = true
+                    }
+                    val responseCode = connection.responseCode
+                    if (responseCode != 200) {
+                        writeEngineLog("downloadAndExtractMnnLibs: mirror ${idx + 1} returned HTTP $responseCode")
+                        connection.disconnect()
+                        continue
+                    }
+
+                    val input = connection.inputStream
+                    val output = java.io.FileOutputStream(tmpZip)
+                    val buffer = ByteArray(16384)
+                    var bytesRead: Int
+                    while (true) {
+                        if (downloadCancelled) {
+                            input.close(); output.close(); connection.disconnect()
+                            return false
+                        }
+                        bytesRead = input.read(buffer)
+                        if (bytesRead == -1) break
+                        output.write(buffer, 0, bytesRead)
+                    }
+                    input.close(); output.close(); connection.disconnect()
+
+                    if (tmpZip.length() < 1_000_000) {
+                        writeEngineLog("downloadAndExtractMnnLibs: mirror ${idx + 1} file too small (${tmpZip.length()}), likely error page")
+                        tmpZip.delete()
+                        continue
+                    }
+
+                    writeEngineLog("downloadAndExtractMnnLibs: mirror ${idx + 1} downloaded OK, size=${tmpZip.length()}")
+                    downloadSuccess = true
+                    break
+                } catch (e: Exception) {
+                    writeEngineLog("downloadAndExtractMnnLibs: mirror ${idx + 1} failed: ${e.message}")
+                    continue
+                }
             }
 
-            val input = connection.inputStream
-            val output = java.io.FileOutputStream(tmpZip)
-            val buffer = ByteArray(16384)
-            var bytesRead: Int
-            while (true) {
-                if (downloadCancelled) {
-                    input.close(); output.close(); connection.disconnect()
-                    return false
-                }
-                bytesRead = input.read(buffer)
-                if (bytesRead == -1) break
-                output.write(buffer, 0, bytesRead)
+            if (!downloadSuccess) {
+                writeEngineLog("downloadAndExtractMnnLibs: all mirrors failed")
+                return false
             }
-            input.close(); output.close(); connection.disconnect()
-            writeEngineLog("downloadAndExtractMnnLibs: zip downloaded, size=${tmpZip.length()}")
 
             // Extract arm64-v8a .so files
             val requiredLibs = listOf(

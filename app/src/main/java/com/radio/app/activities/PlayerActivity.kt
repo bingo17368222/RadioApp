@@ -1334,56 +1334,66 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
-        // v2.4.31: Add isUserSeeking protection around segment jump operations, mirroring the
-        // skip forward/backward buttons added in v2.4.30. jumpToPrevSegment/jumpToNextSegment
-        // perform a seek (often backward), which the monotonic jitter guard in onPositionChanged
-        // treats as a spurious backward jump and fights, causing the displayed position to jitter.
-        // Setting isUserSeeking=true lets the jitter guard accept the seek, and we reset it after
-        // 1500ms so normal anti-jitter protection resumes.
+        // v2.4.32: Add debounce to prevent rapid-fire clicking (user was clicking 4x/second)
+        // and add isUserSeeking protection to prevent jitter guard from fighting seeks
+        val lastSkipClickTime = longArrayOf(0L)
+        val skipDebounceMs = 500L
+        val resetSeekRunnable = Runnable { isUserSeeking = false }
+
+        fun shouldSkip(): Boolean {
+            val now = System.currentTimeMillis()
+            if (now - lastSkipClickTime[0] < skipDebounceMs) return false
+            lastSkipClickTime[0] = now
+            return true
+        }
+
         binding.btnPrevSegment.setOnClickListener {
             if (playbackService == null) {
-                writeEpisodeLog("btnPrevSegment: playbackService is null, cannot jump")
                 Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (!shouldSkip()) return@setOnClickListener
             isUserSeeking = true
-            writeJitterLog("[v2.4.31] btnPrevSegment: isUserSeeking=true, calling jumpToPrevSegment")
+            writeJitterLog("[v2.4.32] btnPrevSegment: isUserSeeking=true")
             playbackService?.jumpToPrevSegment()
-            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
+            window.decorView.removeCallbacks(resetSeekRunnable)
+            window.decorView.postDelayed(resetSeekRunnable, 1500L)
         }
         binding.btnNextSegment.setOnClickListener {
             if (playbackService == null) {
-                writeEpisodeLog("btnNextSegment: playbackService is null, cannot jump")
                 Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (!shouldSkip()) return@setOnClickListener
             isUserSeeking = true
-            writeJitterLog("[v2.4.31] btnNextSegment: isUserSeeking=true, calling jumpToNextSegment")
+            writeJitterLog("[v2.4.32] btnNextSegment: isUserSeeking=true")
             playbackService?.jumpToNextSegment()
-            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
+            window.decorView.removeCallbacks(resetSeekRunnable)
+            window.decorView.postDelayed(resetSeekRunnable, 1500L)
         }
-        // v2.4.30: Add isUserSeeking protection around skip operations to prevent jitter guard from fighting
         binding.btnSkipForward.setOnClickListener {
             if (playbackService == null) {
-                writeJitterLog("[v2.4.30] btnSkipForward: service not bound, ignoring")
                 Toast.makeText(this, "播放服务未就绪", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (!shouldSkip()) return@setOnClickListener
             isUserSeeking = true
-            writeJitterLog("[v2.4.30] btnSkipForward: isUserSeeking=true, calling skipForward")
+            writeJitterLog("[v2.4.32] btnSkipForward: isUserSeeking=true")
             playbackService?.skipForward()
-            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
+            window.decorView.removeCallbacks(resetSeekRunnable)
+            window.decorView.postDelayed(resetSeekRunnable, 1500L)
         }
         binding.btnSkipBackward.setOnClickListener {
             if (playbackService == null) {
-                writeJitterLog("[v2.4.30] btnSkipBackward: service not bound, ignoring")
                 Toast.makeText(this, "播放服务未就绪", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (!shouldSkip()) return@setOnClickListener
             isUserSeeking = true
-            writeJitterLog("[v2.4.30] btnSkipBackward: isUserSeeking=true, calling skipBackward")
+            writeJitterLog("[v2.4.32] btnSkipBackward: isUserSeeking=true")
             playbackService?.skipBackward()
-            window.decorView.postDelayed({ isUserSeeking = false }, 1500L)
+            window.decorView.removeCallbacks(resetSeekRunnable)
+            window.decorView.postDelayed(resetSeekRunnable, 1500L)
         }
         binding.btnClose.setOnClickListener {
             writeJitterLog("btnClose: calling finish() to exit to MainActivity")
