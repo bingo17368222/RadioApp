@@ -664,24 +664,23 @@ class PlayerActivity : AppCompatActivity() {
                 if (!audioUrl.isNullOrBlank()) {
                     currentEpisode?.let { episode ->
                         if (isFreshStart) {
-                            // v2.4.44: When service was killed (svcStarted=false), restore saved position
-                            // even if isFreshStart=true. isFreshStart is set when user selects episode
-                            // from list, but it's never reset to false. So when service is killed and
-                            // user returns to app, it still thinks it's a fresh start and plays from 0.
+                            // v2.4.45: ALWAYS restore saved position when isFreshStart=true.
+                            // Previous code only restored when svcStarted=false (service killed).
+                            // When service was running, startPos=-1 → played from 0, losing progress.
                             val startPos = if (pendingSeekMs > 0) {
                                 pendingSeekMs
-                            } else if (!svcStarted) {
-                                // Service was killed - restore saved position
+                            } else {
+                                // Always try to restore saved position
                                 val savedPos = playbackService?.getSavedPositionForEpisode(episode) ?: -1L
                                 val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
                                 val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
                                 val restorePos = if (cachedPos > 30000 && cachedEpId == episode.id) cachedPos else savedPos
-                                writeJitterLog("[v2.4.44] onServiceConnected: isFreshStart but svcStarted=false, restoring pos=$restorePos (saved=$savedPos, cached=$cachedPos)")
+                                if (restorePos > 30000) {
+                                    writeJitterLog("[v2.4.45] onServiceConnected: isFreshStart, restoring pos=$restorePos (saved=$savedPos, cached=$cachedPos, svcStarted=$svcStarted)")
+                                }
                                 restorePos
-                            } else {
-                                -1L
                             }
-                            writeJitterLog("onServiceConnected: isFreshStart, playEpisode with startPos=$startPos (pendingSeekMs=$pendingSeekMs)")
+                            writeJitterLog("onServiceConnected: isFreshStart, playEpisode with startPos=$startPos (pendingSeekMs=$pendingSeekMs, svcStarted=$svcStarted)")
                             playbackService?.playEpisode(episode, false, startPos)
                             pendingSeekMs = -1L  // [v2.1.9] Clear after use
                             // v2.4.44: Reset isFreshStart after first play so reconnections restore position
@@ -1209,6 +1208,8 @@ class PlayerActivity : AppCompatActivity() {
         setupListeners()
         restoreProcessingState()
         bindPlaybackService()
+        // v2.4.45: Register segment cancel receiver
+        registerReceiver(segmentCancelReceiver, android.content.IntentFilter(SEGMENT_CANCEL_ACTION), Context.RECEIVER_NOT_EXPORTED)
         // 注册广播接收器处理连续播放等事件
         LocalBroadcastManager.getInstance(this).registerReceiver(
             episodeActionReceiver,
@@ -1644,7 +1645,12 @@ class PlayerActivity : AppCompatActivity() {
                     val segEngineName = if (aiModel == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
 
                     runOnUiThread {
-                        if (_binding == null) return@runOnUiThread
+                        // v2.4.45: Always call finishAiProcessing even if _binding==null
+                        // (otherwise notification stays visible forever)
+                        if (_binding == null) {
+                            finishAiProcessing("segment")
+                            return@runOnUiThread
+                        }
                         if (segments.isNotEmpty()) {
                             voiceSegments = segments
                             segmentAdapter?.setSegments(segments)
@@ -2012,6 +2018,12 @@ class PlayerActivity : AppCompatActivity() {
             if (!isUserSeeking && !inStabilization && svcPos > 0 && svcPos >= lastDisplayedPositionMs - 2000) {
                 // Normal case: accept forward progress from service
                 lastDisplayedPositionMs = svcPos
+            } else if (isUserSeeking || inStabilization) {
+                // v2.4.45: Log when updateUI is holding (diagnosing jitter)
+                val delta = svcPos - lastDisplayedPositionMs
+                if (kotlin.math.abs(delta) > 3000) {
+                    writeJitterLog("[v2.4.45] updateUI HOLD: isUserSeeking=$isUserSeeking, stab=$inStabilization, svcPos=$svcPos, displayPos=$lastDisplayedPositionMs, delta=$delta")
+                }
             }
             // When isUserSeeking or in stabilization: keep lastDisplayedPositionMs as-is
             // (it was already set to the seek target or jitter baseline)
@@ -2474,6 +2486,17 @@ class PlayerActivity : AppCompatActivity() {
     // v2.4.44: AI segmentation notification (foreground-like, like subtitle generation)
     private val SEGMENT_NOTIFICATION_ID = 20001
     private val SEGMENT_CHANNEL_ID = "segment_processing"
+    private val SEGMENT_CANCEL_ACTION = "com.radio.app.CANCEL_SEGMENT"
+    private val segmentCancelReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == SEGMENT_CANCEL_ACTION) {
+                writeJitterLog("[v2.4.45] Segment notification cancel clicked")
+                segmentProcessing = false
+                finishAiProcessing("segment")
+                Toast.makeText(this@PlayerActivity, "AI分段已取消", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     private fun showSegmentNotification(progress: Int) {
         try {
@@ -2490,6 +2513,13 @@ class PlayerActivity : AppCompatActivity() {
             val notifTitle = if (dateStr.isNotEmpty()) "$dateStr $title" else title
             val notifContent = "AI分段: ${progress}%"
 
+            // v2.4.45: Add cancel action button
+            val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(packageName)
+            val cancelPending = android.app.PendingIntent.getBroadcast(
+                this, 20001, cancelIntent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+
             val notification = NotificationCompat.Builder(this, SEGMENT_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(notifTitle)
@@ -2498,6 +2528,7 @@ class PlayerActivity : AppCompatActivity() {
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOnlyAlertOnce(true)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
                 .build()
             nm.notify(SEGMENT_NOTIFICATION_ID, notification)
         } catch (_: Exception) {}
@@ -3352,6 +3383,10 @@ class PlayerActivity : AppCompatActivity() {
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
         } catch (_: Exception) {}
+        // v2.4.45: Unregister segment cancel receiver
+        try { unregisterReceiver(segmentCancelReceiver) } catch (_: Exception) {}
+        // v2.4.45: Cancel any lingering segment notification
+        cancelSegmentNotification()
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeChangedReceiver)
         } catch (_: Exception) {}
