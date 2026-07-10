@@ -2723,8 +2723,9 @@ class SubtitleGeneratorService : Service() {
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext,
         episodeId: String = "",  // [v2.1.2] For crash marker
-        resumeFromSample: Int = 0  // [v2.4.20] Resume support: skip first N samples already processed
+        resumeFromSampleParam: Int = 0  // [v2.4.20] Resume support: skip first N samples already processed
     ): Boolean {
+        var resumeFromSample = resumeFromSampleParam  // v2.4.40: mutable copy for reset
         logToFile("processWhisperInChunks: START, pcmFile=${pcmFile.absolutePath}, modelPath=$modelPath, resumeFromSample=$resumeFromSample")
         // [v2.0.74] Issue 2 Fix: Report initial progress immediately so UI shows progress bar
         callback.onProgressUpdate(1, 100)
