@@ -1422,66 +1422,65 @@ class PlayerActivity : AppCompatActivity() {
                     val maxEnd = if (dur > 0) dur else dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
                     writeJitterLog("[v2.4.27] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
 
-                    // [v2.4.27] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
+                    // [v2.4.28] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
+                    // If MNN fails, show error directly - NO fallback to keyword-based segmentation
                     var segments: List<VoiceSegment> = emptyList()
                     if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
                         val modelsDir = getExternalFilesDir("models")
                         val mnnModelDir = File(modelsDir, "mnn-llm/Qwen1.5-1.8B-Chat-MNN")
-                        writeJitterLog("[v2.4.27] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
+                        writeJitterLog("[v2.4.28] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
 
                         if (!MnnLlmBridge.isModelInstalled(mnnModelDir)) {
-                            writeJitterLog("[v2.4.27] btnAiSegment: MNN model not installed, falling back to keyword")
-                            runOnUiThread { Toast.makeText(this, "MNN模型未安装，使用关键词分析。请在离线引擎页面下载阿里MNN-LLM模型。", Toast.LENGTH_LONG).show() }
-                            if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                            val err = MnnLlmBridge.lastError
+                            writeJitterLog("[v2.4.28] btnAiSegment: MNN model not installed: $err")
+                            runOnUiThread { Toast.makeText(this, "MNN模型未安装或文件不完整: $err\n请在离线引擎页面重新下载。", Toast.LENGTH_LONG).show() }
                         } else {
-                            runOnUiThread { Toast.makeText(this, "正在加载MNN离线模型分析字幕...", Toast.LENGTH_SHORT).show() }
+                            runOnUiThread { Toast.makeText(this, "正在加载MNN离线模型...", Toast.LENGTH_SHORT).show() }
                             try {
-                                // Initialize MNN-LLM
-                                writeJitterLog("[v2.4.27] btnAiSegment: initializing MnnLlmBridge...")
+                                writeJitterLog("[v2.4.28] btnAiSegment: initializing MnnLlmBridge...")
                                 val initOk = MnnLlmBridge.init(mnnModelDir)
-                                writeJitterLog("[v2.4.27] btnAiSegment: MnnLlmBridge.init result=$initOk")
+                                writeJitterLog("[v2.4.28] btnAiSegment: MnnLlmBridge.init result=$initOk")
                                 if (!initOk) {
-                                    throw RuntimeException("MNN模型加载失败")
-                                }
-
-                                // Get all subtitles and feed to MNN-LLM
-                                val transcripts = dbHelper.getTranscripts(episode.id)
-                                val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
-                                writeJitterLog("[v2.4.27] btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM")
-
-                                runOnUiThread { Toast.makeText(this, "MNN模型分析中，请稍候...", Toast.LENGTH_SHORT).show() }
-
-                                val results = MnnLlmBridge.classifySubtitles(subtitleData)
-                                writeJitterLog("[v2.4.27] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
-
-                                if (results != null && results.isNotEmpty()) {
-                                    segments = results.map { r ->
-                                        VoiceSegment().apply {
-                                            this.start = r.start
-                                            this.end = r.end
-                                            this.hasVoice = r.isDry
-                                            this.label = r.label
-                                            this.isSimulated = false
-                                        }
-                                    }
+                                    val err = MnnLlmBridge.lastError
+                                    writeJitterLog("[v2.4.28] btnAiSegment: MNN init failed: $err")
+                                    runOnUiThread { Toast.makeText(this, "MNN模型加载失败: $err", Toast.LENGTH_LONG).show() }
                                 } else {
-                                    writeJitterLog("[v2.4.27] btnAiSegment: MNN-LLM returned no results, falling back to keyword")
-                                    runOnUiThread { Toast.makeText(this, "MNN分析无结果，使用关键词分析", Toast.LENGTH_SHORT).show() }
-                                    if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
+                                    val transcripts = dbHelper.getTranscripts(episode.id)
+                                    val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
+                                    writeJitterLog("[v2.4.28] btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM")
+
+                                    runOnUiThread { Toast.makeText(this, "MNN模型分析中，请稍候...", Toast.LENGTH_SHORT).show() }
+
+                                    val results = MnnLlmBridge.classifySubtitles(subtitleData)
+                                    writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
+
+                                    if (results != null && results.isNotEmpty()) {
+                                        segments = results.map { r ->
+                                            VoiceSegment().apply {
+                                                this.start = r.start
+                                                this.end = r.end
+                                                this.hasVoice = r.isDry
+                                                this.label = r.label
+                                                this.isSimulated = false
+                                            }
+                                        }
+                                    } else {
+                                        writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM returned no results")
+                                        runOnUiThread { Toast.makeText(this, "MNN分析无结果，请检查日志", Toast.LENGTH_LONG).show() }
+                                    }
                                 }
                                 MnnLlmBridge.release()
                             } catch (e: Exception) {
-                                writeJitterLog("[v2.4.27] btnAiSegment: MNN-LLM error: ${e.message}")
+                                writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM error: ${e.message}")
                                 runOnUiThread { Toast.makeText(this, "MNN离线分析错误: ${e.message}", Toast.LENGTH_LONG).show() }
-                                if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                                 try { MnnLlmBridge.release() } catch (_: Exception) {}
                             }
                         }
                     } else {
-                        // [v2.4.25] Keyword-based segmentation (default)
+                        // [v2.4.25] Keyword-based segmentation (default for non-MNN models)
                         if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                     }
-                    writeJitterLog("[v2.4.27] btnAiSegment: generated ${segments.size} segments")
+                    writeJitterLog("[v2.4.28] btnAiSegment: generated ${segments.size} segments")
 
                     runOnUiThread {
                         if (_binding == null) return@runOnUiThread

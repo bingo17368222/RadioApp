@@ -4,13 +4,18 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.27 Bridge for MNN-LLM offline model inference.
+ * v2.4.28 Bridge for MNN-LLM offline model inference.
  * Uses JNI to call MNN Llm API via dlopen/dlsym.
  * Requires libMNN.so, libllm.so, libMNN_Express.so, libc++_shared.so in jniLibs.
  */
 class MnnLlmBridge {
     companion object {
         private const val TAG = "MnnLlmBridge"
+
+        // Last error message for UI display
+        @Volatile
+        var lastError: String = ""
+            private set
 
         // Load native libraries in dependency order
         init {
@@ -60,10 +65,19 @@ class MnnLlmBridge {
          * Check if MNN model is installed at the given directory.
          */
         fun isModelInstalled(modelDir: File): Boolean {
-            val hasLlmMnn = File(modelDir, "llm.mnn").exists()
+            val hasLlmMnn = File(modelDir, "llm.mnn").let { it.exists() && it.length() > 1_000_000 }
             val hasWeight = File(modelDir, "llm.mnn.weight").let { it.exists() && it.length() > 100_000_000 }
             val hasConfig = File(modelDir, "config.json").exists() || File(modelDir, "llm.mnn.json").exists()
-            return hasLlmMnn && hasWeight && hasConfig
+            val installed = hasLlmMnn && hasWeight && hasConfig
+            if (!installed) {
+                val missing = mutableListOf<String>()
+                if (!hasLlmMnn) missing.add("llm.mnn")
+                if (!hasWeight) missing.add("llm.mnn.weight(>100MB)")
+                if (!hasConfig) missing.add("config.json/llm.mnn.json")
+                lastError = "模型文件缺失: ${missing.joinToString(", ")}"
+                Log.e(TAG, "isModelInstalled: FALSE - missing: ${missing.joinToString(", ")}")
+            }
+            return installed
         }
 
         /**
@@ -72,12 +86,21 @@ class MnnLlmBridge {
          * @return true if initialization succeeded
          */
         fun init(modelDir: File): Boolean {
+            lastError = ""
+
+            // List all files in model dir for debugging
+            val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
+            Log.i(TAG, "init: modelDir=${modelDir.absolutePath}, files=$files")
+
             if (!initialized) {
+                Log.i(TAG, "init: calling nativeInit()...")
                 initialized = nativeInit()
                 if (!initialized) {
-                    Log.e(TAG, "nativeInit failed")
+                    lastError = "nativeInit失败: 无法加载MNN原生库(libllm.so)"
+                    Log.e(TAG, "init: nativeInit FAILED - native libraries may not be packaged in APK")
                     return false
                 }
+                Log.i(TAG, "init: nativeInit OK")
             }
 
             // Use config file from model directory - check llm.mnn.json first, then config.json
@@ -85,23 +108,26 @@ class MnnLlmBridge {
                 ?: File(modelDir, "config.json").takeIf { it.exists() }
             val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
 
-            Log.i(TAG, "Creating LLM with config: $configPath")
+            Log.i(TAG, "init: creating LLM with config: $configPath")
             llmPtr = nativeCreateLlm(configPath)
             if (llmPtr == 0L) {
-                Log.e(TAG, "nativeCreateLlm returned 0")
+                lastError = "createLLM失败: 无法创建LLM实例(config=$configPath)"
+                Log.e(TAG, "init: nativeCreateLlm returned 0 for config: $configPath")
                 return false
             }
+            Log.i(TAG, "init: nativeCreateLlm OK, ptr=$llmPtr")
 
-            Log.i(TAG, "Loading model...")
+            Log.i(TAG, "init: loading model...")
             val loaded = nativeLoad(llmPtr)
             if (!loaded) {
-                Log.e(TAG, "nativeLoad failed")
+                lastError = "模型加载失败: load()返回false(模型文件可能损坏或不完整)"
+                Log.e(TAG, "init: nativeLoad FAILED")
                 nativeFree(llmPtr)
                 llmPtr = 0L
                 return false
             }
 
-            Log.i(TAG, "MNN LLM ready!")
+            Log.i(TAG, "init: MNN LLM ready!")
             return true
         }
 
@@ -113,7 +139,7 @@ class MnnLlmBridge {
          */
         fun generate(prompt: String, maxTokens: Int = 2000): String {
             if (llmPtr == 0L) {
-                Log.e(TAG, "LLM not initialized")
+                Log.e(TAG, "generate: LLM not initialized")
                 return ""
             }
             return nativeGenerate(llmPtr, prompt, maxTokens)
@@ -138,7 +164,7 @@ class MnnLlmBridge {
             segmentDurationMs: Long = 3 * 60 * 1000L
         ): List<MnnSegmentResult>? {
             if (llmPtr == 0L) {
-                Log.e(TAG, "LLM not initialized for classifySubtitles")
+                Log.e(TAG, "classifySubtitles: LLM not initialized")
                 return null
             }
 
@@ -177,15 +203,15 @@ class MnnLlmBridge {
                 }
             }
 
-            Log.i(TAG, "Sending ${groups.size} segments to MNN-LLM, prompt length=${prompt.length}")
+            Log.i(TAG, "classifySubtitles: ${groups.size} segments, prompt length=${prompt.length}")
 
             val response = generate(prompt, 2000)
             if (response.isBlank()) {
-                Log.e(TAG, "Empty response from MNN-LLM")
+                Log.e(TAG, "classifySubtitles: empty response from MNN-LLM")
                 return null
             }
 
-            Log.i(TAG, "MNN-LLM response length=${response.length}")
+            Log.i(TAG, "classifySubtitles: response length=${response.length}, preview=${response.take(200)}")
 
             // Parse JSON array from response
             return parseClassification(response, groups)
@@ -207,7 +233,7 @@ class MnnLlmBridge {
                 val jsonStart = response.indexOf('[')
                 val jsonEnd = response.lastIndexOf(']')
                 if (jsonStart < 0 || jsonEnd < 0) {
-                    Log.e(TAG, "No JSON array in response: ${response.take(200)}")
+                    Log.e(TAG, "parseClassification: no JSON array in response: ${response.take(200)}")
                     return emptyList()
                 }
 
@@ -231,9 +257,9 @@ class MnnLlmBridge {
                     }
                 }
 
-                Log.i(TAG, "Parsed ${results.size} results (${results.count { it.isDry }} dry, ${results.count { !it.isDry }} water)")
+                Log.i(TAG, "parseClassification: ${results.size} results (${results.count { it.isDry }} dry, ${results.count { !it.isDry }} water)")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to parse response: ${e.message}")
+                Log.e(TAG, "parseClassification: failed: ${e.message}")
             }
             return results
         }

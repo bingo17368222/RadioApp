@@ -293,6 +293,7 @@ class OfflineEngineActivity : AppCompatActivity() {
             val installed = modelDir?.exists() == true && getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && (when {
                 engine.modelDir.contains("vosk", ignoreCase = true) -> isValidVoskModelDir(modelDir)
                 engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
+                engine.modelDir.contains("mnn", ignoreCase = true) -> isValidMnnModelDir(modelDir)
                 else -> true
             })
             // Issue 13: 记录安装检查结果
@@ -1218,17 +1219,22 @@ class OfflineEngineActivity : AppCompatActivity() {
         return result
     }
 
-    // [v2.4.21] Check if MNN model directory is valid
+    // [v2.4.28] Check if MNN model directory is valid - all required files must exist
     private fun isValidMnnModelDir(dir: File): Boolean {
-        Log.d(TAG, "isValidMnnModelDir: checking ${dir.absolutePath}, exists=${dir.exists()}, files=${dir.listFiles()?.map { it.name }}")
+        Log.d(TAG, "isValidMnnModelDir: checking ${dir.absolutePath}, exists=${dir.exists()}, files=${dir.listFiles()?.map { "${it.name}(${it.length()})" }}")
+        writeEngineLog("isValidMnnModelDir: checking ${dir.absolutePath}, files=${dir.listFiles()?.map { "${it.name}(${it.length()})" }}")
         val result = run {
             if (!dir.isDirectory) return@run false
-            // MNN model requires llm.mnn and llm.mnn.weight files
-            val hasLlmMnn = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn" }
+            val hasLlmMnn = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn" && it.length() > 1_000_000 }
             val hasWeight = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn.weight" && it.length() > 100_000_000 }
-            return@run hasLlmMnn && hasWeight
+            val hasConfig = dir.walkTopDown().any { it.isFile && (it.name == "config.json" || it.name == "llm.mnn.json") }
+            if (!hasLlmMnn) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn (>1MB)")
+            if (!hasWeight) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn.weight (>100MB)")
+            if (!hasConfig) writeEngineLog("isValidMnnModelDir: MISSING config.json or llm.mnn.json")
+            return@run hasLlmMnn && hasWeight && hasConfig
         }
         Log.d(TAG, "isValidMnnModelDir: result=$result")
+        writeEngineLog("isValidMnnModelDir: result=$result")
         return result
     }
 

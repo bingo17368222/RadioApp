@@ -2989,24 +2989,24 @@ class SubtitleGeneratorService : Service() {
                 var chunkSuccess = false
                 var chunkErrorCode = 0
 
-                // [v2.4.27] Recreate whisper context every 5 chunks to prevent progressive slowdown
+                // [v2.4.28] Recreate whisper context every 3 chunks to prevent progressive slowdown
                 // The whisper context accumulates internal state (KV cache, segment history) which
                 // causes processing time to increase from 8s to 54s per chunk over time.
                 // Recreating the context resets this state, maintaining consistent speed.
-                if (chunkIdx > 0 && chunkIdx % 5 == 0) {
-                    logToFile("processWhisperInChunks: [v2.4.26] recreating whisper context at chunk $chunkIdx to prevent slowdown")
+                if (chunkIdx > 0 && chunkIdx % 3 == 0) {
+                    logToFile("processWhisperInChunks: [v2.4.28] recreating whisper context at chunk $chunkIdx to prevent slowdown")
                     try {
                         bridge.setOptMode(optMode)
                         val newCtxPtr = bridge.initFromFile(modelPath)
                         if (newCtxPtr != 0L) {
                             try { bridge.free(ctxPtr) } catch (_: Exception) {}
                             ctxPtr = newCtxPtr
-                            logToFile("processWhisperInChunks: [v2.4.26] context recreated, new ctxPtr=$ctxPtr")
+                            logToFile("processWhisperInChunks: [v2.4.28] context recreated, new ctxPtr=$ctxPtr")
                         } else {
-                            logToFile("processWhisperInChunks: [v2.4.26] WARNING: context recreation returned 0, keeping old context")
+                            logToFile("processWhisperInChunks: [v2.4.28] WARNING: context recreation returned 0, keeping old context")
                         }
                     } catch (e: Exception) {
-                        logToFile("processWhisperInChunks: [v2.4.26] WARNING: context recreation failed: ${e.message}, keeping old context")
+                        logToFile("processWhisperInChunks: [v2.4.28] WARNING: context recreation failed: ${e.message}, keeping old context")
                     }
                 }
 
