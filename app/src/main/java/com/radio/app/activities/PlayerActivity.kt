@@ -1383,8 +1383,10 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         val lastSkipClickTime = longArrayOf(0L)
-        // v2.4.36: Reduced debounce from 500ms to 300ms - 500ms felt sluggish
-        val skipDebounceMs = 300L
+        // v2.4.42: Reduced debounce from 300ms to 200ms.
+        // 300ms was too aggressive - user reported "sometimes unavailable".
+        // With SEEK-LOCK, rapid skips are now safe because positions are locked.
+        val skipDebounceMs = 200L
         // v2.4.34: Increased reset time from 1500ms to 3000ms - ExoPlayer buffering after seek
         // can take 2-3 seconds, during which old positions are reported
         // v2.4.41: resetSeekRunnable is now a class-level field (used in multiple methods)
@@ -1952,14 +1954,21 @@ class PlayerActivity : AppCompatActivity() {
         if (playbackService?.isPrepared() == true) {
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val svcDur = playbackService?.getDuration() ?: -1L
-            // [v2.3.1] Monotonic guard: never let updateUI() move position backward.
-            // The service's getCurrentPosition() is already monotonic when prepared, but
-            // during episode transitions there can be brief windows where stale values leak.
-            if (svcPos > 0 && svcPos >= lastDisplayedPositionMs - 2000) {
+            // v2.4.42: CRITICAL FIX - updateUI was bypassing the jitter guard!
+            // Old code read svcPos directly and overwrote lastDisplayedPositionMs,
+            // which fought with the Seek Position Lock in onPositionChanged.
+            // This was THE root cause of seek jitter that was "never fixed".
+            //
+            // Fix: When isUserSeeking or in stabilization, DON'T read svcPos.
+            // Use lastDisplayedPositionMs (which was set by performSeek or jitter guard).
+            val now = System.currentTimeMillis()
+            val inStabilization = (now - jitterSyncTimeMs) < jitterStabilizeMs
+            if (!isUserSeeking && !inStabilization && svcPos > 0 && svcPos >= lastDisplayedPositionMs - 2000) {
+                // Normal case: accept forward progress from service
                 lastDisplayedPositionMs = svcPos
             }
-            // Only update seekBar if we have valid position data (not 0 when playing)
-            val isPlaying = playbackService?.isPlaying() ?: false
+            // When isUserSeeking or in stabilization: keep lastDisplayedPositionMs as-is
+            // (it was already set to the seek target or jitter baseline)
             val displayPos = lastDisplayedPositionMs
             if (displayPos > 0 || !isPlaying) {
                 if (displayPos > 0) {

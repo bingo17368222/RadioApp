@@ -274,12 +274,13 @@ static struct whisper_full_params* prepare_params(void) {
             "接下来我们会详细讨论。"
             "感谢大家的收听。";
     } else if (mode == 2) {
-        // SPEED (tiny): greedy, 2 threads, short prompt
-        // v2.4.40: Reduced from dynamic (up to 8) to 2 threads.
-        // 8 threads caused severe thermal throttling: chunks 4-8 took 100-175s
-        // instead of 10-15s. 2 threads = consistent speed, no throttling.
+        // SPEED (tiny): greedy, 3 threads, short prompt
+        // v2.4.42: Increased from 2 to 3 threads.
+        // v2.4.40 used 2 threads (from 8) to prevent thermal throttling.
+        // With 300ms cooldown (v2.4.41), 3 threads should be safe.
+        // Expected speed: ~1.3x → ~1.6x.
         strategy = WHISPER_SAMPLING_GREEDY;
-        threads = 2;
+        threads = 3;
         prompt = "以下是普通话的句子。";
     } else {
         // BALANCED (base): greedy, moderate threads, medium prompt

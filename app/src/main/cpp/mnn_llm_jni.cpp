@@ -255,10 +255,17 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
 
     const char* promptStr = env->GetStringUTFChars(prompt, nullptr);
-    std::string promptCpp(promptStr);
+    std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    mnn_logf("nativeGenerate: prompt length=%zu, maxTokens=%d", promptCpp.size(), maxTokens);
+    // v2.4.42: Wrap prompt in Qwen1.5-Chat chat template.
+    // Without the chat template, the model falls into a degenerate repetition
+    // loop outputting garbage tokens like "集结集结集结漏漏...".
+    // Qwen1.5-Chat REQUIRES the <|im_start|>/<|im_end|> format.
+    std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+                           + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+
+    mnn_logf("nativeGenerate: prompt length=%zu (wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
 
     std::ostringstream oss;
     int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
