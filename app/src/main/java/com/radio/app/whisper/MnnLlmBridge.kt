@@ -178,7 +178,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.58"
+                    val expectedMarker = "MNN_JNI_v2.4.60"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")

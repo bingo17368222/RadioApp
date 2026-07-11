@@ -227,10 +227,11 @@
             android:layout_height="56dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_rewind"
-            android:contentDescription="Backward"
+            android:contentDescription="重播十五秒"
             android:tooltipText="-15秒"
             android:focusable="false"
-            android:focusableInTouchMode="false" />
+            android:focusableInTouchMode="false"
+            android:importantForAccessibility="no" />
         <ImageButton
             android:id="@+id/btn_play_pause"
             android:layout_width="72dp"
@@ -246,8 +247,9 @@
             android:layout_height="56dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_forward"
-            android:contentDescription="Forward"
-            android:tooltipText="+15秒" />
+            android:contentDescription="快进十五秒"
+            android:tooltipText="+15秒"
+            android:importantForAccessibility="no" />
         <ImageButton
             android:id="@+id/btn_next_segment"
             android:layout_width="48dp"

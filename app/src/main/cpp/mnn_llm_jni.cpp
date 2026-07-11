@@ -109,7 +109,7 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
     // v2.4.46: Compile-time version marker
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.58 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.60 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -275,24 +275,48 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // v2.4.58: Updated compile marker for .so version verification.
-// v2.4.57: ALWAYS wrap prompt in chat template + pass stop_str="<|im_end|>".
-// Kotlin no longer wraps (removed in v2.4.57 to avoid double-wrapping).
-// The C++ .so is the single source of truth for chat template wrapping.
-// This works for both old .so (v2.4.48, which wraps) and new .so (which wraps).
-std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
-                       + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+    // v2.4.60: MNN's response() applies the chat template from llm.mnn.json automatically.
+    // Previous versions wrapped the prompt manually, which caused double-wrapping and
+    // garbage output ("漏集结漏集结..."). Now we pass the raw prompt and let MNN handle it.
+    // If MNN doesn't have a chat template in llm.mnn.json, we fall back to manual wrapping.
+    //
+    // Try raw prompt first (MNN applies chat template from config)
+    std::string promptCpp = rawPrompt;
 
-mnn_logf("nativeGenerate: prompt length=%zu (chat-template-wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
+    mnn_logf("nativeGenerate: prompt length=%zu (raw, MNN applies template), maxTokens=%d, first 100 chars: %.100s",
+             promptCpp.size(), maxTokens, promptCpp.c_str());
 
-std::ostringstream oss;
-int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
-g_response(llm, promptCpp, &oss, "<|im_end|>", max_new);
+    std::ostringstream oss;
+    int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
+    g_response(llm, promptCpp, &oss, "<|im_end|>", max_new);
 
-std::string result = oss.str();
-mnn_logf("nativeGenerate: response length=%zu, first 200 chars: %.200s", result.size(), result.c_str());
+    std::string result = oss.str();
+    mnn_logf("nativeGenerate: response length=%zu, first 200 chars: %.200s", result.size(), result.c_str());
 
-return env->NewStringUTF(result.c_str());
+    // v2.4.60: If response is garbage (repeated chars), retry with manual chat template wrapping
+    auto checkGarbage = [](const std::string& s) -> bool {
+        if (s.length() < 10) return false;
+        std::set<char> uniqueChars(s.begin(), s.begin() + std::min((size_t)50, s.length()));
+        return uniqueChars.size() <= 5;
+    };
+
+    if (checkGarbage(result) && !rawPrompt.empty()) {
+        mnn_logf("nativeGenerate: GARBAGE detected, retrying with manual chat template wrapping");
+        // Fall back to manual wrapping
+        std::string wrappedPrompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+                                    + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+        std::ostringstream oss2;
+        g_response(llm, wrappedPrompt, &oss2, "<|im_end|>", max_new);
+        std::string result2 = oss2.str();
+        mnn_logf("nativeGenerate: retry response length=%zu, first 200 chars: %.200s", result2.size(), result2.c_str());
+        // Use retry result if it's better
+        if (!checkGarbage(result2)) {
+            return env->NewStringUTF(result2.c_str());
+        }
+        // Both garbage - return original
+    }
+
+    return env->NewStringUTF(result.c_str());
 }
 
 // v2.4.58: Return the compile marker string so Kotlin can verify the correct .so is loaded.
@@ -300,7 +324,7 @@ return env->NewStringUTF(result.c_str());
 // Kotlin compares it against the expected marker and force-kills the process if mismatched.
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.58");
+    return env->NewStringUTF("MNN_JNI_v2.4.60");
 }
 
 // v2.4.53: Check if response is garbage (repeated characters)

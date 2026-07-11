@@ -41,6 +41,13 @@ class KeywordSettingsActivity : AppCompatActivity() {
     private val dryKeywordList: MutableList<String> = mutableListOf()
     private val waterKeywordList: MutableList<String> = mutableListOf()
 
+    // [就AI听] 水货分段开头/结尾组合管理（Chip 风格，可添加/删除）
+    private lateinit var etCombinationStart: EditText
+    private lateinit var etCombinationEnd: EditText
+    private lateinit var chipGroupCombinations: ChipGroup
+    private lateinit var tvCombinationsEmpty: TextView
+    private val waterCombinationList: MutableList<Pair<String, String>> = mutableListOf()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_keyword_settings)
@@ -83,6 +90,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
 
         // [就AI听] 关键词管理初始化
         initKeywordManagement()
+        // [就AI听] 水货分段开头/结尾组合管理初始化
+        initWaterCombinationManagement()
     }
 
     // ==================== [就AI听] 关键词管理 ====================
@@ -177,6 +186,65 @@ class KeywordSettingsActivity : AppCompatActivity() {
         }
         tvWaterKeywordsEmpty.visibility =
             if (waterKeywordList.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+    }
+
+    // ==================== [就AI听] 水货分段开头/结尾组合管理 ====================
+
+    private fun initWaterCombinationManagement() {
+        etCombinationStart = findViewById(R.id.et_combination_start)
+        etCombinationEnd = findViewById(R.id.et_combination_end)
+        chipGroupCombinations = findViewById(R.id.chip_group_combinations)
+        tvCombinationsEmpty = findViewById(R.id.tv_combinations_empty)
+
+        // 从 AppSettings（keyword_prefs）加载当前水货组合
+        waterCombinationList.clear()
+        waterCombinationList.addAll(settings.getWaterCombinations())
+
+        // 添加组合按钮
+        findViewById<Button>(R.id.btn_add_combination).setOnClickListener { addWaterCombination() }
+        // 结尾输入框回车即添加
+        etCombinationEnd.setOnEditorActionListener { _, _, _ -> addWaterCombination(); true }
+
+        refreshCombinationChips()
+    }
+
+    private fun addWaterCombination() {
+        val start = etCombinationStart.text.toString().trim()
+        val end = etCombinationEnd.text.toString().trim()
+        if (start.isEmpty() || end.isEmpty()) {
+            Toast.makeText(this, "开头和结尾都不能为空", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val combo = start to end
+        if (waterCombinationList.contains(combo)) {
+            Toast.makeText(this, "该组合已存在", Toast.LENGTH_SHORT).show()
+            return
+        }
+        waterCombinationList.add(combo)
+        settings.setWaterCombinations(this, waterCombinationList)
+        etCombinationStart.text.clear()
+        etCombinationEnd.text.clear()
+        refreshCombinationChips()
+        Toast.makeText(this, "已添加组合：$start ... $end", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeWaterCombination(combo: Pair<String, String>) {
+        waterCombinationList.remove(combo)
+        settings.setWaterCombinations(this, waterCombinationList)
+        refreshCombinationChips()
+        Toast.makeText(this, "已删除组合：${combo.first} ... ${combo.second}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun refreshCombinationChips() {
+        chipGroupCombinations.removeAllViews()
+        for (combo in waterCombinationList) {
+            val label = "${combo.first} ... ${combo.second}"
+            chipGroupCombinations.addView(createKeywordChip(chipGroupCombinations, label) {
+                removeWaterCombination(combo)
+            })
+        }
+        tvCombinationsEmpty.visibility =
+            if (waterCombinationList.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     /**

@@ -42,6 +42,8 @@ class AppSettings private constructor() {
         const val KEYWORD_PREFS_NAME = "keyword_prefs"
         const val KEY_DRY_KEYWORDS = "dry_keywords"
         const val KEY_WATER_KEYWORDS = "water_keywords"
+        // [就AI听] 水货分段开头/结尾组合：JSON 数组，元素为 {"start":"...","end":"..."}
+        const val KEY_WATER_COMBINATIONS = "water_combinations"
         val DEFAULT_DRY_KEYWORDS = listOf(
             "新闻", "天气", "交通", "提醒", "朋友", "大家", "我们", "现在", "今天", "时间", "时候"
         )
@@ -80,6 +82,8 @@ class AppSettings private constructor() {
     // [就AI听] 关键词管理：存储于 keyword_prefs（逗号分隔），与 KeywordConfig 相互独立
     private var dryKeywordList: MutableList<String> = DEFAULT_DRY_KEYWORDS.toMutableList()
     private var waterKeywordList: MutableList<String> = DEFAULT_WATER_KEYWORDS.toMutableList()
+    // [就AI听] 水货分段开头/结尾组合：存储于 keyword_prefs（JSON 数组），默认为空
+    private var waterCombinationList: MutableList<WaterCombination> = mutableListOf()
     var preloadCache: Boolean = false
     var preloadCacheCount: Int = 10
     var enablePreprocessing: Boolean = true
@@ -213,6 +217,22 @@ class AppSettings private constructor() {
             ?: DEFAULT_DRY_KEYWORDS.toMutableList()
         waterKeywordList = parseCsvKeywords(prefs.getString(KEY_WATER_KEYWORDS, null))
             ?: DEFAULT_WATER_KEYWORDS.toMutableList()
+        // [就AI听] 加载水货分段开头/结尾组合（JSON 数组，Gson 反序列化）
+        loadWaterCombinations(context)
+    }
+
+    /** [就AI听] 从 keyword_prefs 读取水货分段组合（JSON 数组） */
+    private fun loadWaterCombinations(context: Context) {
+        val prefs = context.getSharedPreferences(KEYWORD_PREFS_NAME, Context.MODE_PRIVATE)
+        val json = prefs.getString(KEY_WATER_COMBINATIONS, "[]") ?: "[]"
+        waterCombinationList = try {
+            val type = com.google.gson.reflect.TypeToken<List<WaterCombination>>() {}.type
+            val list: List<WaterCombination>? = com.google.gson.Gson().fromJson(json, type)
+            list?.toMutableList() ?: mutableListOf()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            mutableListOf()
+        }
     }
 
     private fun parseCsvKeywords(csv: String?): MutableList<String>? {
@@ -245,6 +265,19 @@ class AppSettings private constructor() {
     fun setWaterKeywords(context: Context, keywords: List<String>) {
         waterKeywordList = keywords.toMutableList()
         saveKeywordPrefs(context)
+    }
+
+    /** [就AI听] 获取水货分段开头/结尾组合列表 */
+    fun getWaterCombinations(): List<Pair<String, String>> {
+        return waterCombinationList.map { it.start to it.end }
+    }
+
+    /** [就AI听] 设置水货分段开头/结尾组合并持久化到 keyword_prefs（JSON 数组） */
+    fun setWaterCombinations(context: Context, combinations: List<Pair<String, String>>) {
+        waterCombinationList = combinations.map { WaterCombination(it.first, it.second) }.toMutableList()
+        val json = com.google.gson.Gson().toJson(waterCombinationList)
+        val prefs = context.getSharedPreferences(KEYWORD_PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_WATER_COMBINATIONS, json).apply()
     }
 
     private fun saveKeywordPrefs(context: Context) {
@@ -455,5 +488,11 @@ class AppSettings private constructor() {
         var waterLogic: String = "or",
         var contentDryLogic: String = "or",
         var contentWaterLogic: String = "or"
+    )
+
+    /** [就AI听] 水货分段开头/结尾组合（Gson 序列化为 {"start":"...","end":"..."}） */
+    data class WaterCombination(
+        var start: String = "",
+        var end: String = ""
     )
 }

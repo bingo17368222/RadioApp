@@ -2515,10 +2515,28 @@ class SubtitleGeneratorService : Service() {
         // v2.4.38: Prevent concurrent whisper processing.
         // Log showed two processWhisperInChunks running simultaneously,
         // causing chunk times of 124s instead of 14s.
+        // v2.4.60: Instead of SKIPPING when another whisper is active, cancel the old
+        // task and wait briefly for it to finish, then start the new one.
+        // This fixes the issue where switching episodes causes the new task to be skipped
+        // and no subtitle generation starts for a long time.
         if (whisperProcessingActive) {
-            logToFile("generateWithWhisper: [v2.4.38] SKIPPED - another whisper processing is active")
-            ctx.log("Whisper处理跳过：另一个处理正在进行中")
-            return false
+            logToFile("generateWithWhisper: [v2.4.60] another whisper processing is active, cancelling old task and waiting")
+            // Cancel all old tasks
+            for (oldCtx in activeTasks.values) {
+                oldCtx.cancelled.set(true)
+            }
+            // Wait up to 10 seconds for the old whisper to finish
+            var waitCount = 0
+            while (whisperProcessingActive && waitCount < 20) {
+                Thread.sleep(500)
+                waitCount++
+            }
+            if (whisperProcessingActive) {
+                logToFile("generateWithWhisper: [v2.4.60] old whisper still active after 10s, forcing start anyway")
+                whisperProcessingActive = false
+            } else {
+                logToFile("generateWithWhisper: [v2.4.60] old whisper finished after ${waitCount * 500}ms, starting new task")
+            }
         }
         whisperProcessingActive = true
         logToFile("generateWithWhisper: START [v2.1.2], episodeId=$episodeId, audioUrl=$audioUrl")

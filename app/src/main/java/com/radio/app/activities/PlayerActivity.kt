@@ -1405,27 +1405,82 @@ class PlayerActivity : AppCompatActivity() {
             Toast.makeText(this, "字幕内容为空", Toast.LENGTH_SHORT).show()
             return
         }
-        val options = arrayOf("提取为干货关键词", "提取为水货关键词")
+        val options = arrayOf("提取为干货关键词", "提取为水货关键词", "添加水货分段组合")
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("提取关键词")
             .setItems(options) { dialog, which ->
-                val prefs = getSharedPreferences("keyword_prefs", Context.MODE_PRIVATE)
-                val key = if (which == 0) "dry_keywords" else "water_keywords"
-                val existing = prefs.getString(key, "") ?: ""
-                // 兼容中英文逗号分隔，与 KeywordSettingsActivity 的解析约定一致
-                val list = if (existing.isEmpty()) mutableListOf()
-                    else existing.split("[,，]".toRegex()).map { it.trim() }
-                        .filter { it.isNotEmpty() }.toMutableList()
-                if (!list.contains(text)) {
-                    list.add(text)
-                    prefs.edit().putString(key, list.joinToString(",")).apply()
+                // [就AI听] 第三个选项：添加水货分段开头/结尾组合
+                if (which == 2) {
+                    dialog.dismiss()
+                    showAddWaterCombinationDialog()
+                    return@setItems
                 }
-                Toast.makeText(
-                    this,
-                    if (which == 0) "已添加到干货关键词列表" else "已添加到水货关键词列表",
-                    Toast.LENGTH_SHORT
-                ).show()
+                // v2.4.60: Use AppSettings methods instead of direct SharedPreferences
+                // to ensure in-memory cache is updated immediately.
+                val settings = com.radio.app.models.AppSettings.getInstance(this)
+                if (which == 0) {
+                    // 添加到干货关键词
+                    val dryList = settings.getDryKeywords().toMutableList()
+                    if (!dryList.contains(text)) {
+                        dryList.add(text)
+                        settings.setDryKeywords(this, dryList)
+                    }
+                    Toast.makeText(this, "已添加到干货关键词列表", Toast.LENGTH_SHORT).show()
+                } else {
+                    // 添加到水货关键词
+                    val waterList = settings.getWaterKeywords().toMutableList()
+                    if (!waterList.contains(text)) {
+                        waterList.add(text)
+                        settings.setWaterKeywords(this, waterList)
+                    }
+                    Toast.makeText(this, "已添加到水货关键词列表", Toast.LENGTH_SHORT).show()
+                }
                 dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** [就AI听] 弹出两个输入框（开头/结尾），将组合保存到 AppSettings 的水货分段组合列表 */
+    private fun showAddWaterCombinationDialog() {
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(60, 40, 60, 20)
+        }
+        val etStart = android.widget.EditText(this).apply {
+            hint = "开头文字"
+            setSingleLine(true)
+        }
+        val etEnd = android.widget.EditText(this).apply {
+            hint = "结尾文字"
+            setSingleLine(true)
+        }
+        container.addView(etStart)
+        container.addView(etEnd)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("添加水货分段组合")
+            .setMessage("分段的字幕文本以"开头"开始且以"结尾"结束时，判定为水货")
+            .setView(container)
+            .setPositiveButton("添加") { _, _ ->
+                val start = etStart.text.toString().trim()
+                val end = etEnd.text.toString().trim()
+                if (start.isEmpty() || end.isEmpty()) {
+                    Toast.makeText(this, "开头和结尾都不能为空", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                try {
+                    val settings = AppSettings.getInstance(this)
+                    val list = settings.getWaterCombinations().toMutableList()
+                    val combo = start to end
+                    if (!list.contains(combo)) {
+                        list.add(combo)
+                        settings.setWaterCombinations(this, list)
+                    }
+                    Toast.makeText(this, "已添加水货分段组合：$start ... $end", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -3111,6 +3166,20 @@ class PlayerActivity : AppCompatActivity() {
     // [v2.4.25] Classify a text segment as dry(content) or water(filler)
     // Uses keyword matching + text density (words per minute)
     private fun classifySegment(text: String, dryKeywords: List<String>, waterKeywords: List<String>, segmentDurationMs: Long): Boolean {
+        // [就AI听] 先检查水货分段开头/结尾组合：若文本以某组合的开头开始且以结尾结束，直接判定为水货
+        try {
+            val combinations = AppSettings.getInstance(this).getWaterCombinations()
+            val trimmedText = text.trim()
+            for ((start, end) in combinations) {
+                if (start.isNotBlank() && end.isNotBlank() &&
+                    trimmedText.startsWith(start) && trimmedText.endsWith(end)) {
+                    return false  // 水货
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         val textLower = text.lowercase()
         var dryScore = 0
         var waterScore = 0
