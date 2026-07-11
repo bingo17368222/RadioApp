@@ -1799,7 +1799,7 @@ class PlayerActivity : AppCompatActivity() {
                                 // This is why "片段列表" never showed engine/time for several versions.
                                 val dryCount2 = segments.count { it.hasVoice }
                                 val waterCount2 = segments.size - dryCount2
-                                val flow2Engine = if (AppSettings(this).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                                val flow2Engine = if (AppSettings.getInstance(this).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
                                 binding.tvAiStatus.text = "片段列表  分段引擎：$flow2Engine"
                                 segmentListDisplayText = binding.tvAiStatus.text.toString()
                                 binding.tvAiStatus.visibility = View.VISIBLE
@@ -1922,7 +1922,7 @@ class PlayerActivity : AppCompatActivity() {
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
                                 // v2.4.56: Fix - second Flow 2 onComplete also missing text
-                                val flow2Engine2 = if (AppSettings(this).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                                val flow2Engine2 = if (AppSettings.getInstance(this).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
                                 binding.tvAiStatus.text = "片段列表  分段引擎：$flow2Engine2"
                                 segmentListDisplayText = binding.tvAiStatus.text.toString()
                                 binding.tvAiStatus.visibility = View.VISIBLE
