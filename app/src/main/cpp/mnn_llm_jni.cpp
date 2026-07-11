@@ -13,6 +13,11 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <string.h>
+#include <set>
+#include <algorithm>
+
+// v2.4.53: Forward declaration
+static bool isGarbageResponse(const std::string& s);
 
 #define TAG "MnnLlmJni"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -270,22 +275,60 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // v2.4.42: Wrap prompt in Qwen1.5-Chat chat template.
-    // Without the chat template, the model falls into a degenerate repetition
-    // loop outputting garbage tokens like "集结集结集结漏漏...".
-    // Qwen1.5-Chat REQUIRES the <|im_start|>/<|im_end|> format.
-    std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
-                           + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+    // v2.4.53: Try BOTH wrapped and unwrapped prompts.
+    // The MNN LLM may already apply chat template internally via llm.mnn.json config.
+    // If so, our wrapping causes double-wrapping → garbage output.
+    // Strategy: Try raw prompt first (let MNN handle template), fall back to wrapped.
+    std::string promptCpp = rawPrompt;  // Default: raw, no wrapping
 
-    mnn_logf("nativeGenerate: prompt length=%zu (wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
+    mnn_logf("nativeGenerate: prompt length=%zu (raw), maxTokens=%d", promptCpp.size(), maxTokens);
 
     std::ostringstream oss;
     int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
     g_response(llm, promptCpp, &oss, nullptr, max_new);
 
     std::string result = oss.str();
-    mnn_logf("nativeGenerate: response length=%zu", result.size());
+    mnn_logf("nativeGenerate: response length=%zu, first 100 chars: %.100s", result.size(), result.c_str());
+
+    // If response is garbage (repeated chars), try with chat template wrapping
+    if (result.size() > 20 && isGarbageResponse(result)) {
+        mnn_log("nativeGenerate: response looks like garbage, retrying with chat template wrapping...");
+        std::string promptWrapped = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+                                    + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+        mnn_logf("nativeGenerate: prompt length=%zu (wrapped), maxTokens=%d", promptWrapped.size(), maxTokens);
+        std::ostringstream oss2;
+        g_response(llm, promptWrapped, &oss2, nullptr, max_new);
+        std::string result2 = oss2.str();
+        mnn_logf("nativeGenerate: wrapped response length=%zu, first 100 chars: %.100s", result2.size(), result2.c_str());
+        if (!result2.empty() && !isGarbageResponse(result2)) {
+            return env->NewStringUTF(result2.c_str());
+        }
+    }
+
     return env->NewStringUTF(result.c_str());
+}
+
+// v2.4.53: Check if response is garbage (repeated characters)
+static bool isGarbageResponse(const std::string& s) {
+    if (s.size() < 10) return false;
+    // Count unique characters in first 50 chars
+    std::set<char> uniqueChars;
+    int limit = std::min((int)s.size(), 50);
+    for (int i = 0; i < limit; i++) {
+        uniqueChars.insert(s[i]);
+    }
+    // If only 2-3 unique chars in 50 chars, it's garbage
+    if (uniqueChars.size() <= 4) return true;
+    // If the same 2-char pattern repeats more than 5 times, it's garbage
+    if (s.size() >= 20) {
+        std::string pattern = s.substr(0, 2);
+        int count = 0;
+        for (size_t i = 0; i < s.size() - 1; i += 2) {
+            if (s.substr(i, 2) == pattern) count++;
+        }
+        if (count > 5) return true;
+    }
+    return false;
 }
 
 JNIEXPORT void JNICALL
