@@ -1794,8 +1794,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // v2.4.59: Check if subtitle service is already running (component check)
         val subtitleRunning = try {
-            val mgr = getSystemService(android.content.ACTIVITY_SERVICE) as android.app.ActivityManager
-            mgr.runningServices?.any { it.service.className == "com.radio.app.services.SubtitleGeneratorService" } ?: false
+            val mgr = getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            @Suppress("DEPRECATION")
+            mgr.getRunningServices(100)?.any { it.service.className == "com.radio.app.services.SubtitleGeneratorService" } ?: false
         } catch (_: Exception) { false }
         if (subtitleRunning) {
             writePreCacheLog("patrolSubtitle: [v2.4.59] SubtitleGeneratorService is running, skipping patrol")
