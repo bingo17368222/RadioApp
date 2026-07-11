@@ -155,23 +155,27 @@ class SubtitleGeneratorService : Service() {
     override fun onCreate() {
         super.onCreate()
 
-        // v2.4.49: Kill self if APK version changed, to force reload of native .so files.
+        // v2.4.50: Kill self if APK version changed, to force reload of native .so files.
         // The :subtitle process survives APK updates, keeping old .so in memory.
         // Once a .so is loaded via System.loadLibrary, it can't be unloaded.
         // The only way to load the new .so is to kill the process.
+        // CRITICAL: Use a file-based flag (not SharedPreferences) because
+        // SharedPreferences may not sync across processes immediately.
         try {
-            val prefs = getSharedPreferences("native_lib_version", MODE_PRIVATE)
-            val storedVersion = prefs.getInt("version_code", 0)
+            val flagFile = java.io.File(filesDir, "native_lib_version.txt")
+            val storedVersion = if (flagFile.exists()) flagFile.readText().trim().toIntOrNull() ?: 0 else 0
             val currentVersion = packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
             if (storedVersion != currentVersion) {
-                prefs.edit().putInt("version_code", currentVersion).apply()
-                Log.w(TAG, "v2.4.49: APK version changed ($storedVersion → $currentVersion), killing :subtitle process to reload .so")
+                // Write synchronously before killing
+                flagFile.writeText(currentVersion.toString())
+                Log.w(TAG, "v2.4.50: APK version changed ($storedVersion → $currentVersion), killing :subtitle process to reload .so")
                 try {
                     val logDir = com.radio.app.RadioApplication.getLogDir(this)
                     val f = java.io.File(logDir, "subtitle/service.log")
                     f.parentFile?.mkdirs()
-                    f.appendText("[${System.currentTimeMillis()}] v2.4.49: Killing :subtitle process (version $storedVersion → $currentVersion) to reload .so\n")
+                    f.appendText("[${System.currentTimeMillis()}] v2.4.50: Killing :subtitle process (version $storedVersion → $currentVersion) to reload .so\n")
                 } catch (_: Exception) {}
+                stopSelf()
                 android.os.Process.killProcess(android.os.Process.myPid())
                 return
             }

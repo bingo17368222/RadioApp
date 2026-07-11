@@ -71,6 +71,7 @@ class PlayerActivity : AppCompatActivity() {
     private var cacheProgressRunnable: Runnable? = null
     private var subtitleProcessing = false
     private var segmentProcessing = false
+    private var segmentListDisplayText: String = ""  // v2.4.50: Store "片段列表" text to prevent overwrite
     private var pendingSeekMs: Long = -1L  // [v2.1.5] For search-to-seek
     private var isFreshStart = false // true if user explicitly clicked an episode from the list
     private var pendingAiTaskType: String? = null
@@ -1673,6 +1674,7 @@ class PlayerActivity : AppCompatActivity() {
                             val dryCount = segments.count { it.hasVoice }
                             val waterCount = segments.size - dryCount
                             binding.tvAiStatus.text = "片段列表  分段引擎：$segEngineName (耗时: ${segElapsed / 1000}s)"
+                            segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
                             binding.tvAiStatus.visibility = View.VISIBLE
                             Toast.makeText(this,
                                 "AI分段完成: ${segments.size}段 (干货${dryCount} 水货${waterCount})",
@@ -1759,6 +1761,8 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
+                                // v2.4.50: Don't overwrite "片段列表" text after segmentation is done
+                                if (!segmentProcessing && segmentListDisplayText.isNotEmpty()) return@runOnUiThread
                                 binding.progressAi.progress = progress
                                 binding.tvAiStatus.text = buildStatusText("segment", progress)
                             }
@@ -1875,6 +1879,8 @@ class PlayerActivity : AppCompatActivity() {
                         override fun onProgressUpdate(progress: Int, total: Int) {
                             runOnUiThread {
                                 if (_binding == null) return@runOnUiThread
+                                // v2.4.50: Don't overwrite "片段列表" text after segmentation is done
+                                if (!segmentProcessing && segmentListDisplayText.isNotEmpty()) return@runOnUiThread
                                 binding.progressAi.progress = progress
                                 binding.tvAiStatus.text = buildStatusText("segment", progress)
                             }
@@ -3181,6 +3187,11 @@ class PlayerActivity : AppCompatActivity() {
             if (realSegments.isNotEmpty() && (voiceSegments.isEmpty() || voiceSegments.all { it.isSimulated })) {
                 voiceSegments = realSegments
                 updateSegmentsUI()
+                // v2.4.50: Restore "片段列表" display text if it was set before
+                if (segmentListDisplayText.isNotEmpty() && _binding != null) {
+                    binding.tvAiStatus.text = segmentListDisplayText
+                    binding.tvAiStatus.visibility = View.VISIBLE
+                }
             }
         }
 
