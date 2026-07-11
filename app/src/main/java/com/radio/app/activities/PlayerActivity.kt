@@ -1496,21 +1496,12 @@ class PlayerActivity : AppCompatActivity() {
             performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
-            // v2.4.55: Post-resume blackout (3s) + debounce (2s).
-            // Root cause: btnSkipBackward fires 86ms after onResume (before user can touch screen).
-            // This is a phantom click from app switch animation, not user action.
-            // Block ALL backward skips for 3 seconds after onResume.
-            val now = System.currentTimeMillis()
-            if (onResumeTimestamp > 0 && now - onResumeTimestamp < 3000) {
-                writeJitterLog("[v2.4.55] btnSkipBackward BLOCKED by post-resume blackout (gap=${now - onResumeTimestamp}ms < 3000ms)")
-                return@setOnClickListener
-            }
-            // v2.4.55: Increased debounce from 800ms to 2000ms to catch rapid phantom clicks
-            if (now - lastSkipBackwardTime < 2000) {
-                writeJitterLog("[v2.4.55] btnSkipBackward DEBOUNCED (gap=${now - lastSkipBackwardTime}ms < 2000ms)")
-                return@setOnClickListener
-            }
-            lastSkipBackwardTime = now
+            // v2.4.56: Root cause of phantom backward clicks found!
+            // The button had android:focusable="true" (default). When a hardware key
+            // (headset button, D-pad, etc.) is held down, Android sends repeated
+            // ACTION_DOWN events at ~220ms intervals to the focused view, each
+            // triggering onClick. Fix: android:focusable="false" in XML.
+            // No more debounce/blackout needed - the root cause is eliminated.
             performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
         }
         binding.btnClose.setOnClickListener {
@@ -1804,6 +1795,14 @@ class PlayerActivity : AppCompatActivity() {
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
+                                // v2.4.56: Fix - Flow 2 onComplete was NOT setting segment list text!
+                                // This is why "片段列表" never showed engine/time for several versions.
+                                val dryCount2 = segments.count { it.hasVoice }
+                                val waterCount2 = segments.size - dryCount2
+                                val flow2Engine = if (aiModel == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                                binding.tvAiStatus.text = "片段列表  分段引擎：$flow2Engine"
+                                segmentListDisplayText = binding.tvAiStatus.text.toString()
+                                binding.tvAiStatus.visibility = View.VISIBLE
                                 finishAiProcessing("segment")
                                 Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
                             }
@@ -1922,6 +1921,11 @@ class PlayerActivity : AppCompatActivity() {
                                 voiceSegments = segments
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
+                                // v2.4.56: Fix - second Flow 2 onComplete also missing text
+                                val flow2Engine2 = if (aiModel == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                                binding.tvAiStatus.text = "片段列表  分段引擎：$flow2Engine2"
+                                segmentListDisplayText = binding.tvAiStatus.text.toString()
+                                binding.tvAiStatus.visibility = View.VISIBLE
                                 finishAiProcessing("segment")
                                 Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
                             }

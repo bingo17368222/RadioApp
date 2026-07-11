@@ -2575,17 +2575,11 @@ class SubtitleGeneratorService : Service() {
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
 
-            // v2.4.55: For tiny model, ALWAYS use FULL audio PCM (not just 5 minutes).
-            // Previously, only pre-cache (forceWhisperBase=true) used full audio.
-            // Non-pre-cache tasks used 5-min clip → incomplete subtitles.
-            // Now, if using tiny model, treat like pre-cache: generate full PCM.
-            val isTinyModelForFullAudio = whisperModel?.contains("tiny", ignoreCase = true) == true
-            if (forceWhisperBaseModel || isTinyModelForFullAudio) {
-                if (isTinyModelForFullAudio && !forceWhisperBaseModel) {
-                    logToFile("generateWithWhisper: [v2.4.55] tiny model detected, using FULL audio PCM (not 5-min clip)")
-                } else {
-                    logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
-                }
+            // v2.4.56: Only pre-cache (forceWhisperBase=true) uses full audio PCM.
+            // Manual subtitle generation uses 5-min PCM (for quick testing).
+            // Pre-cache runs in background and needs complete subtitles.
+            if (forceWhisperBaseModel) {
+                logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
                 val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
                 var pcmDecodeTimeMs = 0L  // [v2.4.18] Track PCM decode time separately
@@ -2902,12 +2896,10 @@ class SubtitleGeneratorService : Service() {
             val isFrom15MinRange = fileBytes >= expected5minBytes * 0.9
             // [v2.4.10] Full PCM starts from beginning, no offset needed
             val whisperOffsetMs = if (isFullPcm) 0L else (if (isFrom15MinRange) 15L * 60 * 1000 else 0L)
-            // v2.4.54: For tiny model, process entire PCM file (not just 5 minutes).
-            // The 5-min limit was designed for base model to avoid OOM, but tiny model
-            // can handle full 2-hour audio. This fixes "未完成完整字幕，却标记完整字幕".
-            val isTinyModel = modelPath.contains("tiny", ignoreCase = true)
-            val bytesToRead = if (isFullPcm || isTinyModel) fileBytes.toInt() else minOf(fileBytes, maxPcmBytes).toInt()
-            logToFile("[v2.4.54] processWhisperInChunks: isTinyModel=$isTinyModel, isFullPcm=$isFullPcm, fileBytes=$fileBytes, bytesToRead=$bytesToRead")
+            // v2.4.56: Revert tiny model full PCM - only pre-cache (isFullPcm) uses full audio.
+            // Manual generation uses 5-min PCM for quick testing.
+            val bytesToRead = if (isFullPcm) fileBytes.toInt() else minOf(fileBytes, maxPcmBytes).toInt()
+            logToFile("[v2.4.56] processWhisperInChunks: isFullPcm=$isFullPcm, fileBytes=$fileBytes, bytesToRead=$bytesToRead")
             if (bytesToRead <= 0) {
                 logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes), aborting")
                 callback.onError("音频文件太短，无法处理")

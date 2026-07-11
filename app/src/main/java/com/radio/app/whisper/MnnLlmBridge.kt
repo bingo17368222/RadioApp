@@ -301,9 +301,23 @@ class MnnLlmBridge {
                 if (response.isNotBlank()) {
                     val isDry = response.contains("干货")
                     val isWater = response.contains("水货")
-                    // v2.4.40: If response doesn't contain either keyword, default to 干货
-                    // (previously defaulted to 水货 which caused all segments to be 水货)
-                    val finalIsDry = if (!isDry && !isWater) true else isDry
+                    // v2.4.56: Detect garbage MNN output (repeated chars like 漏集结漏集结...)
+                    // and fall back to keyword-based classification.
+                    val uniqueChars = response.take(50).toSet().size
+                    val isGarbage = uniqueChars <= 5 && response.length > 10
+                    val finalIsDry = when {
+                        isGarbage -> {
+                            // Garbage response - use keyword-based heuristic
+                            // If text has typical radio content words → 干货, else → 水货
+                            val hasContent = text.contains("新闻") || text.contains("天气") || text.contains("交通") ||
+                                text.contains("提醒") || text.contains("朋友") || text.contains("大家") ||
+                                text.contains("我们") || text.contains("现在") || text.contains("今天")
+                            Log.w(TAG, "classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars), fallback to keyword: ${if (hasContent) "干货" else "水货"}")
+                            hasContent
+                        }
+                        !isDry && !isWater -> true  // Default to 干货
+                        else -> isDry
+                    }
                     allResults.add(MnnSegmentResult(
                         start = group.first,
                         end = group.second,

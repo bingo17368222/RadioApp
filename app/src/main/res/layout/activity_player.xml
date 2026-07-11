@@ -228,7 +228,9 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_rewind"
             android:contentDescription="Backward"
-            android:tooltipText="-15秒" />
+            android:tooltipText="-15秒"
+            android:focusable="false"
+            android:focusableInTouchMode="false" />
         <ImageButton
             android:id="@+id/btn_play_pause"
             android:layout_width="72dp"
