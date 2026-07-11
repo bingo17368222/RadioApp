@@ -155,31 +155,9 @@ class SubtitleGeneratorService : Service() {
     override fun onCreate() {
         super.onCreate()
 
-        // v2.4.50: Kill self if APK version changed, to force reload of native .so files.
-        // The :subtitle process survives APK updates, keeping old .so in memory.
-        // Once a .so is loaded via System.loadLibrary, it can't be unloaded.
-        // The only way to load the new .so is to kill the process.
-        // CRITICAL: Use a file-based flag (not SharedPreferences) because
-        // SharedPreferences may not sync across processes immediately.
-        try {
-            val flagFile = java.io.File(filesDir, "native_lib_version.txt")
-            val storedVersion = if (flagFile.exists()) flagFile.readText().trim().toIntOrNull() ?: 0 else 0
-            val currentVersion = packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
-            if (storedVersion != currentVersion) {
-                // Write synchronously before killing
-                flagFile.writeText(currentVersion.toString())
-                Log.w(TAG, "v2.4.50: APK version changed ($storedVersion → $currentVersion), killing :subtitle process to reload .so")
-                try {
-                    val logDir = com.radio.app.RadioApplication.getLogDir(this)
-                    val f = java.io.File(logDir, "subtitle/service.log")
-                    f.parentFile?.mkdirs()
-                    f.appendText("[${System.currentTimeMillis()}] v2.4.50: Killing :subtitle process (version $storedVersion → $currentVersion) to reload .so\n")
-                } catch (_: Exception) {}
-                stopSelf()
-                android.os.Process.killProcess(android.os.Process.myPid())
-                return
-            }
-        } catch (_: Exception) {}
+        // v2.4.51: The :subtitle process kill logic is now in RadioApplication.onCreate
+        // (main process), which can safely kill :subtitle. The old code here tried to
+        // kill self, but caused infinite restart loops and didn't work reliably.
 
         // [v2.0.43] Issue 7: Use unified log directory for all crash logs
         val crashLogDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "crash")

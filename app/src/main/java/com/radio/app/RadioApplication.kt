@@ -110,6 +110,32 @@ class RadioApplication : Application() {
         getLogDir(this)
         // [v2.1.0] Warm up cache dir + migrate legacy PCM cache
         migrateLegacyPcmCache()
+
+        // v2.4.51: Kill :subtitle process if APK version changed.
+        // The :subtitle process (SubtitleGeneratorService) survives APK updates.
+        // Once .so is loaded, it can't be unloaded. We must kill the process
+        // so it reloads the new .so on next start.
+        // This runs in the MAIN process, so it can safely kill :subtitle.
+        try {
+            val flagFile = java.io.File(filesDir, "native_lib_version.txt")
+            val storedVersion = if (flagFile.exists()) flagFile.readText().trim().toIntOrNull() ?: 0 else 0
+            val currentVersion = packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+            if (storedVersion != currentVersion) {
+                flagFile.writeText(currentVersion.toString())
+                android.util.Log.w("RadioApplication", "v2.4.51: APK version changed ($storedVersion → $currentVersion), killing :subtitle process")
+                // Kill the :subtitle process by name
+                val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+                for (pi in am.runningAppProcesses) {
+                    if (pi.processName == "$packageName:subtitle") {
+                        android.util.Log.w("RadioApplication", "v2.4.51: Found :subtitle process (pid=${pi.pid}), killing...")
+                        android.os.Process.killProcess(pi.pid)
+                        break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("RadioApplication", "v2.4.51: Failed to check/kill :subtitle process: ${e.message}")
+        }
     }
 
     /**
