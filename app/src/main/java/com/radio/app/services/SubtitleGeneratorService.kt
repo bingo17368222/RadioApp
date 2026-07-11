@@ -154,6 +154,29 @@ class SubtitleGeneratorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // v2.4.49: Kill self if APK version changed, to force reload of native .so files.
+        // The :subtitle process survives APK updates, keeping old .so in memory.
+        // Once a .so is loaded via System.loadLibrary, it can't be unloaded.
+        // The only way to load the new .so is to kill the process.
+        try {
+            val prefs = getSharedPreferences("native_lib_version", MODE_PRIVATE)
+            val storedVersion = prefs.getInt("version_code", 0)
+            val currentVersion = packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+            if (storedVersion != currentVersion) {
+                prefs.edit().putInt("version_code", currentVersion).apply()
+                Log.w(TAG, "v2.4.49: APK version changed ($storedVersion → $currentVersion), killing :subtitle process to reload .so")
+                try {
+                    val logDir = com.radio.app.RadioApplication.getLogDir(this)
+                    val f = java.io.File(logDir, "subtitle/service.log")
+                    f.parentFile?.mkdirs()
+                    f.appendText("[${System.currentTimeMillis()}] v2.4.49: Killing :subtitle process (version $storedVersion → $currentVersion) to reload .so\n")
+                } catch (_: Exception) {}
+                android.os.Process.killProcess(android.os.Process.myPid())
+                return
+            }
+        } catch (_: Exception) {}
+
         // [v2.0.43] Issue 7: Use unified log directory for all crash logs
         val crashLogDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "crash")
         val crashHandler = Thread.UncaughtExceptionHandler { thread, throwable ->
@@ -2375,6 +2398,24 @@ class SubtitleGeneratorService : Service() {
      */
     private fun loadWhisperNativeLibrary(): Boolean {
         try {
+            // v2.4.49: Try bundled .so files first (from APK jniLibs)
+            try {
+                System.loadLibrary("ggml-base-whisper")
+                System.loadLibrary("ggml-cpu-whisper")
+                System.loadLibrary("ggml-whisper")
+                System.loadLibrary("whisper")
+                System.loadLibrary("whisper_jni")
+                logToFile("loadWhisperNativeLibrary: all bundled .so loaded via System.loadLibrary")
+                return true
+            } catch (e: UnsatisfiedLinkError) {
+                if (e.message?.contains("already loaded") == true) {
+                    logToFile("loadWhisperNativeLibrary: bundled .so already loaded")
+                    return true
+                }
+                logToFile("loadWhisperNativeLibrary: bundled load failed: ${e.message}, trying external...")
+            }
+
+            // Fallback: Load from external storage (old method)
             try {
                 System.loadLibrary("whisper")
                 logToFile("loadWhisperNativeLibrary: libwhisper.so already loaded via System.loadLibrary")

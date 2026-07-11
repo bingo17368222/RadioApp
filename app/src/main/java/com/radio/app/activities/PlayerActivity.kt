@@ -3364,9 +3364,19 @@ class PlayerActivity : AppCompatActivity() {
         // Now cache svcPos (actual playback position), which is correct even after skipBackward.
         if (serviceBound && playbackService != null) {
             val isPrepared = playbackService?.isPrepared() ?: false
-            val pos = playbackService?.getCurrentPosition() ?: 0L
+            var pos = playbackService?.getCurrentPosition() ?: 0L
             val dur = playbackService?.getDuration() ?: 0L
             val epId = currentEpisode?.id ?: ""
+            // v2.4.49: Fix position going backward on app switch.
+            // The service sometimes reports a momentary backward position (e.g., 6108984
+            // when actual is 6213253) due to buffering or re-prepare. This wrong position
+            // was saved to cache, causing "回退进度" on next app return.
+            // Fix: If service position is >10s behind lastDisplayedPositionMs, use the
+            // last displayed position instead (which was verified by jitter guard).
+            if (isPrepared && pos > 0 && lastDisplayedPositionMs > pos + 10000L) {
+                writeJitterLog("[v2.4.49] onPause: service pos=$pos is behind display=$lastDisplayedPositionMs by ${lastDisplayedPositionMs - pos}ms, using display pos")
+                pos = lastDisplayedPositionMs
+            }
             // v2.4.35: Cache position even at 0 seconds - previously required pos > 5000
             // which meant if user was at the beginning, position was never cached.
             // Now only skip if not prepared or episode unknown.
