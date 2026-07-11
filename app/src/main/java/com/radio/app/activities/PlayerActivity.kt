@@ -72,6 +72,7 @@ class PlayerActivity : AppCompatActivity() {
     private var subtitleProcessing = false
     private var segmentProcessing = false
     private var segmentListDisplayText: String = ""  // v2.4.50: Store "片段列表" text to prevent overwrite
+    private var lastSkipBackwardTime: Long = 0  // v2.4.54: Debounce backward skip
     private var pendingSeekMs: Long = -1L  // [v2.1.5] For search-to-seek
     private var isFreshStart = false // true if user explicitly clicked an episode from the list
     private var pendingAiTaskType: String? = null
@@ -1481,6 +1482,15 @@ class PlayerActivity : AppCompatActivity() {
             performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
+            // v2.4.54: Debounce backward skip to prevent accidental rapid clicks.
+            // Some users report "回退进度" without intentionally clicking. The root cause
+            // is rapid accidental touches. Rate-limit to max 1 skip per 800ms.
+            val now = System.currentTimeMillis()
+            if (now - lastSkipBackwardTime < 800) {
+                writeJitterLog("[v2.4.54] btnSkipBackward DEBOUNCED (gap=${now - lastSkipBackwardTime}ms < 800ms)")
+                return@setOnClickListener
+            }
+            lastSkipBackwardTime = now
             performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
         }
         binding.btnClose.setOnClickListener {

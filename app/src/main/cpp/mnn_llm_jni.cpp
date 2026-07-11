@@ -275,35 +275,23 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // v2.4.53: Try BOTH wrapped and unwrapped prompts.
-    // The MNN LLM may already apply chat template internally via llm.mnn.json config.
-    // If so, our wrapping causes double-wrapping → garbage output.
-    // Strategy: Try raw prompt first (let MNN handle template), fall back to wrapped.
-    std::string promptCpp = rawPrompt;  // Default: raw, no wrapping
+    // v2.4.54: ALWAYS wrap with chat template + pass stop_str="<|im_end|>".
+    // MNN's response() does NOT auto-apply chat template. Without wrapping,
+    // the model outputs garbage (集结集结漏漏...). The official MNN demo uses
+    // stop_str="<im_end>" or "<|im_end|>" to stop generation.
+    // Previous v2.4.53 tried raw first, which was wrong - always wrap.
+    std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+                           + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
 
-    mnn_logf("nativeGenerate: prompt length=%zu (raw), maxTokens=%d", promptCpp.size(), maxTokens);
+    mnn_logf("nativeGenerate: prompt length=%zu (chat-template-wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
 
     std::ostringstream oss;
     int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
-    g_response(llm, promptCpp, &oss, nullptr, max_new);
+    // v2.4.54: Pass "<|im_end|>" as stop_str (was nullptr, causing runaway generation)
+    g_response(llm, promptCpp, &oss, "<|im_end|>", max_new);
 
     std::string result = oss.str();
-    mnn_logf("nativeGenerate: response length=%zu, first 100 chars: %.100s", result.size(), result.c_str());
-
-    // If response is garbage (repeated chars), try with chat template wrapping
-    if (result.size() > 20 && isGarbageResponse(result)) {
-        mnn_log("nativeGenerate: response looks like garbage, retrying with chat template wrapping...");
-        std::string promptWrapped = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
-                                    + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
-        mnn_logf("nativeGenerate: prompt length=%zu (wrapped), maxTokens=%d", promptWrapped.size(), maxTokens);
-        std::ostringstream oss2;
-        g_response(llm, promptWrapped, &oss2, nullptr, max_new);
-        std::string result2 = oss2.str();
-        mnn_logf("nativeGenerate: wrapped response length=%zu, first 100 chars: %.100s", result2.size(), result2.c_str());
-        if (!result2.empty() && !isGarbageResponse(result2)) {
-            return env->NewStringUTF(result2.c_str());
-        }
-    }
+    mnn_logf("nativeGenerate: response length=%zu, first 200 chars: %.200s", result.size(), result.c_str());
 
     return env->NewStringUTF(result.c_str());
 }

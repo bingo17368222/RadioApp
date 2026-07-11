@@ -2894,8 +2894,12 @@ class SubtitleGeneratorService : Service() {
             val isFrom15MinRange = fileBytes >= expected5minBytes * 0.9
             // [v2.4.10] Full PCM starts from beginning, no offset needed
             val whisperOffsetMs = if (isFullPcm) 0L else (if (isFrom15MinRange) 15L * 60 * 1000 else 0L)
-            // [v2.4.10] For full PCM, read entire file; for 5min PCM, cap at 5 minutes
-            val bytesToRead = if (isFullPcm) fileBytes.toInt() else minOf(fileBytes, maxPcmBytes).toInt()
+            // v2.4.54: For tiny model, process entire PCM file (not just 5 minutes).
+            // The 5-min limit was designed for base model to avoid OOM, but tiny model
+            // can handle full 2-hour audio. This fixes "未完成完整字幕，却标记完整字幕".
+            val isTinyModel = modelPath.contains("tiny", ignoreCase = true)
+            val bytesToRead = if (isFullPcm || isTinyModel) fileBytes.toInt() else minOf(fileBytes, maxPcmBytes).toInt()
+            logToFile("[v2.4.54] processWhisperInChunks: isTinyModel=$isTinyModel, isFullPcm=$isFullPcm, fileBytes=$fileBytes, bytesToRead=$bytesToRead")
             if (bytesToRead <= 0) {
                 logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes), aborting")
                 callback.onError("音频文件太短，无法处理")
@@ -3926,7 +3930,11 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.58] Issue 2+3+4 Fix: Start task directly in onStartCommand
             // When service runs in :subtitle process, Activity binder call fails (BinderProxy != LocalBinder)
             // So we must start the task here. Broadcasts are sent by wrappedCallback for cross-process communication.
-            val progressNotification = createProgressNotification(0, taskLabel)
+            // v2.4.54: Build initial notification WITH episode date+title (was empty before)
+            val initialDisplayTitle = try {
+                buildDisplayTitle(episodeId)
+            } catch (e: Exception) { "" }
+            val progressNotification = createProgressNotification(0, taskLabel, initialDisplayTitle)
             try { startForeground(NOTIFICATION_ID, progressNotification) }
             catch (e: Exception) { Log.w(TAG, "startForeground failed: ${e.message}") }
 
@@ -4039,9 +4047,10 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
-    private fun createProgressNotification(progress: Int, taskLabel: String): Notification {
+    private fun createProgressNotification(progress: Int, taskLabel: String, overrideTitle: String? = null): Notification {
         // [v2.4.19] Split date+title into title and content for better display
-        val currentTitle = activeTasks.values.firstOrNull()?.displayTitle ?: ""
+        // v2.4.54: Allow override title for initial notification before task is in activeTasks
+        val currentTitle = overrideTitle ?: activeTasks.values.firstOrNull()?.displayTitle ?: ""
         // [v2.4.19] Use short title for collapsed view, full info in expanded view
         val notifTitle = if (currentTitle.isNotBlank()) currentTitle else "正在处理音频"
         val notifContent = "$taskLabel: ${progress}%"
