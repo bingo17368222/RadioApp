@@ -226,6 +226,17 @@ class MnnLlmBridge {
                 }
 
                 mnnLog("init: MNN LLM ready!")
+
+                // v2.4.59: Set generation config to fix garbage output ("漏集结漏集结...").
+                // The model needs proper generation parameters. Without set_config,
+                // MNN may use default parameters that cause degenerate output.
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.1}"""
+                try {
+                    val configOk = nativeSetConfig(llmPtr, genConfig)
+                    mnnLog("init: set_config result=$configOk, config=$genConfig")
+                } catch (e: Exception) {
+                    mnnLog("init: set_config FAILED: ${e.message}")
+                }
                 // v2.4.39: Close log at the very end of successful init
                 log.close()
                 return true

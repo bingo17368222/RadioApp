@@ -1,8 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="?attr/appBackground">
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="?attr/appBackground">
     <include layout="@layout/view_title_bar" />
     <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+
+            <!-- [就AI听] 干货关键词管理（Chip 风格，可添加/删除） -->
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="干货关键词管理" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="点击右侧 × 图标删除关键词。用于识别干货内容片段。" android:textColor="?attr/appTextSecondary" android:textSize="12sp" android:layout_marginBottom="8dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                    <EditText android:id="@+id/et_dry_keyword_input" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="输入干货关键词" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" android:singleLine="true" android:imeOptions="actionDone" />
+                    <Button android:id="@+id/btn_add_dry_keyword" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="添加" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginStart="8dp" />
+                </LinearLayout>
+                <com.google.android.material.chip.ChipGroup android:id="@+id/chip_group_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:singleSelection="false" app:chipSpacingHorizontal="8dp" app:chipSpacingVertical="8dp" />
+                <TextView android:id="@+id/tv_dry_keywords_empty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无关键词，请在上方输入并添加" android:textColor="?attr/appTextMuted" android:textSize="13sp" android:layout_marginTop="4dp" android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- [就AI听] 水货关键词管理（Chip 风格，可添加/删除） -->
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="水货关键词管理" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="点击右侧 × 图标删除关键词。用于识别水货（广告/音乐等）片段。" android:textColor="?attr/appTextSecondary" android:textSize="12sp" android:layout_marginBottom="8dp" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+                    <EditText android:id="@+id/et_water_keyword_input" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="输入水货关键词" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" android:singleLine="true" android:imeOptions="actionDone" />
+                    <Button android:id="@+id/btn_add_water_keyword" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="添加" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginStart="8dp" />
+                </LinearLayout>
+                <com.google.android.material.chip.ChipGroup android:id="@+id/chip_group_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:singleSelection="false" app:chipSpacingHorizontal="8dp" app:chipSpacingVertical="8dp" />
+                <TextView android:id="@+id/tv_water_keywords_empty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无关键词，请在上方输入并添加" android:textColor="?attr/appTextMuted" android:textSize="13sp" android:layout_marginTop="4dp" android:visibility="gone" />
+            </LinearLayout>
 
             <!-- 干货关键词 -->
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="干货关键词" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />

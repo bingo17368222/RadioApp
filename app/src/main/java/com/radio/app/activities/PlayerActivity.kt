@@ -1308,9 +1308,13 @@ class PlayerActivity : AppCompatActivity() {
                 window.decorView.postDelayed(resetSeekRunnable, 5000L)
             }
             override fun onSegmentLongClick(position: Int, segment: VoiceSegment) {
-                val isDry = !segment.isEffectiveDry()
-                playbackService?.markSegment(position, isDry)
-                segmentAdapter?.notifyItemChanged(position)
+                // [功能1] 长按分段已迁移到 OnItemLongClickListener，弹出"标记为干货/水货"对话框。
+            }
+        })
+        // [功能1] 长按分段手动标记干货/水货
+        segmentAdapter?.setOnItemLongClickListener(object : VoiceSegmentAdapter.OnItemLongClickListener {
+            override fun onItemLongClick(position: Int, segment: VoiceSegment) {
+                showSegmentMarkDialog(position, segment)
             }
         })
         binding.recyclerSegments.layoutManager = LinearLayoutManager(this)
@@ -1319,6 +1323,12 @@ class PlayerActivity : AppCompatActivity() {
 
         // Feature A: subtitle RecyclerView setup
         subtitleAdapter = SubtitleEntryAdapter()
+        // [功能2] 长按字幕提取为干货/水货关键词
+        subtitleAdapter?.setOnItemLongClickListener(object : SubtitleEntryAdapter.OnItemLongClickListener {
+            override fun onItemLongClick(position: Int, transcript: Transcript) {
+                showSubtitleKeywordDialog(transcript)
+            }
+        })
         binding.recyclerSubtitles.layoutManager = LinearLayoutManager(this)
         binding.recyclerSubtitles.adapter = subtitleAdapter
 
@@ -1360,6 +1370,67 @@ class PlayerActivity : AppCompatActivity() {
             val name = url.substringAfterLast("/")
             if (name.isBlank()) "unknown.mp4" else name
         }
+    }
+
+    // [功能1] 长按分段弹出对话框，手动标记该分段为干货/水货。
+    // 标记后更新 VoiceSegment.hasVoice 字段并通知 adapter 刷新。
+    private fun showSegmentMarkDialog(position: Int, segment: VoiceSegment) {
+        val options = arrayOf("标记为干货", "标记为水货")
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("手动标记分段")
+            .setItems(options) { dialog, which ->
+                val isDry = (which == 0)
+                // 更新该分段的 hasVoice 字段（干货=true，水货=false）
+                segment.isManuallyMarked = true
+                segment.hasVoice = isDry
+                segment.label = if (isDry) "手动标记:干货" else "手动标记:水分"
+                // 同步到播放服务并持久化到数据库
+                playbackService?.markSegment(position, isDry)
+                // 通知 adapter 刷新该项
+                segmentAdapter?.notifyItemChanged(position)
+                Toast.makeText(
+                    this,
+                    if (isDry) "已标记为干货" else "已标记为水货",
+                    Toast.LENGTH_SHORT
+                ).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    // [功能2] 长按字幕弹出对话框，将字幕文本提取为干货/水货关键词。
+    // 关键词保存到 SharedPreferences "keyword_prefs"（键名 dry_keywords / water_keywords，逗号分隔）。
+    private fun showSubtitleKeywordDialog(transcript: Transcript) {
+        val text = transcript.text?.trim()
+        if (text.isNullOrEmpty()) {
+            Toast.makeText(this, "字幕内容为空", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val options = arrayOf("提取为干货关键词", "提取为水货关键词")
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("提取关键词")
+            .setItems(options) { dialog, which ->
+                val prefs = getSharedPreferences("keyword_prefs", Context.MODE_PRIVATE)
+                val key = if (which == 0) "dry_keywords" else "water_keywords"
+                val existing = prefs.getString(key, "") ?: ""
+                // 兼容中英文逗号分隔，与 KeywordSettingsActivity 的解析约定一致
+                val list = if (existing.isEmpty()) mutableListOf()
+                    else existing.split("[,，]".toRegex()).map { it.trim() }
+                        .filter { it.isNotEmpty() }.toMutableList()
+                if (!list.contains(text)) {
+                    list.add(text)
+                    prefs.edit().putString(key, list.joinToString(",")).apply()
+                }
+                Toast.makeText(
+                    this,
+                    if (which == 0) "已添加到干货关键词列表" else "已添加到水货关键词列表",
+                    Toast.LENGTH_SHORT
+                ).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun saveEpisodeListToPrefs() {
@@ -3644,6 +3715,21 @@ class PlayerActivity : AppCompatActivity() {
 
         private var transcripts: List<Transcript> = emptyList()
         private var highlightedIndex: Int = -1
+        private var itemLongClickListener: OnItemLongClickListener? = null
+
+        /**
+         * [功能2] 字幕长按监听接口，用于将字幕文本提取为干货/水货关键词。
+         */
+        interface OnItemLongClickListener {
+            fun onItemLongClick(position: Int, transcript: Transcript)
+        }
+
+        /**
+         * [功能2] 注册长按监听器。
+         */
+        fun setOnItemLongClickListener(listener: OnItemLongClickListener) {
+            this.itemLongClickListener = listener
+        }
 
         fun setTranscripts(transcripts: List<Transcript>) {
             // Issue 10 Fix 3: replace the list (do not append) and keep a defensive
@@ -3692,6 +3778,11 @@ class PlayerActivity : AppCompatActivity() {
                 playbackService?.seekTo(targetPos)
                 window.decorView.removeCallbacks(resetSeekRunnable)
                 window.decorView.postDelayed(resetSeekRunnable, 5000L)
+            }
+            // [功能2] 长按字幕提取关键词
+            holder.itemView.setOnLongClickListener {
+                itemLongClickListener?.onItemLongClick(position, transcript)
+                true
             }
         }
 

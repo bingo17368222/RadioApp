@@ -1,6 +1,7 @@
 package com.radio.app.activities
 
 import android.os.Bundle
+import android.view.LayoutInflater
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -9,6 +10,8 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.radio.app.R
 import com.radio.app.models.AppSettings
 import com.radio.app.utils.PreferenceManager
@@ -27,6 +30,16 @@ class KeywordSettingsActivity : AppCompatActivity() {
     private lateinit var settings: AppSettings
     private lateinit var tvTitle: TextView
     private lateinit var btnBack: ImageButton
+
+    // [就AI听] 关键词管理（Chip 风格，可添加/删除）
+    private lateinit var etDryKeywordInput: EditText
+    private lateinit var etWaterKeywordInput: EditText
+    private lateinit var chipGroupDry: ChipGroup
+    private lateinit var chipGroupWater: ChipGroup
+    private lateinit var tvDryKeywordsEmpty: TextView
+    private lateinit var tvWaterKeywordsEmpty: TextView
+    private val dryKeywordList: MutableList<String> = mutableListOf()
+    private val waterKeywordList: MutableList<String> = mutableListOf()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,6 +80,124 @@ class KeywordSettingsActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_ai_extract_water).setOnClickListener { simulateAiExtract("water") }
         findViewById<Button>(R.id.btn_ai_extract_content_dry).setOnClickListener { simulateAiExtract("content_dry") }
         findViewById<Button>(R.id.btn_ai_extract_content_water).setOnClickListener { simulateAiExtract("content_water") }
+
+        // [就AI听] 关键词管理初始化
+        initKeywordManagement()
+    }
+
+    // ==================== [就AI听] 关键词管理 ====================
+
+    private fun initKeywordManagement() {
+        etDryKeywordInput = findViewById(R.id.et_dry_keyword_input)
+        etWaterKeywordInput = findViewById(R.id.et_water_keyword_input)
+        chipGroupDry = findViewById(R.id.chip_group_dry_keywords)
+        chipGroupWater = findViewById(R.id.chip_group_water_keywords)
+        tvDryKeywordsEmpty = findViewById(R.id.tv_dry_keywords_empty)
+        tvWaterKeywordsEmpty = findViewById(R.id.tv_water_keywords_empty)
+
+        // 从 AppSettings（keyword_prefs）加载当前关键词
+        dryKeywordList.clear()
+        dryKeywordList.addAll(settings.getDryKeywords())
+        waterKeywordList.clear()
+        waterKeywordList.addAll(settings.getWaterKeywords())
+
+        // 添加按钮
+        findViewById<Button>(R.id.btn_add_dry_keyword).setOnClickListener { addDryKeyword() }
+        findViewById<Button>(R.id.btn_add_water_keyword).setOnClickListener { addWaterKeyword() }
+
+        // 回车即添加
+        etDryKeywordInput.setOnEditorActionListener { _, _, _ -> addDryKeyword(); true }
+        etWaterKeywordInput.setOnEditorActionListener { _, _, _ -> addWaterKeyword(); true }
+
+        refreshDryChips()
+        refreshWaterChips()
+    }
+
+    private fun addDryKeyword() {
+        val kw = etDryKeywordInput.text.toString().trim()
+        if (kw.isEmpty()) {
+            Toast.makeText(this, "请输入关键词", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (dryKeywordList.contains(kw)) {
+            Toast.makeText(this, "该干货关键词已存在", Toast.LENGTH_SHORT).show()
+            return
+        }
+        dryKeywordList.add(kw)
+        settings.setDryKeywords(this, dryKeywordList)
+        etDryKeywordInput.text.clear()
+        refreshDryChips()
+        Toast.makeText(this, "已添加干货关键词：$kw", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun addWaterKeyword() {
+        val kw = etWaterKeywordInput.text.toString().trim()
+        if (kw.isEmpty()) {
+            Toast.makeText(this, "请输入关键词", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (waterKeywordList.contains(kw)) {
+            Toast.makeText(this, "该水货关键词已存在", Toast.LENGTH_SHORT).show()
+            return
+        }
+        waterKeywordList.add(kw)
+        settings.setWaterKeywords(this, waterKeywordList)
+        etWaterKeywordInput.text.clear()
+        refreshWaterChips()
+        Toast.makeText(this, "已添加水货关键词：$kw", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeDryKeyword(kw: String) {
+        dryKeywordList.remove(kw)
+        settings.setDryKeywords(this, dryKeywordList)
+        refreshDryChips()
+        Toast.makeText(this, "已删除干货关键词：$kw", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeWaterKeyword(kw: String) {
+        waterKeywordList.remove(kw)
+        settings.setWaterKeywords(this, waterKeywordList)
+        refreshWaterChips()
+        Toast.makeText(this, "已删除水货关键词：$kw", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun refreshDryChips() {
+        chipGroupDry.removeAllViews()
+        for (kw in dryKeywordList) {
+            chipGroupDry.addView(createKeywordChip(chipGroupDry, kw) { removeDryKeyword(kw) })
+        }
+        tvDryKeywordsEmpty.visibility =
+            if (dryKeywordList.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+    }
+
+    private fun refreshWaterChips() {
+        chipGroupWater.removeAllViews()
+        for (kw in waterKeywordList) {
+            chipGroupWater.addView(createKeywordChip(chipGroupWater, kw) { removeWaterKeyword(kw) })
+        }
+        tvWaterKeywordsEmpty.visibility =
+            if (waterKeywordList.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+    }
+
+    /**
+     * 创建一个带关闭图标的可删除关键词 Chip（Entry 风格）。
+     * @param parent 用于生成 LayoutParams 的 ChipGroup
+     */
+    private fun createKeywordChip(
+        parent: android.view.ViewGroup,
+        keyword: String,
+        onClose: () -> Unit
+    ): Chip {
+        val chip = LayoutInflater.from(this)
+            .inflate(R.layout.item_keyword_chip, parent, false) as? Chip
+            ?: Chip(this).apply {
+                setEnsureMinTouchTargetSize(false)
+            }
+        chip.text = keyword
+        chip.isCloseIconVisible = true
+        chip.setOnClickListener { /* 点击仅高亮，不删除 */ }
+        chip.setOnCloseIconClickListener { onClose() }
+        return chip
     }
 
     private fun loadCurrentSettings() {

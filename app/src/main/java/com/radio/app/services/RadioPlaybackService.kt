@@ -1773,6 +1773,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun patrolSubtitleGeneration() {
         val appSettings = AppSettings.getInstance(this)
         if (!appSettings.enablePreprocessing) {
+            writePreCacheLog("patrolSubtitle: [v2.4.59] preprocessing disabled, skipping patrol")
             return
         }
         // [v2.4.13] Check if subtitle service is busy (cross-process via flag file)
@@ -1787,15 +1788,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 writePreCacheLog("patrolSubtitle: [v2.4.17] stale busy flag detected (age=${flagAge/1000}s > 15min), deleting and continuing patrol")
                 busyFlag.delete()
             } else {
-                writePreCacheLog("patrolSubtitle: subtitle service is busy (flag age=${flagAge/1000}s), skipping patrol")
+                writePreCacheLog("patrolSubtitle: [v2.4.59] subtitle service is busy (flag age=${flagAge/1000}s), skipping patrol")
                 return
             }
+        }
+        // v2.4.59: Check if subtitle service is already running (component check)
+        val subtitleRunning = try {
+            val mgr = getSystemService(android.content.ACTIVITY_SERVICE) as android.app.ActivityManager
+            mgr.runningServices?.any { it.service.className == "com.radio.app.services.SubtitleGeneratorService" } ?: false
+        } catch (_: Exception) { false }
+        if (subtitleRunning) {
+            writePreCacheLog("patrolSubtitle: [v2.4.59] SubtitleGeneratorService is running, skipping patrol")
+            return
         }
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val currentEp = currentEpisode ?: return@launch
                 if (currentEp.id.isNullOrBlank()) return@launch
+
+                writePreCacheLog("patrolSubtitle: [v2.4.59] patrol started, currentEp=${currentEp.title}")
 
                 // Load pre-cache list and find episodes after current one
                 val preCacheList = loadPreCacheList()

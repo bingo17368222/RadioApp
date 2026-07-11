@@ -38,6 +38,17 @@ class AppSettings private constructor() {
         const val SPLIT_MODE_HORIZONTAL = "horizontal"
         const val SPLIT_MODE_VERTICAL = "vertical"
 
+        // [就AI听] 关键词管理：独立存储于 keyword_prefs，逗号分隔
+        const val KEYWORD_PREFS_NAME = "keyword_prefs"
+        const val KEY_DRY_KEYWORDS = "dry_keywords"
+        const val KEY_WATER_KEYWORDS = "water_keywords"
+        val DEFAULT_DRY_KEYWORDS = listOf(
+            "新闻", "天气", "交通", "提醒", "朋友", "大家", "我们", "现在", "今天", "时间", "时候"
+        )
+        val DEFAULT_WATER_KEYWORDS = listOf(
+            "广告", "赞助", "音乐", "歌曲", "休息", "稍后", "回来"
+        )
+
         @Volatile
         private var instance: AppSettings? = null
 
@@ -66,6 +77,9 @@ class AppSettings private constructor() {
     var splitMode: String = SPLIT_MODE_NONE
     var customColors: CustomColors = CustomColors()
     var keywordConfig: KeywordConfig = KeywordConfig()
+    // [就AI听] 关键词管理：存储于 keyword_prefs（逗号分隔），与 KeywordConfig 相互独立
+    private var dryKeywordList: MutableList<String> = DEFAULT_DRY_KEYWORDS.toMutableList()
+    private var waterKeywordList: MutableList<String> = DEFAULT_WATER_KEYWORDS.toMutableList()
     var preloadCache: Boolean = false
     var preloadCacheCount: Int = 10
     var enablePreprocessing: Boolean = true
@@ -184,6 +198,61 @@ class AppSettings private constructor() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
+        // [就AI听] 加载关键词管理（独立文件 keyword_prefs，逗号分隔）
+        loadKeywordPrefs(context)
+    }
+
+    /**
+     * [就AI听] 从 keyword_prefs 读取干货/水货关键词（逗号分隔）。
+     * 首次使用（无值）时使用默认关键词。
+     */
+    private fun loadKeywordPrefs(context: Context) {
+        val prefs = context.getSharedPreferences(KEYWORD_PREFS_NAME, Context.MODE_PRIVATE)
+        dryKeywordList = parseCsvKeywords(prefs.getString(KEY_DRY_KEYWORDS, null))
+            ?: DEFAULT_DRY_KEYWORDS.toMutableList()
+        waterKeywordList = parseCsvKeywords(prefs.getString(KEY_WATER_KEYWORDS, null))
+            ?: DEFAULT_WATER_KEYWORDS.toMutableList()
+    }
+
+    private fun parseCsvKeywords(csv: String?): MutableList<String>? {
+        if (csv == null) return null  // 未设置过，交由调用方使用默认值
+        val list = mutableListOf<String>()
+        if (csv.isBlank()) return list
+        val parts = csv.split("[,，]".toRegex())
+        for (part in parts) {
+            val trimmed = part.trim()
+            if (trimmed.isNotEmpty()) list.add(trimmed)
+        }
+        return list
+    }
+
+    /** [就AI听] 获取干货关键词列表 */
+    fun getDryKeywords(): List<String> = dryKeywordList.toList()
+
+    /** [就AI听] 获取水货关键词列表 */
+    fun getWaterKeywords(): List<String> = waterKeywordList.toList()
+
+    /**
+     * [就AI听] 设置干货关键词并持久化到 keyword_prefs。
+     */
+    fun setDryKeywords(context: Context, keywords: List<String>) {
+        dryKeywordList = keywords.toMutableList()
+        saveKeywordPrefs(context)
+    }
+
+    /** [就AI听] 设置水货关键词并持久化到 keyword_prefs */
+    fun setWaterKeywords(context: Context, keywords: List<String>) {
+        waterKeywordList = keywords.toMutableList()
+        saveKeywordPrefs(context)
+    }
+
+    private fun saveKeywordPrefs(context: Context) {
+        val prefs = context.getSharedPreferences(KEYWORD_PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString(KEY_DRY_KEYWORDS, dryKeywordList.joinToString(","))
+            .putString(KEY_WATER_KEYWORDS, waterKeywordList.joinToString(","))
+            .apply()
     }
 
     fun save(context: Context) {

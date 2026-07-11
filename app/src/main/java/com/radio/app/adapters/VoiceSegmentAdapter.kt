@@ -14,6 +14,7 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
 
     private var segments: List<VoiceSegment> = emptyList()
     private var listener: OnSegmentClickListener? = null
+    private var itemLongClickListener: OnItemLongClickListener? = null
     private var currentSegmentIndex = -1
 
     interface OnSegmentClickListener {
@@ -21,9 +22,24 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
         fun onSegmentLongClick(position: Int, segment: VoiceSegment)
     }
 
+    /**
+     * [功能1] 独立的长按监听接口，用于弹出"标记为干货/水货"对话框。
+     * 设置后将优先于 OnSegmentClickListener.onSegmentLongClick 触发。
+     */
+    interface OnItemLongClickListener {
+        fun onItemLongClick(position: Int, segment: VoiceSegment)
+    }
+
     fun setSegments(segments: List<VoiceSegment>?) {
         this.segments = segments ?: emptyList()
         notifyDataSetChanged()
+    }
+
+    /**
+     * [功能1] 注册长按监听器。长按分段时回调，由调用方弹出标记对话框。
+     */
+    fun setOnItemLongClickListener(listener: OnItemLongClickListener) {
+        this.itemLongClickListener = listener
     }
 
     fun setCurrentSegmentIndex(index: Int) {
@@ -77,7 +93,12 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
             listener?.onSegmentClick(position, segment)
         }
         holder.itemView.setOnLongClickListener {
-            listener?.onSegmentLongClick(position, segment)
+            // [功能1] 优先使用独立的 OnItemLongClickListener；未设置时回退到旧回调。
+            if (itemLongClickListener != null) {
+                itemLongClickListener?.onItemLongClick(position, segment)
+            } else {
+                listener?.onSegmentLongClick(position, segment)
+            }
             true
         }
     }
