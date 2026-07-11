@@ -44,6 +44,17 @@ class MnnLlmBridge {
         private var initialized = false
         private var llmPtr: Long = 0L
 
+        // v2.4.57: Moved mnnLog to companion object level so generate() can use it
+        private fun mnnLog(msg: String) {
+            Log.i(TAG, msg)
+            try {
+                val logDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "Android/data/com.radio.app/files/logs/subtitle")
+                if (!logDir.exists()) logDir.mkdirs()
+                val logFile = java.io.File(logDir, "mnn_init.log")
+                java.io.FileWriter(logFile, true).use { it.append("[${System.currentTimeMillis()}] $msg\n") }
+            } catch (_: Exception) {}
+        }
+
         /**
          * Check if MNN model + libs are installed.
          */
