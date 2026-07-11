@@ -1324,11 +1324,9 @@ class PlayerActivity : AppCompatActivity() {
         // Feature A: subtitle RecyclerView setup
         subtitleAdapter = SubtitleEntryAdapter()
         // [功能2] 长按字幕提取为干货/水货关键词
-        subtitleAdapter?.setOnItemLongClickListener(object : SubtitleEntryAdapter.OnItemLongClickListener {
-            override fun onItemLongClick(position: Int, transcript: Transcript) {
-                showSubtitleKeywordDialog(transcript)
-            }
-        })
+        subtitleAdapter?.setOnItemLongClickListener { position, transcript ->
+            showSubtitleKeywordDialog(transcript)
+        }
         binding.recyclerSubtitles.layoutManager = LinearLayoutManager(this)
         binding.recyclerSubtitles.adapter = subtitleAdapter
 
@@ -3715,19 +3713,13 @@ class PlayerActivity : AppCompatActivity() {
 
         private var transcripts: List<Transcript> = emptyList()
         private var highlightedIndex: Int = -1
-        private var itemLongClickListener: OnItemLongClickListener? = null
-
-        /**
-         * [功能2] 字幕长按监听接口，用于将字幕文本提取为干货/水货关键词。
-         */
-        interface OnItemLongClickListener {
-            fun onItemLongClick(position: Int, transcript: Transcript)
-        }
+        // [功能2] 使用函数类型替代 interface（interface 不允许在 inner class 中定义）
+        private var itemLongClickListener: ((Int, Transcript) -> Unit)? = null
 
         /**
          * [功能2] 注册长按监听器。
          */
-        fun setOnItemLongClickListener(listener: OnItemLongClickListener) {
+        fun setOnItemLongClickListener(listener: (Int, Transcript) -> Unit) {
             this.itemLongClickListener = listener
         }
 
@@ -3781,7 +3773,7 @@ class PlayerActivity : AppCompatActivity() {
             }
             // [功能2] 长按字幕提取关键词
             holder.itemView.setOnLongClickListener {
-                itemLongClickListener?.onItemLongClick(position, transcript)
+                itemLongClickListener?.invoke(position, transcript)
                 true
             }
         }
