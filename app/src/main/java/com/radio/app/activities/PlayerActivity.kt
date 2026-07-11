@@ -40,6 +40,7 @@ import com.radio.app.whisper.MnnLlmBridge
 import java.io.File
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.widget.TextView
@@ -1496,12 +1497,9 @@ class PlayerActivity : AppCompatActivity() {
             performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
-            // v2.4.56: Root cause of phantom backward clicks found!
-            // The button had android:focusable="true" (default). When a hardware key
-            // (headset button, D-pad, etc.) is held down, Android sends repeated
-            // ACTION_DOWN events at ~220ms intervals to the focused view, each
-            // triggering onClick. Fix: android:focusable="false" in XML.
-            // No more debounce/blackout needed - the root cause is eliminated.
+            // v2.4.57: Log call stack to identify phantom click source.
+            val stack = Thread.currentThread().stackTrace.take(8).joinToString(" <- ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+            writeJitterLog("[v2.4.57] btnSkipBackward onClick: stack=$stack")
             performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
         }
         binding.btnClose.setOnClickListener {
@@ -1648,6 +1646,15 @@ class PlayerActivity : AppCompatActivity() {
                                         }
                                         segments = mergedSegments
                                         writeJitterLog("[v2.4.41] btnAiSegment: MNN merged ${rawSegments.size} → ${mergedSegments.size} segments (dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}})")
+                                        // v2.4.57: Detect abnormal results (all same type = likely garbage)
+                                        if (mergedSegments.size == 1) {
+                                            writeJitterLog("[v2.4.57] btnAiSegment: ABNORMAL - only 1 segment (all ${if (mergedSegments[0].hasVoice) "dry" else "water"}), likely MNN garbage output")
+                                            runOnUiThread {
+                                                finishAiProcessing("segment")
+                                                Toast.makeText(this, "MNN分段异常：所有内容被划分为同一类型，可能是模型输出异常。请尝试重新分段。", Toast.LENGTH_LONG).show()
+                                            }
+                                            return@Thread
+                                        }
                                     } else {
                                         writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM returned no results")
                                         runOnUiThread { Toast.makeText(this, "MNN分析无结果，请检查日志", Toast.LENGTH_LONG).show() }
@@ -1696,6 +1703,11 @@ class PlayerActivity : AppCompatActivity() {
                             val waterCount = segments.size - dryCount
                             binding.tvAiStatus.text = "片段列表  分段引擎：$segEngineName (耗时: ${segElapsed / 1000}s)"
                             segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
+                            // v2.4.57: Persist to SharedPreferences so it survives Activity recreation
+                            getSharedPreferences("segment_info", MODE_PRIVATE).edit()
+                                .putString("seg_engine_${episode.id}", segEngineName)
+                                .putLong("seg_time_${episode.id}", segElapsed)
+                                .apply()
                             binding.tvAiStatus.visibility = View.VISIBLE
                             Toast.makeText(this,
                                 "AI分段完成: ${segments.size}段 (干货${dryCount} 水货${waterCount})",
@@ -1800,7 +1812,16 @@ class PlayerActivity : AppCompatActivity() {
                                 val dryCount2 = segments.count { it.hasVoice }
                                 val waterCount2 = segments.size - dryCount2
                                 val flow2Engine = if (AppSettings.getInstance(this@PlayerActivity).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
-                                binding.tvAiStatus.text = "片段列表  分段引擎：$flow2Engine"
+                                val flow2Text = "片段列表  分段引擎：$flow2Engine"
+                                binding.tvAiStatus.text = flow2Text
+                                segmentListDisplayText = flow2Text
+                                // v2.4.57: Persist to SharedPreferences
+                                currentEpisode?.let { ep ->
+                                    getSharedPreferences("segment_info", MODE_PRIVATE).edit()
+                                        .putString("seg_engine_${ep.id}", flow2Engine)
+                                        .putLong("seg_time_${ep.id}", 0L)
+                                        .apply()
+                                }
                                 segmentListDisplayText = binding.tvAiStatus.text.toString()
                                 binding.tvAiStatus.visibility = View.VISIBLE
                                 finishAiProcessing("segment")
@@ -1923,8 +1944,16 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.recyclerSegments.visibility = View.VISIBLE
                                 // v2.4.56: Fix - second Flow 2 onComplete also missing text
                                 val flow2Engine2 = if (AppSettings.getInstance(this@PlayerActivity).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
-                                binding.tvAiStatus.text = "片段列表  分段引擎：$flow2Engine2"
-                                segmentListDisplayText = binding.tvAiStatus.text.toString()
+                                val flow2Text2 = "片段列表  分段引擎：$flow2Engine2"
+                                binding.tvAiStatus.text = flow2Text2
+                                segmentListDisplayText = flow2Text2
+                                // v2.4.57: Persist to SharedPreferences
+                                currentEpisode?.let { ep ->
+                                    getSharedPreferences("segment_info", MODE_PRIVATE).edit()
+                                        .putString("seg_engine_${ep.id}", flow2Engine2)
+                                        .putLong("seg_time_${ep.id}", 0L)
+                                        .apply()
+                                }
                                 binding.tvAiStatus.visibility = View.VISIBLE
                                 finishAiProcessing("segment")
                                 Toast.makeText(this@PlayerActivity, "AI分段完成，共${segments.size}个片段", Toast.LENGTH_SHORT).show()
@@ -3043,6 +3072,20 @@ class PlayerActivity : AppCompatActivity() {
         super.finish()
     }
 
+    // v2.4.57: Root fix for phantom backward clicks.
+    // Android sends repeated key events at ~220ms intervals when a hardware key
+    // (headset button, volume key, etc.) is held down. These events reach the
+    // focused view and trigger onClick. By consuming ALL repeated key events
+    // (repeatCount > 0) at the Activity level, we prevent them from reaching
+    // any view. This is the ROOT fix - no debounce/blackout needed.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.repeatCount > 0) {
+            writeJitterLog("[v2.4.57] dispatchKeyEvent: BLOCKED repeated key=${event.keyCode} repeatCount=${event.repeatCount} action=${event.action}")
+            return true  // Consume - prevent from reaching any view
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onResume() {
         super.onResume()
         onResumeTimestamp = System.currentTimeMillis()  // v2.4.55: Post-resume seek blackout
@@ -3222,8 +3265,16 @@ class PlayerActivity : AppCompatActivity() {
             if (realSegments.isNotEmpty() && (voiceSegments.isEmpty() || voiceSegments.all { it.isSimulated })) {
                 voiceSegments = realSegments
                 updateSegmentsUI()
-                // v2.4.50: Restore "片段列表" display text if it was set before
-                if (segmentListDisplayText.isNotEmpty() && _binding != null) {
+                // v2.4.57: Restore "片段列表" text from SharedPreferences (survives Activity recreation)
+                val prefs = getSharedPreferences("segment_info", MODE_PRIVATE)
+                val savedEngine = prefs.getString("seg_engine_${episode.id}", null)
+                val savedTime = prefs.getLong("seg_time_${episode.id}", 0L)
+                if (savedEngine != null && _binding != null) {
+                    val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${savedTime / 1000}s)"
+                    binding.tvAiStatus.text = restoredText
+                    segmentListDisplayText = restoredText
+                    binding.tvAiStatus.visibility = View.VISIBLE
+                } else if (segmentListDisplayText.isNotEmpty() && _binding != null) {
                     binding.tvAiStatus.text = segmentListDisplayText
                     binding.tvAiStatus.visibility = View.VISIBLE
                 }

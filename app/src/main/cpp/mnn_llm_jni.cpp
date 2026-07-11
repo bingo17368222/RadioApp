@@ -275,12 +275,14 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // v2.4.55: Prompt is now wrapped in chat template by Kotlin (MnnLlmBridge.generate()).
-    // The C++ side just passes it through to avoid double-wrapping.
-    // Also pass "<|im_end|>" as stop_str to stop generation at end of assistant response.
-    std::string promptCpp = rawPrompt;
+    // v2.4.57: ALWAYS wrap prompt in chat template + pass stop_str="<|im_end|>".
+    // Kotlin no longer wraps (removed in v2.4.57 to avoid double-wrapping).
+    // The C++ .so is the single source of truth for chat template wrapping.
+    // This works for both old .so (v2.4.48, which wraps) and new .so (which wraps).
+    std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+                           + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
 
-    mnn_logf("nativeGenerate: prompt length=%zu, maxTokens=%d", promptCpp.size(), maxTokens);
+    mnn_logf("nativeGenerate: prompt length=%zu (chat-template-wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
 
     std::ostringstream oss;
     int max_new = (maxTokens > 0) ? (int)maxTokens : -1;

@@ -206,22 +206,12 @@ class MnnLlmBridge {
                 Log.e(TAG, "generate: LLM not initialized")
                 return ""
             }
-            // v2.4.55: Wrap prompt in Qwen1.5-Chat chat template HERE in Kotlin,
-            // because the C++ .so can't be reloaded (old :subtitle process keeps old .so).
-            // Also, the old .so's nativeGenerate doesn't wrap the prompt.
-            val wrappedPrompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n" +
-                "<|im_start|>user\n$prompt<|im_end|>\n" +
-                "<|im_start|>assistant\n"
-            Log.i(TAG, "generate: wrapping prompt in chat template (len=${wrappedPrompt.length}), maxTokens=$maxTokens")
-            val result = nativeGenerate(llmPtr, wrappedPrompt, maxTokens)
-            Log.i(TAG, "generate: response len=${result.length}, first200=${result.take(200)}")
-            // Also write to mnn_init.log
-            try {
-                val logDir = android.util.Log.VERBOSE.takeIf { false } ?: ""
-                val logFile = java.io.File(android.os.Environment.getExternalStorageDirectory(), "Android/data/com.radio.app/files/logs/subtitle/mnn_init.log")
-                if (logFile.parentFile?.exists() != true) logFile.parentFile?.mkdirs()
-                java.io.FileWriter(logFile, true).use { it.append("[${System.currentTimeMillis()}] generate: prompt_len=${wrappedPrompt.length}, resp_len=${result.length}, first200=${result.take(200)}\n") }
-            } catch (_: Exception) {}
+            // v2.4.57: Do NOT wrap prompt in Kotlin. The C++ .so already wraps it.
+            // v2.4.55 added Kotlin wrapping which caused DOUBLE-WRAPPING with old .so.
+            // Both old and new .so wrap the prompt in chat template internally.
+            mnnLog("generate: calling nativeGenerate with raw prompt (len=${prompt.length}), maxTokens=$maxTokens")
+            val result = nativeGenerate(llmPtr, prompt, maxTokens)
+            mnnLog("generate: response len=${result.length}, first200=${result.take(200)}")
             return result
         }
 
@@ -307,15 +297,30 @@ class MnnLlmBridge {
                     val isGarbage = uniqueChars <= 5 && response.length > 10
                     val finalIsDry = when {
                         isGarbage -> {
-                            // Garbage response - use keyword-based heuristic
+                            // v2.4.57: Enhanced keyword list for radio content detection.
                             // If text has typical radio content words → 干货, else → 水货
                             val hasContent = text.contains("新闻") || text.contains("天气") || text.contains("交通") ||
                                 text.contains("提醒") || text.contains("朋友") || text.contains("大家") ||
-                                text.contains("我们") || text.contains("现在") || text.contains("今天")
-                            Log.w(TAG, "classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars), fallback to keyword: ${if (hasContent) "干货" else "水货"}")
+                                text.contains("我们") || text.contains("现在") || text.contains("今天") ||
+                                text.contains("时间") || text.contains("时候") || text.contains("因为") ||
+                                text.contains("所以") || text.contains("但是") || text.contains("如果") ||
+                                text.contains("认为") || text.contains("觉得") || text.contains("知道") ||
+                                text.contains("应该") || text.contains("可以") || text.contains("问题") ||
+                                text.contains("生活") || text.contains("健康") || text.contains("安全") ||
+                                text.contains("孩子") || text.contains("家庭") || text.contains("工作") ||
+                                text.contains("学习") || text.contains("老师") || text.contains("学校") ||
+                                text.contains("医院") || text.contains("医生") || text.contains("音乐") ||
+                                text.contains("歌曲") || text.contains("节目") || text.contains("广播") ||
+                                text.contains("听众") || text.contains("主持") || text.contains("嘉宾")
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars), fallback to keyword: ${if (hasContent) "干货" else "水货"}, text=${text.take(60)}")
                             hasContent
                         }
-                        !isDry && !isWater -> true  // Default to 干货
+                        !isDry && !isWater -> {
+                            // v2.4.57: If response is not garbage but doesn't contain keywords,
+                            // check if response has meaningful content (not just repeated chars)
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword in response, defaulting to 干货, response=${response.take(60)}")
+                            true  // Default to 干货
+                        }
                         else -> isDry
                     }
                     allResults.add(MnnSegmentResult(
