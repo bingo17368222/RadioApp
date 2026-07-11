@@ -111,7 +111,7 @@ class RadioApplication : Application() {
         // [v2.1.0] Warm up cache dir + migrate legacy PCM cache
         migrateLegacyPcmCache()
 
-        // v2.4.51: Kill :subtitle process if APK version changed.
+        // v2.4.52: Kill :subtitle process if APK version changed.
         // The :subtitle process (SubtitleGeneratorService) survives APK updates.
         // Once .so is loaded, it can't be unloaded. We must kill the process
         // so it reloads the new .so on next start.
@@ -122,19 +122,62 @@ class RadioApplication : Application() {
             val currentVersion = packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
             if (storedVersion != currentVersion) {
                 flagFile.writeText(currentVersion.toString())
-                android.util.Log.w("RadioApplication", "v2.4.51: APK version changed ($storedVersion → $currentVersion), killing :subtitle process")
-                // Kill the :subtitle process by name
-                val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-                for (pi in am.runningAppProcesses) {
-                    if (pi.processName == "$packageName:subtitle") {
-                        android.util.Log.w("RadioApplication", "v2.4.51: Found :subtitle process (pid=${pi.pid}), killing...")
-                        android.os.Process.killProcess(pi.pid)
-                        break
+                android.util.Log.w("RadioApplication", "v2.4.52: APK version changed ($storedVersion → $currentVersion), killing :subtitle process")
+                // Method 1: Try ActivityManager.runningAppProcesses
+                var killed = false
+                try {
+                    val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+                    for (pi in am.runningAppProcesses) {
+                        if (pi.processName == "$packageName:subtitle") {
+                            android.util.Log.w("RadioApplication", "v2.4.52: Found :subtitle process (pid=${pi.pid}), killing via killProcess...")
+                            android.os.Process.killProcess(pi.pid)
+                            killed = true
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("RadioApplication", "v2.4.52: runningAppProcesses method failed: ${e.message}")
+                }
+                // Method 2: If runningAppProcesses didn't find it (Android 9+ may hide it),
+                // use killBackgroundProcesses as fallback
+                if (!killed) {
+                    try {
+                        val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+                        am.killBackgroundProcesses("$packageName:subtitle")
+                        android.util.Log.w("RadioApplication", "v2.4.52: Called killBackgroundProcesses for :subtitle")
+                    } catch (e: Exception) {
+                        android.util.Log.e("RadioApplication", "v2.4.52: killBackgroundProcesses failed: ${e.message}")
+                    }
+                }
+                // Method 3: Force stop the entire app package (kills all processes including :subtitle)
+                // This is the most reliable method but also kills the main process.
+                // Only use if we couldn't kill :subtitle directly.
+                if (!killed) {
+                    try {
+                        val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+                        // Use reflection to call hidden forceStopPackage API
+                        val method = am.javaClass.getMethod("forceStopPackage", String::class.java)
+                        method.invoke(am, packageName)
+                        android.util.Log.w("RadioApplication", "v2.4.52: Called forceStopPackage for $packageName")
+                    } catch (e: Exception) {
+                        android.util.Log.e("RadioApplication", "v2.4.52: forceStopPackage failed: ${e.message}")
+                        // Last resort: kill all processes with our UID except ourselves
+                        try {
+                            val am = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
+                            for (pi in am.runningAppProcesses) {
+                                if (pi.uid == android.os.Process.myUid() && pi.pid != android.os.Process.myPid()) {
+                                    android.util.Log.w("RadioApplication", "v2.4.52: Killing related process ${pi.processName} (pid=${pi.pid})")
+                                    android.os.Process.killProcess(pi.pid)
+                                }
+                            }
+                        } catch (e2: Exception) {
+                            android.util.Log.e("RadioApplication", "v2.4.52: all kill methods failed: ${e2.message}")
+                        }
                     }
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("RadioApplication", "v2.4.51: Failed to check/kill :subtitle process: ${e.message}")
+            android.util.Log.e("RadioApplication", "v2.4.52: Failed to check/kill :subtitle process: ${e.message}")
         }
     }
 
