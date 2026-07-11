@@ -2575,9 +2575,17 @@ class SubtitleGeneratorService : Service() {
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
 
-            // [v2.4.10] For pre-cache subtitle generation, use FULL audio PCM instead of 5-min clip
-            if (forceWhisperBaseModel) {
-                logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
+            // v2.4.55: For tiny model, ALWAYS use FULL audio PCM (not just 5 minutes).
+            // Previously, only pre-cache (forceWhisperBase=true) used full audio.
+            // Non-pre-cache tasks used 5-min clip → incomplete subtitles.
+            // Now, if using tiny model, treat like pre-cache: generate full PCM.
+            val isTinyModelForFullAudio = whisperModel?.contains("tiny", ignoreCase = true) == true
+            if (forceWhisperBaseModel || isTinyModelForFullAudio) {
+                if (isTinyModelForFullAudio && !forceWhisperBaseModel) {
+                    logToFile("generateWithWhisper: [v2.4.55] tiny model detected, using FULL audio PCM (not 5-min clip)")
+                } else {
+                    logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
+                }
                 val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
                 var pcmDecodeTimeMs = 0L  // [v2.4.18] Track PCM decode time separately

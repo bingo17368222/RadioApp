@@ -206,7 +206,16 @@ class MnnLlmBridge {
                 Log.e(TAG, "generate: LLM not initialized")
                 return ""
             }
-            return nativeGenerate(llmPtr, prompt, maxTokens)
+            // v2.4.55: Wrap prompt in Qwen1.5-Chat chat template HERE in Kotlin,
+            // because the C++ .so can't be reloaded (old :subtitle process keeps old .so).
+            // Also, the old .so's nativeGenerate doesn't wrap the prompt.
+            val wrappedPrompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n" +
+                "<|im_start|>user\n$prompt<|im_end|>\n" +
+                "<|im_start|>assistant\n"
+            mnnLog("generate: wrapping prompt in chat template (len=${wrappedPrompt.length}), maxTokens=$maxTokens")
+            val result = nativeGenerate(llmPtr, wrappedPrompt, maxTokens)
+            mnnLog("generate: response len=${result.length}, first200=${result.take(200)}")
+            return result
         }
 
         fun release() {

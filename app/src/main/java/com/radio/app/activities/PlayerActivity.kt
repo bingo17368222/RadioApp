@@ -73,6 +73,7 @@ class PlayerActivity : AppCompatActivity() {
     private var segmentProcessing = false
     private var segmentListDisplayText: String = ""  // v2.4.50: Store "片段列表" text to prevent overwrite
     private var lastSkipBackwardTime: Long = 0  // v2.4.54: Debounce backward skip
+    private var onResumeTimestamp: Long = 0  // v2.4.55: Post-resume seek blackout
     private var pendingSeekMs: Long = -1L  // [v2.1.5] For search-to-seek
     private var isFreshStart = false // true if user explicitly clicked an episode from the list
     private var pendingAiTaskType: String? = null
@@ -1419,6 +1420,19 @@ class PlayerActivity : AppCompatActivity() {
                 if (service.isPlaying()) {
                     lastPauseIntentTimeMs = System.currentTimeMillis()
                     service.pause()
+                    // v2.4.55: Force save progress on manual pause
+                    val pos = service.getCurrentPosition()
+                    val dur = service.getDuration()
+                    val epId = currentEpisode?.id ?: ""
+                    if (pos > 0 && epId.isNotBlank()) {
+                        writeJitterLog("[v2.4.55] Manual pause: force saving progress pos=$pos, dur=$dur, epId=$epId")
+                        try {
+                            val dbHelper = com.radio.app.utils.SubtitleDatabaseHelper.getInstance(this)
+                            dbHelper.savePlaybackPosition(epId, pos, dur)
+                        } catch (e: Exception) {
+                            writeJitterLog("[v2.4.55] Manual pause: savePlaybackPosition failed: ${e.message}")
+                        }
+                    }
                 } else {
                     service.play()
                 }
@@ -1482,12 +1496,18 @@ class PlayerActivity : AppCompatActivity() {
             performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
-            // v2.4.54: Debounce backward skip to prevent accidental rapid clicks.
-            // Some users report "回退进度" without intentionally clicking. The root cause
-            // is rapid accidental touches. Rate-limit to max 1 skip per 800ms.
+            // v2.4.55: Post-resume blackout (3s) + debounce (2s).
+            // Root cause: btnSkipBackward fires 86ms after onResume (before user can touch screen).
+            // This is a phantom click from app switch animation, not user action.
+            // Block ALL backward skips for 3 seconds after onResume.
             val now = System.currentTimeMillis()
-            if (now - lastSkipBackwardTime < 800) {
-                writeJitterLog("[v2.4.54] btnSkipBackward DEBOUNCED (gap=${now - lastSkipBackwardTime}ms < 800ms)")
+            if (onResumeTimestamp > 0 && now - onResumeTimestamp < 3000) {
+                writeJitterLog("[v2.4.55] btnSkipBackward BLOCKED by post-resume blackout (gap=${now - onResumeTimestamp}ms < 3000ms)")
+                return@setOnClickListener
+            }
+            // v2.4.55: Increased debounce from 800ms to 2000ms to catch rapid phantom clicks
+            if (now - lastSkipBackwardTime < 2000) {
+                writeJitterLog("[v2.4.55] btnSkipBackward DEBOUNCED (gap=${now - lastSkipBackwardTime}ms < 2000ms)")
                 return@setOnClickListener
             }
             lastSkipBackwardTime = now
@@ -3021,6 +3041,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        onResumeTimestamp = System.currentTimeMillis()  // v2.4.55: Post-resume seek blackout
         writeJitterLog("onResume: subtitleProcessing=$subtitleProcessing, segmentProcessing=$segmentProcessing, serviceBound=$serviceBound")
         // [v2.4.9] Refresh subtitle scroll pause duration from settings (user may have changed it)
         subtitleScrollPauseDurationMs = AppSettings.getInstance(this).subtitleScrollPauseSeconds * 1000L
