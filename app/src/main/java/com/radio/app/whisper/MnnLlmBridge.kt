@@ -212,9 +212,16 @@ class MnnLlmBridge {
             val wrappedPrompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n" +
                 "<|im_start|>user\n$prompt<|im_end|>\n" +
                 "<|im_start|>assistant\n"
-            mnnLog("generate: wrapping prompt in chat template (len=${wrappedPrompt.length}), maxTokens=$maxTokens")
+            Log.i(TAG, "generate: wrapping prompt in chat template (len=${wrappedPrompt.length}), maxTokens=$maxTokens")
             val result = nativeGenerate(llmPtr, wrappedPrompt, maxTokens)
-            mnnLog("generate: response len=${result.length}, first200=${result.take(200)}")
+            Log.i(TAG, "generate: response len=${result.length}, first200=${result.take(200)}")
+            // Also write to mnn_init.log
+            try {
+                val logDir = android.util.Log.VERBOSE.takeIf { false } ?: ""
+                val logFile = java.io.File(android.os.Environment.getExternalStorageDirectory(), "Android/data/com.radio.app/files/logs/subtitle/mnn_init.log")
+                if (logFile.parentFile?.exists() != true) logFile.parentFile?.mkdirs()
+                java.io.FileWriter(logFile, true).use { it.append("[${System.currentTimeMillis()}] generate: prompt_len=${wrappedPrompt.length}, resp_len=${result.length}, first200=${result.take(200)}\n") }
+            } catch (_: Exception) {}
             return result
         }
 

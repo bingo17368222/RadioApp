@@ -1427,10 +1427,10 @@ class PlayerActivity : AppCompatActivity() {
                     if (pos > 0 && epId.isNotBlank()) {
                         writeJitterLog("[v2.4.55] Manual pause: force saving progress pos=$pos, dur=$dur, epId=$epId")
                         try {
-                            val dbHelper = com.radio.app.utils.SubtitleDatabaseHelper.getInstance(this)
-                            dbHelper.savePlaybackPosition(epId, pos, dur)
+                            val dbHelper = RadioDatabaseHelper.getInstance(this)
+                            dbHelper.savePlayProgress(com.radio.app.models.PlayProgress(episodeId = epId, progress = pos, recordedAt = System.currentTimeMillis()))
                         } catch (e: Exception) {
-                            writeJitterLog("[v2.4.55] Manual pause: savePlaybackPosition failed: ${e.message}")
+                            writeJitterLog("[v2.4.55] Manual pause: savePlayProgress failed: ${e.message}")
                         }
                     }
                 } else {
