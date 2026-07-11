@@ -37,6 +37,7 @@ import com.radio.app.models.AppSettings
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.utils.PreferenceManager
 import com.radio.app.whisper.MnnLlmBridge
+import com.radio.app.widgets.PhantomSafeImageButton
 import java.io.File
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -1416,6 +1417,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun setupListeners() {
+        // v2.4.58: Enable debug logging on PhantomSafeImageButtons
+        (binding.btnSkipBackward as? PhantomSafeImageButton)?.setDebugLog(true)
+        (binding.btnSkipForward as? PhantomSafeImageButton)?.setDebugLog(true)
+
         binding.btnPlayPause.setOnClickListener {
             playbackService?.let { service ->
                 if (service.isPlaying()) {
@@ -1497,9 +1502,9 @@ class PlayerActivity : AppCompatActivity() {
             performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
-            // v2.4.57: Log call stack to identify phantom click source.
-            val stack = Thread.currentThread().stackTrace.take(8).joinToString(" <- ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
-            writeJitterLog("[v2.4.57] btnSkipBackward onClick: stack=$stack")
+            // v2.4.58: PhantomSafeImageButton blocks phantom clicks at performClick level.
+            // If this code runs, it's a REAL touch-initiated click.
+            writeJitterLog("[v2.4.58] btnSkipBackward onClick: REAL touch confirmed (phantom blocked at view level)")
             performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
         }
         binding.btnClose.setOnClickListener {
@@ -1668,7 +1673,14 @@ class PlayerActivity : AppCompatActivity() {
                             }
                         }
                     } else {
-                        // [v2.4.25] Keyword-based segmentation (default for non-MNN models)
+                        // v2.4.58: "就AI听"方案 = 基于字幕关键词的分类方案
+                        // 独立作为可选方案。不选择时不跳转此方案，保留mnn方案原始分段结果。
+                        // 当用户选择"就AI听"(AI_MODEL_JIU_AI_TING)或其他非MNN模型时，走关键词分类。
+                        val engineLabel = when (aiModel) {
+                            AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                            else -> "关键词"
+                        }
+                        writeJitterLog("[v2.4.58] btnAiSegment: using $engineLabel segmentation (aiModel=$aiModel)")
                         if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                     }
                     writeJitterLog("[v2.4.28] btnAiSegment: generated ${segments.size} segments")
@@ -1685,7 +1697,11 @@ class PlayerActivity : AppCompatActivity() {
                     }
 
                     val segElapsed = System.currentTimeMillis() - segStartTime
-                    val segEngineName = if (aiModel == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                    val segEngineName = when (aiModel) {
+                        AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                        AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                        else -> "关键词"
+                    }
 
                     runOnUiThread {
                         // v2.4.45: Always call finishAiProcessing even if _binding==null
@@ -1811,7 +1827,11 @@ class PlayerActivity : AppCompatActivity() {
                                 // This is why "片段列表" never showed engine/time for several versions.
                                 val dryCount2 = segments.count { it.hasVoice }
                                 val waterCount2 = segments.size - dryCount2
-                                val flow2Engine = if (AppSettings.getInstance(this@PlayerActivity).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                                val flow2Engine = when (AppSettings.getInstance(this@PlayerActivity).safeAiModel()) {
+                                    AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                                    AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                                    else -> "关键词"
+                                }
                                 val flow2Text = "片段列表  分段引擎：$flow2Engine"
                                 binding.tvAiStatus.text = flow2Text
                                 segmentListDisplayText = flow2Text
@@ -1943,7 +1963,11 @@ class PlayerActivity : AppCompatActivity() {
                                 segmentAdapter?.setSegments(segments)
                                 binding.recyclerSegments.visibility = View.VISIBLE
                                 // v2.4.56: Fix - second Flow 2 onComplete also missing text
-                                val flow2Engine2 = if (AppSettings.getInstance(this@PlayerActivity).safeAiModel() == AppSettings.AI_MODEL_MNN_LLM) "MNN-LLM" else "关键词"
+                                val flow2Engine2 = when (AppSettings.getInstance(this@PlayerActivity).safeAiModel()) {
+                                    AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                                    AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                                    else -> "关键词"
+                                }
                                 val flow2Text2 = "片段列表  分段引擎：$flow2Engine2"
                                 binding.tvAiStatus.text = flow2Text2
                                 segmentListDisplayText = flow2Text2
@@ -3072,19 +3096,13 @@ class PlayerActivity : AppCompatActivity() {
         super.finish()
     }
 
-    // v2.4.57: Root fix for phantom backward clicks.
-    // Android sends repeated key events at ~220ms intervals when a hardware key
-    // (headset button, volume key, etc.) is held down. These events reach the
-    // focused view and trigger onClick. By consuming ALL repeated key events
-    // (repeatCount > 0) at the Activity level, we prevent them from reaching
-    // any view. This is the ROOT fix - no debounce/blackout needed.
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.repeatCount > 0) {
-            writeJitterLog("[v2.4.57] dispatchKeyEvent: BLOCKED repeated key=${event.keyCode} repeatCount=${event.repeatCount} action=${event.action}")
-            return true  // Consume - prevent from reaching any view
-        }
-        return super.dispatchKeyEvent(event)
-    }
+    // v2.4.58: Phantom click root fix - REPLACED dispatchKeyEvent approach.
+    // The v2.4.57 dispatchKeyEvent override did NOT work because phantom clicks
+    // don't come from key events. Stack trace shows they come from:
+    //   View.performAccessibilityActionInternal -> performClickInternal -> performClick
+    // The fix is PhantomSafeImageButton (custom view) which overrides performClick
+    // to require a real touch event (ACTION_DOWN) before allowing the click.
+    // No dispatchKeyEvent override needed anymore.
 
     override fun onResume() {
         super.onResume()

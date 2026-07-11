@@ -109,7 +109,7 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
     // v2.4.46: Compile-time version marker
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.46 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.58 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -275,23 +275,32 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // v2.4.57: ALWAYS wrap prompt in chat template + pass stop_str="<|im_end|>".
-    // Kotlin no longer wraps (removed in v2.4.57 to avoid double-wrapping).
-    // The C++ .so is the single source of truth for chat template wrapping.
-    // This works for both old .so (v2.4.48, which wraps) and new .so (which wraps).
-    std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
-                           + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+    // v2.4.58: Updated compile marker for .so version verification.
+// v2.4.57: ALWAYS wrap prompt in chat template + pass stop_str="<|im_end|>".
+// Kotlin no longer wraps (removed in v2.4.57 to avoid double-wrapping).
+// The C++ .so is the single source of truth for chat template wrapping.
+// This works for both old .so (v2.4.48, which wraps) and new .so (which wraps).
+std::string promptCpp = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+                       + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
 
-    mnn_logf("nativeGenerate: prompt length=%zu (chat-template-wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
+mnn_logf("nativeGenerate: prompt length=%zu (chat-template-wrapped), maxTokens=%d", promptCpp.size(), maxTokens);
 
-    std::ostringstream oss;
-    int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
-    g_response(llm, promptCpp, &oss, "<|im_end|>", max_new);
+std::ostringstream oss;
+int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
+g_response(llm, promptCpp, &oss, "<|im_end|>", max_new);
 
-    std::string result = oss.str();
-    mnn_logf("nativeGenerate: response length=%zu, first 200 chars: %.200s", result.size(), result.c_str());
+std::string result = oss.str();
+mnn_logf("nativeGenerate: response length=%zu, first 200 chars: %.200s", result.size(), result.c_str());
 
-    return env->NewStringUTF(result.c_str());
+return env->NewStringUTF(result.c_str());
+}
+
+// v2.4.58: Return the compile marker string so Kotlin can verify the correct .so is loaded.
+// If the :subtitle process kept an old .so in memory, this returns the OLD marker.
+// Kotlin compares it against the expected marker and force-kills the process if mismatched.
+JNIEXPORT jstring JNICALL
+Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
+    return env->NewStringUTF("MNN_JNI_v2.4.58");
 }
 
 // v2.4.53: Check if response is garbage (repeated characters)

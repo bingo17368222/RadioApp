@@ -600,6 +600,10 @@ class SubtitleGeneratorService : Service() {
                         "audioDurationMs" to currentAudioDurationMs
                     )
                 )
+                // v2.4.58: Clear busy flag when subtitle generation completes,
+                // not just when all tasks finish. This allows patrol to resume immediately.
+                try { SUBTITLE_BUSY_FLAG.delete() } catch (_: Exception) {}
+                logToFile("onComplete: [v2.4.58] cleared busy flag file for $episodeId")
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
                     updateProgressNotification(100, "字幕生成完成")
                 }

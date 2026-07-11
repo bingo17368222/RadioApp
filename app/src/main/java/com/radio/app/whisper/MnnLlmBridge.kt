@@ -40,6 +40,8 @@ class MnnLlmBridge {
         private external fun nativeFree(ptr: Long)
         @JvmStatic
         private external fun nativeSetConfig(ptr: Long, configJson: String): Boolean
+        @JvmStatic
+        private external fun nativeGetCompileMarker(): String
 
         private var initialized = false
         private var llmPtr: Long = 0L
@@ -170,6 +172,32 @@ class MnnLlmBridge {
                         return false
                     }
                     mnnLog("init: nativeInit OK")
+
+                    // v2.4.58: Verify the loaded .so is the current version.
+                    // If the :subtitle process kept an OLD .so in memory (from before APK update),
+                    // nativeGetCompileMarker() will return the OLD marker string.
+                    // We compare it against the expected marker and force-kill the process
+                    // so the next init attempt loads the fresh .so.
+                    val expectedMarker = "MNN_JNI_v2.4.58"
+                    try {
+                        val actualMarker = nativeGetCompileMarker()
+                        mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
+                        if (actualMarker != expectedMarker) {
+                            mnnLog("init: OLD .so DETECTED (marker=$actualMarker, expected=$expectedMarker)! Force-killing :subtitle process to load fresh .so on next init.")
+                            lastError = "检测到旧版MNN运行库(已加载)，正在强制重启进程以加载新版本。请重新点击AI分段。"
+                            log.close()
+                            // Kill this process so next init loads the new .so
+                            android.os.Process.killProcess(android.os.Process.myPid())
+                            return false
+                        }
+                    } catch (e: Exception) {
+                        mnnLog("init: nativeGetCompileMarker not available (old .so without this function), assuming old version")
+                        // If nativeGetCompileMarker doesn't exist, it's definitely an old .so
+                        lastError = "检测到旧版MNN运行库(无版本标记)，正在强制重启进程。请重新点击AI分段。"
+                        log.close()
+                        android.os.Process.killProcess(android.os.Process.myPid())
+                        return false
+                    }
                 }
 
                 val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
@@ -302,34 +330,21 @@ class MnnLlmBridge {
                 if (response.isNotBlank()) {
                     val isDry = response.contains("干货")
                     val isWater = response.contains("水货")
-                    // v2.4.56: Detect garbage MNN output (repeated chars like 漏集结漏集结...)
-                    // and fall back to keyword-based classification.
+                    // v2.4.58: Removed keyword-based fallback when MNN output is garbage.
+                    // User requirement: "不选择时不跳转此方案，保留mnn方案原始分段结果"
+                    // When "就AI听" is NOT selected, keep MNN's raw output (even if garbage).
+                    // The abnormal detection in PlayerActivity (mergedSegments.size==1) will catch it.
                     val uniqueChars = response.take(50).toSet().size
                     val isGarbage = uniqueChars <= 5 && response.length > 10
                     val finalIsDry = when {
                         isGarbage -> {
-                            // v2.4.57: Enhanced keyword list for radio content detection.
-                            // If text has typical radio content words → 干货, else → 水货
-                            val hasContent = text.contains("新闻") || text.contains("天气") || text.contains("交通") ||
-                                text.contains("提醒") || text.contains("朋友") || text.contains("大家") ||
-                                text.contains("我们") || text.contains("现在") || text.contains("今天") ||
-                                text.contains("时间") || text.contains("时候") || text.contains("因为") ||
-                                text.contains("所以") || text.contains("但是") || text.contains("如果") ||
-                                text.contains("认为") || text.contains("觉得") || text.contains("知道") ||
-                                text.contains("应该") || text.contains("可以") || text.contains("问题") ||
-                                text.contains("生活") || text.contains("健康") || text.contains("安全") ||
-                                text.contains("孩子") || text.contains("家庭") || text.contains("工作") ||
-                                text.contains("学习") || text.contains("老师") || text.contains("学校") ||
-                                text.contains("医院") || text.contains("医生") || text.contains("音乐") ||
-                                text.contains("歌曲") || text.contains("节目") || text.contains("广播") ||
-                                text.contains("听众") || text.contains("主持") || text.contains("嘉宾")
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars), fallback to keyword: ${if (hasContent) "干货" else "水货"}, text=${text.take(60)}")
-                            hasContent
+                            // v2.4.58: DO NOT fall back to keyword-based classification.
+                            // Keep MNN's raw output. If garbage has neither keyword, default to 干货.
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars), keeping MNN raw output (no keyword fallback), response=${response.take(60)}")
+                            true  // Keep as 干货 (MNN raw output preserved)
                         }
                         !isDry && !isWater -> {
-                            // v2.4.57: If response is not garbage but doesn't contain keywords,
-                            // check if response has meaningful content (not just repeated chars)
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword in response, defaulting to 干货, response=${response.take(60)}")
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword in response, keeping MNN raw output, response=${response.take(60)}")
                             true  // Default to 干货
                         }
                         else -> isDry
