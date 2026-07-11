@@ -1459,7 +1459,7 @@ class PlayerActivity : AppCompatActivity() {
         container.addView(etEnd)
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("添加水货分段组合")
-            .setMessage("分段的字幕文本以"开头"开始且以"结尾"结束时，判定为水货")
+            .setMessage("分段的字幕文本以『开头』开始且以『结尾』结束时，判定为水货")
             .setView(container)
             .setPositiveButton("添加") { _, _ ->
                 val start = etStart.text.toString().trim()

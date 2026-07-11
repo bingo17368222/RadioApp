@@ -226,7 +226,7 @@ class AppSettings private constructor() {
         val prefs = context.getSharedPreferences(KEYWORD_PREFS_NAME, Context.MODE_PRIVATE)
         val json = prefs.getString(KEY_WATER_COMBINATIONS, "[]") ?: "[]"
         waterCombinationList = try {
-            val type = com.google.gson.reflect.TypeToken<List<WaterCombination>>() {}.type
+            val type = object : com.google.gson.reflect.TypeToken<List<WaterCombination>>() {}.type
             val list: List<WaterCombination>? = com.google.gson.Gson().fromJson(json, type)
             list?.toMutableList() ?: mutableListOf()
         } catch (e: Exception) {
