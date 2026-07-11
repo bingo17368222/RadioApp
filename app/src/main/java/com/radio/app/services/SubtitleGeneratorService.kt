@@ -3932,7 +3932,7 @@ class SubtitleGeneratorService : Service() {
             // So we must start the task here. Broadcasts are sent by wrappedCallback for cross-process communication.
             // v2.4.54: Build initial notification WITH episode date+title (was empty before)
             val initialDisplayTitle = try {
-                buildDisplayTitle(episodeId)
+                buildDisplayTitle(episodeId, audioUrl)
             } catch (e: Exception) { "" }
             val progressNotification = createProgressNotification(0, taskLabel, initialDisplayTitle)
             try { startForeground(NOTIFICATION_ID, progressNotification) }
