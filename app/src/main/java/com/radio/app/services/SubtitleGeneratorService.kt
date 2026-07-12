@@ -697,9 +697,9 @@ class SubtitleGeneratorService : Service() {
                                 logToFile("generateSubtitlesForEpisode: [v2.4.68] CRASH LIMIT REACHED: $errorMsg")
                                 settings.whisperCrashCount = 0
                                 crashPrefs.edit().putString("last_crash_episode_id", "").commit()
-                                settings.save(this)
+                                settings.save(this@SubtitleGeneratorService)
                                 callback.onError(errorMsg)
-                                return
+                                return@execute  // v2.4.68: Exit lambda instead of bare return
                             }
                         } else if (settings.whisperCrashCount > 0) {
                             // Different episode - safe to reset
