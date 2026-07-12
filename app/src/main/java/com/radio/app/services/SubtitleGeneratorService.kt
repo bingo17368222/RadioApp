@@ -2736,7 +2736,7 @@ class SubtitleGeneratorService : Service() {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
                 logToFile("generateWithWhisper: [v2.0.99] using PCM cache (${sizeMB}MB)")
-                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.63] pass prev timing
+                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)  // [v2.4.63] non-precache path: no resume/timing accumulation
             }
 
             // No PCM cache — download and decode to 16kHz PCM
@@ -2753,7 +2753,7 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.99] Save to unified _5min.pcm file
             pcm16kFile.writeBytes(audioData)
             logToFile("generateWithWhisper: [v2.0.99] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
-            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.63] pass prev timing
+            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)  // [v2.4.63] non-precache path: no resume/timing accumulation
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
             ctx.lastErrorDetail = detail
