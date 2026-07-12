@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.71"
+                    val expectedMarker = "MNN_JNI_v2.4.72"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -229,25 +229,24 @@ class MnnLlmBridge {
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.71: CRITICAL FIX - Set use_template=false + manual ChatML formatting in JNI.
+                // v2.4.72: CRITICAL FIX - Token ID bypass via tokenizer_encode + response(vector<int>).
                 // ROOT CAUSE of persistent garbage output ("慰慰慰"):
-                //   v2.4.70 injected jinja.chat_template via set_config, but MNN's
-                //   response(string) → apply_chat_template(string, system_prompt) → tokenizer's
-                //   apply_chat_template(string) does NOT properly render the Jinja2 template for
-                //   string inputs. The Jinja2 template expects a `messages` array (from ChatMessages),
-                //   but the string overload can't construct it correctly → template renders empty →
-                //   response(string) falls back to raw text (no ChatML) → Qwen2 outputs garbage.
+                //   The old libllm.so (v2.4.48) likely lacks LLM_USE_JINJA (Jinja2 not compiled)
+                //   AND special_tokens_cache_ (tokenizer doesn't recognize <|im_start|> in text).
+                //   So ALL previous approaches (jinja.chat_template, use_template=false + manual
+                //   ChatML text) failed because the tokenizer encodes <|im_start|> as regular
+                //   text tokens → wrong token IDs → model doesn't see ChatML structure → garbage.
                 //
-                // FIX: Set use_template=false so MNN's response(string) does NOT try to apply any
-                //   template. Instead, we manually format the prompt as full ChatML in the JNI code
-                //   (mnn_llm_jni.cpp nativeGenerate). With use_template=false, response(string)
-                //   passes the raw (but already ChatML-formatted) text directly to the tokenizer,
-                //   which correctly tokenizes the ChatML special tokens (<|im_start|>, <|im_end|>).
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.3,"use_template":false}"""
+                // FIX: Resolve tokenizer_encode() and response(vector<int>) via dlsym.
+                //   In nativeGenerate, we manually construct the token ID array with hardcoded
+                //   ChatML special token IDs (151644=<|im_start|>, 151645=<|im_end|>), bypassing
+                //   the broken template system entirely. If symbols aren't found, fall back to
+                //   response(string) with ChatML text + use_template=false.
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.1,"use_template":false}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.71] set_config result=$configOk, use_template=false (manual ChatML in JNI)")
-                    mnnLog("init: [v2.4.71] genConfig=$genConfig")
+                    mnnLog("init: [v2.4.72] set_config result=$configOk, use_template=false (token ID bypass in JNI)")
+                    mnnLog("init: [v2.4.72] genConfig=$genConfig")
                 } catch (e: Exception) {
                     mnnLog("init: set_config FAILED: ${e.message}")
                 }

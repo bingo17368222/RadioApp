@@ -4170,24 +4170,28 @@ class SubtitleGeneratorService : Service() {
     // [Fix] Ensure episode_info has a non-empty date and title before subtitle generation
     // proceeds. Auto-started (pre-cache/background) tasks are launched via Intent with only
     // episodeId + audioUrl, so the episode_info row may be missing entirely or exist with an
-    // empty date/title. When that happens we fill in the current date and a default title
-    // ("广播节目录音_YYYY-MM-DD") so the episode always shows a date and title, and so the
-    // notification display title (buildDisplayTitle) and the episode list render correctly.
+    // empty date/title. When that happens we fill in the current date and derive the title
+    // from the audio file name (not a generic placeholder) so the notification display title
+    // (buildDisplayTitle) and the episode list render correctly.
+    // v2.4.72: Use audio file name instead of "广播节目录音_YYYY-MM-DD" as default title.
     private fun ensureEpisodeInfo(episodeId: String, audioUrl: String) {
         try {
             val dbHelper = RadioDatabaseHelper.getInstance(this)
             val existing = dbHelper.getEpisodeInfo(episodeId)
             val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            // v2.4.72: Derive default title from audio file name, not a generic placeholder.
+            val defaultTitle = audioUrl.substringAfterLast("/").substringBeforeLast(".")
+                .ifBlank { episodeId }
             if (existing == null) {
                 // No episode_info row at all — create one with default date/title.
                 val ep = com.radio.app.models.Episode().apply {
                     this.id = episodeId
-                    this.title = "广播节目录音_$currentDate"
+                    this.title = defaultTitle
                     this.broadcastAt = currentDate
                     this.audioUrl = audioUrl
                 }
                 dbHelper.saveEpisodeInfo(ep)
-                logToFile("ensureEpisodeInfo: created missing episode_info for $episodeId (title=广播节目录音_$currentDate, date=$currentDate)")
+                logToFile("ensureEpisodeInfo: created missing episode_info for $episodeId (title=$defaultTitle, date=$currentDate)")
             } else {
                 val dateBlank = existing.broadcastAt.isNullOrBlank()
                 val titleBlank = existing.title.isNullOrBlank()
@@ -4195,7 +4199,7 @@ class SubtitleGeneratorService : Service() {
                     // Row exists but is missing date and/or title — fill them in, preserving
                     // any already-present metadata (station, duration, etc.).
                     if (dateBlank) existing.broadcastAt = currentDate
-                    if (titleBlank) existing.title = "广播节目录音_$currentDate"
+                    if (titleBlank) existing.title = defaultTitle
                     dbHelper.saveEpisodeInfo(existing)
                     logToFile("ensureEpisodeInfo: filled missing date/title for $episodeId (title=${existing.title}, broadcastAt=${existing.broadcastAt})")
                 }
