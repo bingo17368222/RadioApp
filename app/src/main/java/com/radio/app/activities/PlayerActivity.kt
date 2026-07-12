@@ -700,14 +700,24 @@ class PlayerActivity : AppCompatActivity() {
                             } else {
                                 playbackService?.getSavedPositionForEpisode(episode) ?: -1L
                             }
-                            // [v2.0.76] Issue 1 Fix: When restoring from killed service, prefer Activity's cached
-                            // position if it's valid and significantly different from service's saved position.
+                            // v2.4.66: Prefer SharedPreferences savedPosition over Activity cached pos.
+                            // The v2.0.76 logic preferred Activity cache, but the cache is often stale
+                            // (saved at onPause time, which may be much earlier than the last periodic save).
+                            // SharedPreferences is updated every 5 seconds during playback and on seek,
+                            // so it's always the most recent position.
                             val activityCachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
                             val activityCachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
-                            if (!svcStarted && activityCachedPos > 30000 && activityCachedEpId == episode.id) {
-                                if (savedPosition <= 0 || kotlin.math.abs(savedPosition - activityCachedPos) > 60000) {
-                                    writeJitterLog("[v2.0.76] Using Activity cached pos=$activityCachedPos instead of service savedPos=$savedPosition (svc was killed, cache is more reliable)")
+                            // v2.4.66: Only use Activity cache as fallback if SharedPreferences has no position
+                            if (!svcStarted && savedPosition <= 0 && activityCachedPos > 30000 && activityCachedEpId == episode.id) {
+                                writeJitterLog("[v2.4.66] No savedPos in SharedPreferences, using Activity cached pos=$activityCachedPos as fallback")
+                                savedPosition = activityCachedPos
+                            } else if (!svcStarted && savedPosition > 0 && activityCachedPos > 30000 && activityCachedEpId == episode.id) {
+                                // v2.4.66: Use whichever is larger (more recent) position
+                                if (savedPosition < activityCachedPos) {
+                                    writeJitterLog("[v2.4.66] Activity cached pos=$activityCachedPos is more recent than savedPos=$savedPosition, using cached")
                                     savedPosition = activityCachedPos
+                                } else {
+                                    writeJitterLog("[v2.4.66] Using SharedPreferences savedPos=$savedPosition (more recent than Activity cache=$activityCachedPos)")
                                 }
                             }
                             val epDurMs = episode.duration * if (episode.duration > 0 && episode.duration < 100000) 1000 else 1
@@ -1651,18 +1661,26 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         binding.btnPrevSegment.setOnClickListener {
+            // v2.4.66: Force save current position before seeking to prevent position loss
+            playbackService?.forceSaveCurrentPosition()
             performSeek({ playbackService?.jumpToPrevSegment() }, "btnPrevSegment")
         }
         binding.btnNextSegment.setOnClickListener {
+            // v2.4.66: Force save current position before seeking
+            playbackService?.forceSaveCurrentPosition()
             performSeek({ playbackService?.jumpToNextSegment() }, "btnNextSegment")
         }
         binding.btnSkipForward.setOnClickListener {
+            // v2.4.66: Force save current position before seeking
+            playbackService?.forceSaveCurrentPosition()
             performSeek({ playbackService?.skipForward() }, "btnSkipForward")
         }
         binding.btnSkipBackward.setOnClickListener {
             // v2.4.58: PhantomSafeImageButton blocks phantom clicks at performClick level.
             // If this code runs, it's a REAL touch-initiated click.
             writeJitterLog("[v2.4.58] btnSkipBackward onClick: REAL touch confirmed (phantom blocked at view level)")
+            // v2.4.66: Force save current position before seeking
+            playbackService?.forceSaveCurrentPosition()
             performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
         }
         binding.btnClose.setOnClickListener {
@@ -2858,6 +2876,8 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playNextEpisode() {
+        // v2.4.66: Force save current position before switching episodes
+        playbackService?.forceSaveCurrentPosition()
         getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
             putBoolean("subtitle_processing", false)
             putBoolean("segment_processing", false)
@@ -2903,6 +2923,8 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playPrevEpisode() {
+        // v2.4.66: Force save current position before switching episodes
+        playbackService?.forceSaveCurrentPosition()
         getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
             putBoolean("subtitle_processing", false)
             putBoolean("segment_processing", false)

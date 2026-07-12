@@ -507,13 +507,20 @@ class OfflineEngineActivity : AppCompatActivity() {
                     var downloadedCount = 0
                     for ((idx, url) in engine.multiFileUrls.withIndex()) {
                         if (downloadCancelled) break
-                        val fileName = url.substringAfter("FilePath=")
+                        // v2.4.66: Extract filename from URL correctly for both API and resolve formats.
+                        // Old API format: .../repo?Revision=master&FilePath=llm.mnn → extract after "FilePath="
+                        // New resolve format: .../resolve/master/llm.mnn → extract after last "/"
+                        val fileName = if (url.contains("FilePath=")) {
+                            url.substringAfter("FilePath=")
+                        } else {
+                            url.substringAfterLast("/")
+                        }
                         val outFile = File(targetDir, fileName)
                         withContext(Dispatchers.Main) {
                             btn.text = "下载中(${idx+1}/${engine.multiFileUrls.size})"
                             progressBar?.progress = (idx * 100 / engine.multiFileUrls.size)
                         }
-                        writeEngineLog("downloadModel: downloading file ${idx+1}/${engine.multiFileUrls.size}: $fileName")
+                        writeEngineLog("downloadModel: downloading file ${idx+1}/${engine.multiFileUrls.size}: $fileName (url=$url)")
                         val success = withContext(Dispatchers.IO) {
                             downloadSingleFile(url, outFile, engine, btn, progressBar)
                         }

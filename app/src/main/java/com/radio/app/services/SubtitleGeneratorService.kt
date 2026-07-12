@@ -237,6 +237,25 @@ class SubtitleGeneratorService : Service() {
                     // explicitly requested that subtitle generation failure should NOT trigger
                     // model switching. User must manually change ASR engine in Settings.
                     logToFile("[v2.3.1] STRICT mode: NOT auto-switching to Vosk after Whisper crash (user preference)")
+                    // v2.4.66: Send error broadcast so PlayerActivity can show Toast to user
+                    sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
+                        "episodeId" to (lastEpisodeId ?: ""),
+                        "message" to "字幕引擎(Whisper)在上次运行中崩溃(SIGABRT)，已自动重启。如果反复崩溃，请在设置中检查Whisper模型或更换ASR引擎。"
+                    ))
+                    // v2.4.66: Also show a notification for pre-cache tasks (no UI visible)
+                    try {
+                        val notif = NotificationCompat.Builder(this, CHANNEL_ID_ERROR)
+                            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                            .setContentTitle("字幕生成失败")
+                            .setContentText("Whisper引擎崩溃(SIGABRT)，已自动重启")
+                            .setStyle(NotificationCompat.BigTextStyle().bigText("字幕引擎(Whisper)在上次运行中崩溃(SIGABRT)。已自动重启服务并尝试继续。如果反复崩溃，请在设置→离线引擎管理中检查Whisper模型文件，或手动切换到其他ASR引擎。"))
+                            .setAutoCancel(true)
+                            .build()
+                        val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                        notifManager.notify(NOTIFICATION_ID_ERROR, notif)
+                    } catch (e: Exception) {
+                        logToFile("onCreate: failed to show crash notification: ${e.message}")
+                    }
                 }
             }
         } catch (_: Exception) {}
