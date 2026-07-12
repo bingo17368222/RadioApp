@@ -508,11 +508,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         prefs.registerOnSharedPreferenceChangeListener(prefChangeListener)
 
-        // [v2.0.72] Issue 6 Fix: Run PCM patrol after service start (delayed 10s to avoid blocking startup)
-        Handler(Looper.getMainLooper()).postDelayed({
-            writePreCacheLog("patrolPcm: triggering startup PCM patrol")
-            patrolAndRepairPcmFiles()
-        }, 10_000)
+        // [v2.4.61] 不再自动生成5分钟PCM文件，禁用PCM巡逻修复
+        // Handler(Looper.getMainLooper()).postDelayed({
+        //     writePreCacheLog("patrolPcm: triggering startup PCM patrol")
+        //     patrolAndRepairPcmFiles()
+        // }, 10_000)
 
         // [v2.4.13] Subtitle patrol: check every 3 minutes for cached episodes without subtitles
         // Only generates when subtitle service is idle (checked inside patrolSubtitleGeneration)
@@ -718,8 +718,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     callback?.onStateChanged(true)
                                     // 后台下载音频文件
                                     startBackgroundDownload()
-                                    // 尝试触发PCM预解码（当前节目已缓存时）
-                                    startPcmPreDecodeIfNeeded()
+                                    // [v2.4.61] 不再自动生成5分钟PCM文件，手动生成字幕时再生成
+                                    // startPcmPreDecodeIfNeeded()
                                 }
                                 Player.STATE_ENDED -> {
                                     callback?.onStateChanged(false)
@@ -876,7 +876,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (!isPrecaching) {
                 Handler(Looper.getMainLooper()).post { triggerPreCache() }
             }
-            startPcmPreDecodeIfNeeded()
+            // [v2.4.61] 不再自动生成5分钟PCM文件
+            // startPcmPreDecodeIfNeeded()
             return
         }
         downloadActive.set(true)
@@ -946,8 +947,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (!isPrecaching) {
                     Handler(Looper.getMainLooper()).post { triggerPreCache() }
                 }
-                // 尝试触发当前节目的PCM预解码
-                startPcmPreDecodeIfNeeded()
+                // [v2.4.61] 不再自动生成5分钟PCM文件
+                // startPcmPreDecodeIfNeeded()
             } catch (e: Exception) {
                 Log.e(TAG, "Download error: ${e.message}")
                 writeServiceLog("notification", "DELETING file: ${targetFile.absolutePath}, size=${targetFile.length()} (download error)")
@@ -1551,10 +1552,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } catch (e: Exception) {
                     Log.e(TAG, "Pre-cache: failed to save cache_episode_mapping: ${e.message}")
                 }
-                // 下载成功后触发PCM预解码
-                startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
-                // 同时检查当前播放节目的PCM预解码
-                startPcmPreDecodeIfNeeded()
+                // [v2.4.61] 不再自动生成5分钟PCM文件，手动生成字幕时再生成
+                // startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
+                // startPcmPreDecodeIfNeeded()
                 // [Fix] Persist the episode's metadata (date/title) to the episode_info table
                 // now that the background recording has been saved. RadioPlaybackService never
                 // wrote episode_info before, so auto-started subtitle tasks found no date/title.
@@ -1700,6 +1700,37 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             infoFile.delete()
         }
         writePreCacheLog("startPcmPreDecodeIfNeeded: triggering PCM pre-decode from normal cache for ${episode.title}")
+        startPcmPreDecode(episodeId, audioFile, episode.title ?: "unknown")
+    }
+
+    /**
+     * v2.4.61: 手动触发当前节目的5分钟PCM预解码（手动生成字幕时调用）。
+     * 与 startPcmPreDecodeIfNeeded 不同，此方法忽略 enablePreprocessing 开关，
+     * 因为用户明确请求了字幕生成，需要准备PCM数据。
+     */
+    fun requestManualPcmPreDecode() {
+        val episode = currentEpisode ?: run {
+            writePreCacheLog("requestManualPcmPreDecode: no current episode, skipping")
+            return
+        }
+        val episodeId = episode.id
+        if (episodeId.isNullOrBlank()) {
+            writePreCacheLog("requestManualPcmPreDecode: no episode id, skipping")
+            return
+        }
+        val url = currentStreamUrl
+        if (url.isBlank()) {
+            writePreCacheLog("requestManualPcmPreDecode: no stream URL, skipping")
+            return
+        }
+        val fileName = extractCacheFileName(url)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+        val audioFile = File(episodesDir, fileName)
+        if (!audioFile.exists() || audioFile.length() <= 1024) {
+            writePreCacheLog("requestManualPcmPreDecode: audio file not cached yet for ${episode.title} ($fileName), PCM will be generated during subtitle processing")
+            return
+        }
+        writePreCacheLog("requestManualPcmPreDecode: triggering manual PCM pre-decode for ${episode.title}")
         startPcmPreDecode(episodeId, audioFile, episode.title ?: "unknown")
     }
 
@@ -4630,10 +4661,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (currentEpisode == null) return
         try {
             val preCacheList = loadPreCacheList()
+            val savedList = loadEpisodeList()
             val settings = AppSettings.getInstance(this)
             val curId = currentEpisode!!.id
             var nextEpisode: Episode? = null
             var foundCurrent = false
+            // v2.4.62: Search preCacheList first (contains future episodes + cross-day episodes)
             for (ep in preCacheList) {
                 if (!foundCurrent) {
                     if (ep.id == curId) foundCurrent = true
@@ -4644,9 +4677,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     break
                 }
             }
+            // v2.4.62: Fallback to saved episode list (contains ALL episodes for current day, including current).
+            // The preCacheList is built starting from currentEpisodeIndex+1, so the current episode's ID
+            // is NOT in it. When the current episode is not found in preCacheList, we fall back to the
+            // full saved list which DOES contain the current episode, allowing findNextInList to correctly
+            // find the next episode on the same day instead of jumping to cross-day.
             if (nextEpisode == null) {
-                Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list, trying cross-day")
-                writeNotifDetailLog("autoPlayNextEpisode: nextEpisode is null after pre-cache scan, trying cross-day (curId=$curId, preCacheList.size=${preCacheList.size})")
+                writeNotifDetailLog("autoPlayNextEpisode: curId=$curId not found in preCacheList (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
+                nextEpisode = findNextInList(savedList, curId, settings)
+            }
+            // v2.4.62: Anti-loop check
+            if (nextEpisode != null && nextEpisode.id == curId) {
+                writeNotifDetailLog("autoPlayNextEpisode: [ANTI-LOOP] nextEpisode.id == curId ($curId), skipping to cross-day")
+                nextEpisode = null
+            }
+            if (nextEpisode == null) {
+                Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list or saved list, trying cross-day")
+                writeNotifDetailLog("autoPlayNextEpisode: nextEpisode is null after all list scans, trying cross-day (curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size})")
                 writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
                 val crossDayEp = fetchCrossDayEpisode(nextDate = true)
                 if (crossDayEp != null) {

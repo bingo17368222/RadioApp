@@ -119,6 +119,7 @@ class SubtitleGeneratorService : Service() {
         @Volatile var startTime = System.currentTimeMillis()
         @Volatile var lastOutputTime = System.currentTimeMillis()
         @Volatile var lastErrorDetail: String? = null
+        @Volatile var errorReported: Boolean = false  // v2.4.61: prevent double error callbacks
         @Volatile var displayTitle: String = ""  // [v2.4.18] Episode title+date for notification
         val cancelled = AtomicBoolean(false)
 
@@ -424,7 +425,9 @@ class SubtitleGeneratorService : Service() {
             ctx.cancelled.set(true)
         }
         activeTasks.clear()
-        logToFile("cancelAllTasks: all tasks cancelled, globalCancelled=true")
+        // [v2.4.61] Clear busy flag file when cancelling all tasks
+        try { SUBTITLE_BUSY_FLAG.delete() } catch (_: Exception) {}
+        logToFile("cancelAllTasks: all tasks cancelled, globalCancelled=true, busy flag cleared")
         cancelProgressNotification()
     }
 
@@ -534,6 +537,8 @@ class SubtitleGeneratorService : Service() {
                 ctx.lastReportedProgress = progress
             }
             override fun onError(error: String) {
+                if (ctx.errorReported) return  // v2.4.61: prevent double error reporting
+                ctx.errorReported = true
                 callback.onError(error)
                 // [跨进程] 发送错误广播
                 sendSubtitleBroadcast(
@@ -600,10 +605,8 @@ class SubtitleGeneratorService : Service() {
                         "audioDurationMs" to currentAudioDurationMs
                     )
                 )
-                // v2.4.58: Clear busy flag when subtitle generation completes,
-                // not just when all tasks finish. This allows patrol to resume immediately.
-                try { SUBTITLE_BUSY_FLAG.delete() } catch (_: Exception) {}
-                logToFile("onComplete: [v2.4.58] cleared busy flag file for $episodeId")
+                // v2.4.61: Let cleanupTask() handle busy flag clearing when ALL tasks finish.
+                // Early deletion here could incorrectly clear flag if another task is still active.
                 if (!ctx.cancelled.get() && !globalCancelled.get()) {
                     updateProgressNotification(100, "字幕生成完成")
                 }
@@ -678,7 +681,7 @@ class SubtitleGeneratorService : Service() {
                                 val failReason = ctx.lastErrorDetail ?: "Whisper引擎处理失败（无详细错误）"
                                 ctx.log("Whisper subtitle generation FAILED. Reason: $failReason")
                                 logToFile("generateSubtitlesForEpisode: [v2.3.0] Whisper FAILED, reason=$failReason. STRICT mode, NO fallback.")
-                                wrappedCallback.onError("Whisper字幕生成失败：$failReason。请检查模型文件完整性，或在设置中手动切换ASR引擎后重试。")
+                                wrappedCallback.onError("$failReason")
                                 activeTasks.remove(episodeId)
                                 cleanupTask()
                             }
@@ -771,6 +774,8 @@ class SubtitleGeneratorService : Service() {
             Log.w(TAG, "Segment task already running for $episodeId, skipping duplicate")
             return
         }
+        // [v2.4.61] Set busy flag for segment tasks too (cross-process idle detection)
+        try { SUBTITLE_BUSY_FLAG.parentFile?.mkdirs(); SUBTITLE_BUSY_FLAG.createNewFile() } catch (_: Exception) {}
         ctx.log("Starting segment generation, audioUrl=$audioUrl")
 
         // 包装回调，同时更新通知
@@ -790,6 +795,8 @@ class SubtitleGeneratorService : Service() {
                 cleanupTask()
             }
             override fun onError(error: String) {
+                if (ctx.errorReported) return  // v2.4.61: prevent double error reporting
+                ctx.errorReported = true
                 callback.onError(error)
                 // Ensure task is cleaned up on error: cancel ongoing notification immediately
                 cancelProgressNotification()
@@ -846,8 +853,13 @@ class SubtitleGeneratorService : Service() {
                             ctx.log("Using Whisper model for segments: $whisperModel")
                             val success = generateWithWhisper(episodeId, audioUrl, subtitleCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
-                                ctx.log("Whisper segment generation FAILED")
-                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper segments FAILED. NO auto-fallback.")
+                                // v2.4.61: Report error to callback if generateWithWhisper didn't already.
+                                // When whisper is busy, generateWithWhisper sets lastErrorDetail but does NOT
+                                // call callback.onError (to avoid double-reporting), so we do it here.
+                                val failReason = ctx.lastErrorDetail ?: "Whisper分段处理失败（无详细错误）"
+                                ctx.log("Whisper segment generation FAILED. Reason: $failReason")
+                                logToFile("generateSubtitlesForEpisode: [v2.4.61] Whisper segments FAILED, reason=$failReason. NO auto-fallback.")
+                                wrappedCallback.onError("$failReason")
                             }
                         } else {
                             ctx.log("ERROR: Whisper model selected but not found for segments")
@@ -2515,28 +2527,17 @@ class SubtitleGeneratorService : Service() {
         // v2.4.38: Prevent concurrent whisper processing.
         // Log showed two processWhisperInChunks running simultaneously,
         // causing chunk times of 124s instead of 14s.
-        // v2.4.60: Instead of SKIPPING when another whisper is active, cancel the old
-        // task and wait briefly for it to finish, then start the new one.
-        // This fixes the issue where switching episodes causes the new task to be skipped
-        // and no subtitle generation starts for a long time.
+        // v2.4.61: Per user request, DO NOT cancel already running tasks.
+        // If another whisper task is active, report failure and let the caller
+        // decide what to do (patrol will retry later when service is idle).
         if (whisperProcessingActive) {
-            logToFile("generateWithWhisper: [v2.4.60] another whisper processing is active, cancelling old task and waiting")
-            // Cancel all old tasks
-            for (oldCtx in activeTasks.values) {
-                oldCtx.cancelled.set(true)
-            }
-            // Wait up to 10 seconds for the old whisper to finish
-            var waitCount = 0
-            while (whisperProcessingActive && waitCount < 20) {
-                Thread.sleep(500)
-                waitCount++
-            }
-            if (whisperProcessingActive) {
-                logToFile("generateWithWhisper: [v2.4.60] old whisper still active after 10s, forcing start anyway")
-                whisperProcessingActive = false
-            } else {
-                logToFile("generateWithWhisper: [v2.4.60] old whisper finished after ${waitCount * 500}ms, starting new task")
-            }
+            val detail = "字幕引擎(Whisper)正在处理其他任务，请等待当前任务完成后重试。"
+            ctx.lastErrorDetail = detail
+            logToFile("generateWithWhisper: [v2.4.61] another whisper processing is active, NOT cancelling old tasks (user preference)")
+            ctx.log("ERROR: $detail")
+            // Don't call callback.onError() here - the caller will do it with proper wrapping
+            // (avoids double error broadcast)
+            return false
         }
         whisperProcessingActive = true
         logToFile("generateWithWhisper: START [v2.1.2], episodeId=$episodeId, audioUrl=$audioUrl")

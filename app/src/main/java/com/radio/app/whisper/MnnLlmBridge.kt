@@ -178,7 +178,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.60"
+                    val expectedMarker = "MNN_JNI_v2.4.61"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -227,10 +227,9 @@ class MnnLlmBridge {
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.59: Set generation config to fix garbage output ("漏集结漏集结...").
-                // The model needs proper generation parameters. Without set_config,
-                // MNN may use default parameters that cause degenerate output.
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.1}"""
+                // v2.4.61: More deterministic generation config for classification tasks
+                // Lower temperature, higher repetition penalty to avoid degenerate output
+                val genConfig = """{"temperature":0.05,"top_p":0.7,"max_new_tokens":2000,"repetition_penalty":1.2}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
                     mnnLog("init: set_config result=$configOk, config=$genConfig")
@@ -256,9 +255,9 @@ class MnnLlmBridge {
                 Log.e(TAG, "generate: LLM not initialized")
                 return ""
             }
-            // v2.4.57: Do NOT wrap prompt in Kotlin. The C++ .so already wraps it.
-            // v2.4.55 added Kotlin wrapping which caused DOUBLE-WRAPPING with old .so.
-            // Both old and new .so wrap the prompt in chat template internally.
+            // v2.4.61: Pass raw prompt to native code. The C++ layer tries manual ChatML wrapping
+            // first (with Chinese system prompt optimized for Qwen models), then falls back to
+            // raw prompt (MNN applies template from config) if the first attempt produces garbage.
             mnnLog("generate: calling nativeGenerate with raw prompt (len=${prompt.length}), maxTokens=$maxTokens")
             val result = nativeGenerate(llmPtr, prompt, maxTokens)
             mnnLog("generate: response len=${result.length}, first200=${result.take(200)}")
@@ -325,40 +324,47 @@ class MnnLlmBridge {
 
                 val startTime = group.first / 1000
                 val endTime = group.second / 1000
-                val text = if (group.third.length > 300) group.third.substring(0, 300) + "..." else group.third
+                val text = if (group.third.length > 280) group.third.substring(0, 280) else group.third
 
-                // v2.4.31: Simpler prompt, fewer tokens
-                val prompt = "判断以下广播内容是「干货」(新闻/资讯/访谈)还是「水货」(广告/音乐/闲聊)。只回答\"干货\"或\"水货\"。\n${startTime}s-${endTime}s: $text"
+                // v2.4.61: Improved prompt - more direct, ask for single word answer only
+                val prompt = "判断以下广播内容是「干货」还是「水货」。干货=新闻/资讯/有用信息，水货=广告/音乐/闲聊废话。只回答干货或水货，不要其他内容。\n内容(${startTime}s-${endTime}s): $text"
 
-                val response = generate(prompt, 50)
+                val response = generate(prompt, 50).trim()
                 // v2.4.40: Log full response for debugging MNN classification
-                Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} response='${response.take(50)}' textLen=${text.length}")
+                Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} response='${response.take(80)}' textLen=${text.length}")
                 // v2.4.41: Also write to file log
                 try {
                     classifyLog?.write("[${System.currentTimeMillis()}] seg ${idx+1}/${groups.size}: textLen=${text.length}, text='${text.take(80)}', response='${response.take(80)}'\n")
                     classifyLog?.flush()
                 } catch (_: Exception) {}
                 if (response.isNotBlank()) {
-                    val isDry = response.contains("干货")
-                    val isWater = response.contains("水货")
-                    // v2.4.58: Removed keyword-based fallback when MNN output is garbage.
-                    // User requirement: "不选择时不跳转此方案，保留mnn方案原始分段结果"
-                    // When "就AI听" is NOT selected, keep MNN's raw output (even if garbage).
-                    // The abnormal detection in PlayerActivity (mergedSegments.size==1) will catch it.
+                    // v2.4.61: Clean response - remove punctuation/whitespace around keywords
+                    val cleanedResponse = response.replace(Regex("[\\s\\p{Punct}]"), "")
+                    val isDry = cleanedResponse.contains("干货")
+                    val isWater = cleanedResponse.contains("水货")
+                    // Garbage detection: very few unique chars in longer responses = repetitive garbage
                     val uniqueChars = response.take(50).toSet().size
-                    val isGarbage = uniqueChars <= 5 && response.length > 10
+                    val isGarbage = uniqueChars <= 4 && response.length > 10
+                    // v2.4.61: If both keywords appear (unlikely), prioritize based on position (first match wins)
                     val finalIsDry = when {
                         isGarbage -> {
-                            // v2.4.58: DO NOT fall back to keyword-based classification.
-                            // Keep MNN's raw output. If garbage has neither keyword, default to 干货.
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars), keeping MNN raw output (no keyword fallback), response=${response.take(60)}")
-                            true  // Keep as 干货 (MNN raw output preserved)
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars, len=${response.length}), defaulting to 干货, response=${response.take(60)}")
+                            true
                         }
-                        !isDry && !isWater -> {
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword in response, keeping MNN raw output, response=${response.take(60)}")
-                            true  // Default to 干货
+                        isDry && isWater -> {
+                            // Both keywords present - use first occurrence
+                            val dryPos = cleanedResponse.indexOf("干货")
+                            val waterPos = cleanedResponse.indexOf("水货")
+                            val firstIsDry = dryPos >= 0 && (waterPos < 0 || dryPos < waterPos)
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} both keywords, first=${if (firstIsDry) "干货" else "水货"}, response=${response.take(60)}")
+                            firstIsDry
                         }
-                        else -> isDry
+                        isWater -> false
+                        isDry -> true
+                        else -> {
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword in response, defaulting to 干货, response=${response.take(60)}")
+                            true
+                        }
                     }
                     allResults.add(MnnSegmentResult(
                         start = group.first,

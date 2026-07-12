@@ -2,6 +2,8 @@ package com.radio.app.activities
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -1399,11 +1401,21 @@ class PlayerActivity : AppCompatActivity() {
 
     // [功能2] 长按字幕弹出对话框，将字幕文本提取为干货/水货关键词。
     // 关键词保存到 SharedPreferences "keyword_prefs"（键名 dry_keywords / water_keywords，逗号分隔）。
+    // v2.4.61: 长按弹出菜单时自动复制字幕内容到剪贴板。
     private fun showSubtitleKeywordDialog(transcript: Transcript) {
         val text = transcript.text?.trim()
         if (text.isNullOrEmpty()) {
             Toast.makeText(this, "字幕内容为空", Toast.LENGTH_SHORT).show()
             return
+        }
+        // v2.4.61: 复制字幕内容到剪贴板
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("字幕内容", text)
+            clipboard.setPrimaryClip(clip)
+            Toast.makeText(this, "已复制字幕内容到剪贴板", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "Failed to copy to clipboard", e)
         }
         val options = arrayOf("提取为干货关键词", "提取为水货关键词", "添加水货分段组合")
         androidx.appcompat.app.AlertDialog.Builder(this)
@@ -1653,6 +1665,12 @@ class PlayerActivity : AppCompatActivity() {
             // If generation fails or produces 0 subtitles, old subtitles are preserved.
             // Subtitles are replaced only when new ones are successfully generated (in onComplete).
             writeEpisodeLog("btnGenerateSubtitle: starting generation for ${episode.id} (old subtitles preserved until new ones complete)")
+            // v2.4.61: 手动生成字幕时，手动触发5分钟PCM预解码（不再自动生成）
+            try {
+                playbackService?.requestManualPcmPreDecode()
+            } catch (e: Exception) {
+                android.util.Log.w("PlayerActivity", "Failed to trigger manual PCM pre-decode: ${e.message}")
+            }
             startAiProcessing("subtitle")
             bindSubtitleService(episode, "subtitle")
         }
@@ -3081,18 +3099,21 @@ class PlayerActivity : AppCompatActivity() {
             val transcripts = dbHelper.getTranscripts(episodeId)
             if (transcripts.size < 3) return emptyList()
 
-            // [v2.4.25] Refined keywords — removed common words that match everything
-            // Dry keywords: specific content indicators (news, analysis, data, interview)
-            val dryKeywords = listOf("新闻", "资讯", "报道", "访谈", "评论", "分析", "数据", "调查",
+            // [v2.4.25] Default keywords for content-based classification
+            // v2.4.61: Merge with user-customized keywords from AppSettings (就AI听 scheme)
+            val defaultDryKeywords = listOf("新闻", "资讯", "报道", "访谈", "评论", "分析", "数据", "调查",
                 "采访", "记者", "专家", "研究", "政策", "经济", "社会", "科技", "教育", "健康",
                 "事故", "事件", "天气", "路况", "交通", "市场", "价格")
-            // Water keywords: broadcast filler, ads, music, station ID, greetings
-            val waterKeywords = listOf("广告", "音乐", "歌曲", "休息", "片头", "片尾", "赞助",
+            val defaultWaterKeywords = listOf("广告", "音乐", "歌曲", "休息", "片头", "片尾", "赞助",
                 "微信", "公众号", "下载", "关注", "扫码", "二维码", "推广",
                 "欢迎收听", "感谢收听", "这里是", "您正在收听", "广播电台",
                 "接下来", "稍后", "马上回来", "不要走开",
                 "早安", "晚安", "再见", "拜拜",
                 "片花", "预告", "下周", "明天同一时间")
+            // v2.4.61: Merge defaults with user-customized keywords (deduped, user keywords take priority)
+            val settings = AppSettings.getInstance(this)
+            val dryKeywords = (defaultDryKeywords + settings.getDryKeywords()).distinct()
+            val waterKeywords = (defaultWaterKeywords + settings.getWaterKeywords()).distinct()
 
             // Group transcripts into segments (every ~3-5 minutes of content)
             val segmentDurationMs = 3 * 60 * 1000L  // 3 minutes per segment

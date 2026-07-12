@@ -109,7 +109,7 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
     // v2.4.46: Compile-time version marker
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.60 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.61 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -275,47 +275,85 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     std::string rawPrompt(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // v2.4.60: MNN's response() applies the chat template from llm.mnn.json automatically.
-    // Previous versions wrapped the prompt manually, which caused double-wrapping and
-    // garbage output ("漏集结漏集结..."). Now we pass the raw prompt and let MNN handle it.
-    // If MNN doesn't have a chat template in llm.mnn.json, we fall back to manual wrapping.
-    //
-    // Try raw prompt first (MNN applies chat template from config)
-    std::string promptCpp = rawPrompt;
-
-    mnn_logf("nativeGenerate: prompt length=%zu (raw, MNN applies template), maxTokens=%d, first 100 chars: %.100s",
-             promptCpp.size(), maxTokens, promptCpp.c_str());
-
-    std::ostringstream oss;
+    // v2.4.61: Try raw prompt first (MNN applies chat template from llm.mnn.json config).
+    // If that produces garbage or no valid answer, fall back to manual ChatML wrapping with
+    // a Chinese system prompt optimized for Qwen models.
+    // Qwen1.5 models expect ChatML format; MNN's response() should apply it automatically
+    // based on the config, but we have a manual wrapping fallback for reliability.
     int max_new = (maxTokens > 0) ? (int)maxTokens : -1;
-    g_response(llm, promptCpp, &oss, "<|im_end|>", max_new);
 
-    std::string result = oss.str();
-    mnn_logf("nativeGenerate: response length=%zu, first 200 chars: %.200s", result.size(), result.c_str());
-
-    // v2.4.60: If response is garbage (repeated chars), retry with manual chat template wrapping
+    // Helper: check if response looks like garbage (repeated/meaningless chars)
     auto checkGarbage = [](const std::string& s) -> bool {
-        if (s.length() < 10) return false;
+        if (s.length() < 2) return true;  // Empty or too short is useless
+        if (s.length() < 10) return false;  // Short responses like "干货" are OK
+        // Check unique character count in first 50 chars
         std::set<char> uniqueChars(s.begin(), s.begin() + std::min((size_t)50, s.length()));
-        return uniqueChars.size() <= 5;
+        if (uniqueChars.size() <= 4) return true;  // Very few unique chars = repetitive garbage
+        // Check for repeating patterns (same 2-char sequence repeating)
+        if (s.length() >= 20) {
+            std::string p2 = s.substr(0, 2);
+            int repetitions = 0;
+            for (size_t i = 0; i + 2 <= s.length() && i < 100; i += 2) {
+                if (s.substr(i, 2) == p2) repetitions++;
+            }
+            if (repetitions > 5) return true;
+        }
+        return false;
     };
 
-    if (checkGarbage(result) && !rawPrompt.empty()) {
-        mnn_logf("nativeGenerate: GARBAGE detected, retrying with manual chat template wrapping");
-        // Fall back to manual wrapping
-        std::string wrappedPrompt = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+    // Helper: trim whitespace and clean response
+    auto cleanResponse = [](std::string s) -> std::string {
+        // Trim leading/trailing whitespace
+        size_t start = s.find_first_not_of(" \t\n\r");
+        if (start == std::string::npos) return "";
+        size_t end = s.find_last_not_of(" \t\n\r");
+        s = s.substr(start, end - start + 1);
+        // Truncate at stop token if present
+        size_t stopPos = s.find("<|im_end|>");
+        if (stopPos != std::string::npos) s = s.substr(0, stopPos);
+        // Trim again after stop token removal
+        start = s.find_first_not_of(" \t\n\r");
+        if (start == std::string::npos) return "";
+        end = s.find_last_not_of(" \t\n\r");
+        return s.substr(start, end - start + 1);
+    };
+
+    // Helper: check if response contains expected answer keywords
+    auto hasValidAnswer = [](const std::string& s) -> bool {
+        return s.find("干货") != std::string::npos || s.find("水货") != std::string::npos;
+    };
+
+    // Attempt 1: Raw prompt (MNN applies chat template from config - primary path)
+    mnn_logf("nativeGenerate: [v2.4.61] ATTEMPT 1/2: RAW prompt (MNN applies template), len=%zu, first100=%.100s",
+             rawPrompt.size(), rawPrompt.c_str());
+    std::ostringstream oss1;
+    g_response(llm, rawPrompt, &oss1, "<|im_end|>", max_new);
+    std::string result = cleanResponse(oss1.str());
+    mnn_logf("nativeGenerate: attempt 1 result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+             result.size(), checkGarbage(result), hasValidAnswer(result), result.c_str());
+
+    // If first attempt is garbage or has no valid answer, try manual ChatML wrapping
+    if (checkGarbage(result) || !hasValidAnswer(result)) {
+        mnn_logf("nativeGenerate: [v2.4.61] ATTEMPT 2/2: MANUAL ChatML wrapping (Chinese system prompt)");
+        std::string wrappedPrompt = "<|im_start|>system\n你是一个专业的广播内容分析助手。请严格按照要求回答，只输出\"干货\"或\"水货\"。<|im_end|>\n<|im_start|>user\n"
                                     + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
         std::ostringstream oss2;
         g_response(llm, wrappedPrompt, &oss2, "<|im_end|>", max_new);
-        std::string result2 = oss2.str();
-        mnn_logf("nativeGenerate: retry response length=%zu, first 200 chars: %.200s", result2.size(), result2.c_str());
-        // Use retry result if it's better
-        if (!checkGarbage(result2)) {
-            return env->NewStringUTF(result2.c_str());
+        std::string result2 = cleanResponse(oss2.str());
+        mnn_logf("nativeGenerate: attempt 2 result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+                 result2.size(), checkGarbage(result2), hasValidAnswer(result2), result2.c_str());
+        // Use result2 if it's better (not garbage AND has valid answer, OR result1 was garbage)
+        if (!checkGarbage(result2) && (hasValidAnswer(result2) || checkGarbage(result))) {
+            mnn_logf("nativeGenerate: using attempt 2 result (better quality)");
+            result = result2;
+        } else {
+            mnn_logf("nativeGenerate: keeping attempt 1 result (attempt 2 not better)");
         }
-        // Both garbage - return original
+    } else {
+        mnn_logf("nativeGenerate: attempt 1 succeeded on first try");
     }
 
+    mnn_logf("nativeGenerate: final result len=%zu, first200=%.200s", result.size(), result.c_str());
     return env->NewStringUTF(result.c_str());
 }
 
@@ -324,7 +362,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
 // Kotlin compares it against the expected marker and force-kills the process if mismatched.
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.60");
+    return env->NewStringUTF("MNN_JNI_v2.4.61");
 }
 
 // v2.4.53: Check if response is garbage (repeated characters)
