@@ -65,6 +65,7 @@ typedef void (*DestroyFunc)(MNN::Transformer::Llm*);
 typedef bool (*LoadFunc)(MNN::Transformer::Llm*);
 typedef bool (*SetConfigFunc)(MNN::Transformer::Llm*, const std::string&);
 typedef void (*ResponseStrFunc)(MNN::Transformer::Llm*, const std::string&, std::ostream*, const char*, int);
+typedef void (*ResetFunc)(MNN::Transformer::Llm*);  // v2.4.69: Llm::reset() - clears KV cache and position_id
 
 // Keep handles to all loaded libraries so they stay resident
 static void* g_libMNN = nullptr;
@@ -81,6 +82,7 @@ static DestroyFunc g_destroy = nullptr;
 static LoadFunc g_load = nullptr;
 static SetConfigFunc g_set_config = nullptr;
 static ResponseStrFunc g_response = nullptr;
+static ResetFunc g_reset = nullptr;  // v2.4.69: Llm::reset()
 
 // Helper: dlopen from a specific directory with full path
 static void* dlopen_from_dir(const char* dir, const char* libname) {
@@ -209,13 +211,23 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
         "_ZN3MNN11Transformer3Llm10set_configERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE");
     g_response = (ResponseStrFunc)dlsym(g_libllm,
         "_ZN3MNN11Transformer3Llm8responseERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEPNS2_13basic_ostreamIcS5_EEPKci");
+    // v2.4.69: Resolve Llm::reset() - critical for clearing KV cache and position_id between calls.
+    // Without reset(), position_id accumulates across calls causing RoPE position embedding
+    // corruption, which leads to garbage output (e.g. "集结漏", "慰慰慰").
+    g_reset = (ResetFunc)dlsym(g_libllm,
+        "_ZN3MNN11Transformer3Llm5resetEv");
 
-    mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p",
-             g_createLLM, g_destroy, g_load, g_set_config, g_response);
+    mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p reset=%p",
+             g_createLLM, g_destroy, g_load, g_set_config, g_response, g_reset);
 
     if (!g_createLLM || !g_destroy || !g_load || !g_response) {
         mnn_log("nativeInit: FAILED - one or more symbols not found");
         return JNI_FALSE;
+    }
+    if (!g_reset) {
+        mnn_log("nativeInit: WARNING - reset() symbol NOT found! Position_id will accumulate across calls causing garbage output");
+    } else {
+        mnn_log("nativeInit: reset() symbol resolved OK - will call before each response()");
     }
 
     mnn_log("nativeInit: all symbols resolved OK");
@@ -324,8 +336,15 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     };
 
     // Attempt 1: Raw prompt (MNN applies chat template from config - primary path)
-    mnn_logf("nativeGenerate: [v2.4.61] ATTEMPT 1/2: RAW prompt (MNN applies template), len=%zu, first100=%.100s",
+    mnn_logf("nativeGenerate: [v2.4.69] ATTEMPT 1/2: RAW prompt (MNN applies template), len=%zu, first100=%.100s",
              rawPrompt.size(), rawPrompt.c_str());
+    // v2.4.69: CRITICAL FIX - Call reset() before each response() to clear KV cache and
+    // reset position_id to 0. Without this, position_id accumulates across calls,
+    // causing RoPE position embedding corruption → garbage output ("集结漏", "慰慰慰").
+    if (g_reset) {
+        g_reset(llm);
+        mnn_logf("nativeGenerate: [v2.4.69] reset() called before attempt 1 (KV cache cleared, position_id reset to 0)");
+    }
     std::ostringstream oss1;
     g_response(llm, rawPrompt, &oss1, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss1.str());
@@ -334,9 +353,14 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
 
     // If first attempt is garbage or has no valid answer, try manual ChatML wrapping
     if (checkGarbage(result) || !hasValidAnswer(result)) {
-        mnn_logf("nativeGenerate: [v2.4.61] ATTEMPT 2/2: MANUAL ChatML wrapping (Chinese system prompt)");
+        mnn_logf("nativeGenerate: [v2.4.69] ATTEMPT 2/2: MANUAL ChatML wrapping (Chinese system prompt)");
         std::string wrappedPrompt = "<|im_start|>system\n你是一个专业的广播内容分析助手。请严格按照要求回答，只输出\"干货\"或\"水货\"。<|im_end|>\n<|im_start|>user\n"
                                     + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
+        // v2.4.69: reset() before attempt 2 as well - clear KV cache from attempt 1
+        if (g_reset) {
+            g_reset(llm);
+            mnn_logf("nativeGenerate: [v2.4.69] reset() called before attempt 2 (KV cache cleared, position_id reset to 0)");
+        }
         std::ostringstream oss2;
         g_response(llm, wrappedPrompt, &oss2, "<|im_end|>", max_new);
         std::string result2 = cleanResponse(oss2.str());
@@ -357,12 +381,25 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     return env->NewStringUTF(result.c_str());
 }
 
+// v2.4.69: Reset LLM session - clears KV cache and resets position_id to 0.
+// Must be called before each response() to prevent position_id accumulation.
+JNIEXPORT void JNICALL
+Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, jlong ptr) {
+    if (!g_reset || ptr == 0) {
+        mnn_logf("nativeReset: g_reset=%p ptr=%lld (reset not available or invalid ptr)", g_reset, (long long)ptr);
+        return;
+    }
+    auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
+    g_reset(llm);
+    mnn_log("nativeReset: LLM session reset (KV cache cleared, position_id reset to 0)");
+}
+
 // v2.4.58: Return the compile marker string so Kotlin can verify the correct .so is loaded.
 // If the :subtitle process kept an old .so in memory, this returns the OLD marker.
 // Kotlin compares it against the expected marker and force-kills the process if mismatched.
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.61");
+    return env->NewStringUTF("MNN_JNI_v2.4.69");
 }
 
 // v2.4.53: Check if response is garbage (repeated characters)

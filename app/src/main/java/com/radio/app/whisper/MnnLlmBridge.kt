@@ -37,6 +37,8 @@ class MnnLlmBridge {
         @JvmStatic
         private external fun nativeGenerate(ptr: Long, prompt: String, maxTokens: Int): String
         @JvmStatic
+        private external fun nativeReset(ptr: Long)  // v2.4.69: Reset KV cache and position_id
+        @JvmStatic
         private external fun nativeFree(ptr: Long)
         @JvmStatic
         private external fun nativeSetConfig(ptr: Long, configJson: String): Boolean
@@ -178,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.61"
+                    val expectedMarker = "MNN_JNI_v2.4.69"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -257,9 +259,17 @@ class MnnLlmBridge {
                 Log.e(TAG, "generate: LLM not initialized")
                 return ""
             }
-            // v2.4.61: Pass raw prompt to native code. The C++ layer tries manual ChatML wrapping
-            // first (with Chinese system prompt optimized for Qwen models), then falls back to
-            // raw prompt (MNN applies template from config) if the first attempt produces garbage.
+            // v2.4.69: CRITICAL FIX - Call reset() before each generate to clear KV cache
+            // and reset position_id to 0. Without this, position_id accumulates across calls,
+            // causing RoPE position embedding corruption → garbage output ("集结漏", "慰慰慰").
+            // The reset() is also called inside nativeGenerate before each response() attempt,
+            // but calling it here too ensures the Kotlin-level caller has a clean session.
+            try {
+                nativeReset(llmPtr)
+                mnnLog("generate: [v2.4.69] reset() called (KV cache cleared, position_id=0)")
+            } catch (e: Exception) {
+                mnnLog("generate: [v2.4.69] nativeReset failed: ${e.message}")
+            }
             mnnLog("generate: calling nativeGenerate with raw prompt (len=${prompt.length}), maxTokens=$maxTokens")
             val result = nativeGenerate(llmPtr, prompt, maxTokens)
             mnnLog("generate: response len=${result.length}, first200=${result.take(200)}")
