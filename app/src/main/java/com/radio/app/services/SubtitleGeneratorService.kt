@@ -72,6 +72,7 @@ class SubtitleGeneratorService : Service() {
     // [v2.0.66] Issue 6 Fix: Track current model name for display in UI
     @Volatile
     private var currentModelName: String = ""
+    private var lastEpisodeIdForCrashTracking: String? = null  // v2.4.68: Track episode for crash loop detection
 
     // [v2.4.31] Track total processing time and audio duration for speed ratio display.
     // Set by processWhisperInChunks right before onComplete; read by the wrapped
@@ -230,8 +231,10 @@ class SubtitleGeneratorService : Service() {
                     // Just log the crash and let the user continue using Whisper
                     val settings = AppSettings.getInstance(this)
                     settings.whisperCrashCount = settings.whisperCrashCount + 1
+                    // v2.4.68: Save the episode ID that caused the crash, so we can detect repeated crashes for the same episode
+                    settings.putString("last_crash_episode_id", lastEpisodeIdForCrashTracking ?: "")
                     settings.save(this)
-                    logToFile("[v2.3.1] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount})")
+                    logToFile("[v2.3.1] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount}, episode=${settings.getString("last_crash_episode_id", "")})")
                     // [v2.3.1] Per user requirement: NO auto-switching to other models on failure.
                     // Previously we auto-switched to Vosk after 2 Whisper crashes, but the user
                     // explicitly requested that subtitle generation failure should NOT trigger
@@ -679,12 +682,29 @@ class SubtitleGeneratorService : Service() {
                     asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
                         // [v2.3.1] STRICT mode per user requirement: NO auto-switching to Vosk
                         // even after Whisper crashes. Always use Whisper when user selected Whisper.
-                        // Reset crash count since we're attempting Whisper again.
-                        if (settings.whisperCrashCount > 0) {
+                        // v2.4.68: Don't reset crash count if this is the SAME episode that crashed.
+                        // Previously, crash count was reset every time, causing infinite crash loops.
+                        // Now we only reset when starting a DIFFERENT episode.
+                        val lastCrashEpisode = settings.getString("last_crash_episode_id", "")
+                        if (settings.whisperCrashCount > 0 && lastCrashEpisode == episodeId) {
+                            // Same episode crashing again - DON'T reset, let count accumulate
+                            logToFile("generateSubtitlesForEpisode: [v2.4.68] SAME episode crash ($episodeId, count=${settings.whisperCrashCount}), NOT resetting crash count")
+                            if (settings.whisperCrashCount >= 3) {
+                                val errorMsg = "字幕引擎(Whisper)连续崩溃${settings.whisperCrashCount}次（episode=$episodeId），已达到最大重试次数。该音频可能在特定位置导致Whisper原生库崩溃。请尝试手动生成5分钟片段字幕，或更换ASR引擎。"
+                                logToFile("generateSubtitlesForEpisode: [v2.4.68] CRASH LIMIT REACHED: $errorMsg")
+                                settings.whisperCrashCount = 0
+                                settings.putString("last_crash_episode_id", "")
+                                settings.save(this)
+                                callback.onError(errorMsg)
+                                return
+                            }
+                        } else if (settings.whisperCrashCount > 0) {
+                            // Different episode - safe to reset
                             settings.whisperCrashCount = 0
                             settings.forceVoskUntil = 0
+                            settings.putString("last_crash_episode_id", "")
                             settings.save(this)
-                            logToFile("generateSubtitlesForEpisode: [v2.3.1] resetting crash count, attempting Whisper as selected by user")
+                            logToFile("generateSubtitlesForEpisode: [v2.3.1] resetting crash count (different episode), attempting Whisper as selected by user")
                         }
                         logToFile("generateSubtitlesForEpisode: entering Whisper branch (strict - no auto-fallback)")
                         val whisperModel = findWhisperModel()
@@ -2669,32 +2689,35 @@ class SubtitleGeneratorService : Service() {
                         // [v2.4.18] Read PCM length BEFORE deleting
                         val pcmFileBytes = fullPcmFile.length()
                         val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
-                        // v2.4.67: Check PCM size — if too small (< 1 min of audio), skip subtitle generation
-                        if (pcmDurationSec < 60) {
-                            val errorMsg = "完整PCM太小 (${sizeMB}MB, ${pcmDurationSec}s < 60s)，可能音频文件不完整或解码失败。跳过字幕生成。"
-                            logToFile("generateWithWhisper: [v2.4.67] WARNING: $errorMsg")
-                            ctx.log(errorMsg)
-                            callback.onError(errorMsg)
-                            return false
-                        }
-                        logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
-                        ctx.log("完整PCM缓存 (${sizeMB}MB)")
-                        val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.20] pass resumeFromSample, [v2.4.63] pass prev timing
-                        // [v2.4.14] Only delete full PCM on success; keep for resume on failure
-                        if (result) {
-                            // [v2.4.18] Compute stats BEFORE deleting file
-                            val totalTimeMs = System.currentTimeMillis() - statsStartTime
-                            val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
-                            logToFile("generateWithWhisper: [v2.4.18] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=0ms (cached), whisperTime=${totalTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
+                        // v2.4.68: Check PCM size — if too small (< 20 min of audio), delete and regenerate.
+                        // User requirement: PCM < 20 minutes is considered abnormal. Regenerate from source.
+                        if (pcmDurationSec < 1200) {
+                            logToFile("generateWithWhisper: [v2.4.68] cached PCM too small (${sizeMB}MB, ${pcmDurationSec}s < 1200s), deleting and re-decoding from source")
+                            ctx.log("PCM缓存太小(${pcmDurationSec}s)，重新解码音频...")
                             fullPcmFile.delete()
-                            // [v2.4.16] Fix: Also delete corresponding info file
                             val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                             if (fullInfoFile.exists()) fullInfoFile.delete()
-                            logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
+                            // Fall through to re-decode below
                         } else {
-                            logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
+                            logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
+                            ctx.log("完整PCM缓存 (${sizeMB}MB)")
+                            val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.20] pass resumeFromSample, [v2.4.63] pass prev timing
+                            // [v2.4.14] Only delete full PCM on success; keep for resume on failure
+                            if (result) {
+                                // [v2.4.18] Compute stats BEFORE deleting file
+                                val totalTimeMs = System.currentTimeMillis() - statsStartTime
+                                val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
+                                logToFile("generateWithWhisper: [v2.4.18] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=0ms (cached), whisperTime=${totalTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
+                                fullPcmFile.delete()
+                                // [v2.4.16] Fix: Also delete corresponding info file
+                                val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
+                                if (fullInfoFile.exists()) fullInfoFile.delete()
+                                logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
+                            } else {
+                                logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
+                            }
+                            return result
                         }
-                        return result
                     }
 
                     // Need to generate full PCM from cached audio file
@@ -2721,10 +2744,11 @@ class SubtitleGeneratorService : Service() {
                             // [v2.4.18] Read PCM length BEFORE deleting
                             val pcmFileBytes = fullPcmFile.length()
                             val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
-                            // v2.4.67: Check PCM size — if too small (< 1 min of audio), skip subtitle generation
-                            if (pcmDurationSec < 60) {
-                                val errorMsg = "解码后PCM太小 (${sizeMB}MB, ${pcmDurationSec}s < 60s)，可能音频文件不完整。跳过字幕生成。"
-                                logToFile("generateWithWhisper: [v2.4.67] WARNING: $errorMsg")
+                            // v2.4.68: Check PCM size — if too small (< 20 min of audio), skip subtitle generation.
+                            // User requirement: PCM < 20 minutes is considered abnormal.
+                            if (pcmDurationSec < 1200) {
+                                val errorMsg = "解码后PCM太小 (${sizeMB}MB, ${pcmDurationSec}s < 1200s/20min)，可能音频文件不完整。跳过字幕生成。"
+                                logToFile("generateWithWhisper: [v2.4.68] WARNING: $errorMsg")
                                 ctx.log(errorMsg)
                                 callback.onError(errorMsg)
                                 return false
@@ -2833,6 +2857,7 @@ class SubtitleGeneratorService : Service() {
         // [v2.0.66] Issue 6: Set model name for broadcast
         // [v2.4.2] Use friendly name instead of raw filename
         currentModelName = getFriendlyModelName(modelPath)
+        lastEpisodeIdForCrashTracking = episodeId  // v2.4.68: Track for crash loop detection
         // [v2.4.31] Record the start time of Whisper processing to compute total processing
         // time (总耗时) and the speed ratio (倍率 = audio_duration / processing_time) for display.
         val processingStartTime = System.currentTimeMillis()
@@ -3446,6 +3471,17 @@ class SubtitleGeneratorService : Service() {
             val format = extractor.getTrackFormat(audioTrack)
             extractor.selectTrack(audioTrack)
             val mime = format.getString(MediaFormat.KEY_MIME)!!
+            // v2.4.68: Log source track duration for PCM size comparison
+            var sourceDurationUs = 0L
+            try {
+                if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    sourceDurationUs = format.getLong(MediaFormat.KEY_DURATION)
+                    val sourceDurationSec = sourceDurationUs / 1000000
+                    logToFile("decodeFullAudioToPcm: [v2.4.68] source track duration=${sourceDurationSec}s (${sourceDurationUs}us)")
+                }
+            } catch (e: Exception) {
+                logToFile("decodeFullAudioToPcm: [v2.4.68] failed to read KEY_DURATION: ${e.message}")
+            }
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
@@ -3552,6 +3588,16 @@ class SubtitleGeneratorService : Service() {
             val sizeMB = pcmFile.length() / 1024 / 1024
             val durationSec = pcmFile.length() / 2 / outSampleRate
             logToFile("decodeFullAudioToPcm: [v2.4.10] DONE, output=${sizeMB}MB (${durationSec}s), took ${System.currentTimeMillis()-decodeStartTime}ms")
+            // v2.4.68: Compare PCM duration to source duration. If PCM is much shorter (<80%),
+            // the decoder may have stopped early. Log a warning.
+            if (sourceDurationUs > 0) {
+                val sourceDurationSec = sourceDurationUs / 1000000
+                val ratio = durationSec.toDouble() / sourceDurationSec.toDouble()
+                logToFile("decodeFullAudioToPcm: [v2.4.68] duration check: PCM=${durationSec}s, source=${sourceDurationSec}s, ratio=${String.format("%.2f", ratio)}")
+                if (ratio < 0.8) {
+                    logToFile("decodeFullAudioToPcm: [v2.4.68] WARNING: PCM is only ${String.format("%.0f%%", ratio*100)} of source duration! Decoder may have stopped early.")
+                }
+            }
             return pcmFile.exists() && pcmFile.length() > 1024 * 100
 
         } catch (e: Exception) {
