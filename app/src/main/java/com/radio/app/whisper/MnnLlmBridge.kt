@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.70"
+                    val expectedMarker = "MNN_JNI_v2.4.71"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -229,25 +229,25 @@ class MnnLlmBridge {
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.70: CRITICAL FIX - Inject jinja.chat_template via set_config.
-                // ROOT CAUSE of multi-language garbage output:
-                //   The model's llm_config.json has "prompt_template" (old %s format), but
-                //   MNN's setChatTemplate() ONLY reads "jinja.chat_template" (Jinja2 format).
-                //   Without a chat_template, MNN passes the raw prompt text directly to the
-                //   model WITHOUT ChatML formatting (<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n).
-                //   The Qwen2 model trained with ChatML can't understand raw text → outputs garbage
-                //   tokens from multiple languages (Russian и/сегодня, Japanese は, English import, etc.).
+                // v2.4.71: CRITICAL FIX - Set use_template=false + manual ChatML formatting in JNI.
+                // ROOT CAUSE of persistent garbage output ("慰慰慰"):
+                //   v2.4.70 injected jinja.chat_template via set_config, but MNN's
+                //   response(string) → apply_chat_template(string, system_prompt) → tokenizer's
+                //   apply_chat_template(string) does NOT properly render the Jinja2 template for
+                //   string inputs. The Jinja2 template expects a `messages` array (from ChatMessages),
+                //   but the string overload can't construct it correctly → template renders empty →
+                //   response(string) falls back to raw text (no ChatML) → Qwen2 outputs garbage.
                 //
-                // FIX: Set jinja.chat_template to the correct Qwen2 ChatML Jinja2 template.
-                //   set_config() merges this into the config, then calls setChatTemplate(),
-                //   which finds jinja.chat_template and calls mTokenizer->set_chat_template().
-                //   Now response(string) → apply_chat_template() → correct ChatML formatting.
-                val chatTemplate = "{% for message in messages %}{{ '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}{% endfor %}{{ '<|im_start|>assistant\\n' }}"
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.3,"jinja":{"chat_template":"$chatTemplate"}}"""
+                // FIX: Set use_template=false so MNN's response(string) does NOT try to apply any
+                //   template. Instead, we manually format the prompt as full ChatML in the JNI code
+                //   (mnn_llm_jni.cpp nativeGenerate). With use_template=false, response(string)
+                //   passes the raw (but already ChatML-formatted) text directly to the tokenizer,
+                //   which correctly tokenizes the ChatML special tokens (<|im_start|>, <|im_end|>).
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.3,"use_template":false}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.70] set_config result=$configOk, injected jinja.chat_template for ChatML")
-                    mnnLog("init: [v2.4.70] genConfig=$genConfig")
+                    mnnLog("init: [v2.4.71] set_config result=$configOk, use_template=false (manual ChatML in JNI)")
+                    mnnLog("init: [v2.4.71] genConfig=$genConfig")
                 } catch (e: Exception) {
                     mnnLog("init: set_config FAILED: ${e.message}")
                 }

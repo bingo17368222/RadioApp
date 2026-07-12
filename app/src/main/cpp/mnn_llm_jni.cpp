@@ -111,7 +111,7 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
     // v2.4.46: Compile-time version marker
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.61 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.71 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -335,19 +335,31 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
         return s.find("干货") != std::string::npos || s.find("水货") != std::string::npos;
     };
 
-    // v2.4.70: With jinja.chat_template now injected via set_config(), MNN's response(string)
-    // will properly apply ChatML formatting. No need for manual wrapping (Attempt 2).
-    // Attempt 2 (manual ChatML) would cause DOUBLE wrapping since response(string) applies
-    // the Jinja2 template internally, which would wrap the already-wrapped prompt again.
-    mnn_logf("nativeGenerate: [v2.4.70] response with ChatML template (injected via set_config), prompt len=%zu, first100=%.100s",
-             rawPrompt.size(), rawPrompt.c_str());
+    // v2.4.71: Manual ChatML formatting + use_template=false.
+    // ROOT CAUSE of persistent garbage ("慰慰慰"): MNN's response(string) with jinja.chat_template
+    // still fails because apply_chat_template(string, system_prompt) doesn't properly render the
+    // Jinja2 template for string inputs (template expects a `messages` array from ChatMessages).
+    // When the Jinja2 rendering returns empty, response(string) falls back to raw text (no ChatML),
+    // and Qwen2 outputs garbage.
+    //
+    // FIX: Set use_template=false via set_config (done in Kotlin init), then manually format the
+    // prompt as full ChatML here. With use_template=false, response(string) skips template
+    // application and passes the raw (but ChatML-formatted) text directly to the tokenizer.
+    // The tokenizer correctly tokenizes ChatML special tokens (<|im_start|>, <|im_end|>).
+    std::string chatmlPrompt =
+        "<|im_start|>system\n你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。<|im_end|>\n"
+        "<|im_start|>user\n" + rawPrompt + "<|im_end|>\n"
+        "<|im_start|>assistant\n";
+
+    mnn_logf("nativeGenerate: [v2.4.71] manual ChatML, use_template=false, prompt len=%zu, chatml len=%zu, first200=%.200s",
+             rawPrompt.size(), chatmlPrompt.size(), chatmlPrompt.c_str());
     // v2.4.69: Call reset() before each response() to clear KV cache and reset position_id.
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.70] reset() called (KV cache cleared, position_id=0)");
+        mnn_logf("nativeGenerate: [v2.4.71] reset() called (KV cache cleared, position_id=0)");
     }
     std::ostringstream oss1;
-    g_response(llm, rawPrompt, &oss1, "<|im_end|>", max_new);
+    g_response(llm, chatmlPrompt, &oss1, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss1.str());
     mnn_logf("nativeGenerate: result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
              result.size(), checkGarbage(result), hasValidAnswer(result), result.c_str());
@@ -374,7 +386,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 // Kotlin compares it against the expected marker and force-kills the process if mismatched.
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.70");
+    return env->NewStringUTF("MNN_JNI_v2.4.71");
 }
 
 // v2.4.53: Check if response is garbage (repeated characters)
