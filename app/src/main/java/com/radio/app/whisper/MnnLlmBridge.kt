@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.77"
+                    val expectedMarker = "MNN_JNI_v2.4.78"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -202,6 +202,41 @@ class MnnLlmBridge {
                     }
                 }
 
+                // v2.4.78: Inject jinja.chat_template into llm_config.json on device.
+                // set_config() before load() (v2.4.77) didn't work because MNN's load()
+                // reads config from the FILE (passed to createLlm), not from set_config.
+                // By modifying llm_config.json directly, createLlm will read the
+                // jinja.chat_template and load() will set it in the tokenizer.
+                val llmConfigFile = File(modelDir, "llm_config.json")
+                if (llmConfigFile.exists()) {
+                    try {
+                        val rawJson = llmConfigFile.readText()
+                        val json = org.json.JSONObject(rawJson)
+                        // Check if jinja.chat_template already exists
+                        if (!json.has("jinja")) {
+                            val jinjaObj = org.json.JSONObject()
+                            jinjaObj.put("chat_template", "{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}{%- endfor -%}{{ '<|im_start|>assistant\\n' }}")
+                            json.put("jinja", jinjaObj)
+                            llmConfigFile.writeText(json.toString())
+                            mnnLog("init: [v2.4.78] Injected jinja.chat_template into llm_config.json")
+                        } else {
+                            val jinjaObj = json.getJSONObject("jinja")
+                            if (!jinjaObj.has("chat_template")) {
+                                jinjaObj.put("chat_template", "{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}{%- endfor -%}{{ '<|im_start|>assistant\\n' }}")
+                                json.put("jinja", jinjaObj)
+                                llmConfigFile.writeText(json.toString())
+                                mnnLog("init: [v2.4.78] Added chat_template to existing jinja object in llm_config.json")
+                            } else {
+                                mnnLog("init: [v2.4.78] jinja.chat_template already exists in llm_config.json")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        mnnLog("init: [v2.4.78] Failed to inject jinja.chat_template: ${e.message}")
+                    }
+                } else {
+                    mnnLog("init: [v2.4.78] llm_config.json not found, cannot inject jinja.chat_template")
+                }
+
                 val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
                     ?: File(modelDir, "config.json").takeIf { it.exists() }
                 val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
@@ -216,19 +251,11 @@ class MnnLlmBridge {
                 }
                 mnnLog("init: nativeCreateLlm OK, ptr=$llmPtr")
 
-                // v2.4.77: CRITICAL FIX - Set config BEFORE load()
-                // MNN's load() reads jinja.chat_template from config and sets
-                // chat_template_ in the tokenizer. If we set config AFTER load(),
-                // the Jinja template is never applied.
-                // Also, old MNN (pre-Jinja2) ignores prompt_template in llm_config.json
-                // and falls back to plain text concatenation (no ChatML).
-                // By setting jinja.chat_template BEFORE load(), MNN will use the
-                // Jinja template engine to properly format ChatML with <|im_start|>.
+                // v2.4.78: Also set config before load (backup in case file injection fails)
                 val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":true,"jinja":{"chat_template":"{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}{%- endfor -%}{{ '<|im_start|>assistant\n' }}"}}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.77] set_config BEFORE load, result=$configOk")
-                    mnnLog("init: [v2.4.77] genConfig=$genConfig")
+                    mnnLog("init: [v2.4.78] set_config BEFORE load, result=$configOk")
                 } catch (e: Exception) {
                     mnnLog("init: set_config FAILED: ${e.message}")
                 }
@@ -333,7 +360,7 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.77] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.78] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {
