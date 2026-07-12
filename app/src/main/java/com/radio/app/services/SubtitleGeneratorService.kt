@@ -232,9 +232,11 @@ class SubtitleGeneratorService : Service() {
                     val settings = AppSettings.getInstance(this)
                     settings.whisperCrashCount = settings.whisperCrashCount + 1
                     // v2.4.68: Save the episode ID that caused the crash, so we can detect repeated crashes for the same episode
-                    settings.putString("last_crash_episode_id", lastEpisodeIdForCrashTracking ?: "")
+                    val crashPrefs = getSharedPreferences("subtitle_crash_tracking", MODE_MULTI_PROCESS)
+                    crashPrefs.edit().putString("last_crash_episode_id", lastEpisodeIdForCrashTracking ?: "").commit()
                     settings.save(this)
-                    logToFile("[v2.3.1] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount}, episode=${settings.getString("last_crash_episode_id", "")})")
+                    val trackedEpisodeId = crashPrefs.getString("last_crash_episode_id", "")
+                    logToFile("[v2.3.1] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount}, episode=$trackedEpisodeId)")
                     // [v2.3.1] Per user requirement: NO auto-switching to other models on failure.
                     // Previously we auto-switched to Vosk after 2 Whisper crashes, but the user
                     // explicitly requested that subtitle generation failure should NOT trigger
@@ -685,7 +687,8 @@ class SubtitleGeneratorService : Service() {
                         // v2.4.68: Don't reset crash count if this is the SAME episode that crashed.
                         // Previously, crash count was reset every time, causing infinite crash loops.
                         // Now we only reset when starting a DIFFERENT episode.
-                        val lastCrashEpisode = settings.getString("last_crash_episode_id", "")
+                        val crashPrefs = getSharedPreferences("subtitle_crash_tracking", MODE_MULTI_PROCESS)
+                        val lastCrashEpisode = crashPrefs.getString("last_crash_episode_id", "")
                         if (settings.whisperCrashCount > 0 && lastCrashEpisode == episodeId) {
                             // Same episode crashing again - DON'T reset, let count accumulate
                             logToFile("generateSubtitlesForEpisode: [v2.4.68] SAME episode crash ($episodeId, count=${settings.whisperCrashCount}), NOT resetting crash count")
@@ -693,7 +696,7 @@ class SubtitleGeneratorService : Service() {
                                 val errorMsg = "字幕引擎(Whisper)连续崩溃${settings.whisperCrashCount}次（episode=$episodeId），已达到最大重试次数。该音频可能在特定位置导致Whisper原生库崩溃。请尝试手动生成5分钟片段字幕，或更换ASR引擎。"
                                 logToFile("generateSubtitlesForEpisode: [v2.4.68] CRASH LIMIT REACHED: $errorMsg")
                                 settings.whisperCrashCount = 0
-                                settings.putString("last_crash_episode_id", "")
+                                crashPrefs.edit().putString("last_crash_episode_id", "").commit()
                                 settings.save(this)
                                 callback.onError(errorMsg)
                                 return
@@ -702,7 +705,7 @@ class SubtitleGeneratorService : Service() {
                             // Different episode - safe to reset
                             settings.whisperCrashCount = 0
                             settings.forceVoskUntil = 0
-                            settings.putString("last_crash_episode_id", "")
+                            crashPrefs.edit().putString("last_crash_episode_id", "").commit()
                             settings.save(this)
                             logToFile("generateSubtitlesForEpisode: [v2.3.1] resetting crash count (different episode), attempting Whisper as selected by user")
                         }
