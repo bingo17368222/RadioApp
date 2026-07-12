@@ -1774,6 +1774,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         writePreCacheLog("startPreCacheSubtitleGeneration: triggering subtitle generation for ${episode.title} ($episodeId)")
 
+        // v2.4.73: Write episode_info to database BEFORE starting subtitle generation.
+        // Previously, episode_info was only created in ensureEpisodeInfo() during subtitle
+        // generation, which was too late — the notification showed "广播节目录音" placeholder.
+        // Now we save it here, using the title from the Episode object (from radio schedule API).
+        try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+            val existing = dbHelper.getEpisodeInfo(episodeId)
+            if (existing == null) {
+                // No episode_info row — create one with the title from the Episode object
+                val ep = com.radio.app.models.Episode().apply {
+                    this.id = episodeId
+                    this.title = episode.title.ifBlank { episodeId }
+                    this.broadcastAt = episode.broadcastAt
+                    this.audioUrl = audioUrl
+                }
+                dbHelper.saveEpisodeInfo(ep)
+                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] saved episode_info (title=${episode.title})")
+            } else if (existing.title.isNullOrBlank()) {
+                // Row exists but title is empty — fill it in
+                existing.title = episode.title.ifBlank { episodeId }
+                dbHelper.saveEpisodeInfo(existing)
+                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] filled missing title=${episode.title}")
+            }
+        } catch (e: Exception) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] error saving episode_info: ${e.message}")
+        }
+
         // 发送Intent启动SubtitleGeneratorService，使用"precache_subtitle"作为任务类型
         // 添加extra标记force_whisper_base=true，让SubtitleGeneratorService使用Whisper base模型
         val subtitleIntent = android.content.Intent(this, com.radio.app.services.SubtitleGeneratorService::class.java).apply {
