@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.74"
+                    val expectedMarker = "MNN_JNI_v2.4.75"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -229,16 +229,18 @@ class MnnLlmBridge {
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.74: Removed response(ChatMessages) approach - old libllm.so lacks
-                // LLM_USE_JINJA, so apply_chat_template falls back to plain text (no ChatML),
-                // causing multilingual garbage. Now using token ID bypass directly.
-                // v2.4.73: tokenizer_encode mangled name fixed (15→16 chars).
-                // Config: use_template=false (we handle ChatML in JNI), rep_penalty=1.1
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.1,"use_template":false}"""
+                // v2.4.75: Back to response(string) + use_template=false.
+                // Token ID bypass (v2.4.72-74) failed due to ARM64 sret ABI mismatch
+                // when calling tokenizer_encode via dlsym reinterpret_cast.
+                // response(string) with use_template=false calls tokenizer_encode
+                // internally within MNN's ABI, which correctly handles special tokens.
+                // Key change from v2.4.71: repetition_penalty=1.0 (was 1.3) to avoid
+                // over-penalizing 干货/水货 tokens.
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":false}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.74] set_config result=$configOk, use_template=false (token ID bypass only)")
-                    mnnLog("init: [v2.4.74] genConfig=$genConfig")
+                    mnnLog("init: [v2.4.75] set_config result=$configOk, use_template=false, rep_penalty=1.0")
+                    mnnLog("init: [v2.4.75] genConfig=$genConfig")
                 } catch (e: Exception) {
                     mnnLog("init: set_config FAILED: ${e.message}")
                 }
@@ -330,7 +332,7 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.75] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {

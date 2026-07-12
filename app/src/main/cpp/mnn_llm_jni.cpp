@@ -142,7 +142,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.74 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.75 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -348,178 +348,67 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     // v2.4.72: Call reset() before each response
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.74] reset() called");
+        mnn_logf("nativeGenerate: [v2.4.75] reset() called");
     }
 
-    std::string result;
-
     // ================================================================
-    // v2.4.74: PRIMARY PATH - Token ID bypass
-    // v2.4.73 tried response(ChatMessages) first, but the old libllm.so
-    // lacks LLM_USE_JINJA → apply_chat_template falls back to plain text
-    // concatenation (no <|im_start|>/<|im_end|> tokens) → model receives
-    // unstructured text → outputs multilingual garbage (Russian/Chinese/Japanese mix).
-    // The multilingual garbage passed checkGarbage() (diverse chars) and was
-    // returned as "valid" output, preventing the token ID bypass from running.
+    // v2.4.75: CRITICAL INSIGHT - Use response(string) with use_template=false
     //
-    // FIX: Skip ChatMessages entirely. Go directly to token ID bypass.
+    // MNN source analysis reveals:
+    //   response(string) → [skip apply_chat_template if use_template=false]
+    //   → tokenizer_encode(prompt) → response(vector<int>)
+    //
+    // When use_template=false, response(string) passes the raw text directly
+    // to tokenizer_encode, which:
+    //   1. Adds prefix_tokens_ (BOS etc.)
+    //   2. Recognizes <|im_start|>/<|im_end|> via special_tokens_cache_
+    //   3. Returns correct token IDs
+    // Then calls response(vector<int>) internally - all within MNN's ABI.
+    //
+    // Previous attempts failed because:
+    //   - v2.4.71: use_template=false + ChatML text → response(string) →
+    //     tokenizer_encode → response(vector<int>). SHOULD have worked but
+    //     "慰慰慰" output suggests the old libllm.so may have a bug in
+    //     tokenizer_encode's special_tokens_cache_ handling.
+    //   - v2.4.72-74: Tried calling tokenizer_encode + response(vector<int>)
+    //     directly via dlsym. But std::vector<int> returned by value uses
+    //     ARM64 sret ABI (hidden pointer in x8). The reinterpret_cast to
+    //     function pointer doesn't guarantee matching ABI → corrupted
+    //     vector data → wrong token IDs → garbage output.
+    //
+    // v2.4.75 FIX: Go back to response(string) with use_template=false.
+    // This is the simplest and ABI-safe approach. The key difference from
+    // v2.4.71: we also set repetition_penalty=1.0 (was 1.3) to avoid
+    // over-penalizing common tokens like 干货/水货.
     // ================================================================
 
-    if (g_tokenize && g_response_vec) {
-        mnn_logf("nativeGenerate: [v2.4.73] Using token ID bypass (tokenizer_encode + response_vec)");
+    std::string chatmlPrompt =
+        "<|im_start|>system\n你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。<|im_end|>\n"
+        "<|im_start|>user\n" + rawPrompt + "<|im_end|>\n"
+        "<|im_start|>assistant\n";
 
-        // Step 1: Diagnostic - check if tokenizer recognizes <|im_start|>
-        {
-            std::vector<int> testIds = g_tokenize(llm, "<|im_start|>");
-            std::string idsStr;
-            for (size_t i = 0; i < testIds.size() && i < 10; i++) {
-                idsStr += std::to_string(testIds[i]) + " ";
-            }
-            bool recognizesSpecial = (testIds.size() == 1 && testIds[0] == CHATML_IM_START);
-            // Note: tokenizer_encode adds prefix_tokens_, so the count might be >1.
-            // But if the LAST token is 151644, it means <|im_start|> was recognized.
-            bool lastIsSpecial = (!testIds.empty() && testIds.back() == CHATML_IM_START);
-            mnn_logf("nativeGenerate: [v2.4.72] DIAGNOSTIC: encode(\"<|im_start|>\") = [%s] count=%zu, recognizesSpecial=%d, lastIsSpecial=%d",
-                     idsStr.c_str(), testIds.size(), recognizesSpecial ? 1 : 0, lastIsSpecial ? 1 : 0);
+    mnn_logf("nativeGenerate: [v2.4.75] response(string) with use_template=false, chatml len=%zu, first200=%.200s",
+             chatmlPrompt.size(), chatmlPrompt.c_str());
+
+    std::ostringstream oss;
+    g_response(llm, chatmlPrompt, &oss, "<|im_end|>", max_new);
+    std::string result = cleanResponse(oss.str());
+
+    mnn_logf("nativeGenerate: [v2.4.75] response(string) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+             result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
+
+    // If still garbage, try without ChatML (plain prompt)
+    if (checkGarbage(result) || result.empty()) {
+        mnn_logf("nativeGenerate: [v2.4.75] ChatML produced garbage, trying plain prompt");
+        if (g_reset) g_reset(llm);
+        std::ostringstream oss2;
+        g_response(llm, rawPrompt, &oss2, "<|im_end|>", max_new);
+        std::string result2 = cleanResponse(oss2.str());
+        mnn_logf("nativeGenerate: [v2.4.75] plain prompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+                 result2.size(), checkGarbage(result2) ? 1 : 0, hasValidAnswer(result2) ? 1 : 0, result2.c_str());
+        if (!result2.empty() && !checkGarbage(result2)) {
+            result = result2;
         }
-
-        // Step 2: Encode the full ChatML text using tokenizer_encode
-        // If the tokenizer recognizes special tokens, we can encode the full ChatML text directly.
-        // If not, we need to encode text parts separately and insert special token IDs manually.
-        std::string chatmlPrompt =
-            "<|im_start|>system\n你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。<|im_end|>\n"
-            "<|im_start|>user\n" + rawPrompt + "<|im_end|>\n"
-            "<|im_start|>assistant\n";
-
-        // Try encoding the full ChatML text first
-        std::vector<int> allIds = g_tokenize(llm, chatmlPrompt);
-
-        // Check if the encoded IDs contain CHATML_IM_START (151644)
-        bool hasSpecialTokens = false;
-        for (int id : allIds) {
-            if (id == CHATML_IM_START || id == CHATML_IM_END) {
-                hasSpecialTokens = true;
-                break;
-            }
-        }
-
-        // Log first 40 token IDs for debugging
-        {
-            std::string idsStr;
-            for (size_t i = 0; i < allIds.size() && i < 40; i++) {
-                idsStr += std::to_string(allIds[i]) + " ";
-            }
-            mnn_logf("nativeGenerate: [v2.4.72] Full ChatML encode: count=%zu, hasSpecialTokens=%d, first40=[%s]",
-                     allIds.size(), hasSpecialTokens ? 1 : 0, idsStr.c_str());
-        }
-
-        if (hasSpecialTokens) {
-            // Tokenizer recognized special tokens! Use the encoded IDs directly.
-            mnn_logf("nativeGenerate: [v2.4.72] Tokenizer recognized special tokens, using encoded IDs directly");
-        } else {
-            // Tokenizer did NOT recognize special tokens.
-            // Manually construct token IDs by encoding text parts separately.
-            mnn_logf("nativeGenerate: [v2.4.72] Tokenizer did NOT recognize special tokens, constructing manually");
-
-            // Encode a dummy string to find out how many prefix_tokens_ are added
-            std::vector<int> dummyIds = g_tokenize(llm, "");
-            int prefixCount = (int)dummyIds.size();
-            mnn_logf("nativeGenerate: [v2.4.72] prefix_tokens count=%d", prefixCount);
-
-            // Helper: encode text and strip prefix tokens
-            auto encodeNoPrefix = [&](const std::string& text) -> std::vector<int> {
-                std::vector<int> ids = g_tokenize(llm, text);
-                if ((int)ids.size() > prefixCount) {
-                    ids.erase(ids.begin(), ids.begin() + prefixCount);
-                }
-                return ids;
-            };
-
-            // Build ChatML token sequence manually:
-            // <|im_start|>system\n{system}<|im_end|>\n
-            // <|im_start|>user\n{user}<|im_end|>\n
-            // <|im_start|>assistant\n
-            allIds.clear();
-            // Start with prefix tokens (BOS etc.)
-            for (int i = 0; i < prefixCount; i++) {
-                allIds.push_back(dummyIds[i]);
-            }
-
-            // System message
-            allIds.push_back(CHATML_IM_START);
-            auto sysIds = encodeNoPrefix("system\n你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。");
-            allIds.insert(allIds.end(), sysIds.begin(), sysIds.end());
-            allIds.push_back(CHATML_IM_END);
-            auto nlIds = encodeNoPrefix("\n");
-            allIds.insert(allIds.end(), nlIds.begin(), nlIds.end());
-
-            // User message
-            allIds.push_back(CHATML_IM_START);
-            auto userIds = encodeNoPrefix("user\n" + rawPrompt);
-            allIds.insert(allIds.end(), userIds.begin(), userIds.end());
-            allIds.push_back(CHATML_IM_END);
-            allIds.insert(allIds.end(), nlIds.begin(), nlIds.end());
-
-            // Assistant prompt
-            allIds.push_back(CHATML_IM_START);
-            auto asstIds = encodeNoPrefix("assistant\n");
-            allIds.insert(allIds.end(), asstIds.begin(), asstIds.end());
-
-            // Log the manually constructed token IDs
-            {
-                std::string idsStr;
-                for (size_t i = 0; i < allIds.size() && i < 50; i++) {
-                    idsStr += std::to_string(allIds[i]) + " ";
-                }
-                mnn_logf("nativeGenerate: [v2.4.72] Manual token IDs: count=%zu, first50=[%s]",
-                         allIds.size(), idsStr.c_str());
-            }
-        }
-
-        // Step 3: Call response(vector<int>) with the token IDs
-        std::ostringstream oss;
-        g_response_vec(llm, allIds, &oss, "<|im_end|>", max_new);
-        result = cleanResponse(oss.str());
-
-        mnn_logf("nativeGenerate: [v2.4.72] response_vec result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
-                 result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
-
-        // If token ID bypass produced garbage, fall back to response(string) as last resort
-        if (checkGarbage(result) || result.empty()) {
-            mnn_logf("nativeGenerate: [v2.4.72] token ID bypass produced garbage, trying response(string) fallback");
-
-            if (g_reset) g_reset(llm);
-            std::ostringstream oss2;
-            g_response(llm, chatmlPrompt, &oss2, "<|im_end|>", max_new);
-            std::string result2 = cleanResponse(oss2.str());
-            mnn_logf("nativeGenerate: [v2.4.72] response(string) fallback: len=%zu, garbage=%d, first200=%.200s",
-                     result2.size(), checkGarbage(result2) ? 1 : 0, result2.c_str());
-            if (!result2.empty() && !checkGarbage(result2)) {
-                result = result2;
-            }
-        }
-    } else {
-        // ================================================================
-        // FALLBACK PATH - response(string) with manual ChatML
-        // Used when tokenizer_encode or response(vector<int>) symbols are not available
-        // ================================================================
-        mnn_logf("nativeGenerate: [v2.4.72] Fallback: response(string) with ChatML (tokenize=%p, response_vec=%p)",
-                 g_tokenize, g_response_vec);
-
-        std::string chatmlPrompt =
-            "<|im_start|>system\n你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。<|im_end|>\n"
-            "<|im_start|>user\n" + rawPrompt + "<|im_end|>\n"
-            "<|im_start|>assistant\n";
-
-        mnn_logf("nativeGenerate: [v2.4.72] response(string), chatml len=%zu, first200=%.200s",
-                 chatmlPrompt.size(), chatmlPrompt.c_str());
-
-        std::ostringstream oss;
-        g_response(llm, chatmlPrompt, &oss, "<|im_end|>", max_new);
-        result = cleanResponse(oss.str());
-
-        mnn_logf("nativeGenerate: [v2.4.72] response(string) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
-                 result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
     }
 
     mnn_logf("nativeGenerate: final result len=%zu, first200=%.200s", result.size(), result.c_str());
@@ -539,7 +428,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.74");
+    return env->NewStringUTF("MNN_JNI_v2.4.75");
 }
 
 static bool isGarbageResponse(const std::string& s) {
