@@ -335,47 +335,22 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
         return s.find("干货") != std::string::npos || s.find("水货") != std::string::npos;
     };
 
-    // Attempt 1: Raw prompt (MNN applies chat template from config - primary path)
-    mnn_logf("nativeGenerate: [v2.4.69] ATTEMPT 1/2: RAW prompt (MNN applies template), len=%zu, first100=%.100s",
+    // v2.4.70: With jinja.chat_template now injected via set_config(), MNN's response(string)
+    // will properly apply ChatML formatting. No need for manual wrapping (Attempt 2).
+    // Attempt 2 (manual ChatML) would cause DOUBLE wrapping since response(string) applies
+    // the Jinja2 template internally, which would wrap the already-wrapped prompt again.
+    mnn_logf("nativeGenerate: [v2.4.70] response with ChatML template (injected via set_config), prompt len=%zu, first100=%.100s",
              rawPrompt.size(), rawPrompt.c_str());
-    // v2.4.69: CRITICAL FIX - Call reset() before each response() to clear KV cache and
-    // reset position_id to 0. Without this, position_id accumulates across calls,
-    // causing RoPE position embedding corruption → garbage output ("集结漏", "慰慰慰").
+    // v2.4.69: Call reset() before each response() to clear KV cache and reset position_id.
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.69] reset() called before attempt 1 (KV cache cleared, position_id reset to 0)");
+        mnn_logf("nativeGenerate: [v2.4.70] reset() called (KV cache cleared, position_id=0)");
     }
     std::ostringstream oss1;
     g_response(llm, rawPrompt, &oss1, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss1.str());
-    mnn_logf("nativeGenerate: attempt 1 result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+    mnn_logf("nativeGenerate: result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
              result.size(), checkGarbage(result), hasValidAnswer(result), result.c_str());
-
-    // If first attempt is garbage or has no valid answer, try manual ChatML wrapping
-    if (checkGarbage(result) || !hasValidAnswer(result)) {
-        mnn_logf("nativeGenerate: [v2.4.69] ATTEMPT 2/2: MANUAL ChatML wrapping (Chinese system prompt)");
-        std::string wrappedPrompt = "<|im_start|>system\n你是一个专业的广播内容分析助手。请严格按照要求回答，只输出\"干货\"或\"水货\"。<|im_end|>\n<|im_start|>user\n"
-                                    + rawPrompt + "<|im_end|>\n<|im_start|>assistant\n";
-        // v2.4.69: reset() before attempt 2 as well - clear KV cache from attempt 1
-        if (g_reset) {
-            g_reset(llm);
-            mnn_logf("nativeGenerate: [v2.4.69] reset() called before attempt 2 (KV cache cleared, position_id reset to 0)");
-        }
-        std::ostringstream oss2;
-        g_response(llm, wrappedPrompt, &oss2, "<|im_end|>", max_new);
-        std::string result2 = cleanResponse(oss2.str());
-        mnn_logf("nativeGenerate: attempt 2 result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
-                 result2.size(), checkGarbage(result2), hasValidAnswer(result2), result2.c_str());
-        // Use result2 if it's better (not garbage AND has valid answer, OR result1 was garbage)
-        if (!checkGarbage(result2) && (hasValidAnswer(result2) || checkGarbage(result))) {
-            mnn_logf("nativeGenerate: using attempt 2 result (better quality)");
-            result = result2;
-        } else {
-            mnn_logf("nativeGenerate: keeping attempt 1 result (attempt 2 not better)");
-        }
-    } else {
-        mnn_logf("nativeGenerate: attempt 1 succeeded on first try");
-    }
 
     mnn_logf("nativeGenerate: final result len=%zu, first200=%.200s", result.size(), result.c_str());
     return env->NewStringUTF(result.c_str());
@@ -399,7 +374,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 // Kotlin compares it against the expected marker and force-kills the process if mismatched.
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.69");
+    return env->NewStringUTF("MNN_JNI_v2.4.70");
 }
 
 // v2.4.53: Check if response is garbage (repeated characters)
