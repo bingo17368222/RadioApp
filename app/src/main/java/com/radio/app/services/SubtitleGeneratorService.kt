@@ -239,7 +239,7 @@ class SubtitleGeneratorService : Service() {
                     logToFile("[v2.3.1] STRICT mode: NOT auto-switching to Vosk after Whisper crash (user preference)")
                     // v2.4.66: Send error broadcast so PlayerActivity can show Toast to user
                     sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
-                        "episodeId" to (lastEpisodeId ?: ""),
+                        "episodeId" to "",
                         "message" to "字幕引擎(Whisper)在上次运行中崩溃(SIGABRT)，已自动重启。如果反复崩溃，请在设置中检查Whisper模型或更换ASR引擎。"
                     ))
                     // v2.4.66: Also show a notification for pre-cache tasks (no UI visible)
