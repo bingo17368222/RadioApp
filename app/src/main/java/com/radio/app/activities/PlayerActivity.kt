@@ -1759,14 +1759,13 @@ class PlayerActivity : AppCompatActivity() {
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
                     val transcriptCount = dbHelper.getTranscriptCount(episode.id)
-                    val isComplete = dbHelper.hasCompleteSubtitles(episode.id)
-                    writeJitterLog("[v2.4.23] btnAiSegment: transcriptCount=$transcriptCount, isComplete=$isComplete")
+                    writeJitterLog("[v2.4.23] btnAiSegment: transcriptCount=$transcriptCount")
 
-                    if (transcriptCount < 3 || !isComplete) {
+                    // v2.4.74: Removed isComplete check - partial subtitles can also be used for AI segmentation
+                    if (transcriptCount < 1) {
                         runOnUiThread {
                             finishAiProcessing("segment")
-                            val msg = if (transcriptCount == 0) "无字幕，请先生成字幕" else "字幕不完整($transcriptCount 条)，请先完成字幕生成"
-                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, "无字幕，请先生成字幕", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }

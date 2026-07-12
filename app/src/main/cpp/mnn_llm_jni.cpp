@@ -80,11 +80,6 @@ typedef void (*ResetFunc)(MNN::Transformer::Llm*);
 // The compiler will handle the ABI correctly if we match the declaration.
 typedef std::vector<int> (*TokenizeFunc)(MNN::Transformer::Llm*, const std::string&);
 typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const char*, int);
-// v2.4.73: response(ChatMessages) = response(vector<pair<string,string>>)
-// This goes through MNN's full pipeline: apply_chat_template → tokenizer_encode → generate
-typedef void (*ResponseChatMsgsFunc)(MNN::Transformer::Llm*,
-    const std::vector<std::pair<std::string, std::string>>&,
-    std::ostream*, const char*, int);
 
 // Keep handles to all loaded libraries so they stay resident
 static void* g_libMNN = nullptr;
@@ -104,7 +99,6 @@ static ResponseStrFunc g_response = nullptr;
 static ResetFunc g_reset = nullptr;
 static TokenizeFunc g_tokenize = nullptr;       // v2.4.72: tokenizer_encode
 static ResponseVecFunc g_response_vec = nullptr; // v2.4.72: response(vector<int>)
-static ResponseChatMsgsFunc g_response_chatmsgs = nullptr; // v2.4.73: response(ChatMessages)
 
 // v2.4.72: Qwen2/Qwen1.5 ChatML special token IDs
 // These are standard for all Qwen models using ChatML format
@@ -148,7 +142,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.73 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.74 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -237,18 +231,8 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
         g_response_vec = try_resolve_symbols<ResponseVecFunc>(g_libllm, response_vec_names, 3);
     }
 
-    // v2.4.73: Resolve response(vector<pair<string,string>>&, ostream*, const char*, int)
-    // This is the ChatMessages overload - goes through apply_chat_template → tokenizer → generate
-    {
-        const char* response_chatmsgs_names[] = {
-            // Llm::response(const vector<pair<string,string>>&, ostream*, const char*, int)
-            "_ZN3MNN11Transformer3Llm8responseERKNSt6__ndk16vectorINS2_4pairINS2_12basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEESA_EENS8_ISB_EEEEPNS2_13basic_ostreamIcS7_EEPKci",
-        };
-        g_response_chatmsgs = try_resolve_symbols<ResponseChatMsgsFunc>(g_libllm, response_chatmsgs_names, 1);
-    }
-
-    mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p reset=%p tokenize=%p response_vec=%p response_chatmsgs=%p",
-             g_createLLM, g_destroy, g_load, g_set_config, g_response, g_reset, g_tokenize, g_response_vec, g_response_chatmsgs);
+    mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p reset=%p tokenize=%p response_vec=%p",
+             g_createLLM, g_destroy, g_load, g_set_config, g_response, g_reset, g_tokenize, g_response_vec);
 
     if (!g_createLLM || !g_destroy || !g_load || !g_response) {
         mnn_log("nativeInit: FAILED - one or more core symbols not found");
@@ -263,11 +247,8 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
     if (!g_response_vec) {
         mnn_log("nativeInit: WARNING - response(vector<int>) symbol NOT found! Will fall back to response(string)");
     }
-    if (g_response_chatmsgs) {
-        mnn_log("nativeInit: [v2.4.73] response(ChatMessages) resolved! Will try ChatMessages approach first.");
-    }
     if (g_tokenize && g_response_vec) {
-        mnn_log("nativeInit: [v2.4.73] tokenizer_encode + response(vector<int>) both resolved! Token ID bypass available.");
+        mnn_log("nativeInit: [v2.4.74] tokenizer_encode + response(vector<int>) both resolved! Token ID bypass active.");
     }
 
     mnn_log("nativeInit: all symbols resolved OK");
@@ -367,55 +348,21 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     // v2.4.72: Call reset() before each response
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.73] reset() called");
+        mnn_logf("nativeGenerate: [v2.4.74] reset() called");
     }
 
     std::string result;
 
     // ================================================================
-    // v2.4.73: PRIMARY PATH - response(ChatMessages)
-    // Uses MNN's full pipeline: apply_chat_template → tokenizer_encode → generate
-    // This is the simplest and most correct approach. If the tokenizer
-    // recognizes <|im_start|> (via special_tokens_cache_), this should work.
-    // ================================================================
-    if (g_response_chatmsgs) {
-        mnn_logf("nativeGenerate: [v2.4.73] Trying response(ChatMessages)");
-
-        std::vector<std::pair<std::string, std::string>> messages;
-        messages.push_back({"system", "你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。"});
-        messages.push_back({"user", rawPrompt});
-
-        std::ostringstream oss;
-        g_response_chatmsgs(llm, messages, &oss, "<|im_end|>", max_new);
-        result = cleanResponse(oss.str());
-
-        mnn_logf("nativeGenerate: [v2.4.73] ChatMessages result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
-                 result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
-
-        if (!checkGarbage(result) && !result.empty()) {
-            // ChatMessages approach worked!
-            mnn_logf("nativeGenerate: [v2.4.73] ChatMessages produced valid output, done");
-            mnn_logf("nativeGenerate: final result len=%zu, first200=%.200s", result.size(), result.c_str());
-            return env->NewStringUTF(result.c_str());
-        }
-
-        mnn_logf("nativeGenerate: [v2.4.73] ChatMessages produced garbage, trying token ID bypass");
-
-        // Reset for next attempt
-        if (g_reset) g_reset(llm);
-    }
-
-    // ================================================================
-    // v2.4.72: SECONDARY PATH - Token ID bypass
-    // Bypass MNN's template system by:
-    // 1. Using tokenizer_encode to encode text parts (without special tokens)
-    // 2. Manually inserting ChatML special token IDs (151644, 151645)
-    // 3. Calling response(vector<int>) directly with the complete token ID list
+    // v2.4.74: PRIMARY PATH - Token ID bypass
+    // v2.4.73 tried response(ChatMessages) first, but the old libllm.so
+    // lacks LLM_USE_JINJA → apply_chat_template falls back to plain text
+    // concatenation (no <|im_start|>/<|im_end|> tokens) → model receives
+    // unstructured text → outputs multilingual garbage (Russian/Chinese/Japanese mix).
+    // The multilingual garbage passed checkGarbage() (diverse chars) and was
+    // returned as "valid" output, preventing the token ID bypass from running.
     //
-    // This works even if:
-    // - LLM_USE_JINJA is not compiled in (no Jinja2 template support)
-    // - special_tokens_cache_ is missing (tokenizer doesn't recognize <|im_start|> in text)
-    // - use_template config key is not recognized by old MNN
+    // FIX: Skip ChatMessages entirely. Go directly to token ID bypass.
     // ================================================================
 
     if (g_tokenize && g_response_vec) {
@@ -592,7 +539,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.73");
+    return env->NewStringUTF("MNN_JNI_v2.4.74");
 }
 
 static bool isGarbageResponse(const std::string& s) {

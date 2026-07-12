@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.73"
+                    val expectedMarker = "MNN_JNI_v2.4.74"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -229,16 +229,16 @@ class MnnLlmBridge {
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.73: CRITICAL FIX - tokenizer_encode mangled name had wrong length (15→16).
-                // v2.4.72's token ID bypass never executed because tokenizer_encode wasn't resolved.
-                // Now with correct name, the bypass should work. Also added response(ChatMessages)
-                // as the simplest approach (tries MNN's full pipeline first).
+                // v2.4.74: Removed response(ChatMessages) approach - old libllm.so lacks
+                // LLM_USE_JINJA, so apply_chat_template falls back to plain text (no ChatML),
+                // causing multilingual garbage. Now using token ID bypass directly.
+                // v2.4.73: tokenizer_encode mangled name fixed (15→16 chars).
                 // Config: use_template=false (we handle ChatML in JNI), rep_penalty=1.1
                 val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.1,"use_template":false}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.73] set_config result=$configOk, use_template=false (ChatMessages + token ID bypass in JNI)")
-                    mnnLog("init: [v2.4.73] genConfig=$genConfig")
+                    mnnLog("init: [v2.4.74] set_config result=$configOk, use_template=false (token ID bypass only)")
+                    mnnLog("init: [v2.4.74] genConfig=$genConfig")
                 } catch (e: Exception) {
                     mnnLog("init: set_config FAILED: ${e.message}")
                 }
