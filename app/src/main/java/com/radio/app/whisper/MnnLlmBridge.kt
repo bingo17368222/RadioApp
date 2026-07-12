@@ -44,6 +44,7 @@ class MnnLlmBridge {
         private external fun nativeSetConfig(ptr: Long, configJson: String): Boolean
         @JvmStatic
         private external fun nativeGetCompileMarker(): String
+        private external fun nativeTestApplyChatTemplate(ptr: Long, userInput: String): String
 
         private var initialized = false
         private var llmPtr: Long = 0L
@@ -180,7 +181,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.78"
+                    val expectedMarker = "MNN_JNI_v2.4.79"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -272,6 +273,16 @@ class MnnLlmBridge {
                 }
 
                 mnnLog("init: MNN LLM ready!")
+
+                // v2.4.79: Diagnostic - test apply_chat_template to see what MNN generates
+                try {
+                    val testInput = "你好"
+                    val templateResult = nativeTestApplyChatTemplate(llmPtr, testInput)
+                    mnnLog("init: [v2.4.79] DIAGNOSTIC: apply_chat_template('$testInput') = '$templateResult'")
+                } catch (e: Exception) {
+                    mnnLog("init: [v2.4.79] DIAGNOSTIC failed: ${e.message}")
+                }
+
                 // v2.4.39: Close log at the very end of successful init
                 log.close()
                 return true
@@ -360,7 +371,7 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.78] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.79] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {

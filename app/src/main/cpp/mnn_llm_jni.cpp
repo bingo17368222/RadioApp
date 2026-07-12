@@ -80,6 +80,8 @@ typedef void (*ResetFunc)(MNN::Transformer::Llm*);
 // The compiler will handle the ABI correctly if we match the declaration.
 typedef std::vector<int> (*TokenizeFunc)(MNN::Transformer::Llm*, const std::string&);
 typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const char*, int);
+// v2.4.79: apply_chat_template(string) -> string
+typedef std::string (*ApplyChatTemplateFunc)(const MNN::Transformer::Llm*, const std::string&);
 
 // Keep handles to all loaded libraries so they stay resident
 static void* g_libMNN = nullptr;
@@ -99,6 +101,7 @@ static ResponseStrFunc g_response = nullptr;
 static ResetFunc g_reset = nullptr;
 static TokenizeFunc g_tokenize = nullptr;       // v2.4.72: tokenizer_encode
 static ResponseVecFunc g_response_vec = nullptr; // v2.4.72: response(vector<int>)
+static ApplyChatTemplateFunc g_apply_chat_template = nullptr; // v2.4.79: apply_chat_template(string)
 
 // v2.4.72: Qwen2/Qwen1.5 ChatML special token IDs
 // These are standard for all Qwen models using ChatML format
@@ -142,7 +145,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.78 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.79 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -231,8 +234,18 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
         g_response_vec = try_resolve_symbols<ResponseVecFunc>(g_libllm, response_vec_names, 3);
     }
 
-    mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p reset=%p tokenize=%p response_vec=%p",
-             g_createLLM, g_destroy, g_load, g_set_config, g_response, g_reset, g_tokenize, g_response_vec);
+    // v2.4.79: Resolve apply_chat_template(const string&) -> string
+    {
+        const char* apply_chat_names[] = {
+            // Llm::apply_chat_template(const string&) const
+            // _ZNK3MNN11Transformer3Llm19apply_chat_templateERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE
+            "_ZNK3MNN11Transformer3Llm19apply_chat_templateERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE",
+        };
+        g_apply_chat_template = try_resolve_symbols<ApplyChatTemplateFunc>(g_libllm, apply_chat_names, 1);
+    }
+
+    mnn_logf("nativeInit: symbol resolution: create=%p destroy=%p load=%p config=%p response=%p reset=%p tokenize=%p response_vec=%p apply_chat=%p",
+             g_createLLM, g_destroy, g_load, g_set_config, g_response, g_reset, g_tokenize, g_response_vec, g_apply_chat_template);
 
     if (!g_createLLM || !g_destroy || !g_load || !g_response) {
         mnn_log("nativeInit: FAILED - one or more core symbols not found");
@@ -416,7 +429,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.78");
+    return env->NewStringUTF("MNN_JNI_v2.4.79");
 }
 
 static bool isGarbageResponse(const std::string& s) {
@@ -456,6 +469,28 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeSetConfig(JNIEnv* env, jclass claz
     env->ReleaseStringUTFChars(configJson, cfg);
     bool ok = g_set_config(llm, cfgStr);
     return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+// v2.4.79: Diagnostic function to test apply_chat_template
+JNIEXPORT jstring JNICALL
+Java_com_radio_app_whisper_MnnLlmBridge_nativeTestApplyChatTemplate(JNIEnv* env, jclass clazz, jlong ptr, jstring userInput) {
+    if (!g_apply_chat_template || ptr == 0) {
+        mnn_log("nativeTestApplyChatTemplate: apply_chat_template not available or ptr=0");
+        return env->NewStringUTF("[ERROR: apply_chat_template not resolved]");
+    }
+    auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
+    const char* input = env->GetStringUTFChars(userInput, nullptr);
+    std::string inputStr(input);
+    env->ReleaseStringUTFChars(userInput, input);
+
+    mnn_logf("nativeTestApplyChatTemplate: [v2.4.79] input='%s'", inputStr.c_str());
+
+    std::string result = g_apply_chat_template(llm, inputStr);
+
+    mnn_logf("nativeTestApplyChatTemplate: [v2.4.79] result len=%zu, content='%.500s'",
+             result.size(), result.c_str());
+
+    return env->NewStringUTF(result.c_str());
 }
 
 } // extern "C"
