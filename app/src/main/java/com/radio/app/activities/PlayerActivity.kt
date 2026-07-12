@@ -1562,18 +1562,40 @@ class PlayerActivity : AppCompatActivity() {
                 if (service.isPlaying()) {
                     lastPauseIntentTimeMs = System.currentTimeMillis()
                     service.pause()
-                    // v2.4.55: Force save progress on manual pause
+                    // v2.4.63: Force save progress on manual pause - position + last episode
                     val pos = service.getCurrentPosition()
                     val dur = service.getDuration()
                     val epId = currentEpisode?.id ?: ""
                     if (pos > 0 && epId.isNotBlank()) {
-                        writeJitterLog("[v2.4.55] Manual pause: force saving progress pos=$pos, dur=$dur, epId=$epId")
+                        writeJitterLog("[v2.4.63] Manual pause: force saving progress pos=$pos, dur=$dur, epId=$epId")
+                        // 1. Save to play_progress DB table
                         try {
                             val dbHelper = RadioDatabaseHelper.getInstance(this)
                             dbHelper.savePlayProgress(com.radio.app.models.PlayProgress(episodeId = epId, progress = pos, recordedAt = System.currentTimeMillis()))
                         } catch (e: Exception) {
-                            writeJitterLog("[v2.4.55] Manual pause: savePlayProgress failed: ${e.message}")
+                            writeJitterLog("[v2.4.63] Manual pause: savePlayProgress failed: ${e.message}")
                         }
+                        // v2.4.63: 2. Force save to playback_positions SharedPreferences via service
+                        // This ensures the position is immediately persisted (not just cached in Activity)
+                        try {
+                            service.forceSaveCurrentPosition()
+                        } catch (e: Exception) {
+                            writeJitterLog("[v2.4.63] Manual pause: forceSaveCurrentPosition failed: ${e.message}")
+                        }
+                        // v2.4.63: 3. Force save last episode info so it can be restored on next app launch
+                        try {
+                            currentEpisode?.let { ep -> service.forceSaveLastEpisode(ep) }
+                        } catch (e: Exception) {
+                            writeJitterLog("[v2.4.63] Manual pause: forceSaveLastEpisode failed: ${e.message}")
+                        }
+                        // v2.4.63: 4. Update Activity's cached position
+                        lastDisplayedPositionMs = pos
+                        getSharedPreferences("player_position_cache", MODE_PRIVATE).edit()
+                            .putLong("cached_position", pos)
+                            .putLong("cached_duration", dur)
+                            .putString("cached_episode_id", epId)
+                            .commit()
+                        writeJitterLog("[v2.4.63] Manual pause: position cached and persisted pos=$pos, epId=$epId")
                     }
                 } else {
                     service.play()

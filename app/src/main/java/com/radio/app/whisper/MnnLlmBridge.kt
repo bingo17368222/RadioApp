@@ -228,8 +228,10 @@ class MnnLlmBridge {
                 mnnLog("init: MNN LLM ready!")
 
                 // v2.4.61: More deterministic generation config for classification tasks
-                // Lower temperature, higher repetition penalty to avoid degenerate output
-                val genConfig = """{"temperature":0.05,"top_p":0.7,"max_new_tokens":2000,"repetition_penalty":1.2}"""
+                // v2.4.63: Increase temperature slightly (0.1) and repetition_penalty (1.3) to
+                // prevent the model from getting stuck in repetitive token loops ("集结漏集结...").
+                // temperature=0.05 was too low, causing greedy decoding into degenerate output.
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.3}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
                     mnnLog("init: set_config result=$configOk, config=$genConfig")
@@ -370,7 +372,8 @@ class MnnLlmBridge {
                         start = group.first,
                         end = group.second,
                         isDry = finalIsDry,
-                        label = if (finalIsDry) "干货" else "水货"
+                        // v2.4.63: Mark garbage responses for global check
+                        label = if (isGarbage) "GARBAGE" else if (finalIsDry) "干货" else "水货"
                     ))
                     Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> ${if (finalIsDry) "干货" else "水货"} (resp=${response.take(30)})")
                 } else {
@@ -387,9 +390,19 @@ class MnnLlmBridge {
 
             onProgress?.invoke(groups.size, groups.size)
             Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
+            // v2.4.63: Global garbage check - if ALL responses were garbage (model is broken),
+            // override all segments to 干货 since MNN classification is unreliable.
+            val garbageCount = allResults.count { it.label == "GARBAGE" }
+            if (garbageCount > 0 && garbageCount == allResults.size && allResults.size > 0) {
+                mnnLog("classifySubtitles: ALL ${allResults.size} responses were GARBAGE - model appears broken, overriding all to 干货")
+                try {
+                    classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: ALL GARBAGE - overriding all to 干货\n")
+                } catch (_: Exception) {}
+                return allResults.map { MnnSegmentResult(it.start, it.end, true, "干货") }
+            }
             // v2.4.41: Close classify log
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: END, ${allResults.size} results, dry=${allResults.count{it.isDry}}, water=${allResults.count{!it.isDry}}\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: END, ${allResults.size} results, dry=${allResults.count{it.isDry}}, water=${allResults.count{!it.isDry}}, garbage=$garbageCount\n")
                 classifyLog?.close()
             } catch (_: Exception) {}
             return allResults

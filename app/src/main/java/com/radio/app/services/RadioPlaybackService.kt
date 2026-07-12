@@ -2452,24 +2452,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.36: Allow saving even at pos=0 - previously pos<=0 was skipped, but
         // this meant if user started playing from beginning, position was never saved.
         if (pos < 0) return
-        val episodeKey = "${ep.stationId}::${ep.title}"
+        // v2.4.63: Use episode ID as the primary key (unique per episode).
+        // Previously used stationId::title which is shared across different dates of the
+        // same program, causing position to be overwritten when switching between dates.
+        val episodeKey = ep.id ?: ""
+        if (episodeKey.isBlank()) return
         // [v2.4.31] Fix: use commit() (synchronous) instead of apply() (asynchronous).
-        // apply() only stages the write in memory and defers the disk flush to a background
-        // thread. When the app is backgrounded and the system kills the process under memory
-        // pressure, the pending write is discarded before it ever reaches disk. As a result the
-        // 15-second auto-save frequently fails and playback restarts from zero on next launch.
-        // commit() blocks until the value is persisted to disk, guaranteeing the position
-        // survives a process kill. This mirrors the seekTo() path which already uses commit().
         getSharedPreferences("playback_positions", MODE_PRIVATE)
-            .edit().putLong(episodeKey, pos)
-            .putLong(ep.id ?: "", pos).commit()
-        // v2.4.37: Log successful save for debugging
-        writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: SAVED pos=$pos for episode=$episodeKey")
+            .edit().putLong(episodeKey, pos).commit()
+        writeServiceLog("playback", "[v2.4.63] saveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
     }
 
     private fun clearSavedPosition() {
         val ep = currentEpisode ?: return
-        val episodeKey = "${ep.stationId}::${ep.title}"
+        // v2.4.63: Use episode ID as key (same as saveCurrentPosition)
+        val episodeKey = ep.id ?: ""
+        if (episodeKey.isBlank()) return
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().remove(episodeKey).apply()
     }
@@ -2491,8 +2489,45 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     fun getSavedPosition(episode: Episode?): Long {
         val ep = episode ?: return -1L
-        val episodeKey = "${ep.stationId}::${ep.title}"
+        // v2.4.63: Use episode ID as key (unique per episode, not shared across dates)
+        val episodeKey = ep.id ?: ""
+        if (episodeKey.isBlank()) return -1L
         return getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+    }
+
+    /**
+     * v2.4.63: Force save current position immediately (bypasses the 5s restore guard).
+     * Called when user manually pauses playback.
+     */
+    fun forceSaveCurrentPosition() {
+        val ep = currentEpisode ?: return
+        val pos = getCurrentPosition()
+        if (pos < 0) return
+        val episodeKey = ep.id ?: ""
+        if (episodeKey.isBlank()) return
+        getSharedPreferences("playback_positions", MODE_PRIVATE)
+            .edit().putLong(episodeKey, pos).commit()
+        writeServiceLog("playback", "[v2.4.63] forceSaveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
+    }
+
+    /**
+     * v2.4.63: Force save last episode info (bypasses normal saveLastEpisode which may not be called on pause).
+     * Called when user manually pauses playback to ensure last played episode is remembered.
+     */
+    fun forceSaveLastEpisode(episode: Episode) {
+        val prefs = getSharedPreferences("last_episode", MODE_PRIVATE)
+        prefs.edit().apply {
+            putString("episode_id", episode.id)
+            putString("title", episode.title)
+            putString("audio_url", episode.audioUrl)
+            putString("station_name", episode.stationName)
+            putString("station_id", episode.stationId)
+            putLong("duration", episode.duration)
+            putString("broadcast_at", episode.broadcastAt)
+            putString("program_name", episode.programName)
+            putLong("saved_at", System.currentTimeMillis())
+        }.commit()  // v2.4.63: Use commit() for synchronous save
+        writeServiceLog("playback", "[v2.4.63] forceSaveLastEpisode: SAVED episode=${episode.title}, id=${episode.id}")
     }
 
     private fun startProgressPolling() {

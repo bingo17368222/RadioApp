@@ -2611,6 +2611,9 @@ class SubtitleGeneratorService : Service() {
                 // If so, skip already-processed audio and append new subtitles instead of deleting old ones
                 isResumeMode = false  // [v2.4.20] Reset for each episode
                 var resumeFromSample = 0
+                // v2.4.63: Track previous session's timing for accumulation in resume mode
+                var prevProcessingTimeMs = 0L
+                var prevAudioDurationMs = 0L
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
                     val existingCount = dbHelper.getTranscriptCount(episodeId)
@@ -2621,7 +2624,11 @@ class SubtitleGeneratorService : Service() {
                         if (maxEndMs > 5000) {  // At least 5s of audio processed
                             resumeFromSample = ((maxEndMs / 1000.0) * 16000).toInt()
                             isResumeMode = true
-                            logToFile("generateWithWhisper: [v2.4.20] RESUME MODE: found $existingCount partial transcripts, last end=${maxEndMs}ms, resuming from sample $resumeFromSample (${maxEndMs/1000}s)")
+                            // v2.4.63: Load previous session's timing for accumulation
+                            val prevInfo = dbHelper.getTranscriptEngineInfo(episodeId)
+                            prevProcessingTimeMs = prevInfo.processingTimeMs
+                            prevAudioDurationMs = prevInfo.audioDurationMs
+                            logToFile("generateWithWhisper: [v2.4.20] RESUME MODE: found $existingCount partial transcripts, last end=${maxEndMs}ms, resuming from sample $resumeFromSample (${maxEndMs/1000}s), prevTime=${prevProcessingTimeMs}ms, prevAudio=${prevAudioDurationMs}ms")
                             ctx.log("续传字幕 (从 ${maxEndMs/1000}s 处继续)")
                         }
                     }
@@ -3233,11 +3240,19 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
             // [v2.4.31] Record total processing time and audio duration for speed ratio display.
-            // processing_time = wall-clock time of this run; audio_duration = samples processed
-            // in THIS run (excludes resume-skipped samples so the ratio stays accurate).
-            // speed ratio (倍率) = audio_duration / processing_time.
-            currentProcessingTimeMs = System.currentTimeMillis() - processingStartTime
-            currentAudioDurationMs = (totalSamplesRead - resumeFromSample).toLong() * 1000L / 16000L
+            // v2.4.63: In RESUME mode, accumulate with previous session's timing so the total
+            // reflects the entire subtitle generation effort, not just this session's portion.
+            val thisSessionProcessingMs = System.currentTimeMillis() - processingStartTime
+            val thisSessionAudioMs = (totalSamplesRead - resumeFromSample).toLong() * 1000L / 16000L
+            if (isResumeMode) {
+                // Accumulate: total = previous session + this session
+                currentProcessingTimeMs = prevProcessingTimeMs + thisSessionProcessingMs
+                currentAudioDurationMs = prevAudioDurationMs + thisSessionAudioMs
+                logToFile("processWhisperInChunks: [v2.4.63] ACCUMULATED timing: prevProc=${prevProcessingTimeMs}ms + thisProc=${thisSessionProcessingMs}ms = ${currentProcessingTimeMs}ms, prevAudio=${prevAudioDurationMs}ms + thisAudio=${thisSessionAudioMs}ms = ${currentAudioDurationMs}ms")
+            } else {
+                currentProcessingTimeMs = thisSessionProcessingMs
+                currentAudioDurationMs = thisSessionAudioMs
+            }
             val ratioStr = if (currentProcessingTimeMs > 0)
                 String.format("%.2f", currentAudioDurationMs.toDouble() / currentProcessingTimeMs) else "N/A"
             logToFile("processWhisperInChunks: [v2.4.31] timing: processingTime=${currentProcessingTimeMs}ms (${currentProcessingTimeMs / 1000}s), audioDuration=${currentAudioDurationMs}ms (${currentAudioDurationMs / 1000}s), ratio=${ratioStr}x")
