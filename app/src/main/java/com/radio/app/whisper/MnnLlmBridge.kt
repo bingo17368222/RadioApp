@@ -397,6 +397,8 @@ class MnnLlmBridge {
                 mnnLog("classifySubtitles: ALL ${allResults.size} responses were GARBAGE - model appears broken, overriding all to 干货")
                 try {
                     classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: ALL GARBAGE - overriding all to 干货\n")
+                    classifyLog?.flush()  // v2.4.67: Flush before returning
+                    classifyLog?.close()
                 } catch (_: Exception) {}
                 return allResults.map { MnnSegmentResult(it.start, it.end, true, "干货") }
             }

@@ -2669,6 +2669,14 @@ class SubtitleGeneratorService : Service() {
                         // [v2.4.18] Read PCM length BEFORE deleting
                         val pcmFileBytes = fullPcmFile.length()
                         val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
+                        // v2.4.67: Check PCM size — if too small (< 1 min of audio), skip subtitle generation
+                        if (pcmDurationSec < 60) {
+                            val errorMsg = "完整PCM太小 (${sizeMB}MB, ${pcmDurationSec}s < 60s)，可能音频文件不完整或解码失败。跳过字幕生成。"
+                            logToFile("generateWithWhisper: [v2.4.67] WARNING: $errorMsg")
+                            ctx.log(errorMsg)
+                            callback.onError(errorMsg)
+                            return
+                        }
                         logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
                         ctx.log("完整PCM缓存 (${sizeMB}MB)")
                         val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.20] pass resumeFromSample, [v2.4.63] pass prev timing
@@ -2713,6 +2721,14 @@ class SubtitleGeneratorService : Service() {
                             // [v2.4.18] Read PCM length BEFORE deleting
                             val pcmFileBytes = fullPcmFile.length()
                             val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
+                            // v2.4.67: Check PCM size — if too small (< 1 min of audio), skip subtitle generation
+                            if (pcmDurationSec < 60) {
+                                val errorMsg = "解码后PCM太小 (${sizeMB}MB, ${pcmDurationSec}s < 60s)，可能音频文件不完整。跳过字幕生成。"
+                                logToFile("generateWithWhisper: [v2.4.67] WARNING: $errorMsg")
+                                ctx.log(errorMsg)
+                                callback.onError(errorMsg)
+                                return
+                            }
                             logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
                             // v2.4.39: PCM decode takes 130-370s. During that time, the service
@@ -3153,6 +3169,28 @@ class SubtitleGeneratorService : Service() {
                         logToFile("processWhisperInChunks: chunk $chunkIdx: got $nSeg segments")
                     // v2.4.65: Heartbeat - update busy flag timestamp so patrol knows we're alive
                     try { SUBTITLE_BUSY_FLAG.setLastModified(System.currentTimeMillis()) } catch (_: Exception) {}
+
+                    // v2.4.67: Save a "progress marker" BEFORE extracting segments.
+                    // The native bridge.fullGetSegmentText/T0/T1 calls can SIGABRT (signal=6)
+                    // on certain audio segments. If the process crashes during segment extraction,
+                    // the next resume would restart from the same position, creating an infinite loop.
+                    // By saving a dummy transcript with the end timestamp of this chunk NOW,
+                    // the next resume will skip past this chunk even if segment extraction crashes.
+                    try {
+                        val chunkEndMs = (totalSamplesRead + samplesToRead).toLong() * 1000L / 16000L
+                        val markerTranscript = com.radio.app.models.Transcript(
+                            text = "",
+                            segmentStart = totalSamplesRead.toLong() * 1000L / 16000L,
+                            segmentEnd = chunkEndMs
+                        )
+                        markerTranscript.episodeId = episodeId
+                        val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@SubtitleGeneratorService)
+                        dbHelper.saveTranscript(markerTranscript)
+                        logToFile("processWhisperInChunks: [v2.4.67] saved progress marker chunkEnd=${chunkEndMs}ms (nSeg=$nSeg)")
+                    } catch (e: Exception) {
+                        logToFile("processWhisperInChunks: [v2.4.67] failed to save progress marker: ${e.message}")
+                    }
+
                         for (i in 0 until nSeg) {
                             if (ctx.cancelled.get()) break
                             val text = bridge.fullGetSegmentText(ctxPtr, i)
@@ -3429,7 +3467,9 @@ class SubtitleGeneratorService : Service() {
             var outputDone = false
             var resampledBytes = 0L
 
-            val maxDecodeTimeMs = 10 * 60 * 1000L  // 10 min max decode time
+            // v2.4.67: Increased from 10 min to 30 min - large 2-hour audio files can take
+            // more than 10 minutes to decode on slower devices.
+            val maxDecodeTimeMs = 30 * 60 * 1000L  // 30 min max decode time
             val decodeStartTime = System.currentTimeMillis()
 
             var resamplePhase = 0.0
