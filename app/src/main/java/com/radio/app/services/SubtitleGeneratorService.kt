@@ -2645,7 +2645,7 @@ class SubtitleGeneratorService : Service() {
                         val pcmDurationSec = pcmFileBytes / 2 / 16000  // 16kHz mono 16-bit
                         logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
                         ctx.log("完整PCM缓存 (${sizeMB}MB)")
-                        val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample)  // [v2.4.20] pass resumeFromSample
+                        val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.20] pass resumeFromSample, [v2.4.63] pass prev timing
                         // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                         if (result) {
                             // [v2.4.18] Compute stats BEFORE deleting file
@@ -2698,7 +2698,7 @@ class SubtitleGeneratorService : Service() {
                                 globalCancelled.set(false)
                             }
                             val whisperStartTime = System.currentTimeMillis()  // [v2.4.18] Track Whisper processing time
-                            val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample)  // [v2.4.20] pass resumeFromSample
+                            val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.20] pass resumeFromSample, [v2.4.63] pass prev timing
                             val whisperTimeMs = System.currentTimeMillis() - whisperStartTime
                             // [v2.4.14] Only delete full PCM on success; keep for resume on failure
                             if (result) {
@@ -2736,7 +2736,7 @@ class SubtitleGeneratorService : Service() {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
                 logToFile("generateWithWhisper: [v2.0.99] using PCM cache (${sizeMB}MB)")
-                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId)
+                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.63] pass prev timing
             }
 
             // No PCM cache — download and decode to 16kHz PCM
@@ -2753,7 +2753,7 @@ class SubtitleGeneratorService : Service() {
             // [v2.0.99] Save to unified _5min.pcm file
             pcm16kFile.writeBytes(audioData)
             logToFile("generateWithWhisper: [v2.0.99] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
-            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId)
+            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.63] pass prev timing
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
             ctx.lastErrorDetail = detail
@@ -2778,9 +2778,13 @@ class SubtitleGeneratorService : Service() {
     private fun processWhisperInChunks(
         pcmFile: File, modelPath: String, callback: SubtitleCallback, ctx: TaskContext,
         episodeId: String = "",  // [v2.1.2] For crash marker
-        resumeFromSampleParam: Int = 0  // [v2.4.20] Resume support: skip first N samples already processed
+        resumeFromSampleParam: Int = 0,  // [v2.4.20] Resume support: skip first N samples already processed
+        prevProcessingTimeMsParam: Long = 0L,  // v2.4.63: Previous session's processing time for accumulation
+        prevAudioDurationMsParam: Long = 0L  // v2.4.63: Previous session's audio duration for accumulation
     ): Boolean {
         var resumeFromSample = resumeFromSampleParam  // v2.4.40: mutable copy for reset
+        val prevProcessingTimeMs = prevProcessingTimeMsParam  // v2.4.63: Local copy for accumulation
+        val prevAudioDurationMs = prevAudioDurationMsParam  // v2.4.63: Local copy for accumulation
         logToFile("processWhisperInChunks: START, pcmFile=${pcmFile.absolutePath}, modelPath=$modelPath, resumeFromSample=$resumeFromSample")
         // [v2.0.74] Issue 2 Fix: Report initial progress immediately so UI shows progress bar
         callback.onProgressUpdate(1, 100)
