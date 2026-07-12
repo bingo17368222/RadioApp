@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.75"
+                    val expectedMarker = "MNN_JNI_v2.4.76"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -229,18 +229,22 @@ class MnnLlmBridge {
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.75: Back to response(string) + use_template=false.
-                // Token ID bypass (v2.4.72-74) failed due to ARM64 sret ABI mismatch
-                // when calling tokenizer_encode via dlsym reinterpret_cast.
-                // response(string) with use_template=false calls tokenizer_encode
-                // internally within MNN's ABI, which correctly handles special tokens.
-                // Key change from v2.4.71: repetition_penalty=1.0 (was 1.3) to avoid
-                // over-penalizing 干货/水货 tokens.
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":false}"""
+                // v2.4.76: CRITICAL FIX - use_template=true
+                // v2.4.75 used use_template=false + manual ChatML text. But old libllm.so
+                // (v2.4.48) tokenizer_encode doesn't recognize <|im_start|>/<|im_end|> as
+                // special tokens → they get encoded as regular text → wrong token IDs →
+                // model outputs "慰慰慰" garbage.
+                //
+                // llm_config.json has prompt_template: "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n"
+                // With use_template=true, MNN's apply_chat_template handles <|im_start|>
+                // correctly (via template substitution, not tokenizer_encode text matching).
+                // We pass only the user content (no ChatML markers) and let MNN apply
+                // the template. System prompt is baked into the user prompt text.
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":true}"""
                 try {
                     val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.75] set_config result=$configOk, use_template=false, rep_penalty=1.0")
-                    mnnLog("init: [v2.4.75] genConfig=$genConfig")
+                    mnnLog("init: [v2.4.76] set_config result=$configOk, use_template=true (MNN handles ChatML)")
+                    mnnLog("init: [v2.4.76] genConfig=$genConfig")
                 } catch (e: Exception) {
                     mnnLog("init: set_config FAILED: ${e.message}")
                 }
@@ -332,7 +336,7 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.75] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.76] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {

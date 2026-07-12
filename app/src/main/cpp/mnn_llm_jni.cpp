@@ -142,7 +142,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.75 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.76 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -348,63 +348,44 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     // v2.4.72: Call reset() before each response
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.75] reset() called");
+        mnn_logf("nativeGenerate: [v2.4.76] reset() called");
     }
 
     // ================================================================
-    // v2.4.75: CRITICAL INSIGHT - Use response(string) with use_template=false
+    // v2.4.76: Use response(string) with use_template=true
     //
-    // MNN source analysis reveals:
-    //   response(string) → [skip apply_chat_template if use_template=false]
-    //   → tokenizer_encode(prompt) → response(vector<int>)
+    // llm_config.json has: "prompt_template": "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n"
+    // With use_template=true, response(string) calls apply_chat_template(user_content)
+    // which replaces %s with user_content. The template contains <|im_start|>/<|im_end|>
+    // but MNN's template engine handles these via special token substitution (not
+    // via tokenizer_encode text matching), so they get correct token IDs.
     //
-    // When use_template=false, response(string) passes the raw text directly
-    // to tokenizer_encode, which:
-    //   1. Adds prefix_tokens_ (BOS etc.)
-    //   2. Recognizes <|im_start|>/<|im_end|> via special_tokens_cache_
-    //   3. Returns correct token IDs
-    // Then calls response(vector<int>) internally - all within MNN's ABI.
-    //
-    // Previous attempts failed because:
-    //   - v2.4.71: use_template=false + ChatML text → response(string) →
-    //     tokenizer_encode → response(vector<int>). SHOULD have worked but
-    //     "慰慰慰" output suggests the old libllm.so may have a bug in
-    //     tokenizer_encode's special_tokens_cache_ handling.
-    //   - v2.4.72-74: Tried calling tokenizer_encode + response(vector<int>)
-    //     directly via dlsym. But std::vector<int> returned by value uses
-    //     ARM64 sret ABI (hidden pointer in x8). The reinterpret_cast to
-    //     function pointer doesn't guarantee matching ABI → corrupted
-    //     vector data → wrong token IDs → garbage output.
-    //
-    // v2.4.75 FIX: Go back to response(string) with use_template=false.
-    // This is the simplest and ABI-safe approach. The key difference from
-    // v2.4.71: we also set repetition_penalty=1.0 (was 1.3) to avoid
-    // over-penalizing common tokens like 干货/水货.
+    // We pass ONLY the user content (no ChatML markers). MNN wraps it with the template.
+    // The system prompt is prepended to the user content as plain text.
     // ================================================================
 
-    std::string chatmlPrompt =
-        "<|im_start|>system\n你是一个广播内容分类器。判断广播内容是干货还是水货，只回答干货或水货。<|im_end|>\n"
-        "<|im_start|>user\n" + rawPrompt + "<|im_end|>\n"
-        "<|im_start|>assistant\n";
+    // Build user content: system prompt + user content (no ChatML markers)
+    std::string userContent =
+        "判断以下广播内容是干货还是水货，只回答干货或水货。\n" + rawPrompt;
 
-    mnn_logf("nativeGenerate: [v2.4.75] response(string) with use_template=false, chatml len=%zu, first200=%.200s",
-             chatmlPrompt.size(), chatmlPrompt.c_str());
+    mnn_logf("nativeGenerate: [v2.4.76] response(string) with use_template=true, userContent len=%zu, first200=%.200s",
+             userContent.size(), userContent.c_str());
 
     std::ostringstream oss;
-    g_response(llm, chatmlPrompt, &oss, "<|im_end|>", max_new);
+    g_response(llm, userContent, &oss, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss.str());
 
-    mnn_logf("nativeGenerate: [v2.4.75] response(string) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+    mnn_logf("nativeGenerate: [v2.4.76] response(string) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
              result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
 
-    // If still garbage, try without ChatML (plain prompt)
+    // If still garbage, try rawPrompt without system prefix
     if (checkGarbage(result) || result.empty()) {
-        mnn_logf("nativeGenerate: [v2.4.75] ChatML produced garbage, trying plain prompt");
+        mnn_logf("nativeGenerate: [v2.4.76] garbage, trying rawPrompt only");
         if (g_reset) g_reset(llm);
         std::ostringstream oss2;
         g_response(llm, rawPrompt, &oss2, "<|im_end|>", max_new);
         std::string result2 = cleanResponse(oss2.str());
-        mnn_logf("nativeGenerate: [v2.4.75] plain prompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+        mnn_logf("nativeGenerate: [v2.4.76] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
                  result2.size(), checkGarbage(result2) ? 1 : 0, hasValidAnswer(result2) ? 1 : 0, result2.c_str());
         if (!result2.empty() && !checkGarbage(result2)) {
             result = result2;
@@ -428,7 +409,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.75");
+    return env->NewStringUTF("MNN_JNI_v2.4.76");
 }
 
 static bool isGarbageResponse(const std::string& s) {
