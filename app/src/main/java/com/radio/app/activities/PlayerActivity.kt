@@ -1747,15 +1747,16 @@ class PlayerActivity : AppCompatActivity() {
                     // If MNN fails, show error directly - NO fallback to keyword-based segmentation
                     var segments: List<VoiceSegment> = emptyList()
                     if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
-                        // v2.4.64: Support both new Qwen2.5 and old Qwen1.5 model directories
-                        // Check for new model first, fall back to old model directory
+                        // v2.4.65: Support Qwen2-1.5B-Instruct-MNN (new), Qwen2.5 (v2.4.64), and Qwen1.5 (old) model directories
                         val modelsDir = getExternalFilesDir("models")
-                        var mnnModelDir = File(modelsDir, "mnn-llm/Qwen2.5-1.5B-Instruct-MNN")
+                        var mnnModelDir = File(modelsDir, "mnn-llm/Qwen2-1.5B-Instruct-MNN")
                         if (!mnnModelDir.exists()) {
-                            // Fall back to old model directory for backward compatibility
+                            mnnModelDir = File(modelsDir, "mnn-llm/Qwen2.5-1.5B-Instruct-MNN")
+                        }
+                        if (!mnnModelDir.exists()) {
                             mnnModelDir = File(modelsDir, "mnn-llm/Qwen1.5-1.8B-Chat-MNN")
                         }
-                        writeJitterLog("[v2.4.64] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
+                        writeJitterLog("[v2.4.65] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
 
                         if (!MnnLlmBridge.isModelInstalled(mnnModelDir)) {
                             val err = MnnLlmBridge.lastError

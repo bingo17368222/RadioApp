@@ -3132,6 +3132,8 @@ class SubtitleGeneratorService : Service() {
                     if (result == 0) {
                         val nSeg = bridge.fullNSegments(ctxPtr)
                         logToFile("processWhisperInChunks: chunk $chunkIdx: got $nSeg segments")
+                    // v2.4.65: Heartbeat - update busy flag timestamp so patrol knows we're alive
+                    try { SUBTITLE_BUSY_FLAG.setLastModified(System.currentTimeMillis()) } catch (_: Exception) {}
                         for (i in 0 until nSeg) {
                             if (ctx.cancelled.get()) break
                             val text = bridge.fullGetSegmentText(ctxPtr, i)
@@ -4184,5 +4186,14 @@ class SubtitleGeneratorService : Service() {
             getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().clear().apply()
         } catch (_: Exception) {}
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
+    }
+
+    // v2.4.65: onTaskRemoved is called when the user swipes away the task from recents.
+    // This ensures the busy flag is cleaned up even if onDestroy doesn't fire properly.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        logToFile("onTaskRemoved: cleaning up busy flag and cancelling tasks")
+        try { SUBTITLE_BUSY_FLAG.delete() } catch (_: Exception) {}
+        cancelAllTasks()
+        super.onTaskRemoved(rootIntent)
     }
 }

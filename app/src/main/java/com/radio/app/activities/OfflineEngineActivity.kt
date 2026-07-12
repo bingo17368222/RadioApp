@@ -114,23 +114,24 @@ class OfflineEngineActivity : AppCompatActivity() {
         ),
 
         // ===== 阿里 MNN-LLM 离线引擎 =====
-        // v2.4.64: Changed from Qwen1.5-1.8B-Chat-MNN to Qwen2.5-1.5B-Instruct-MNN
+        // v2.4.64: Changed from Qwen1.5-1.8B-Chat-MNN to Qwen2-1.5B-Instruct-MNN
         // because Qwen1.5-1.8B consistently produces garbage output ("集结漏集结...").
-        // Qwen2.5 has better quantization quality and GQA support.
+        // v2.4.65: Use official MNN org's Qwen2-1.5B-Instruct-MNN (not zhaode's Qwen2.5 which doesn't exist)
+        // and use resolve URL format instead of API format (which returns 404).
         EngineInfo(
-            "阿里 MNN-LLM (Qwen2.5-1.5B-Instruct)",
-            "阿里巴巴 MNN 推理引擎\n模型: Qwen2.5-1.5B-Instruct-MNN (4bit量化)\n大小: 约1GB | 来源: ModelScope\n状态: 支持下载\n适用: AI分段模型，区分干货片段和水货片段\n说明: 从魔搭社区下载MNN格式模型文件\nv2.4.64: 更换为Qwen2.5，解决旧模型乱码问题",
-            "约1GB",
+            "阿里 MNN-LLM (Qwen2-1.5B-Instruct)",
+            "阿里巴巴 MNN 推理引擎\n模型: Qwen2-1.5B-Instruct-MNN (4bit量化)\n大小: 约870MB | 来源: ModelScope官方\n状态: 支持下载\n适用: AI分段模型，区分干货片段和水货片段\n说明: 从魔搭社区下载MNN格式模型文件\nv2.4.65: 更换为Qwen2，解决旧模型乱码问题",
+            "约870MB",
             null,  // 使用 multiFileUrls 多文件下载
-            "mnn-llm/Qwen2.5-1.5B-Instruct-MNN",
+            "mnn-llm/Qwen2-1.5B-Instruct-MNN",
             unavailable = false,
             multiFileUrls = listOf(
-                "https://www.modelscope.cn/api/v1/models/zhaode/Qwen2.5-1.5B-Instruct-MNN/repo?Revision=master&FilePath=llm.mnn",
-                "https://www.modelscope.cn/api/v1/models/zhaode/Qwen2.5-1.5B-Instruct-MNN/repo?Revision=master&FilePath=llm.mnn.weight",
-                "https://www.modelscope.cn/api/v1/models/zhaode/Qwen2.5-1.5B-Instruct-MNN/repo?Revision=master&FilePath=llm.mnn.json",
-                "https://www.modelscope.cn/api/v1/models/zhaode/Qwen2.5-1.5B-Instruct-MNN/repo?Revision=master&FilePath=tokenizer.txt",
-                "https://www.modelscope.cn/api/v1/models/zhaode/Qwen2.5-1.5B-Instruct-MNN/repo?Revision=master&FilePath=config.json",
-                "https://www.modelscope.cn/api/v1/models/zhaode/Qwen2.5-1.5B-Instruct-MNN/repo?Revision=master&FilePath=llm_config.json"
+                "https://www.modelscope.cn/models/MNN/Qwen2-1.5B-Instruct-MNN/resolve/master/llm.mnn",
+                "https://www.modelscope.cn/models/MNN/Qwen2-1.5B-Instruct-MNN/resolve/master/llm.mnn.weight",
+                "https://www.modelscope.cn/models/MNN/Qwen2-1.5B-Instruct-MNN/resolve/master/llm.mnn.json",
+                "https://www.modelscope.cn/models/MNN/Qwen2-1.5B-Instruct-MNN/resolve/master/tokenizer.txt",
+                "https://www.modelscope.cn/models/MNN/Qwen2-1.5B-Instruct-MNN/resolve/master/config.json",
+                "https://www.modelscope.cn/models/MNN/Qwen2-1.5B-Instruct-MNN/resolve/master/llm_config.json"
             )
         ),
 

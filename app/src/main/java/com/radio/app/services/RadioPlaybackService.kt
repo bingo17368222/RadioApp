@@ -1813,10 +1813,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             "RadioApp/subtitle_service_busy.flag"
         )
         if (busyFlag.exists()) {
-            // [v2.4.17] Check flag age — if older than 15 minutes, it's stale (service crashed/OOM killed)
+            // v2.4.65: Reduced stale timeout from 15min to 2min.
+            // With heartbeat (flag timestamp updated every chunk), a live task updates the flag
+            // every ~15-30 seconds. If no update for 2 minutes, the service is definitely dead.
             val flagAge = System.currentTimeMillis() - busyFlag.lastModified()
-            if (flagAge > 15 * 60 * 1000L) {
-                writePreCacheLog("patrolSubtitle: [v2.4.17] stale busy flag detected (age=${flagAge/1000}s > 15min), deleting and continuing patrol")
+            if (flagAge > 2 * 60 * 1000L) {
+                writePreCacheLog("patrolSubtitle: [v2.4.65] stale busy flag detected (age=${flagAge/1000}s > 2min), deleting and continuing patrol")
                 busyFlag.delete()
             } else {
                 writePreCacheLog("patrolSubtitle: [v2.4.59] subtitle service is busy (flag age=${flagAge/1000}s), skipping patrol")
