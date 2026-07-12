@@ -86,6 +86,8 @@ class PlayerActivity : AppCompatActivity() {
 
     // Feature B: Real-time position tracking
     private var currentPlaybackPositionMs: Long = 0
+    // v2.4.70: Track duration for stale position detection during episode switch
+    private var currentPlaybackDurationMs: Long = 0
     // [v2.0.62] Issue 1 Fix: Service is now the authoritative position source (PowerAmp approach).
     // The service never reports 0 during seeking/buffering, so UI just displays what service reports.
     // We keep a simple UI-level monotonic guard as defense-in-depth.
@@ -866,6 +868,18 @@ class PlayerActivity : AppCompatActivity() {
                 val currentEpId = currentEpisode?.id
                 var displayPosition = position
                 if (currentEpId != null && currentEpId != lastJitterEpisodeId) {
+                    // v2.4.70: Fix continuous playback progress bar stuck at 100%.
+                    // When episode auto-switches (continuous play), ExoPlayer may still report
+                    // the OLD episode's end position (e.g., 7198144) for a few callbacks before
+                    // the new episode loads. If we accept this old position, the progress bar
+                    // shows 100% (full) for the new episode until ExoPlayer catches up.
+                    // Fix: If position is >90% of the OLD episode's duration, it's likely a
+                    // stale position from the old episode — skip it and wait for a valid position.
+                    val oldDuration = currentPlaybackDurationMs
+                    if (oldDuration > 10000 && position > oldDuration * 0.9) {
+                        writeJitterLog("[v2.4.70] onPositionChanged: episode changed to $currentEpId, but pos=$position is near old duration=$oldDuration (>90%), likely stale — waiting for new episode position")
+                        return@runOnUiThread
+                    }
                     // [v2.0.73] Issue 1 Fix: Don't accept position=0 on episode change (player not ready yet).
                     // Wait for a valid position (>2s) before setting baseline, otherwise UI flashes 0.
                     if (position > 2000) {
@@ -988,6 +1002,7 @@ class PlayerActivity : AppCompatActivity() {
                 val dur = duration.toInt()
                 // Feature B: store current playback position
                 currentPlaybackPositionMs = displayPosition
+                currentPlaybackDurationMs = duration  // v2.4.70: Track for stale position detection
                 if (isDragging) return@runOnUiThread
                 if (dur > 0) {
                     binding.seekBar.max = dur

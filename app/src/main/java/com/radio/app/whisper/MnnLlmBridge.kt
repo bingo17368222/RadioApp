@@ -354,9 +354,26 @@ class MnnLlmBridge {
                     val cleanedResponse = response.replace(Regex("[\\s\\p{Punct}]"), "")
                     val isDry = cleanedResponse.contains("干货")
                     val isWater = cleanedResponse.contains("水货")
-                    // Garbage detection: very few unique chars in longer responses = repetitive garbage
+                    // v2.4.70: Enhanced garbage detection - catch multi-language garbage output
                     val uniqueChars = response.take(50).toSet().size
-                    val isGarbage = uniqueChars <= 4 && response.length > 10
+                    // v2.4.70: Check for non-CJK characters (Russian, Japanese, English letters in long responses)
+                    val hasNonCJK = response.length > 10 && response.any { c ->
+                        val code = c.code
+                        // Russian/Cyrillic range
+                        (code in 0x0400..0x04FF) ||
+                        // Japanese Hiragana/Katakana
+                        (code in 0x3040..0x30FF) ||
+                        // Latin letters (English) in responses >20 chars (short responses like "干货" are OK)
+                        (code in 0x41..0x7A && response.length > 20)
+                    }
+                    // v2.4.70: Garbage if: few unique chars, OR contains non-CJK chars (multi-language garbage),
+                    // OR response >30 chars but doesn't contain either keyword (model is outputting random text)
+                    val isGarbage = when {
+                        uniqueChars <= 4 && response.length > 10 -> true  // Repetitive garbage (慰慰慰, FFFFFFFF)
+                        hasNonCJK -> true  // Multi-language garbage (Russian, Japanese, English mixed in)
+                        response.length > 30 && !isDry && !isWater -> true  // Long response with no keywords
+                        else -> false
+                    }
                     // v2.4.61: If both keywords appear (unlikely), prioritize based on position (first match wins)
                     val finalIsDry = when {
                         isGarbage -> {
