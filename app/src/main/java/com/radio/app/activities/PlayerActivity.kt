@@ -1270,8 +1270,8 @@ class PlayerActivity : AppCompatActivity() {
         // If saved position is stale, onServiceConnected will immediately correct it.
         var preFilled = false
         if (currentEpisode != null) {
-            val episodeKey = "${currentEpisode!!.stationId}::${currentEpisode!!.title}"
-            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val episodeKey = currentEpisode!!.id ?: ""
+            val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
             if (savedPos > 0) {
                 binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                 binding.seekBar.progress = savedPos.toInt()
@@ -1747,9 +1747,15 @@ class PlayerActivity : AppCompatActivity() {
                     // If MNN fails, show error directly - NO fallback to keyword-based segmentation
                     var segments: List<VoiceSegment> = emptyList()
                     if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
+                        // v2.4.64: Support both new Qwen2.5 and old Qwen1.5 model directories
+                        // Check for new model first, fall back to old model directory
                         val modelsDir = getExternalFilesDir("models")
-                        val mnnModelDir = File(modelsDir, "mnn-llm/Qwen1.5-1.8B-Chat-MNN")
-                        writeJitterLog("[v2.4.28] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
+                        var mnnModelDir = File(modelsDir, "mnn-llm/Qwen2.5-1.5B-Instruct-MNN")
+                        if (!mnnModelDir.exists()) {
+                            // Fall back to old model directory for backward compatibility
+                            mnnModelDir = File(modelsDir, "mnn-llm/Qwen1.5-1.8B-Chat-MNN")
+                        }
+                        writeJitterLog("[v2.4.64] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
 
                         if (!MnnLlmBridge.isModelInstalled(mnnModelDir)) {
                             val err = MnnLlmBridge.lastError
@@ -2876,8 +2882,8 @@ class PlayerActivity : AppCompatActivity() {
                 clearSubtitles()
                 currentEpisodeIndex = targetIdx
                 saveLastEpisode()
-                val episodeKey = "${ep.stationId}::${ep.title}"
-                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val episodeKey = ep.id ?: ""
+                val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playbackService?.playEpisode(ep, false, startPos)
                 voiceSegments = generateSimulatedSegments()
@@ -2920,8 +2926,8 @@ class PlayerActivity : AppCompatActivity() {
                 clearSubtitles()
                 currentEpisodeIndex = targetIdx
                 saveLastEpisode()
-                val episodeKey = "${ep.stationId}::${ep.title}"
-                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val episodeKey = ep.id ?: ""
+                val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playbackService?.playEpisode(ep, false, startPos)
                 voiceSegments = generateSimulatedSegments()
@@ -3022,8 +3028,8 @@ class PlayerActivity : AppCompatActivity() {
                     // Issue 10 Fix 2: clear old subtitles when crossing to another day's episode
                     clearSubtitles()
                     saveLastEpisode()
-                    val episodeKey = "${targetEpisode.stationId}::${targetEpisode.title}"
-                    val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                    val episodeKey = targetEpisode.id ?: ""
+                    val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                     val startPos = if (savedPos > 0) savedPos else -1L
                     playbackService?.playEpisode(targetEpisode, false, startPos)
                     voiceSegments = generateSimulatedSegments()

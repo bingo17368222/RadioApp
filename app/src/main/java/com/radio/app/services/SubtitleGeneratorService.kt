@@ -45,6 +45,8 @@ class SubtitleGeneratorService : Service() {
         private const val SAMPLE_RATE = 16000
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "subtitle_progress_channel"
+        private const val NOTIFICATION_ID_ERROR = 1002  // v2.4.64: Error notification
+        private const val CHANNEL_ID_ERROR = "subtitle_error_channel"  // v2.4.64
         private const val TASK_TIMEOUT_MS = 10 * 60 * 1000L // 10 minutes hard timeout per task
         private const val MAX_AUDIO_DURATION_SEC = 1800L // 30分钟最大处理时长，超长音频只处理前30分钟
         // [v2.4.13] File-based flag for cross-process subtitle idle detection.
@@ -298,6 +300,11 @@ class SubtitleGeneratorService : Service() {
             )
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(channel)
+            // v2.4.64: Error notification channel (high importance for visibility)
+            val errorChannel = NotificationChannel(
+                CHANNEL_ID_ERROR, "字幕生成错误", NotificationManager.IMPORTANCE_HIGH
+            )
+            nm.createNotificationChannel(errorChannel)
         }
 
         // [v2.0.99] Register broadcast receiver for ASR provider changes.
@@ -3997,7 +4004,23 @@ class SubtitleGeneratorService : Service() {
                     val dummyCallback = object : SubtitleCallback {
                         override fun onSubtitleGenerated(transcript: Transcript) {}
                         override fun onProgressUpdate(progress: Int, total: Int) {}
-                        override fun onError(error: String) {}
+                        override fun onError(error: String) {
+                            // v2.4.64: Pre-cache task failure - show notification with failure reason
+                            logToFile("onStartCommand: [v2.4.64] PRE-CACHE subtitle task FAILED for $episodeId: $error")
+                            try {
+                                val notif = NotificationCompat.Builder(this@SubtitleGeneratorService, CHANNEL_ID_ERROR)
+                                    .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                                    .setContentTitle("字幕预生成失败")
+                                    .setContentText("$error")
+                                    .setStyle(NotificationCompat.BigTextStyle().bigText(error))
+                                    .setAutoCancel(true)
+                                    .build()
+                                val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                                notifManager.notify(NOTIFICATION_ID_ERROR, notif)
+                            } catch (e: Exception) {
+                                logToFile("onStartCommand: failed to show error notification: ${e.message}")
+                            }
+                        }
                         override fun onComplete(transcripts: List<Transcript>) {}
                     }
                     generateSubtitlesForEpisode(episodeId, audioUrl, dummyCallback)

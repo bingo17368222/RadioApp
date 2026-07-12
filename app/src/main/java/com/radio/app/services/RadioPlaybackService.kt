@@ -2403,8 +2403,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             pendingStartPosition = -1L
             pos
         } else {
-            val episodeKey = "${ep.stationId}::${ep.title}"
-            getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val episodeKey = ep.id ?: ""
+            if (episodeKey.isBlank()) -1L else getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
         }
         if (savedPos > 0 && !isLive) {
             isSeekingToPosition = true
@@ -3976,13 +3976,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // [v2.4.6] Save position immediately after seek to prevent loss on crash.
             // Previously position was only saved periodically while playing.
             // If the app crashes (e.g., Whisper OOM), the last seek position would be lost.
+            // v2.4.63: Use episode ID as key (unique per episode, not shared across dates)
             val ep = currentEpisode
             if (ep != null && pos > 0 && !isLive) {
-                val episodeKey = "${ep.stationId}::${ep.title}"
-                getSharedPreferences("playback_positions", MODE_PRIVATE)
-                    .edit().putLong(episodeKey, pos)
-                    .putLong(ep.id ?: "", pos).commit()  // commit() = synchronous write
-                writeServiceLog("playback", "[v2.4.6] seekTo: saved position=$pos for episode=$episodeKey")
+                val episodeKey = ep.id ?: ""
+                if (episodeKey.isNotBlank()) {
+                    getSharedPreferences("playback_positions", MODE_PRIVATE)
+                        .edit().putLong(episodeKey, pos).commit()  // commit() = synchronous write
+                    writeServiceLog("playback", "[v2.4.63] seekTo: saved position=$pos for episodeId=$episodeKey")
+                }
             }
         } else {
             // Player not ready - store seek and apply when STATE_READY fires
@@ -4189,7 +4191,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 用于 Activity 重建时恢复播放进度，避免从 0 开始播放导致位置抖动
      */
     fun getSavedPositionForEpisode(episode: Episode): Long {
-        val episodeKey = "${episode.stationId}::${episode.title}"
+        // v2.4.63: Use episode ID as key (unique per episode)
+        val episodeKey = episode.id ?: ""
+        if (episodeKey.isBlank()) return -1L
         return getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
     }
 
@@ -4569,8 +4573,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         if (prevEpisode != null) {
-            val episodeKey = "${prevEpisode.stationId}::${prevEpisode.title}"
-            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val episodeKey = prevEpisode.id ?: ""
+            val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(prevEpisode, false, startPos)
             writeServiceLog("notification", "notifyPrevEpisode: AFTER switch - new title='${prevEpisode.title}', new date='$notificationDate', new timeRange='$notificationTimeRange', fullSubText='${buildNotificationSubText()}'")
@@ -4596,8 +4600,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     savePreCacheList(preCacheListForCross)
                     writeServiceLog("notification", "notifyPrevEpisode: added cross-day episode to preCacheList: ${crossDayEp.id}")
                 }
-                val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
-                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val episodeKey = crossDayEp.id ?: ""
+                val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playEpisode(crossDayEp, false, startPos)
                 callback?.onEpisodeChanged(crossDayEp)
@@ -4642,8 +4646,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         if (nextEpisode != null) {
-            val episodeKey = "${nextEpisode.stationId}::${nextEpisode.title}"
-            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val episodeKey = nextEpisode.id ?: ""
+            val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
             writeServiceLog("notification", "notifyNextEpisode: AFTER switch - new title='${nextEpisode.title}', new date='$notificationDate', new timeRange='$notificationTimeRange', fullSubText='${buildNotificationSubText()}'")
@@ -4669,8 +4673,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     savePreCacheList(preCacheListForCross)
                     writeServiceLog("notification", "notifyNextEpisode: added cross-day episode to preCacheList: ${crossDayEp.id}")
                 }
-                val episodeKey = "${crossDayEp.stationId}::${crossDayEp.title}"
-                val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+                val episodeKey = crossDayEp.id ?: ""
+                val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playEpisode(crossDayEp, false, startPos)
                 callback?.onEpisodeChanged(crossDayEp)
@@ -4757,8 +4761,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             writeNotifDetailLog("autoPlayNextEpisode: found next episode in pre-cache list, switching - title=${nextEpisode.title}, id=${nextEpisode.id}")
             Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")
-            val episodeKey = "${nextEpisode.stationId}::${nextEpisode.title}"
-            val savedPos = getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L)
+            val episodeKey = nextEpisode.id ?: ""
+            val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(nextEpisode, false, startPos)
             updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
