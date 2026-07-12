@@ -142,7 +142,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.76 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.77 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -348,44 +348,51 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     // v2.4.72: Call reset() before each response
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.76] reset() called");
+        mnn_logf("nativeGenerate: [v2.4.77] reset() called");
     }
 
     // ================================================================
-    // v2.4.76: Use response(string) with use_template=true
+    // v2.4.77: Use response(string) with use_template=true + jinja.chat_template
     //
-    // llm_config.json has: "prompt_template": "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n"
-    // With use_template=true, response(string) calls apply_chat_template(user_content)
-    // which replaces %s with user_content. The template contains <|im_start|>/<|im_end|>
-    // but MNN's template engine handles these via special token substitution (not
-    // via tokenizer_encode text matching), so they get correct token IDs.
+    // v2.4.70 tried jinja.chat_template but set it AFTER load() → never applied.
+    // v2.4.76 tried use_template=true without jinja → old MNN ignores
+    // prompt_template, falls back to plain text concatenation → "慰慰慰".
     //
-    // We pass ONLY the user content (no ChatML markers). MNN wraps it with the template.
-    // The system prompt is prepended to the user content as plain text.
+    // v2.4.77: jinja.chat_template is now set BEFORE load() (in MnnLlmBridge.kt).
+    // With use_template=true, response(string) calls apply_chat_template which:
+    //   1. Builds ChatMessages from user_content
+    //   2. Applies Jinja template: <|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n
+    //   3. Calls tokenizer_encode on the result
+    // The Jinja template contains <|im_start|>/<|im_end|> as literal text, but
+    // apply_chat_template returns a string, and tokenizer_encode processes it.
+    // Since the Jinja template is set, tokenizer_encode will see the full ChatML text.
+    // If tokenizer_encode has special_tokens_cache_, <|im_start|> gets correct token ID.
+    // If not, <|im_start|> gets BPE-encoded as regular text → wrong tokens.
+    //
+    // We pass only user content (no ChatML markers). MNN wraps it with Jinja template.
     // ================================================================
 
-    // Build user content: system prompt + user content (no ChatML markers)
     std::string userContent =
         "判断以下广播内容是干货还是水货，只回答干货或水货。\n" + rawPrompt;
 
-    mnn_logf("nativeGenerate: [v2.4.76] response(string) with use_template=true, userContent len=%zu, first200=%.200s",
+    mnn_logf("nativeGenerate: [v2.4.77] response(string) use_template=true+jinja, userContent len=%zu, first200=%.200s",
              userContent.size(), userContent.c_str());
 
     std::ostringstream oss;
     g_response(llm, userContent, &oss, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss.str());
 
-    mnn_logf("nativeGenerate: [v2.4.76] response(string) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+    mnn_logf("nativeGenerate: [v2.4.77] result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
              result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
 
     // If still garbage, try rawPrompt without system prefix
     if (checkGarbage(result) || result.empty()) {
-        mnn_logf("nativeGenerate: [v2.4.76] garbage, trying rawPrompt only");
+        mnn_logf("nativeGenerate: [v2.4.77] garbage, trying rawPrompt only");
         if (g_reset) g_reset(llm);
         std::ostringstream oss2;
         g_response(llm, rawPrompt, &oss2, "<|im_end|>", max_new);
         std::string result2 = cleanResponse(oss2.str());
-        mnn_logf("nativeGenerate: [v2.4.76] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+        mnn_logf("nativeGenerate: [v2.4.77] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
                  result2.size(), checkGarbage(result2) ? 1 : 0, hasValidAnswer(result2) ? 1 : 0, result2.c_str());
         if (!result2.empty() && !checkGarbage(result2)) {
             result = result2;
@@ -409,7 +416,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.76");
+    return env->NewStringUTF("MNN_JNI_v2.4.77");
 }
 
 static bool isGarbageResponse(const std::string& s) {

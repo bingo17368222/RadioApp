@@ -1811,12 +1811,14 @@ class PlayerActivity : AppCompatActivity() {
 
                                     runOnUiThread { Toast.makeText(this, "MNN分析中(分批处理)...", Toast.LENGTH_SHORT).show() }
 
-                                    val results = MnnLlmBridge.classifySubtitles(subtitleData) { current, total ->
+                                    val results = MnnLlmBridge.classifySubtitles(subtitleData) { current, total, mnnResponse ->
                                         val pct = if (total > 0) current * 100 / total else 0
-                                        writeJitterLog("[v2.4.30] btnAiSegment: MNN progress $current/$total ($pct%)")
+                                        writeJitterLog("[v2.4.30] btnAiSegment: MNN progress $current/$total ($pct%) response='${mnnResponse.take(60)}'")
                                         runOnUiThread {
                                             if (_binding != null) {
-                                                binding.tvAiStatus.text = "MNN分析中: $current/$total ($pct%)"
+                                                // v2.4.77: Show MNN response in status text
+                                                val responsePreview = if (mnnResponse.isNotBlank()) " → ${mnnResponse.take(30)}" else ""
+                                                binding.tvAiStatus.text = "MNN分析中: $current/$total ($pct%)$responsePreview"
                                                 binding.progressAi.progress = pct
                                             }
                                             // v2.4.44: Update notification progress

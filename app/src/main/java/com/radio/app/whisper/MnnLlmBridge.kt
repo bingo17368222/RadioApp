@@ -180,7 +180,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.76"
+                    val expectedMarker = "MNN_JNI_v2.4.77"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -216,6 +216,23 @@ class MnnLlmBridge {
                 }
                 mnnLog("init: nativeCreateLlm OK, ptr=$llmPtr")
 
+                // v2.4.77: CRITICAL FIX - Set config BEFORE load()
+                // MNN's load() reads jinja.chat_template from config and sets
+                // chat_template_ in the tokenizer. If we set config AFTER load(),
+                // the Jinja template is never applied.
+                // Also, old MNN (pre-Jinja2) ignores prompt_template in llm_config.json
+                // and falls back to plain text concatenation (no ChatML).
+                // By setting jinja.chat_template BEFORE load(), MNN will use the
+                // Jinja template engine to properly format ChatML with <|im_start|>.
+                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":true,"jinja":{"chat_template":"{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}{%- endfor -%}{{ '<|im_start|>assistant\n' }}"}}"""
+                try {
+                    val configOk = nativeSetConfig(llmPtr, genConfig)
+                    mnnLog("init: [v2.4.77] set_config BEFORE load, result=$configOk")
+                    mnnLog("init: [v2.4.77] genConfig=$genConfig")
+                } catch (e: Exception) {
+                    mnnLog("init: set_config FAILED: ${e.message}")
+                }
+
                 mnnLog("init: loading model...")
                 val loaded = nativeLoad(llmPtr)
                 if (!loaded) {
@@ -228,26 +245,6 @@ class MnnLlmBridge {
                 }
 
                 mnnLog("init: MNN LLM ready!")
-
-                // v2.4.76: CRITICAL FIX - use_template=true
-                // v2.4.75 used use_template=false + manual ChatML text. But old libllm.so
-                // (v2.4.48) tokenizer_encode doesn't recognize <|im_start|>/<|im_end|> as
-                // special tokens → they get encoded as regular text → wrong token IDs →
-                // model outputs "慰慰慰" garbage.
-                //
-                // llm_config.json has prompt_template: "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n"
-                // With use_template=true, MNN's apply_chat_template handles <|im_start|>
-                // correctly (via template substitution, not tokenizer_encode text matching).
-                // We pass only the user content (no ChatML markers) and let MNN apply
-                // the template. System prompt is baked into the user prompt text.
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":true}"""
-                try {
-                    val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.76] set_config result=$configOk, use_template=true (MNN handles ChatML)")
-                    mnnLog("init: [v2.4.76] genConfig=$genConfig")
-                } catch (e: Exception) {
-                    mnnLog("init: set_config FAILED: ${e.message}")
-                }
                 // v2.4.39: Close log at the very end of successful init
                 log.close()
                 return true
@@ -298,7 +295,7 @@ class MnnLlmBridge {
         fun classifySubtitles(
             subtitles: List<Triple<Long, Long, String>>,
             segmentDurationMs: Long = 3 * 60 * 1000L,
-            onProgress: ((Int, Int) -> Unit)? = null
+            onProgress: ((Int, Int, String) -> Unit)? = null
         ): List<MnnSegmentResult>? {
             if (llmPtr == 0L) {
                 Log.e(TAG, "classifySubtitles: LLM not initialized")
@@ -336,12 +333,10 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.76] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.77] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {
-                onProgress?.invoke(idx, groups.size)
-
                 val startTime = group.first / 1000
                 val endTime = group.second / 1000
                 val text = if (group.third.length > 280) group.third.substring(0, 280) else group.third
@@ -350,6 +345,8 @@ class MnnLlmBridge {
                 val prompt = "判断以下广播内容是「干货」还是「水货」。干货=新闻/资讯/有用信息，水货=广告/音乐/闲聊废话。只回答干货或水货，不要其他内容。\n内容(${startTime}s-${endTime}s): $text"
 
                 val response = generate(prompt, 50).trim()
+                // v2.4.77: Include MNN response in progress callback for UI display
+                onProgress?.invoke(idx, groups.size, response)
                 // v2.4.40: Log full response for debugging MNN classification
                 Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} response='${response.take(80)}' textLen=${text.length}")
                 // v2.4.41: Also write to file log
@@ -423,7 +420,7 @@ class MnnLlmBridge {
                 }
             }
 
-            onProgress?.invoke(groups.size, groups.size)
+            onProgress?.invoke(groups.size, groups.size, "")
             Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
             // v2.4.63: Global garbage check - if ALL responses were garbage (model is broken),
             // override all segments to 干货 since MNN classification is unreliable.
