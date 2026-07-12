@@ -2675,7 +2675,7 @@ class SubtitleGeneratorService : Service() {
                             logToFile("generateWithWhisper: [v2.4.67] WARNING: $errorMsg")
                             ctx.log(errorMsg)
                             callback.onError(errorMsg)
-                            return
+                            return false
                         }
                         logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
                         ctx.log("完整PCM缓存 (${sizeMB}MB)")
@@ -2727,7 +2727,7 @@ class SubtitleGeneratorService : Service() {
                                 logToFile("generateWithWhisper: [v2.4.67] WARNING: $errorMsg")
                                 ctx.log(errorMsg)
                                 callback.onError(errorMsg)
-                                return
+                                return false
                             }
                             logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
