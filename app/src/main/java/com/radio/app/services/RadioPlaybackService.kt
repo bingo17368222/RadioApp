@@ -1900,14 +1900,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     (0 until preCacheList.size).toList()
                 }
 
+                // [v2.4.81] Better patrol logging: count what was scanned
+                var totalScanned = 0
+                var withAudio = 0
+                var withSubtitles = 0
+                var withoutAudio = 0
+
                 // [v2.4.19] Also check for leftover _full.pcm (interrupted generation) - prioritize these
                 for (i in scanOrder) {
                     val ep = preCacheList[i]
                     if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
+                    totalScanned++
 
                     // Check if audio is cached
                     val fileName = extractCacheFileName(ep.audioUrl)
-                    if (fileName !in cachedNames) continue
+                    if (fileName !in cachedNames) {
+                        withoutAudio++
+                        continue
+                    }
+                    withAudio++
 
                     // [v2.4.14] Skip episodes marked as "no preprocessing needed"
                     if (settings.isNoPreprocess(ep.id)) continue
@@ -1920,7 +1931,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     } catch (e: Exception) {
                         writePreCacheLog("patrolSubtitle: [v2.4.19] hasCompleteSubtitles failed for ${ep.id}: ${e.message}, treating as incomplete")
                     }
-                    if (isComplete) continue
+                    if (isComplete) {
+                        withSubtitles++
+                        continue
+                    }
 
                     // [v2.4.14] Check if there's a leftover _full.pcm (interrupted generation)
                     // If so, this episode needs resume — prioritize it
@@ -1954,7 +1968,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
-                writePreCacheLog("patrolSubtitle: [v2.4.13] all cached episodes already have complete subtitles (scanned ${scanOrder.size} episodes)")
+                writePreCacheLog("patrolSubtitle: [v2.4.81] all cached episodes already have complete subtitles (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+                // v2.4.81: Show one-time notification when patrol finds nothing to do
+                // but there are episodes without cached audio (need download first)
+                if (withoutAudio > 0 && withAudio > 0 && withSubtitles == withAudio) {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                            if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
+                                nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预生成字幕", NotificationManager.IMPORTANCE_LOW))
+                            }
+                        }
+                        val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
+                            .setSmallIcon(android.R.drawable.ic_media_ff)
+                            .setContentTitle("预生成字幕")
+                            .setContentText("已有字幕: $withSubtitles 集, 待下载音频: $withoutAudio 集")
+                            .setAutoCancel(true)
+                            .build()
+                        val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                        notifManager.notify(2002, notif)
+                    } catch (_: Exception) {}
+                }
             } catch (e: Exception) {
                 writePreCacheLog("patrolSubtitle: [v2.4.13] patrol failed: ${e.message}")
             }
@@ -2924,9 +2958,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // (autoPlayNextEpisode) is never triggered.
         // Fix: when pos is within 3s of dur AND position hasn't changed for 15s
         // (3 consecutive 5s polls), manually trigger episode end handling.
+        // [v2.4.81] FIX: Also handle pos >= dur (position exceeds duration).
+        // When pos > dur, distToEnd is negative, and the old check `distToEnd in 0..3000`
+        // fails. This causes the progress bar to stay at 100% forever.
         if (prepared && !isLive && !userPaused && continuousPlay && dur > 10000) {
             val distToEnd = dur - pos
-            if (distToEnd in 0..3000) {
+            // v2.4.81: Handle both near-end (0..3000) AND past-end (negative distToEnd)
+            val isNearOrPastEnd = distToEnd in -10000..3000
+            if (isNearOrPastEnd) {
                 // Position is near the end
                 if (stuckAtEndSince == 0L) {
                     stuckAtEndSince = System.currentTimeMillis()
@@ -4390,26 +4429,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("notification", "fetchCrossDayEpisode: fetching $stationId on $targetDate (nextDate=$nextDate), currentDate=$currentDate")
             Log.d(TAG, "fetchCrossDayEpisode: fetching $stationId on $targetDate (nextDate=$nextDate)")
 
-            // Issue 2 Fix: 先尝试网络抓取。如果目标日期返回 0 个节目，就沿 nextDate 方向
-            // 继续往后（或往前）尝试，最多 3 天，避免目标日期确实没有节目时直接落到 URL 构造，
-            // 生成一个不存在的文件导致播放失败后又退回只有 2 天节目的 preCacheList。
+            // [v2.4.81] FIX: Removed the 3-day retry loop that skipped dates.
+            // Old behavior: if API returned 0 episodes for 07-31, it advanced to 08-01
+            // and returned 08-01 episodes, SKIPPING 07-31 entirely.
+            // New behavior: try API once for target date. If 0 episodes, fall through
+            // to saved list and URL construction, which correctly handles dates
+            // that the API doesn't have but episodes exist for.
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             var episodes: List<Episode>? = null
-            var networkFetchDate = targetDate
-            for (attempt in 0 until 3) {
-                val fetched = apiService.fetchEpisodesByDateSync(stationId, networkFetchDate)
-                writeServiceLog("notification", "fetchCrossDayEpisode: network fetch (attempt ${attempt + 1}/3) returned episodes=${fetched?.size ?: "null"} for $stationId on $networkFetchDate")
-                if (fetched != null && fetched.isNotEmpty()) {
-                    episodes = fetched
-                    break
-                }
-                // 沿 nextDate 方向推进一天后重试
-                val parsedDate = try { dateFormat.parse(networkFetchDate) } catch (e: Exception) { null }
-                if (parsedDate == null) break
-                val retryCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-                retryCal.time = parsedDate
-                retryCal.add(java.util.Calendar.DAY_OF_YEAR, if (nextDate) 1 else -1)
-                networkFetchDate = dateFormat.format(retryCal.time)
+            val fetched = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+            writeServiceLog("notification", "fetchCrossDayEpisode: network fetch returned episodes=${fetched?.size ?: "null"} for $stationId on $targetDate")
+            if (fetched != null && fetched.isNotEmpty()) {
+                episodes = fetched
             }
 
             if (episodes != null && episodes.isNotEmpty()) {

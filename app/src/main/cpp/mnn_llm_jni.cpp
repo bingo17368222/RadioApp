@@ -145,7 +145,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.80 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.81 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -361,51 +361,151 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     // v2.4.72: Call reset() before each response
     if (g_reset) {
         g_reset(llm);
-        mnn_logf("nativeGenerate: [v2.4.77] reset() called");
+        mnn_logf("nativeGenerate: [v2.4.81] reset() called");
     }
 
     // ================================================================
-    // v2.4.77: Use response(string) with use_template=true + jinja.chat_template
+    // v2.4.81: Manual token ID construction with special tokens
     //
-    // v2.4.70 tried jinja.chat_template but set it AFTER load() → never applied.
-    // v2.4.76 tried use_template=true without jinja → old MNN ignores
-    // prompt_template, falls back to plain text concatenation → "慰慰慰".
+    // v2.4.80 diagnostic confirmed: apply_chat_template works correctly,
+    // returning proper ChatML: <|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n
     //
-    // v2.4.77: jinja.chat_template is now set BEFORE load() (in MnnLlmBridge.kt).
-    // With use_template=true, response(string) calls apply_chat_template which:
-    //   1. Builds ChatMessages from user_content
-    //   2. Applies Jinja template: <|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n
-    //   3. Calls tokenizer_encode on the result
-    // The Jinja template contains <|im_start|>/<|im_end|> as literal text, but
-    // apply_chat_template returns a string, and tokenizer_encode processes it.
-    // Since the Jinja template is set, tokenizer_encode will see the full ChatML text.
-    // If tokenizer_encode has special_tokens_cache_, <|im_start|> gets correct token ID.
-    // If not, <|im_start|> gets BPE-encoded as regular text → wrong tokens.
+    // But the model STILL outputs garbage. Root cause: tokenizer_encode doesn't
+    // recognize <|im_start|>/<|im_end|> as special tokens → they get BPE-encoded
+    // as regular text → wrong token IDs → model outputs garbage.
     //
-    // We pass only user content (no ChatML markers). MNN wraps it with Jinja template.
+    // FIX: Manually construct token IDs:
+    // 1. Call apply_chat_template to get ChatML text
+    // 2. Split by <|im_start|> and <|im_end|> markers
+    // 3. Call tokenizer_encode on each text segment
+    // 4. Insert Qwen2 special token IDs: <|im_start|>=151644, <|im_end|>=151645
+    // 5. Call response(vector<int>) with the combined tokens
     // ================================================================
 
     std::string userContent =
         "判断以下广播内容是干货还是水货，只回答干货或水货。\n" + rawPrompt;
 
-    mnn_logf("nativeGenerate: [v2.4.77] response(string) use_template=true+jinja, userContent len=%zu, first200=%.200s",
+    bool usedManualTokens = false;
+
+    // Try manual token ID construction if apply_chat_template and tokenizer_encode are available
+    if (g_apply_chat_template && g_tokenize && g_response_vec) {
+        // Step 1: Get ChatML text from apply_chat_template
+        std::string chatml = g_apply_chat_template(llm, userContent);
+        mnn_logf("nativeGenerate: [v2.4.81] apply_chat_template returned len=%zu, content='%.300s'",
+                 chatml.size(), chatml.c_str());
+
+        // Step 2: Split by special token markers and build token IDs
+        // Qwen2 special tokens: <|im_start|>=151644, <|im_end|>=151645
+        const int TOKEN_IM_START = 151644;
+        const int TOKEN_IM_END = 151645;
+        const std::string MARKER_START = "<|im_start|>";
+        const std::string MARKER_END = "<|im_end|>";
+
+        std::vector<int> inputIds;
+
+        size_t pos = 0;
+        while (pos < chatml.size()) {
+            // Find next marker
+            size_t startIdx = chatml.find(MARKER_START, pos);
+            size_t endIdx = chatml.find(MARKER_END, pos);
+
+            // Determine which marker comes first
+            size_t nextMarker = std::string::npos;
+            bool isStart = false;
+            if (startIdx != std::string::npos && (endIdx == std::string::npos || startIdx < endIdx)) {
+                nextMarker = startIdx;
+                isStart = true;
+            } else if (endIdx != std::string::npos) {
+                nextMarker = endIdx;
+                isStart = false;
+            }
+
+            if (nextMarker == std::string::npos) {
+                // No more markers, encode the rest
+                std::string rest = chatml.substr(pos);
+                if (!rest.empty()) {
+                    auto tokens = g_tokenize(llm, rest);
+                    mnn_logf("nativeGenerate: [v2.4.81] encode segment len=%zu, tokens=%zu, first5=%d,%d,%d,%d,%d",
+                             rest.size(), tokens.size(),
+                             tokens.size() > 0 ? tokens[0] : -1,
+                             tokens.size() > 1 ? tokens[1] : -1,
+                             tokens.size() > 2 ? tokens[2] : -1,
+                             tokens.size() > 3 ? tokens[3] : -1,
+                             tokens.size() > 4 ? tokens[4] : -1);
+                    inputIds.insert(inputIds.end(), tokens.begin(), tokens.end());
+                }
+                break;
+            }
+
+            // Encode text before the marker
+            if (nextMarker > pos) {
+                std::string segment = chatml.substr(pos, nextMarker - pos);
+                if (!segment.empty()) {
+                    auto tokens = g_tokenize(llm, segment);
+                    inputIds.insert(inputIds.end(), tokens.begin(), tokens.end());
+                }
+            }
+
+            // Insert special token ID
+            inputIds.push_back(isStart ? TOKEN_IM_START : TOKEN_IM_END);
+
+            // Skip past the marker
+            pos = nextMarker + (isStart ? MARKER_START.size() : MARKER_END.size());
+        }
+
+        mnn_logf("nativeGenerate: [v2.4.81] manual token IDs: total=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                 inputIds.size(),
+                 inputIds.size() > 0 ? inputIds[0] : -1,
+                 inputIds.size() > 1 ? inputIds[1] : -1,
+                 inputIds.size() > 2 ? inputIds[2] : -1,
+                 inputIds.size() > 3 ? inputIds[3] : -1,
+                 inputIds.size() > 4 ? inputIds[4] : -1,
+                 inputIds.size() > 5 ? inputIds[5] : -1,
+                 inputIds.size() > 6 ? inputIds[6] : -1,
+                 inputIds.size() > 7 ? inputIds[7] : -1,
+                 inputIds.size() > 8 ? inputIds[8] : -1,
+                 inputIds.size() > 9 ? inputIds[9] : -1);
+
+        // Step 5: Call response(vector<int>)
+        if (!inputIds.empty()) {
+            std::ostringstream oss;
+            g_response_vec(llm, inputIds, &oss, "<|im_end|>", max_new);
+            std::string result = cleanResponse(oss.str());
+
+            mnn_logf("nativeGenerate: [v2.4.81] response(vec) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+                     result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
+
+            if (!result.empty() && !checkGarbage(result)) {
+                usedManualTokens = true;
+                // Return result directly
+                return env->NewStringUTF(result.c_str());
+            }
+            mnn_logf("nativeGenerate: [v2.4.81] manual tokens still garbage, falling back to response(string)");
+        }
+    } else {
+        mnn_logf("nativeGenerate: [v2.4.81] manual tokens not available (apply_chat=%p, tokenize=%p, response_vec=%p)",
+                 g_apply_chat_template, g_tokenize, g_response_vec);
+    }
+
+    // Fallback: response(string) with use_template=true
+    mnn_logf("nativeGenerate: [v2.4.81] fallback: response(string) use_template=true, userContent len=%zu, first200=%.200s",
              userContent.size(), userContent.c_str());
 
     std::ostringstream oss;
     g_response(llm, userContent, &oss, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss.str());
 
-    mnn_logf("nativeGenerate: [v2.4.77] result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+    mnn_logf("nativeGenerate: [v2.4.81] fallback result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
              result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
 
     // If still garbage, try rawPrompt without system prefix
     if (checkGarbage(result) || result.empty()) {
-        mnn_logf("nativeGenerate: [v2.4.77] garbage, trying rawPrompt only");
+        mnn_logf("nativeGenerate: [v2.4.81] garbage, trying rawPrompt only");
         if (g_reset) g_reset(llm);
         std::ostringstream oss2;
         g_response(llm, rawPrompt, &oss2, "<|im_end|>", max_new);
         std::string result2 = cleanResponse(oss2.str());
-        mnn_logf("nativeGenerate: [v2.4.77] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+        mnn_logf("nativeGenerate: [v2.4.81] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
                  result2.size(), checkGarbage(result2) ? 1 : 0, hasValidAnswer(result2) ? 1 : 0, result2.c_str());
         if (!result2.empty() && !checkGarbage(result2)) {
             result = result2;
@@ -429,7 +529,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.80");
+    return env->NewStringUTF("MNN_JNI_v2.4.81");
 }
 
 static bool isGarbageResponse(const std::string& s) {
