@@ -1068,9 +1068,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+            // v2.4.90: Skip episodes marked as "no preprocessing needed" for pre-cache
+            val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
             if (fileName in cachedNames) {
                 futureCachedCount++
-            } else if (!isDisliked && ep.audioUrl.isNotBlank() && nextToDownload == null) {
+            } else if (!isDisliked && !isNoPreprocess && ep.audioUrl.isNotBlank() && nextToDownload == null) {
                 nextToDownload = ep
                 Log.d(TAG, "Pre-cache: next to download: ${ep.title} (index=$i)")
             }
@@ -1113,7 +1115,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val ep = preCacheList[i]
                     val fileName = extractCacheFileName(ep.audioUrl)
                     val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
-                    if (fileName !in updatedCachedNames && !isDisliked && ep.audioUrl.isNotBlank()) {
+                    // v2.4.90: Skip episodes marked as "no preprocessing needed" for pre-cache
+                    val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
+                    if (fileName !in updatedCachedNames && !isDisliked && !isNoPreprocess && ep.audioUrl.isNotBlank()) {
                         nextToDownload = ep
                         break
                     }

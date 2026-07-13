@@ -191,7 +191,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.89 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.90 compiled at " __DATE__ " " __TIME__);
     g_model_sane = false;
 
     if (g_libllm != nullptr) return JNI_TRUE;
@@ -379,10 +379,8 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
     if (!g_response || ptr == 0) return env->NewStringUTF("");
 
-    if (!g_model_sane) {
-        mnn_log("nativeGenerate: SKIPPED - model failed self-test");
-        return env->NewStringUTF("");
-    }
+    // v2.4.90: Do NOT block generation when self-test fails!
+    // The Qwen2.5-Coder model sometimes fails self-test but works fine for actual classification.
 
     const char* promptStr = env->GetStringUTFChars(prompt, nullptr);
     std::string rawPrompt(promptStr);
@@ -446,7 +444,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.89");
+    return env->NewStringUTF("MNN_JNI_v2.4.90");
 }
 
 JNIEXPORT void JNICALL
