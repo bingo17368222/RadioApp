@@ -105,12 +105,13 @@ typedef void (*ResetFunc)(MNN::Transformer::Llm*);
 // But simpler: we use a wrapper that takes the same args and returns vector by value.
 // The compiler will handle the ABI correctly if we match the declaration.
 typedef std::vector<int> (*TokenizeFunc)(MNN::Transformer::Llm*, const std::string&);
-// v2.4.82: FIX: stop_prompt must be const std::string&, NOT const char*!
-// The actual MNN function signature is:
-//   void Llm::response(const vector<int>&, ostream*, const string&, int)
-// Using const char* causes the function to interpret raw C string bytes as a
-// std::string object → undefined behavior → garbage model output.
-typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const std::string&, int);
+// v2.4.84: REVERTED back to const char*! Native log confirmed:
+//   try_resolve: found symbol [3]: ...EEEPKci
+// The MNN function signature is response(vector<int>&, ostream*, const char*, int)
+// NOT const std::string&. Using const std::string& causes the stop_prompt to be
+// garbage (pointer to std::string object, not C string), so the model never stops
+// and outputs "interoper interoper interoper..." until max_new.
+typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const char*, int);
 // v2.4.79: apply_chat_template(string) -> string
 typedef std::string (*ApplyChatTemplateFunc)(const MNN::Transformer::Llm*, const std::string&);
 
@@ -176,7 +177,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.83 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.84 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -405,21 +406,18 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     }
 
     // ================================================================
-    // v2.4.81: Manual token ID construction with special tokens
+    // v2.4.84: Manual token ID construction with special tokens + system prompt
     //
-    // v2.4.80 diagnostic confirmed: apply_chat_template works correctly,
-    // returning proper ChatML: <|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n
+    // v2.4.83 native log confirmed:
+    // 1. apply_chat_template returns ChatML WITHOUT system prompt:
+    //    <|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n
+    // 2. tokenizer_encode doesn't recognize <|im_start|>/<|im_end|> as special tokens
+    // 3. response_vec uses const char* (PKc), NOT const std::string&
     //
-    // But the model STILL outputs garbage. Root cause: tokenizer_encode doesn't
-    // recognize <|im_start|>/<|im_end|> as special tokens → they get BPE-encoded
-    // as regular text → wrong token IDs → model outputs garbage.
-    //
-    // FIX: Manually construct token IDs:
-    // 1. Call apply_chat_template to get ChatML text
-    // 2. Split by <|im_start|> and <|im_end|> markers
-    // 3. Call tokenizer_encode on each text segment
-    // 4. Insert Qwen2 special token IDs: <|im_start|>=151644, <|im_end|>=151645
-    // 5. Call response(vector<int>) with the combined tokens
+    // v2.4.84 fixes:
+    // 1. Reverted ResponseVecFunc typedef back to const char*
+    // 2. Add system prompt manually: <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n
+    // 3. Construct token IDs: system_prompt + user_prompt + assistant_start
     // ================================================================
 
     std::string userContent =
@@ -429,10 +427,22 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
 
     // Try manual token ID construction if apply_chat_template and tokenizer_encode are available
     if (g_apply_chat_template && g_tokenize && g_response_vec) {
-        // Step 1: Get ChatML text from apply_chat_template
+        // Step 1: Get ChatML text from apply_chat_template (user message only)
         std::string chatml = g_apply_chat_template(llm, userContent);
-        mnn_logf("nativeGenerate: [v2.4.81] apply_chat_template returned len=%zu, content='%.300s'",
+        mnn_logf("nativeGenerate: [v2.4.84] apply_chat_template returned len=%zu, content='%.300s'",
                  chatml.size(), chatml.c_str());
+
+        // v2.4.84: Prepend system prompt manually
+        // Qwen2 Jinja template should add system prompt automatically, but MNN's
+        // implementation doesn't. The ChatML starts with <|im_start|>user, missing:
+        //   <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n
+        // We need to add this BEFORE the user message.
+        std::string systemChatML =
+            "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n";
+        std::string fullChatML = systemChatML + chatml;
+
+        mnn_logf("nativeGenerate: [v2.4.84] fullChatML len=%zu (system=%zu + user=%zu)",
+                 fullChatML.size(), systemChatML.size(), chatml.size());
 
         // Step 2: Split by special token markers and build token IDs
         // Qwen2 special tokens: <|im_start|>=151644, <|im_end|>=151645
@@ -444,10 +454,10 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
         std::vector<int> inputIds;
 
         size_t pos = 0;
-        while (pos < chatml.size()) {
+        while (pos < fullChatML.size()) {
             // Find next marker
-            size_t startIdx = chatml.find(MARKER_START, pos);
-            size_t endIdx = chatml.find(MARKER_END, pos);
+            size_t startIdx = fullChatML.find(MARKER_START, pos);
+            size_t endIdx = fullChatML.find(MARKER_END, pos);
 
             // Determine which marker comes first
             size_t nextMarker = std::string::npos;
@@ -462,10 +472,10 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
 
             if (nextMarker == std::string::npos) {
                 // No more markers, encode the rest
-                std::string rest = chatml.substr(pos);
+                std::string rest = fullChatML.substr(pos);
                 if (!rest.empty()) {
                     auto tokens = g_tokenize(llm, rest);
-                    mnn_logf("nativeGenerate: [v2.4.81] encode segment len=%zu, tokens=%zu, first5=%d,%d,%d,%d,%d",
+                    mnn_logf("nativeGenerate: [v2.4.84] encode last segment len=%zu, tokens=%zu, first5=%d,%d,%d,%d,%d",
                              rest.size(), tokens.size(),
                              tokens.size() > 0 ? tokens[0] : -1,
                              tokens.size() > 1 ? tokens[1] : -1,
@@ -479,7 +489,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
 
             // Encode text before the marker
             if (nextMarker > pos) {
-                std::string segment = chatml.substr(pos, nextMarker - pos);
+                std::string segment = fullChatML.substr(pos, nextMarker - pos);
                 if (!segment.empty()) {
                     auto tokens = g_tokenize(llm, segment);
                     inputIds.insert(inputIds.end(), tokens.begin(), tokens.end());
@@ -493,7 +503,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
             pos = nextMarker + (isStart ? MARKER_START.size() : MARKER_END.size());
         }
 
-        mnn_logf("nativeGenerate: [v2.4.81] manual token IDs: total=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+        mnn_logf("nativeGenerate: [v2.4.84] manual token IDs: total=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
                  inputIds.size(),
                  inputIds.size() > 0 ? inputIds[0] : -1,
                  inputIds.size() > 1 ? inputIds[1] : -1,
@@ -506,14 +516,14 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
                  inputIds.size() > 8 ? inputIds[8] : -1,
                  inputIds.size() > 9 ? inputIds[9] : -1);
 
-        // Step 5: Call response(vector<int>)
+        // Step 5: Call response(vector<int>) with const char* stop_prompt
+        // v2.4.84: MUST pass C string literal, NOT std::string!
         if (!inputIds.empty()) {
             std::ostringstream oss;
-            std::string stopPrompt = "<|im_end|>";
-            g_response_vec(llm, inputIds, &oss, stopPrompt, max_new);
+            g_response_vec(llm, inputIds, &oss, "<|im_end|>", max_new);
             std::string result = cleanResponse(oss.str());
 
-            mnn_logf("nativeGenerate: [v2.4.81] response(vec) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+            mnn_logf("nativeGenerate: [v2.4.84] response(vec) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
                      result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
 
             if (!result.empty() && !checkGarbage(result)) {
@@ -521,32 +531,32 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
                 // Return result directly
                 return env->NewStringUTF(result.c_str());
             }
-            mnn_logf("nativeGenerate: [v2.4.81] manual tokens still garbage, falling back to response(string)");
+            mnn_logf("nativeGenerate: [v2.4.84] manual tokens still garbage, falling back to response(string)");
         }
     } else {
-        mnn_logf("nativeGenerate: [v2.4.81] manual tokens not available (apply_chat=%p, tokenize=%p, response_vec=%p)",
+        mnn_logf("nativeGenerate: [v2.4.84] manual tokens not available (apply_chat=%p, tokenize=%p, response_vec=%p)",
                  g_apply_chat_template, g_tokenize, g_response_vec);
     }
 
     // Fallback: response(string) with use_template=true
-    mnn_logf("nativeGenerate: [v2.4.81] fallback: response(string) use_template=true, userContent len=%zu, first200=%.200s",
+    mnn_logf("nativeGenerate: [v2.4.84] fallback: response(string) use_template=true, userContent len=%zu, first200=%.200s",
              userContent.size(), userContent.c_str());
 
     std::ostringstream oss;
     g_response(llm, userContent, &oss, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss.str());
 
-    mnn_logf("nativeGenerate: [v2.4.81] fallback result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+    mnn_logf("nativeGenerate: [v2.4.84] fallback result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
              result.size(), checkGarbage(result) ? 1 : 0, hasValidAnswer(result) ? 1 : 0, result.c_str());
 
     // If still garbage, try rawPrompt without system prefix
     if (checkGarbage(result) || result.empty()) {
-        mnn_logf("nativeGenerate: [v2.4.81] garbage, trying rawPrompt only");
+        mnn_logf("nativeGenerate: [v2.4.84] garbage, trying rawPrompt only");
         if (g_reset) g_reset(llm);
         std::ostringstream oss2;
         g_response(llm, rawPrompt, &oss2, "<|im_end|>", max_new);
         std::string result2 = cleanResponse(oss2.str());
-        mnn_logf("nativeGenerate: [v2.4.81] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
+        mnn_logf("nativeGenerate: [v2.4.84] rawPrompt result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
                  result2.size(), checkGarbage(result2) ? 1 : 0, hasValidAnswer(result2) ? 1 : 0, result2.c_str());
         if (!result2.empty() && !checkGarbage(result2)) {
             result = result2;
@@ -570,7 +580,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.83");
+    return env->NewStringUTF("MNN_JNI_v2.4.84");
 }
 
 static bool isGarbageResponse(const std::string& s) {

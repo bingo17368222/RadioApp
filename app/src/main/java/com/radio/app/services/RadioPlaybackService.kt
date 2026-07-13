@@ -2997,16 +2997,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val distToEnd = dur - pos
             // v2.4.81: Handle both near-end (0..3000) AND past-end (negative distToEnd)
             val isNearOrPastEnd = distToEnd in -10000..3000
-            if (isNearOrPastEnd) {
-                // Position is near the end
+            // v2.4.84: If pos > dur (position EXCEEDS duration), trigger immediately!
+            // No need to wait 15s - the audio is clearly done.
+            val isPastEnd = pos > dur
+            if (isPastEnd) {
+                writeServiceLog("notification", "[v2.4.84] PAST-END: pos=$pos > dur=$dur, triggering autoPlayNextEpisode immediately")
+                stuckAtEndSince = 0L
+                stuckAtEndPos = 0L
+                prepared = false
+                authoritativePosition = 0L
+                maxKnownPosition = 0L
+                lastNotifiedPosition = -1L
+                if (continuousPlay && !isLive) {
+                    autoPlayNextEpisode()
+                } else {
+                    forceNotificationUpdate = true
+                    lastNotificationContentHash = 0
+                    updateNotification()
+                }
+                return
+            } else if (isNearOrPastEnd) {
+                // Position is near the end (within 3s before dur)
                 if (stuckAtEndSince == 0L) {
                     stuckAtEndSince = System.currentTimeMillis()
                     stuckAtEndPos = pos
-                    writeServiceLog("notification", "[v2.4.6] STUCK-AT-END detected: pos=$pos, dur=$dur, distToEnd=${distToEnd}ms, starting 15s timer")
+                    writeServiceLog("notification", "[v2.4.6] STUCK-AT-END detected: pos=$pos, dur=$dur, distToEnd=${distToEnd}ms, starting 5s timer")
                 } else if (pos == stuckAtEndPos) {
                     // Position hasn't changed since we first detected near-end
                     val stuckDuration = System.currentTimeMillis() - stuckAtEndSince
-                    if (stuckDuration >= 15000) {
+                    // v2.4.84: Reduced from 15s to 5s - user sees progress bar at 100% for too long
+                    if (stuckDuration >= 5000) {
                         writeServiceLog("notification", "[v2.4.6] STUCK-AT-END CONFIRMED: pos=$pos unchanged for ${stuckDuration}ms, triggering autoPlayNextEpisode manually")
                         stuckAtEndSince = 0L
                         stuckAtEndPos = 0L
@@ -3024,7 +3044,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                         return
                     } else {
-                        writeServiceLog("notification", "[v2.4.6] STUCK-AT-END waiting: pos=$pos unchanged for ${stuckDuration}ms (need 15000ms)")
+                        writeServiceLog("notification", "[v2.4.6] STUCK-AT-END waiting: pos=$pos unchanged for ${stuckDuration}ms (need 5000ms)")
                     }
                 } else {
                     // Position changed (advanced slightly), reset timer
