@@ -31,6 +31,8 @@ static bool isGarbageResponse(const std::string& s);
 
 // File-based logging for debugging MNN load failures
 static int g_log_fd = -1;
+// v2.4.83: Forward declaration needed because mnn_log calls mnn_logf
+static void mnn_logf(const char* fmt, ...);
 static void mnn_log(const char* msg) {
     LOGI("%s", msg);
     if (g_log_fd < 0) {
