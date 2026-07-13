@@ -1975,7 +1975,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (withoutAudio > 0 && !isPrecaching) {
                     writePreCacheLog("patrolSubtitle: [v2.4.82] found $withoutAudio episodes without audio, triggering pre-cache download")
                     try {
-                        mainScope.launch { triggerPreCache() }
+                        serviceScope.launch { triggerPreCache() }
                     } catch (_: Exception) {}
                 }
                 // v2.4.81: Show one-time notification when patrol finds nothing to do
