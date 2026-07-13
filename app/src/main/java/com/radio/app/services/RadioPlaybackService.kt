@@ -1,6 +1,8 @@
 package com.radio.app.services
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.ComponentName
@@ -980,17 +982,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     /**
      * 写入预缓存日志到外部存储，方便调试
+     * v2.4.80: Fixed to use getLogDir() so logs are included in the log zip
      */
     private fun writePreCacheLog(msg: String) {
         try {
-            val logDir = getExternalFilesDir("logs")
-            if (logDir != null) {
-                if (!logDir.exists()) logDir.mkdirs()
-                val logFile = File(logDir, "precache.log")
-                val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-                FileWriter(logFile, true).use { it.append("[$ts] $msg\n") }
-                Log.d(TAG, "[PreCache] $msg")
-            }
+            // v2.4.80: Use getLogDir() instead of getExternalFilesDir("logs")
+            // so precache logs are included in the collected log zip
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "precache")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = File(logDir, "precache.log")
+            val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            FileWriter(logFile, true).use { it.append("[$ts][v2.4.80] $msg\n") }
+            Log.d(TAG, "[PreCache] $msg")
         } catch (_: Exception) {}
     }
 
@@ -1931,6 +1934,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Found a cached episode without subtitles — trigger subtitle generation
                     writePreCacheLog("patrolSubtitle: [v2.4.13] found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
                     startPreCacheSubtitleGeneration(ep)
+                    // v2.4.80: Show notification when patrol finds episode to process
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                            if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
+                                nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预生成字幕", NotificationManager.IMPORTANCE_LOW))
+                            }
+                        }
+                        val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
+                            .setSmallIcon(android.R.drawable.ic_media_ff)
+                            .setContentTitle("预生成字幕")
+                            .setContentText("正在为 ${ep.title ?: ep.id} 生成字幕...")
+                            .setAutoCancel(true)
+                            .build()
+                        val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                        notifManager.notify(2001, notif)
+                    } catch (_: Exception) {}
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
