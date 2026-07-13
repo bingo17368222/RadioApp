@@ -186,6 +186,18 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return isComplete
     }
 
+    // v2.4.83: Get subtitle segment count for an episode (for diagnostic logging)
+    fun getSubtitleSegmentCount(episodeId: String): Int {
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT COUNT(*) FROM $TABLE_TRANSCRIPTS WHERE episode_id = ?", arrayOf(episodeId))
+        var count = 0
+        if (cursor.moveToFirst()) {
+            count = cursor.getInt(0)
+        }
+        cursor.close()
+        return count
+    }
+
     // [v2.4.12] Get the engine used to generate subtitles for an episode
     fun getTranscriptEngine(episodeId: String): String? {
         val db = readableDatabase

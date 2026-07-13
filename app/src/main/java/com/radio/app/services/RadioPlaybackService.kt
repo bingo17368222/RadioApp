@@ -1758,6 +1758,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.14] episode $episodeId marked as no-preprocess, skipping")
             return
         }
+        // v2.4.83: Skip episodes that are disliked
+        if (appSettings.isDisliked(episodeId)) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.83] episode $episodeId is disliked, skipping")
+            return
+        }
+        if (!episode.title.isNullOrBlank() && appSettings.isDislikedByTitle(episode.stationId, episode.title)) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.83] episode $episodeId title='${episode.title}' is disliked, skipping")
+            return
+        }
         val audioUrl = episode.audioUrl
         if (audioUrl.isNullOrBlank()) {
             writePreCacheLog("startPreCacheSubtitleGeneration: empty audioUrl, skipping")
@@ -1768,7 +1777,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try {
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             if (dbHelper.hasCompleteSubtitles(episodeId)) {
-                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.18] complete subtitles exist for $episodeId, skipping")
+                // v2.4.83: Log detailed info about why it's being skipped
+                val segmentCount = try { dbHelper.getSubtitleSegmentCount(episodeId) } catch (_: Exception) { -1 }
+                val audioFile = File(getExternalFilesDir("episodes"), extractCacheFileName(audioUrl))
+                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.83] SKIP $episodeId: complete subtitles exist (segments=$segmentCount, audioCached=${audioFile.exists()}, audioSize=${if (audioFile.exists()) audioFile.length() else 0})")
                 return
             }
         } catch (e: Exception) {
@@ -1924,6 +1936,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // [v2.4.14] Skip episodes marked as "no preprocessing needed"
                     if (settings.isNoPreprocess(ep.id)) continue
+
+                    // v2.4.83: Skip episodes that are disliked
+                    if (settings.isDisliked(ep.id)) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.83] SKIP ep=${ep.id}, disliked by ID")
+                        continue
+                    }
+                    // v2.4.83: Also check by title (stationId + title)
+                    if (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.83] SKIP ep=${ep.id}, disliked by title: ${ep.title}")
+                        continue
+                    }
 
                     // [v2.4.18] Check if subtitles are COMPLETE (not just existing)
                     // [v2.4.19] Wrap in try-catch to prevent patrol abort on DB errors

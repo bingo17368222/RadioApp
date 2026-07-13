@@ -34,14 +34,38 @@ static int g_log_fd = -1;
 static void mnn_log(const char* msg) {
     LOGI("%s", msg);
     if (g_log_fd < 0) {
+        // v2.4.83: Try multiple paths including getLogDir()
+        // getLogDir() returns /sdcard/RadioApp/logs/ which is where log collection happens
         const char* paths[] = {
+            // Primary: /sdcard/RadioApp/logs/subtitle/native.log (matches getLogDir())
+            "/storage/emulated/0/RadioApp/logs/subtitle/native.log",
+            "/sdcard/RadioApp/logs/subtitle/native.log",
+            // Fallback: app-specific external storage
             "/storage/emulated/0/Android/data/com.radio.app/files/logs/subtitle/native.log",
             "/data/data/com.radio.app/files/logs/subtitle/native.log",
             nullptr
         };
         for (int i = 0; paths[i] != nullptr; i++) {
+            // v2.4.83: Create parent directory if it doesn't exist
+            char dir[256];
+            strncpy(dir, paths[i], sizeof(dir) - 1);
+            dir[sizeof(dir) - 1] = '\0';
+            char* last_slash = strrchr(dir, '/');
+            if (last_slash) {
+                *last_slash = '\0';
+                mkdir(dir, 0755);
+                // Also create parent of parent
+                char* prev_slash = strrchr(dir, '/');
+                if (prev_slash) {
+                    *prev_slash = '\0';
+                    mkdir(dir, 0755);
+                }
+            }
             g_log_fd = open(paths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
-            if (g_log_fd >= 0) break;
+            if (g_log_fd >= 0) {
+                mnn_logf("mnn_log: log file opened at %s (fd=%d)", paths[i], g_log_fd);
+                break;
+            }
         }
     }
     if (g_log_fd >= 0) {
@@ -150,7 +174,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.82 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.83 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -228,15 +252,24 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
 
     // v2.4.72: Resolve response(const vector<int>&, ostream*, const char*, int)
     {
+        // v2.4.83: FIX! The old mangled names used PKc (const char*) for stop_prompt,
+        // but the actual MNN function uses const std::string&. This means dlsym
+        // returned NULL, and the manual token approach was NEVER executed!
+        // The correct mangling for const std::string& is:
+        //   RKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE
         const char* response_vec_names[] = {
-            // Standard mangling for Llm::response(const vector<int>&, ostream*, const char*, int)
+            // Llm::response(const vector<int>&, ostream*, const string&, int)
+            // with const std::string& for stop_prompt (CORRECT)
+            "_ZN3MNN11Transformer3Llm8responseERKNSt6__ndk16vectorIiNS2_9allocatorIiEEEEPNS2_13basic_ostreamIcNS2_11char_traitsIcEEEERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEi",
+            // Alternative with different substitution numbering
+            "_ZN3MNN11Transformer3Llm8responseERKSt6__ndk16vectorIiNS_9allocatorIiEEEEPNS_13basic_ostreamIcNS_11char_traitsIcEEEERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEi",
+            // Another variant
+            "_ZN3MNN11Transformer3Llm8responseERKNSt6__ndk16vectorIiNS2_9allocatorIiEEEEPNS2_13basic_ostreamIcS5_EEERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEEi",
+            // Old names with PKc (const char*) - kept for fallback if MNN uses char*
             "_ZN3MNN11Transformer3Llm8responseERKNSt6__ndk16vectorIiNS2_9allocatorIiEEEEPNS2_13basic_ostreamIcNS2_11char_traitsIcEEEEPKci",
-            // Alternative mangling (different substitution numbering)
             "_ZN3MNN11Transformer3Llm8responseERKSt6__ndk16vectorIiNS_9allocatorIiEEEEPNS_13basic_ostreamIcNS_11char_traitsIcEEEEPKci",
-            // Another possible variant
-            "_ZN3MNN11Transformer3Llm8responseERKNSt6__ndk16vectorIiNS2_9allocatorIiEEEEPNS2_13basic_ostreamIcS5_EEPKci",
         };
-        g_response_vec = try_resolve_symbols<ResponseVecFunc>(g_libllm, response_vec_names, 3);
+        g_response_vec = try_resolve_symbols<ResponseVecFunc>(g_libllm, response_vec_names, 5);
     }
 
     // v2.4.79: Resolve apply_chat_template(const string&) -> string
@@ -535,7 +568,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.82");
+    return env->NewStringUTF("MNN_JNI_v2.4.83");
 }
 
 static bool isGarbageResponse(const std::string& s) {
