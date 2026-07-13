@@ -78,9 +78,11 @@ class MnnLlmBridge {
         }
 
         fun isModelInstalled(modelDir: File): Boolean {
-            val hasLlmMnn = File(modelDir, "llm.mnn").let { it.exists() && it.length() > 1_000_000 }
+            // v2.4.89: llm.mnn can be as small as 488KB for newer models (was 1.15MB for old ones)
+            val hasLlmMnn = File(modelDir, "llm.mnn").let { it.exists() && it.length() > 100_000 }
             val hasWeight = File(modelDir, "llm.mnn.weight").let { it.exists() && it.length() > 100_000_000 }
-            val hasConfig = File(modelDir, "config.json").exists() || File(modelDir, "llm.mnn.json").exists()
+            // v2.4.89: config.json is the runtime config (required), llm.mnn.json is model structure (optional)
+            val hasConfig = File(modelDir, "config.json").exists()
             val libsDir = File(modelDir.parentFile, "mnn-libs")
             val hasLibllm = File(libsDir, "libllm.so").exists()
             val installed = hasLlmMnn && hasWeight && hasConfig && hasLibllm
@@ -173,7 +175,7 @@ class MnnLlmBridge {
                     mnnLog("init: nativeInit OK")
 
                     // Version check
-                    val expectedMarker = "MNN_JNI_v2.4.88"
+                    val expectedMarker = "MNN_JNI_v2.4.89"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -193,33 +195,16 @@ class MnnLlmBridge {
                     }
                 }
 
-                // v2.4.87: RESTORE llm_config.json - remove jinja injection that was corrupting config
+                // v2.4.89: Do NOT modify llm_config.json - new model has correct jinja chat_template built-in.
+                // Old v2.4.87 code removed jinja, but the new Qwen2.5-Coder model NEEDS jinja for chat formatting.
                 val llmConfigFile = File(modelDir, "llm_config.json")
                 if (llmConfigFile.exists()) {
-                    try {
-                        val rawJson = llmConfigFile.readText()
-                        mnnLog("init: llm_config.json size=${llmConfigFile.length()} bytes")
-                        if (rawJson.contains("\"jinja\"")) {
-                            // Remove the jinja key that we injected in previous versions
-                            val json = org.json.JSONObject(rawJson)
-                            if (json.has("jinja")) {
-                                json.remove("jinja")
-                                llmConfigFile.writeText(json.toString())
-                                mnnLog("init: REMOVED jinja from llm_config.json (was corrupting model)")
-                            }
-                        } else {
-                            mnnLog("init: llm_config.json clean (no jinja)")
-                        }
-                    } catch (e: Exception) {
-                        mnnLog("init: Failed to clean llm_config.json: ${e.message}")
-                    }
+                    mnnLog("init: llm_config.json size=${llmConfigFile.length()} bytes (unchanged)")
                 }
 
-                // v2.4.88: CRITICAL FIX - use config.json (runtime config, 159 bytes) NOT llm.mnn.json (model structure, 7MB)!
-                // Previously tried llm.mnn.json FIRST, which caused createLLM() to parse a 7MB model structure
-                // file as runtime config, resulting in wrong model architecture settings → garbage output.
+                // v2.4.88: Use config.json (runtime config) NOT llm.mnn.json (model structure)!
                 // config.json contains: llm_model, llm_weight, backend_type, thread_num, precision, memory
-                // llm_config.json contains: hidden_size, layer_nums, prompt_template, etc.
+                // llm_config.json contains: hidden_size, layer_nums, jinja chat_template, etc.
                 val configFile = File(modelDir, "config.json").takeIf { it.exists() }
                     ?: File(modelDir, "llm_config.json").takeIf { it.exists() }
                 val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
