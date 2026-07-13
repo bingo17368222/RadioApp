@@ -1916,9 +1916,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) {
                         withoutAudio++
+                        writePreCacheLog("patrolSubtitle: [v2.4.82] SKIP ep=${ep.id}, audio NOT cached (expected: $fileName)")
                         continue
                     }
                     withAudio++
+                    writePreCacheLog("patrolSubtitle: [v2.4.82] ep=${ep.id}, audio cached ($fileName), checking subtitles...")
 
                     // [v2.4.14] Skip episodes marked as "no preprocessing needed"
                     if (settings.isNoPreprocess(ep.id)) continue
@@ -1968,7 +1970,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
-                writePreCacheLog("patrolSubtitle: [v2.4.81] all cached episodes already have complete subtitles (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+                writePreCacheLog("patrolSubtitle: [v2.4.82] all cached episodes already have complete subtitles (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+                // v2.4.82: If there are episodes without audio, trigger pre-cache download
+                if (withoutAudio > 0 && !isPrecaching) {
+                    writePreCacheLog("patrolSubtitle: [v2.4.82] found $withoutAudio episodes without audio, triggering pre-cache download")
+                    try {
+                        mainScope.launch { triggerPreCache() }
+                    } catch (_: Exception) {}
+                }
                 // v2.4.81: Show one-time notification when patrol finds nothing to do
                 // but there are episodes without cached audio (need download first)
                 if (withoutAudio > 0 && withAudio > 0 && withSubtitles == withAudio) {

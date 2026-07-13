@@ -182,7 +182,7 @@ class MnnLlmBridge {
                     // nativeGetCompileMarker() will return the OLD marker string.
                     // We compare it against the expected marker and force-kill the process
                     // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.81"
+                    val expectedMarker = "MNN_JNI_v2.4.82"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -372,7 +372,7 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.81] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.82] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {
@@ -471,7 +471,7 @@ class MnnLlmBridge {
                     classifyLog?.flush()  // v2.4.67: Flush before returning
                     classifyLog?.close()
                 } catch (_: Exception) {}
-                return allResults.map { MnnSegmentResult(it.start, it.end, true, "干货") }
+                return allResults.map { MnnSegmentResult(it.start, it.end, true, "干货", wasGarbage = true) }
             }
             // v2.4.41: Close classify log
             try {
@@ -485,7 +485,8 @@ class MnnLlmBridge {
             val start: Long,
             val end: Long,
             val isDry: Boolean,
-            val label: String
+            val label: String,
+            val wasGarbage: Boolean = false  // v2.4.82: true if MNN output was garbage
         )
     }
 }

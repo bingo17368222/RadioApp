@@ -79,7 +79,12 @@ typedef void (*ResetFunc)(MNN::Transformer::Llm*);
 // But simpler: we use a wrapper that takes the same args and returns vector by value.
 // The compiler will handle the ABI correctly if we match the declaration.
 typedef std::vector<int> (*TokenizeFunc)(MNN::Transformer::Llm*, const std::string&);
-typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const char*, int);
+// v2.4.82: FIX: stop_prompt must be const std::string&, NOT const char*!
+// The actual MNN function signature is:
+//   void Llm::response(const vector<int>&, ostream*, const string&, int)
+// Using const char* causes the function to interpret raw C string bytes as a
+// std::string object → undefined behavior → garbage model output.
+typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const std::string&, int);
 // v2.4.79: apply_chat_template(string) -> string
 typedef std::string (*ApplyChatTemplateFunc)(const MNN::Transformer::Llm*, const std::string&);
 
@@ -145,7 +150,7 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.81 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.82 compiled at " __DATE__ " " __TIME__);
 
     if (g_libllm != nullptr) {
         mnn_log("nativeInit: already initialized");
@@ -469,7 +474,8 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
         // Step 5: Call response(vector<int>)
         if (!inputIds.empty()) {
             std::ostringstream oss;
-            g_response_vec(llm, inputIds, &oss, "<|im_end|>", max_new);
+            std::string stopPrompt = "<|im_end|>";
+            g_response_vec(llm, inputIds, &oss, stopPrompt, max_new);
             std::string result = cleanResponse(oss.str());
 
             mnn_logf("nativeGenerate: [v2.4.81] response(vec) result: len=%zu, garbage=%d, hasKeyword=%d, first200=%.200s",
@@ -529,7 +535,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, j
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.81");
+    return env->NewStringUTF("MNN_JNI_v2.4.82");
 }
 
 static bool isGarbageResponse(const std::string& s) {
