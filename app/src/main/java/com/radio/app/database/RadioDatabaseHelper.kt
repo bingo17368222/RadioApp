@@ -117,6 +117,14 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return progress
     }
 
+    // v2.4.86: Delete play progress when episode completes so user can replay from beginning
+    fun deletePlayProgress(episodeId: String) {
+        try {
+            val db = writableDatabase
+            db.delete(TABLE_PLAY_PROGRESS, "episode_id = ?", arrayOf(episodeId))
+        } catch (_: Exception) {}
+    }
+
     // ===== Transcripts =====
 
     fun saveTranscript(transcript: Transcript) {

@@ -2578,13 +2578,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("playback", "[v2.4.63] saveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
     }
 
+    // v2.4.86: Clear saved position from BOTH SharedPreferences AND database when episode completes.
+    // Previously only cleared SharedPreferences, leaving stale DB/Activity cache progress which
+    // caused "cannot replay" issue when PlayerActivity restored from cache and skipped to near-end.
     private fun clearSavedPosition() {
         val ep = currentEpisode ?: return
-        // v2.4.63: Use episode ID as key (same as saveCurrentPosition)
         val episodeKey = ep.id ?: ""
         if (episodeKey.isBlank()) return
+        // 1. Clear service-side SharedPreferences
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().remove(episodeKey).apply()
+        // 2. Clear SQLite database progress
+        try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+            dbHelper.deletePlayProgress(episodeKey)
+        } catch (e: Exception) {
+            writeServiceLog("playback", "[v2.4.86] clearSavedPosition: DB delete failed: ${e.message}")
+        }
+        // 3. Clear Activity's player_position_cache so replay doesn't jump to stale near-end position
+        try {
+            getSharedPreferences("player_position_cache", MODE_PRIVATE)
+                .edit().remove("cached_position").remove("cached_episode_id").apply()
+        } catch (_: Exception) {}
+        writeServiceLog("playback", "[v2.4.86] clearSavedPosition: cleared all progress for episode=$episodeKey")
     }
 
     private fun saveLastEpisode(episode: Episode) {
@@ -3001,7 +3017,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // No need to wait 15s - the audio is clearly done.
             val isPastEnd = pos > dur
             if (isPastEnd) {
-                writeServiceLog("notification", "[v2.4.84] PAST-END: pos=$pos > dur=$dur, triggering autoPlayNextEpisode immediately")
+                writeServiceLog("notification", "[v2.4.86] PAST-END: pos=$pos > dur=$dur, clearing progress and triggering autoPlayNextEpisode")
+                // v2.4.86: Clear saved progress BEFORE switching to next episode
+                // so the completed episode can be replayed from the beginning
+                clearSavedPosition()
                 stuckAtEndSince = 0L
                 stuckAtEndPos = 0L
                 prepared = false
@@ -3027,7 +3046,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val stuckDuration = System.currentTimeMillis() - stuckAtEndSince
                     // v2.4.84: Reduced from 15s to 5s - user sees progress bar at 100% for too long
                     if (stuckDuration >= 5000) {
-                        writeServiceLog("notification", "[v2.4.6] STUCK-AT-END CONFIRMED: pos=$pos unchanged for ${stuckDuration}ms, triggering autoPlayNextEpisode manually")
+                        writeServiceLog("notification", "[v2.4.86] STUCK-AT-END CONFIRMED: pos=$pos unchanged for ${stuckDuration}ms, clearing progress and triggering autoPlayNextEpisode")
+                        // v2.4.86: Clear saved progress BEFORE switching to next episode
+                        clearSavedPosition()
                         stuckAtEndSince = 0L
                         stuckAtEndPos = 0L
                         // Simulate STATE_ENDED handling to trigger continuous play

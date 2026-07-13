@@ -5,10 +5,16 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.35 Bridge for MNN-LLM offline model inference.
+ * v2.4.86 Bridge for MNN-LLM offline model inference.
  * MNN .so files are downloaded with the model (NOT in APK).
  * v2.4.35: .so files are copied to internal storage before dlopen,
  * because Android 7+ blocks dlopen from external storage.
+ *
+ * v2.4.86 fixes:
+ *   1. Call set_config AFTER load() so use_template=true actually takes effect
+ *   2. Native code tries JSON messages array first (cleanest approach)
+ *   3. Native code reorders symbol resolution to try const char* first (prevents ABI mismatch)
+ *   4. Removed keyword classification fallback - MNN should work correctly now
  */
 class MnnLlmBridge {
     companion object {
@@ -37,20 +43,23 @@ class MnnLlmBridge {
         @JvmStatic
         private external fun nativeGenerate(ptr: Long, prompt: String, maxTokens: Int): String
         @JvmStatic
-        private external fun nativeReset(ptr: Long)  // v2.4.69: Reset KV cache and position_id
+        private external fun nativeReset(ptr: Long)
         @JvmStatic
         private external fun nativeFree(ptr: Long)
         @JvmStatic
         private external fun nativeSetConfig(ptr: Long, configJson: String): Boolean
         @JvmStatic
+        private external fun nativeSetConfigPostLoad(ptr: Long): Boolean  // v2.4.86: set config AFTER load
+        @JvmStatic
         private external fun nativeGetCompileMarker(): String
         @JvmStatic
         private external fun nativeTestApplyChatTemplate(ptr: Long, userInput: String): String
+        @JvmStatic
+        private external fun nativeTestJsonTemplate(ptr: Long): String  // v2.4.86: test JSON messages
 
         private var initialized = false
         private var llmPtr: Long = 0L
 
-        // v2.4.57: Moved mnnLog to companion object level so generate() can use it
         private fun mnnLog(msg: String) {
             Log.i(TAG, msg)
             try {
@@ -68,7 +77,6 @@ class MnnLlmBridge {
             val hasLlmMnn = File(modelDir, "llm.mnn").let { it.exists() && it.length() > 1_000_000 }
             val hasWeight = File(modelDir, "llm.mnn.weight").let { it.exists() && it.length() > 100_000_000 }
             val hasConfig = File(modelDir, "config.json").exists() || File(modelDir, "llm.mnn.json").exists()
-            // v2.4.31: Also check for .so files in the libs subdirectory
             val libsDir = File(modelDir.parentFile, "mnn-libs")
             val hasLibllm = File(libsDir, "libllm.so").exists()
             val installed = hasLlmMnn && hasWeight && hasConfig && hasLibllm
@@ -86,14 +94,10 @@ class MnnLlmBridge {
 
         /**
          * Initialize the MNN-LLM engine.
-         * @param modelDir Directory containing llm.mnn, llm.mnn.weight, config.json etc.
-         * @param context Application context for accessing internal storage.
-         * @return true if initialization succeeded
          */
         fun init(modelDir: File, context: Context? = null): Boolean {
             lastError = ""
 
-            // v2.4.37: Use unified log directory
             val logDir = if (context != null) {
                 java.io.File(com.radio.app.RadioApplication.getLogDir(context), "subtitle")
             } else {
@@ -104,37 +108,29 @@ class MnnLlmBridge {
             try {
                 logFile.parentFile?.mkdirs()
                 val log = java.io.FileWriter(logFile, true)
-                // v2.4.40: Make mnnLog exception-safe so it doesn't propagate IOException
-                // and cause init() to fail. The "Stream closed" exception was happening
-                // on the first init() call, causing MNN to fail on first attempt.
                 fun mnnLog(msg: String) {
                     Log.i(TAG, msg)
                     try {
                         log.write("[${System.currentTimeMillis()}] $msg\n")
                         log.flush()
                     } catch (_: Exception) {
-                        // Ignore log write errors
                     }
                 }
 
                 val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
-                mnnLog("init: modelDir=${modelDir.absolutePath}, files=$files")
+                mnnLog("init: [v2.4.86] modelDir=${modelDir.absolutePath}, files=$files")
 
-                // v2.4.31: Get the libs directory (sibling of model dir) - on external storage
                 val extLibsDir = File(modelDir.parentFile, "mnn-libs")
                 mnnLog("init: extLibsDir=${extLibsDir.absolutePath}, exists=${extLibsDir.exists()}")
                 val libFiles = extLibsDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
                 mnnLog("init: extLibFiles=$libFiles")
 
                 if (!initialized) {
-                    // v2.4.48: .so files are now bundled in APK jniLibs.
-                    // Try nativeInit with empty path first (uses default dlopen search).
-                    mnnLog("init: using bundled .so files (v2.4.48), calling nativeInit('')...")
+                    mnnLog("init: using bundled .so files, calling nativeInit('')...")
                     initialized = nativeInit("")
                     mnnLog("init: nativeInit('') returned $initialized")
 
                     if (!initialized) {
-                        // Fallback: try loading from internal storage (old method)
                         mnnLog("init: bundled load failed, trying external storage copy...")
                         val internalLibsDir = if (context != null) {
                             File(context.filesDir, "mnn-libs")
@@ -177,66 +173,56 @@ class MnnLlmBridge {
                     }
                     mnnLog("init: nativeInit OK")
 
-                    // v2.4.58: Verify the loaded .so is the current version.
-                    // If the :subtitle process kept an OLD .so in memory (from before APK update),
-                    // nativeGetCompileMarker() will return the OLD marker string.
-                    // We compare it against the expected marker and force-kill the process
-                    // so the next init attempt loads the fresh .so.
-                    val expectedMarker = "MNN_JNI_v2.4.84"
+                    // Version check - force process restart if old .so is cached
+                    val expectedMarker = "MNN_JNI_v2.4.86"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
                         if (actualMarker != expectedMarker) {
-                            mnnLog("init: OLD .so DETECTED (marker=$actualMarker, expected=$expectedMarker)! Force-killing :subtitle process to load fresh .so on next init.")
-                            lastError = "检测到旧版MNN运行库(已加载)，正在强制重启进程以加载新版本。请重新点击AI分段。"
+                            mnnLog("init: OLD .so DETECTED! Force-killing :subtitle process.")
+                            lastError = "检测到旧版MNN运行库，正在强制重启进程以加载新版本。请重新点击AI分段。"
                             log.close()
-                            // Kill this process so next init loads the new .so
                             android.os.Process.killProcess(android.os.Process.myPid())
                             return false
                         }
                     } catch (e: Exception) {
-                        mnnLog("init: nativeGetCompileMarker not available (old .so without this function), assuming old version")
-                        // If nativeGetCompileMarker doesn't exist, it's definitely an old .so
-                        lastError = "检测到旧版MNN运行库(无版本标记)，正在强制重启进程。请重新点击AI分段。"
+                        mnnLog("init: nativeGetCompileMarker not available, assuming old version")
+                        lastError = "检测到旧版MNN运行库，正在强制重启进程。请重新点击AI分段。"
                         log.close()
                         android.os.Process.killProcess(android.os.Process.myPid())
                         return false
                     }
                 }
 
-                // v2.4.78: Inject jinja.chat_template into llm_config.json on device.
-                // set_config() before load() (v2.4.77) didn't work because MNN's load()
-                // reads config from the FILE (passed to createLlm), not from set_config.
-                // By modifying llm_config.json directly, createLlm will read the
-                // jinja.chat_template and load() will set it in the tokenizer.
+                // Inject jinja.chat_template into llm_config.json so the tokenizer
+                // knows how to format ChatML and recognizes special tokens
                 val llmConfigFile = File(modelDir, "llm_config.json")
                 if (llmConfigFile.exists()) {
                     try {
                         val rawJson = llmConfigFile.readText()
                         val json = org.json.JSONObject(rawJson)
-                        // Check if jinja.chat_template already exists
                         if (!json.has("jinja")) {
                             val jinjaObj = org.json.JSONObject()
                             jinjaObj.put("chat_template", "{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}{%- endfor -%}{{ '<|im_start|>assistant\\n' }}")
                             json.put("jinja", jinjaObj)
                             llmConfigFile.writeText(json.toString())
-                            mnnLog("init: [v2.4.78] Injected jinja.chat_template into llm_config.json")
+                            mnnLog("init: Injected jinja.chat_template into llm_config.json")
                         } else {
                             val jinjaObj = json.getJSONObject("jinja")
                             if (!jinjaObj.has("chat_template")) {
                                 jinjaObj.put("chat_template", "{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}{%- endfor -%}{{ '<|im_start|>assistant\\n' }}")
                                 json.put("jinja", jinjaObj)
                                 llmConfigFile.writeText(json.toString())
-                                mnnLog("init: [v2.4.78] Added chat_template to existing jinja object in llm_config.json")
+                                mnnLog("init: Added chat_template to existing jinja object")
                             } else {
-                                mnnLog("init: [v2.4.78] jinja.chat_template already exists in llm_config.json")
+                                mnnLog("init: jinja.chat_template already exists")
                             }
                         }
                     } catch (e: Exception) {
-                        mnnLog("init: [v2.4.78] Failed to inject jinja.chat_template: ${e.message}")
+                        mnnLog("init: Failed to inject jinja.chat_template: ${e.message}")
                     }
                 } else {
-                    mnnLog("init: [v2.4.78] llm_config.json not found, cannot inject jinja.chat_template")
+                    mnnLog("init: llm_config.json not found")
                 }
 
                 val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
@@ -253,15 +239,6 @@ class MnnLlmBridge {
                 }
                 mnnLog("init: nativeCreateLlm OK, ptr=$llmPtr")
 
-                // v2.4.78: Also set config before load (backup in case file injection fails)
-                val genConfig = """{"temperature":0.1,"top_p":0.8,"max_new_tokens":2000,"repetition_penalty":1.0,"use_template":true,"jinja":{"chat_template":"{%- for message in messages -%}{{ '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}{%- endfor -%}{{ '<|im_start|>assistant\n' }}"}}"""
-                try {
-                    val configOk = nativeSetConfig(llmPtr, genConfig)
-                    mnnLog("init: [v2.4.78] set_config BEFORE load, result=$configOk")
-                } catch (e: Exception) {
-                    mnnLog("init: set_config FAILED: ${e.message}")
-                }
-
                 mnnLog("init: loading model...")
                 val loaded = nativeLoad(llmPtr)
                 if (!loaded) {
@@ -272,19 +249,36 @@ class MnnLlmBridge {
                     log.close()
                     return false
                 }
+                mnnLog("init: nativeLoad OK")
+
+                // v2.4.86: CRITICAL - Call set_config AFTER load()!
+                // Previously this was called before load(), which MNN ignores
+                // because load() reads config from the file passed to createLlm.
+                // Setting use_template=true after load ensures MNN applies the
+                // Jinja chat template when response(string) is called.
+                try {
+                    val configOk = nativeSetConfigPostLoad(llmPtr)
+                    mnnLog("init: [v2.4.86] nativeSetConfigPostLoad returned $configOk (use_template=true, temperature=0.1)")
+                } catch (e: Exception) {
+                    mnnLog("init: nativeSetConfigPostLoad FAILED: ${e.message}")
+                }
 
                 mnnLog("init: MNN LLM ready!")
 
-                // v2.4.79: Diagnostic - test apply_chat_template to see what MNN generates
+                // v2.4.86: Diagnostics - test both plain text and JSON messages template
                 try {
-                    val testInput = "你好"
-                    val templateResult = nativeTestApplyChatTemplate(llmPtr, testInput)
-                    mnnLog("init: [v2.4.79] DIAGNOSTIC: apply_chat_template('$testInput') = '$templateResult'")
+                    val plainResult = nativeTestApplyChatTemplate(llmPtr, "你好")
+                    mnnLog("init: DIAGNOSTIC apply_chat_template('你好') = '${plainResult.take(300)}'")
                 } catch (e: Exception) {
-                    mnnLog("init: [v2.4.79] DIAGNOSTIC failed: ${e.message}")
+                    mnnLog("init: DIAGNOSTIC apply_chat_template failed: ${e.message}")
+                }
+                try {
+                    val jsonResult = nativeTestJsonTemplate(llmPtr)
+                    mnnLog("init: DIAGNOSTIC apply_chat_template(JSON messages) = '${jsonResult.take(300)}'")
+                } catch (e: Exception) {
+                    mnnLog("init: DIAGNOSTIC JSON template failed: ${e.message}")
                 }
 
-                // v2.4.39: Close log at the very end of successful init
                 log.close()
                 return true
             } catch (e: Exception) {
@@ -303,18 +297,12 @@ class MnnLlmBridge {
                 Log.e(TAG, "generate: LLM not initialized")
                 return ""
             }
-            // v2.4.69: CRITICAL FIX - Call reset() before each generate to clear KV cache
-            // and reset position_id to 0. Without this, position_id accumulates across calls,
-            // causing RoPE position embedding corruption → garbage output ("集结漏", "慰慰慰").
-            // The reset() is also called inside nativeGenerate before each response() attempt,
-            // but calling it here too ensures the Kotlin-level caller has a clean session.
             try {
                 nativeReset(llmPtr)
-                mnnLog("generate: [v2.4.69] reset() called (KV cache cleared, position_id=0)")
             } catch (e: Exception) {
-                mnnLog("generate: [v2.4.69] nativeReset failed: ${e.message}")
+                mnnLog("generate: nativeReset failed: ${e.message}")
             }
-            mnnLog("generate: calling nativeGenerate with raw prompt (len=${prompt.length}), maxTokens=$maxTokens")
+            mnnLog("generate: calling nativeGenerate with prompt len=${prompt.length}, maxTokens=$maxTokens")
             val result = nativeGenerate(llmPtr, prompt, maxTokens)
             mnnLog("generate: response len=${result.length}, first200=${result.take(200)}")
             return result
@@ -329,7 +317,8 @@ class MnnLlmBridge {
 
         /**
          * Classify subtitle segments in batches of 1 segment.
-         * v2.4.31: batch size = 1 for faster progress feedback
+         * v2.4.86: Removed keyword classification fallback. The MNN fixes should
+         * make the model produce correct "干货"/"水货" answers.
          */
         fun classifySubtitles(
             subtitles: List<Triple<Long, Long, String>>,
@@ -361,81 +350,71 @@ class MnnLlmBridge {
 
             if (groups.isEmpty()) return null
 
-            // v2.4.31: Process ONE segment at a time for fastest progress feedback
             val allResults = mutableListOf<MnnSegmentResult>()
-            Log.i(TAG, "classifySubtitles: ${groups.size} segments, batch=1")
+            Log.i(TAG, "classifySubtitles: [v2.4.86] ${groups.size} segments, batch=1")
 
-            // v2.4.41: Write classification results to mnn_classify.log for debugging
             val classifyLogFile = java.io.File("/storage/emulated/0/RadioApp/logs/subtitle/mnn_classify.log")
             try { classifyLogFile.parentFile?.mkdirs() } catch (_: Exception) {}
             val classifyLog = try {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.85] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.86] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
+
+            var garbageCount = 0
 
             for ((idx, group) in groups.withIndex()) {
                 val startTime = group.first / 1000
                 val endTime = group.second / 1000
                 val text = if (group.third.length > 280) group.third.substring(0, 280) else group.third
 
-                // v2.4.61: Improved prompt - more direct, ask for single word answer only
-                val prompt = "判断以下广播内容是「干货」还是「水货」。干货=新闻/资讯/有用信息，水货=广告/音乐/闲聊废话。只回答干货或水货，不要其他内容。\n内容(${startTime}s-${endTime}s): $text"
+                // v2.4.86: Simpler prompt - native code now adds system prompt via JSON messages
+                val prompt = "判断以下广播内容(${startTime}s-${endTime}s)是干货还是水货，只回答干货或水货：\n$text"
 
                 val response = generate(prompt, 50).trim()
-                // v2.4.77: Include MNN response in progress callback for UI display
                 onProgress?.invoke(idx, groups.size, response)
-                // v2.4.40: Log full response for debugging MNN classification
                 Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} response='${response.take(80)}' textLen=${text.length}")
-                // v2.4.41: Also write to file log
                 try {
                     classifyLog?.write("[${System.currentTimeMillis()}] seg ${idx+1}/${groups.size}: textLen=${text.length}, text='${text.take(80)}', response='${response.take(80)}'\n")
                     classifyLog?.flush()
                 } catch (_: Exception) {}
+
                 if (response.isNotBlank()) {
-                    // v2.4.61: Clean response - remove punctuation/whitespace around keywords
                     val cleanedResponse = response.replace(Regex("[\\s\\p{Punct}]"), "")
                     val isDry = cleanedResponse.contains("干货")
                     val isWater = cleanedResponse.contains("水货")
-                    // v2.4.70: Enhanced garbage detection - catch multi-language garbage output
                     val uniqueChars = response.take(50).toSet().size
-                    // v2.4.70: Check for non-CJK characters (Russian, Japanese, English letters in long responses)
                     val hasNonCJK = response.length > 10 && response.any { c ->
                         val code = c.code
-                        // Russian/Cyrillic range
                         (code in 0x0400..0x04FF) ||
-                        // Japanese Hiragana/Katakana
                         (code in 0x3040..0x30FF) ||
-                        // Latin letters (English) in responses >20 chars (short responses like "干货" are OK)
                         (code in 0x41..0x7A && response.length > 20)
                     }
-                    // v2.4.70: Garbage if: few unique chars, OR contains non-CJK chars (multi-language garbage),
-                    // OR response >30 chars but doesn't contain either keyword (model is outputting random text)
                     val isGarbage = when {
-                        uniqueChars <= 4 && response.length > 10 -> true  // Repetitive garbage (慰慰慰, FFFFFFFF)
-                        hasNonCJK -> true  // Multi-language garbage (Russian, Japanese, English mixed in)
-                        response.length > 30 && !isDry && !isWater -> true  // Long response with no keywords
+                        uniqueChars <= 4 && response.length > 10 -> true
+                        hasNonCJK -> true
+                        response.length > 30 && !isDry && !isWater -> true
                         else -> false
                     }
-                    // v2.4.61: If both keywords appear (unlikely), prioritize based on position (first match wins)
+                    if (isGarbage) garbageCount++
+
                     val finalIsDry = when {
                         isGarbage -> {
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE detected (unique=$uniqueChars, len=${response.length}), defaulting to 干货, response=${response.take(60)}")
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} GARBAGE (unique=$uniqueChars, len=${response.length}), defaulting to 干货, resp=${response.take(60)}")
                             true
                         }
                         isDry && isWater -> {
-                            // Both keywords present - use first occurrence
                             val dryPos = cleanedResponse.indexOf("干货")
                             val waterPos = cleanedResponse.indexOf("水货")
                             val firstIsDry = dryPos >= 0 && (waterPos < 0 || dryPos < waterPos)
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} both keywords, first=${if (firstIsDry) "干货" else "水货"}, response=${response.take(60)}")
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} both keywords, first=${if (firstIsDry) "干货" else "水货"}")
                             firstIsDry
                         }
                         isWater -> false
                         isDry -> true
                         else -> {
-                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword in response, defaulting to 干货, response=${response.take(60)}")
+                            mnnLog("classifySubtitles: seg ${idx+1}/${groups.size} no keyword, defaulting to 干货, resp=${response.take(60)}")
                             true
                         }
                     }
@@ -443,43 +422,33 @@ class MnnLlmBridge {
                         start = group.first,
                         end = group.second,
                         isDry = finalIsDry,
-                        // v2.4.63: Mark garbage responses for global check
                         label = if (isGarbage) "GARBAGE" else if (finalIsDry) "干货" else "水货"
                     ))
                     Log.i(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> ${if (finalIsDry) "干货" else "水货"} (resp=${response.take(30)})")
                 } else {
-                    // Default to dry if no response
+                    garbageCount++
                     allResults.add(MnnSegmentResult(
                         start = group.first,
                         end = group.second,
                         isDry = true,
-                        label = "干货"
+                        label = "GARBAGE"
                     ))
                     Log.w(TAG, "classifySubtitles: seg ${idx + 1}/${groups.size} -> empty, defaulting to 干货")
                 }
             }
 
             onProgress?.invoke(groups.size, groups.size, "")
-            Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
-            // v2.4.63: Global garbage check - if ALL responses were garbage (model is broken),
-            // v2.4.85: Use keyword-based classification instead of defaulting all to 干货
-            val garbageCount = allResults.count { it.label == "GARBAGE" }
-            if (garbageCount > 0 && garbageCount == allResults.size && allResults.size > 0) {
-                mnnLog("classifySubtitles: ALL ${allResults.size} responses were GARBAGE - using keyword-based classification")
+            Log.i(TAG, "classifySubtitles: total results=${allResults.size}, garbage=$garbageCount/${allResults.size}")
+
+            // v2.4.86: If ALL responses were garbage, log it but still return results
+            // (defaulting to 干货). User requested no keyword classification fallback.
+            if (garbageCount == allResults.size && allResults.size > 0) {
+                mnnLog("classifySubtitles: WARNING - ALL ${allResults.size} responses were GARBAGE. MNN model may need attention.")
                 try {
-                    classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: ALL GARBAGE - using keyword classification\n")
-                    classifyLog?.flush()
-                    classifyLog?.close()
+                    classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: WARNING - ALL RESPONSES GARBAGE (MNN issue)\n")
                 } catch (_: Exception) {}
-                // v2.4.85: Keyword-based fallback when MNN model is broken
-                return allResults.mapIndexed { idx, result ->
-                    val subtitleText = groups.getOrNull(idx)?.third ?: ""
-                    val (isDry, label) = keywordClassify(subtitleText)
-                    mnnLog("classifySubtitles: keyword fallback seg ${idx+1}: text='${subtitleText.take(60)}', result=$label")
-                    MnnSegmentResult(result.start, result.end, isDry, label, wasGarbage = true)
-                }
             }
-            // v2.4.41: Close classify log
+
             try {
                 classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: END, ${allResults.size} results, dry=${allResults.count{it.isDry}}, water=${allResults.count{!it.isDry}}, garbage=$garbageCount\n")
                 classifyLog?.close()
@@ -492,60 +461,7 @@ class MnnLlmBridge {
             val end: Long,
             val isDry: Boolean,
             val label: String,
-            val wasGarbage: Boolean = false  // v2.4.82: true if MNN output was garbage
+            val wasGarbage: Boolean = false
         )
-
-        // v2.4.85: Keyword-based classification fallback when MNN model is broken
-        // Returns (isDry, label) based on subtitle text content
-        private fun keywordClassify(text: String): Pair<Boolean, String> {
-            if (text.isBlank() || text.length < 5) {
-                // Very short or empty text → likely music/silence → 水货
-                return Pair(false, "水货")
-            }
-
-            // 水货 keywords (music, ads, entertainment, idle chat)
-            val waterKeywords = listOf(
-                "音乐", "歌曲", "演唱", "歌手", "伴奏", "旋律", "节奏", "播放歌曲",
-                "点歌", "点播", "一首歌", "这首歌", "那首歌", "请听", "请欣赏",
-                "广告", "赞助", "冠名", "特别支持", "品牌", "产品",
-                "短信", "微信", "互动", "游戏", "有奖", "竞猜", "抽奖",
-                "笑话", "搞笑", "娱乐",
-                "欢迎收听", "欢迎回来", "听众朋友", "各位听众",
-                "正在播放", "接下来是", "歌曲时间", "音乐时间"
-            )
-
-            // 干货 keywords (news, information, talk shows with substance)
-            val dryKeywords = listOf(
-                "新闻", "资讯", "报道", "访谈", "评论", "财经", "经济", "政治",
-                "国际", "社会", "科技", "教育", "健康", "法律", "民生", "公益",
-                "讲座", "解读", "分析", "观察", "热点", "焦点", "专题", "深度",
-                "今天的话题", "本期节目", "今天的节目", "我们来聊", "我们来看",
-                "主持人", "嘉宾", "专家", "教授", "博士", "分析师",
-                "据了", "根据", "数据显示", "统计", "调查",
-                "政策", "法规", "改革", "发展", "增长", "下降", "上升"
-            )
-
-            var waterScore = 0
-            var dryScore = 0
-
-            for (kw in waterKeywords) {
-                if (text.contains(kw)) waterScore++
-            }
-            for (kw in dryKeywords) {
-                if (text.contains(kw)) dryScore++
-            }
-
-            // If text is mostly Chinese characters and reasonably long, lean towards 干货
-            val cjkCount = text.count { it.code in 0x4E00..0x9FFF }
-            val textDensity = cjkCount.toDouble() / text.length
-
-            return when {
-                waterScore > dryScore -> Pair(false, "水货")
-                dryScore > 0 -> Pair(true, "干货")
-                textDensity > 0.3 && text.length > 30 -> Pair(true, "干货")  // Substantial Chinese text
-                textDensity < 0.1 -> Pair(false, "水货")  // Very little text → likely music
-                else -> Pair(true, "干货")  // Default to 干货
-            }
-        }
     }
 }
