@@ -173,7 +173,7 @@ class MnnLlmBridge {
                     mnnLog("init: nativeInit OK")
 
                     // Version check
-                    val expectedMarker = "MNN_JNI_v2.4.87"
+                    val expectedMarker = "MNN_JNI_v2.4.88"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")
@@ -215,8 +215,13 @@ class MnnLlmBridge {
                     }
                 }
 
-                val configFile = File(modelDir, "llm.mnn.json").takeIf { it.exists() }
-                    ?: File(modelDir, "config.json").takeIf { it.exists() }
+                // v2.4.88: CRITICAL FIX - use config.json (runtime config, 159 bytes) NOT llm.mnn.json (model structure, 7MB)!
+                // Previously tried llm.mnn.json FIRST, which caused createLLM() to parse a 7MB model structure
+                // file as runtime config, resulting in wrong model architecture settings → garbage output.
+                // config.json contains: llm_model, llm_weight, backend_type, thread_num, precision, memory
+                // llm_config.json contains: hidden_size, layer_nums, prompt_template, etc.
+                val configFile = File(modelDir, "config.json").takeIf { it.exists() }
+                    ?: File(modelDir, "llm_config.json").takeIf { it.exists() }
                 val configPath = configFile?.absolutePath ?: (modelDir.absolutePath + "/")
 
                 mnnLog("init: creating LLM with config: $configPath")

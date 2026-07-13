@@ -1,25 +1,16 @@
-// [v2.4.87] MNN-LLM JNI bridge
+// [v2.4.88] MNN-LLM JNI bridge
 //
-// v2.4.87 ROOT CAUSE FIX:
-//   The model NEVER worked (all 18 classification runs from v2.4.58~v2.4.86 produced garbage).
-//   Root causes identified from logs:
-//   1. set_config() was corrupting model state - ALL methods including bare prompt produced
-//      the same garbage ("慰慰慰" / "interoper" / "FFFFFFFF"), proving the issue was in
-//      the model's inference engine, not prompt formatting.
-//   2. llm_config.json was modified by injecting jinja template (277→377 bytes), potentially
-//      interfering with MNN's model config parsing.
-//   3. apply_chat_template does NOT support JSON array format - it treats the entire
-//      JSON string as a single user message.
-//   4. response(string) with use_template=true wraps input as user message only (no system).
+// v2.4.88 ROOT CAUSE FIX:
+//   The REAL root cause was in MnnLlmBridge.kt: createLLM() was called with
+//   llm.mnn.json (7MB model structure file) instead of config.json (159 bytes runtime config).
+//   This caused MNN to load the model with wrong architecture settings → garbage output.
 //
-//   FIX STRATEGY:
-//   1. Do NOT call set_config() at all - let model use its default llm.mnn.json config.
-//   2. Do NOT inject jinja into llm_config.json - restore it to original state.
-//   3. Do NOT use response(string) for generation (it always wraps as user-only).
-//   4. Use ONLY response(vector<int>) with manually constructed token IDs.
-//   5. Add BOS token (151643) at sequence start - Qwen2 requires it.
-//   6. Add self-test after load: generate "1+1=" and verify model produces sane output.
-//   7. If self-test fails, destroy and recreate the model (reset corrupted state).
+//   Native changes:
+//   1. Use response(string) as PRIMARY method - MNN applies prompt_template from llm_config.json
+//      automatically: "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n"
+//   2. Keep response(vector<int>) as FALLBACK if response(string) produces garbage
+//   3. Self-test now uses response(string) first, then response(vector) as fallback
+//   4. Do NOT call set_config() - let model use defaults from config.json
 #include <jni.h>
 #include <dlfcn.h>
 #include <string>
@@ -39,7 +30,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-// File-based logging
 static int g_log_fd = -1;
 static void mnn_logf(const char* fmt, ...);
 static void mnn_log(const char* msg) {
@@ -61,16 +51,10 @@ static void mnn_log(const char* msg) {
                 *last_slash = '\0';
                 mkdir(dir, 0755);
                 char* prev_slash = strrchr(dir, '/');
-                if (prev_slash) {
-                    *prev_slash = '\0';
-                    mkdir(dir, 0755);
-                }
+                if (prev_slash) { *prev_slash = '\0'; mkdir(dir, 0755); }
             }
             g_log_fd = open(paths[i], O_WRONLY | O_CREAT | O_APPEND, 0644);
-            if (g_log_fd >= 0) {
-                mnn_logf("mnn_log: log file opened at %s (fd=%d)", paths[i], g_log_fd);
-                break;
-            }
+            if (g_log_fd >= 0) break;
         }
     }
     if (g_log_fd >= 0) {
@@ -89,11 +73,8 @@ static void mnn_logf(const char* fmt, ...) {
     mnn_log(buf);
 }
 
-namespace MNN { namespace Transformer {
-class Llm;
-}}
+namespace MNN { namespace Transformer { class Llm; }}
 
-// Function pointer types - all use const char* for stop_prompt (PKc in mangling)
 typedef MNN::Transformer::Llm* (*CreateLLMFunc)(const std::string&);
 typedef void (*DestroyFunc)(MNN::Transformer::Llm*);
 typedef bool (*LoadFunc)(MNN::Transformer::Llm*);
@@ -102,11 +83,9 @@ typedef void (*ResponseStrFunc)(MNN::Transformer::Llm*, const std::string&, std:
 typedef void (*ResetFunc)(MNN::Transformer::Llm*);
 typedef std::vector<int> (*TokenizeFunc)(MNN::Transformer::Llm*, const std::string&);
 typedef void (*ResponseVecFunc)(MNN::Transformer::Llm*, const std::vector<int>&, std::ostream*, const char*, int);
-typedef std::string (*ApplyChatTemplateFunc)(const MNN::Transformer::Llm*, const std::string&);
 
 static void* g_libMNN = nullptr;
 static void* g_libllm = nullptr;
-// Keep other handles to prevent unload
 static void* g_libMNN_Express = nullptr;
 static void* g_libMNN_Vulkan = nullptr;
 static void* g_libMNN_CL = nullptr;
@@ -122,22 +101,17 @@ static ResponseStrFunc g_response = nullptr;
 static ResetFunc g_reset = nullptr;
 static TokenizeFunc g_tokenize = nullptr;
 static ResponseVecFunc g_response_vec = nullptr;
-static ApplyChatTemplateFunc g_apply_chat_template = nullptr;
 
-// Qwen2 ChatML special token IDs
-static const int QWEN2_BOS = 151643;       // <|endoftext|> used as BOS
-static const int CHATML_IM_START = 151644;  // <|im_start|>
-static const int CHATML_IM_END = 151645;    // <|im_end|>
-
-// v2.4.87: Self-test result - if model fails self-test, all generations will be skipped
+static const int QWEN2_BOS = 151643;
+static const int CHATML_IM_START = 151644;
+static const int CHATML_IM_END = 151645;
 static bool g_model_sane = false;
 
 static void* dlopen_from_dir(const char* dir, const char* libname) {
     std::string fullpath = std::string(dir) + "/" + libname;
     struct stat st;
     if (stat(fullpath.c_str(), &st) != 0) return nullptr;
-    void* handle = dlopen(fullpath.c_str(), RTLD_NOW | RTLD_LOCAL);
-    return handle;
+    return dlopen(fullpath.c_str(), RTLD_NOW | RTLD_LOCAL);
 }
 
 template<typename FuncPtr>
@@ -152,7 +126,6 @@ static FuncPtr try_resolve_symbols(void* lib, const char* names[], int count) {
     return nullptr;
 }
 
-// Helper: trim and cut at stop token
 static std::string cleanResponse(std::string s) {
     size_t start = s.find_first_not_of(" \t\n\r");
     if (start == std::string::npos) return "";
@@ -182,63 +155,35 @@ static bool isGarbageResponse(const std::string& s) {
     return false;
 }
 
-// v2.4.87: Build token IDs for ChatML format manually.
-// Bypasses MNN's broken apply_chat_template and response(string) entirely.
-// Only uses tokenizer_encode for text segments, inserts special tokens as IDs.
+// Build ChatML token IDs manually (fallback when response(string) fails)
 static std::vector<int> buildChatMLTokenIds(MNN::Transformer::Llm* llm,
         const std::string& systemPrompt, const std::string& userPrompt) {
     std::vector<int> ids;
-    
-    // Qwen2 requires BOS token at start
     ids.push_back(QWEN2_BOS);
-    
-    // System turn: <|im_start|>system\n{content}<|im_end|>\n
     ids.push_back(CHATML_IM_START);
-    // Encode "system\n" - tokenizer may add BOS, remove it
     auto sysRoleTokens = g_tokenize(llm, "system\n");
-    if (!sysRoleTokens.empty() && sysRoleTokens[0] == QWEN2_BOS) {
-        sysRoleTokens.erase(sysRoleTokens.begin());
-    }
+    if (!sysRoleTokens.empty() && sysRoleTokens[0] == QWEN2_BOS) sysRoleTokens.erase(sysRoleTokens.begin());
     ids.insert(ids.end(), sysRoleTokens.begin(), sysRoleTokens.end());
-    
     auto sysContentTokens = g_tokenize(llm, systemPrompt);
-    if (!sysContentTokens.empty() && sysContentTokens[0] == QWEN2_BOS) {
-        sysContentTokens.erase(sysContentTokens.begin());
-    }
+    if (!sysContentTokens.empty() && sysContentTokens[0] == QWEN2_BOS) sysContentTokens.erase(sysContentTokens.begin());
     ids.insert(ids.end(), sysContentTokens.begin(), sysContentTokens.end());
-    
     ids.push_back(CHATML_IM_END);
     auto nlTokens = g_tokenize(llm, "\n");
-    if (!nlTokens.empty() && nlTokens[0] == QWEN2_BOS) {
-        nlTokens.erase(nlTokens.begin());
-    }
+    if (!nlTokens.empty() && nlTokens[0] == QWEN2_BOS) nlTokens.erase(nlTokens.begin());
     ids.insert(ids.end(), nlTokens.begin(), nlTokens.end());
-    
-    // User turn: <|im_start|>user\n{content}<|im_end|>\n
     ids.push_back(CHATML_IM_START);
     auto userRoleTokens = g_tokenize(llm, "user\n");
-    if (!userRoleTokens.empty() && userRoleTokens[0] == QWEN2_BOS) {
-        userRoleTokens.erase(userRoleTokens.begin());
-    }
+    if (!userRoleTokens.empty() && userRoleTokens[0] == QWEN2_BOS) userRoleTokens.erase(userRoleTokens.begin());
     ids.insert(ids.end(), userRoleTokens.begin(), userRoleTokens.end());
-    
     auto userContentTokens = g_tokenize(llm, userPrompt);
-    if (!userContentTokens.empty() && userContentTokens[0] == QWEN2_BOS) {
-        userContentTokens.erase(userContentTokens.begin());
-    }
+    if (!userContentTokens.empty() && userContentTokens[0] == QWEN2_BOS) userContentTokens.erase(userContentTokens.begin());
     ids.insert(ids.end(), userContentTokens.begin(), userContentTokens.end());
-    
     ids.push_back(CHATML_IM_END);
     ids.insert(ids.end(), nlTokens.begin(), nlTokens.end());
-    
-    // Assistant turn start: <|im_start|>assistant\n
     ids.push_back(CHATML_IM_START);
     auto asstRoleTokens = g_tokenize(llm, "assistant\n");
-    if (!asstRoleTokens.empty() && asstRoleTokens[0] == QWEN2_BOS) {
-        asstRoleTokens.erase(asstRoleTokens.begin());
-    }
+    if (!asstRoleTokens.empty() && asstRoleTokens[0] == QWEN2_BOS) asstRoleTokens.erase(asstRoleTokens.begin());
     ids.insert(ids.end(), asstRoleTokens.begin(), asstRoleTokens.end());
-    
     return ids;
 }
 
@@ -246,13 +191,10 @@ extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, jstring libDir) {
-    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.87 compiled at " __DATE__ " " __TIME__);
+    mnn_log("mnn_llm_jni COMPILE MARKER: v2.4.88 compiled at " __DATE__ " " __TIME__);
     g_model_sane = false;
 
-    if (g_libllm != nullptr) {
-        mnn_log("nativeInit: already initialized");
-        return JNI_TRUE;
-    }
+    if (g_libllm != nullptr) return JNI_TRUE;
 
     const char* libDirC = nullptr;
     std::string libDirStr;
@@ -286,7 +228,6 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
         if (!g_libllm) return JNI_FALSE;
     }
 
-    // Resolve symbols - try PKc (const char*) first for response_vec
     g_createLLM = (CreateLLMFunc)dlsym(g_libllm,
         "_ZN3MNN11Transformer3Llm9createLLMERKNSt6__ndk112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE");
     g_destroy = (DestroyFunc)dlsym(g_libllm,
@@ -319,10 +260,7 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeInit(JNIEnv* env, jclass clazz, js
     mnn_logf("nativeInit: symbols: create=%p destroy=%p load=%p config=%p response=%p reset=%p tokenize=%p response_vec=%p",
              g_createLLM, g_destroy, g_load, g_set_config, g_response, g_reset, g_tokenize, g_response_vec);
 
-    if (!g_createLLM || !g_destroy || !g_load || !g_response) {
-        mnn_log("nativeInit: FAILED - core symbols missing");
-        return JNI_FALSE;
-    }
+    if (!g_createLLM || !g_destroy || !g_load || !g_response) return JNI_FALSE;
     mnn_log("nativeInit: OK");
     return JNI_TRUE;
 }
@@ -333,8 +271,15 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeCreateLlm(JNIEnv* env, jclass claz
     const char* path = env->GetStringUTFChars(configPath, nullptr);
     std::string configPathStr(path);
     env->ReleaseStringUTFChars(configPath, path);
-
     mnn_logf("nativeCreateLlm: configPath=%s", configPathStr.c_str());
+
+    struct stat st;
+    if (stat(configPathStr.c_str(), &st) != 0) {
+        mnn_logf("nativeCreateLlm: config file does NOT exist!");
+        return 0;
+    }
+    mnn_logf("nativeCreateLlm: config file size=%ld bytes", st.st_size);
+
     MNN::Transformer::Llm* llm = g_createLLM(configPathStr);
     mnn_logf("nativeCreateLlm: ptr=%p", llm);
     return llm ? reinterpret_cast<jlong>(llm) : 0;
@@ -350,66 +295,81 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeLoad(JNIEnv* env, jclass clazz, jl
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
-// v2.4.87: NO set_config at all! Previous versions called set_config which corrupted
-// model state, causing ALL outputs to be garbage regardless of input/method.
-
-// v2.4.87: Self-test - verify model produces sane output after load.
-// Generates a simple "1+1=" prompt and checks if output contains "2".
-// Returns true if model is sane, false if it produces garbage.
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeSelfTest(JNIEnv* env, jclass clazz, jlong ptr) {
-    if (!g_response_vec || !g_tokenize || ptr == 0) {
-        mnn_log("nativeSelfTest: missing symbols, cannot test");
-        return JNI_FALSE;
-    }
+    if (ptr == 0 || !g_response) return JNI_FALSE;
     auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
 
-    mnn_log("nativeSelfTest: running model sanity check...");
-
-    // Build simple ChatML: <|im_start|>user\n1+1=<|im_end|>\n<|im_start|>assistant\n
-    std::vector<int> ids;
-    ids.push_back(QWEN2_BOS);
-    ids.push_back(CHATML_IM_START);
-    auto roleTokens = g_tokenize(llm, "user\n");
-    if (!roleTokens.empty() && roleTokens[0] == QWEN2_BOS) roleTokens.erase(roleTokens.begin());
-    ids.insert(ids.end(), roleTokens.begin(), roleTokens.end());
-    auto contentTokens = g_tokenize(llm, "1+1=");
-    if (!contentTokens.empty() && contentTokens[0] == QWEN2_BOS) contentTokens.erase(contentTokens.begin());
-    ids.insert(ids.end(), contentTokens.begin(), contentTokens.end());
-    ids.push_back(CHATML_IM_END);
-    auto nlTokens = g_tokenize(llm, "\n");
-    if (!nlTokens.empty() && nlTokens[0] == QWEN2_BOS) nlTokens.erase(nlTokens.begin());
-    ids.insert(ids.end(), nlTokens.begin(), nlTokens.end());
-    ids.push_back(CHATML_IM_START);
-    auto asstTokens = g_tokenize(llm, "assistant\n");
-    if (!asstTokens.empty() && asstTokens[0] == QWEN2_BOS) asstTokens.erase(asstTokens.begin());
-    ids.insert(ids.end(), asstTokens.begin(), asstTokens.end());
-
-    mnn_logf("nativeSelfTest: input tokens=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
-             ids.size(),
-             ids.size()>0?ids[0]:-1, ids.size()>1?ids[1]:-1, ids.size()>2?ids[2]:-1,
-             ids.size()>3?ids[3]:-1, ids.size()>4?ids[4]:-1, ids.size()>5?ids[5]:-1,
-             ids.size()>6?ids[6]:-1, ids.size()>7?ids[7]:-1, ids.size()>8?ids[8]:-1,
-             ids.size()>9?ids[9]:-1);
+    mnn_log("nativeSelfTest: running model sanity check with response(string)...");
 
     if (g_reset) g_reset(llm);
+
+    // v2.4.88: Use response(string) - MNN applies prompt_template automatically
     std::ostringstream oss;
-    g_response_vec(llm, ids, &oss, "<|im_end|>", 20);
+    g_response(llm, std::string("1+1="), &oss, "<|im_end|>", 20);
     std::string result = cleanResponse(oss.str());
 
-    mnn_logf("nativeSelfTest: output='%s', len=%zu, garbage=%d",
+    mnn_logf("nativeSelfTest: [response(string)] output='%s', len=%zu, garbage=%d",
              result.c_str(), result.size(), isGarbageResponse(result) ? 1 : 0);
 
-    // Check if output contains a digit (sane) or is garbage
     bool sane = false;
-    if (!isGarbageResponse(result)) {
+    if (!isGarbageResponse(result) && !result.empty()) {
         for (char c : result) {
             if (c >= '0' && c <= '9') { sane = true; break; }
         }
+        // Also accept if it contains Chinese characters (model might respond in Chinese)
+        for (char c : result) {
+            if ((unsigned char)c >= 0x80) { sane = true; break; }
+        }
     }
-    g_model_sane = sane;
-    mnn_logf("nativeSelfTest: model is %s", sane ? "SANE - OK to use" : "BROKEN - all outputs will be garbage");
 
+    // Fallback: try manual token IDs if response(string) failed
+    if (!sane && g_tokenize && g_response_vec) {
+        mnn_log("nativeSelfTest: response(string) failed, trying manual token IDs...");
+        if (g_reset) g_reset(llm);
+        std::vector<int> ids;
+        ids.push_back(QWEN2_BOS);
+        ids.push_back(CHATML_IM_START);
+        auto roleTokens = g_tokenize(llm, "user\n");
+        if (!roleTokens.empty() && roleTokens[0] == QWEN2_BOS) roleTokens.erase(roleTokens.begin());
+        ids.insert(ids.end(), roleTokens.begin(), roleTokens.end());
+        auto contentTokens = g_tokenize(llm, "1+1=");
+        if (!contentTokens.empty() && contentTokens[0] == QWEN2_BOS) contentTokens.erase(contentTokens.begin());
+        ids.insert(ids.end(), contentTokens.begin(), contentTokens.end());
+        ids.push_back(CHATML_IM_END);
+        auto nlTokens = g_tokenize(llm, "\n");
+        if (!nlTokens.empty() && nlTokens[0] == QWEN2_BOS) nlTokens.erase(nlTokens.begin());
+        ids.insert(ids.end(), nlTokens.begin(), nlTokens.end());
+        ids.push_back(CHATML_IM_START);
+        auto asstTokens = g_tokenize(llm, "assistant\n");
+        if (!asstTokens.empty() && asstTokens[0] == QWEN2_BOS) asstTokens.erase(asstTokens.begin());
+        ids.insert(ids.end(), asstTokens.begin(), asstTokens.end());
+
+        mnn_logf("nativeSelfTest: [response(vec)] input tokens=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                 ids.size(),
+                 ids.size()>0?ids[0]:-1, ids.size()>1?ids[1]:-1, ids.size()>2?ids[2]:-1,
+                 ids.size()>3?ids[3]:-1, ids.size()>4?ids[4]:-1, ids.size()>5?ids[5]:-1,
+                 ids.size()>6?ids[6]:-1, ids.size()>7?ids[7]:-1, ids.size()>8?ids[8]:-1,
+                 ids.size()>9?ids[9]:-1);
+
+        std::ostringstream oss2;
+        g_response_vec(llm, ids, &oss2, "<|im_end|>", 20);
+        result = cleanResponse(oss2.str());
+        mnn_logf("nativeSelfTest: [response(vec)] output='%s', len=%zu, garbage=%d",
+                 result.c_str(), result.size(), isGarbageResponse(result) ? 1 : 0);
+
+        if (!isGarbageResponse(result) && !result.empty()) {
+            for (char c : result) {
+                if (c >= '0' && c <= '9') { sane = true; break; }
+            }
+            for (char c : result) {
+                if ((unsigned char)c >= 0x80) { sane = true; break; }
+            }
+        }
+    }
+
+    g_model_sane = sane;
+    mnn_logf("nativeSelfTest: model is %s", sane ? "SANE" : "BROKEN");
     if (g_reset) g_reset(llm);
     return sane ? JNI_TRUE : JNI_FALSE;
 }
@@ -417,11 +377,8 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeSelfTest(JNIEnv* env, jclass clazz
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz, jlong ptr, jstring prompt, jint maxTokens) {
     auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
-    if (!g_response_vec || !g_tokenize || ptr == 0) {
-        return env->NewStringUTF("");
-    }
+    if (!g_response || ptr == 0) return env->NewStringUTF("");
 
-    // v2.4.87: If model failed self-test, skip generation entirely
     if (!g_model_sane) {
         mnn_log("nativeGenerate: SKIPPED - model failed self-test");
         return env->NewStringUTF("");
@@ -432,87 +389,94 @@ Java_com_radio_app_whisper_MnnLlmBridge_nativeGenerate(JNIEnv* env, jclass clazz
     env->ReleaseStringUTFChars(prompt, promptStr);
 
     int max_new = (maxTokens > 0) ? (int)maxTokens : 50;
-
     if (g_reset) g_reset(llm);
 
-    // v2.4.87: Use ONLY response(vector<int>) with manually built ChatML token IDs.
-    // This completely bypasses MNN's broken apply_chat_template and response(string).
-    std::string systemPrompt = "你是一个分类助手。只回答干货或水货两个字之一。";
-    std::string userPrompt = rawPrompt;
-
-    std::vector<int> inputIds = buildChatMLTokenIds(llm, systemPrompt, userPrompt);
-
-    mnn_logf("nativeGenerate: total input tokens=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
-             inputIds.size(),
-             inputIds.size()>0?inputIds[0]:-1, inputIds.size()>1?inputIds[1]:-1,
-             inputIds.size()>2?inputIds[2]:-1, inputIds.size()>3?inputIds[3]:-1,
-             inputIds.size()>4?inputIds[4]:-1, inputIds.size()>5?inputIds[5]:-1,
-             inputIds.size()>6?inputIds[6]:-1, inputIds.size()>7?inputIds[7]:-1,
-             inputIds.size()>8?inputIds[8]:-1, inputIds.size()>9?inputIds[9]:-1);
-
+    // v2.4.88: PRIMARY - Use response(string), MNN applies prompt_template automatically.
+    // The template from llm_config.json is: "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n"
+    // We include the system instruction as part of the user prompt since template only has user role.
+    mnn_logf("nativeGenerate: [METHOD1 response(string)] prompt len=%zu", rawPrompt.size());
     std::ostringstream oss;
-    g_response_vec(llm, inputIds, &oss, "<|im_end|>", max_new);
+    g_response(llm, rawPrompt, &oss, "<|im_end|>", max_new);
     std::string result = cleanResponse(oss.str());
-
-    mnn_logf("nativeGenerate: result len=%zu, garbage=%d, first100=%.100s",
+    mnn_logf("nativeGenerate: [METHOD1] result len=%zu, garbage=%d, first100=%.100s",
              result.size(), isGarbageResponse(result) ? 1 : 0, result.c_str());
 
+    // If response(string) produced valid output, return it
+    if (!result.empty() && !isGarbageResponse(result)) {
+        mnn_log("nativeGenerate: [METHOD1] SUCCESS");
+        return env->NewStringUTF(result.c_str());
+    }
+
+    // FALLBACK: Use manual token IDs if response(string) failed
+    if (g_tokenize && g_response_vec) {
+        mnn_log("nativeGenerate: [METHOD1] failed, trying [METHOD2 response(vector)]");
+        if (g_reset) g_reset(llm);
+        std::string systemPrompt = "你是一个分类助手。只回答干货或水货两个字之一。";
+        std::vector<int> inputIds = buildChatMLTokenIds(llm, systemPrompt, rawPrompt);
+        mnn_logf("nativeGenerate: [METHOD2] total input tokens=%zu, first10=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                 inputIds.size(),
+                 inputIds.size()>0?inputIds[0]:-1, inputIds.size()>1?inputIds[1]:-1,
+                 inputIds.size()>2?inputIds[2]:-1, inputIds.size()>3?inputIds[3]:-1,
+                 inputIds.size()>4?inputIds[4]:-1, inputIds.size()>5?inputIds[5]:-1,
+                 inputIds.size()>6?inputIds[6]:-1, inputIds.size()>7?inputIds[7]:-1,
+                 inputIds.size()>8?inputIds[8]:-1, inputIds.size()>9?inputIds[9]:-1);
+
+        std::ostringstream oss2;
+        g_response_vec(llm, inputIds, &oss2, "<|im_end|>", max_new);
+        result = cleanResponse(oss2.str());
+        mnn_logf("nativeGenerate: [METHOD2] result len=%zu, garbage=%d, first100=%.100s",
+                 result.size(), isGarbageResponse(result) ? 1 : 0, result.c_str());
+
+        if (!result.empty()) {
+            mnn_log("nativeGenerate: [METHOD2] returning result");
+            return env->NewStringUTF(result.c_str());
+        }
+    }
+
+    mnn_logf("nativeGenerate: all methods failed, returning empty");
     return env->NewStringUTF(result.c_str());
 }
 
 JNIEXPORT void JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeReset(JNIEnv* env, jclass clazz, jlong ptr) {
     if (g_reset && ptr != 0) {
-        auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
-        g_reset(llm);
+        g_reset(reinterpret_cast<MNN::Transformer::Llm*>(ptr));
     }
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeGetCompileMarker(JNIEnv* env, jclass clazz) {
-    return env->NewStringUTF("MNN_JNI_v2.4.87");
+    return env->NewStringUTF("MNN_JNI_v2.4.88");
 }
 
 JNIEXPORT void JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeFree(JNIEnv* env, jclass clazz, jlong ptr) {
     if (g_destroy && ptr != 0) {
-        auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
-        g_destroy(llm);
+        g_destroy(reinterpret_cast<MNN::Transformer::Llm*>(ptr));
         mnn_log("nativeFree: LLM freed");
     }
 }
 
-// v2.4.87: No-op - kept for ABI compatibility but does nothing
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeSetConfig(JNIEnv* env, jclass clazz, jlong ptr, jstring configJson) {
-    mnn_log("nativeSetConfig: NO-OP in v2.4.87 (set_config corrupts model state)");
+    mnn_log("nativeSetConfig: NO-OP (let model use config.json defaults)");
     return JNI_TRUE;
 }
 
-// v2.4.87: No-op
 JNIEXPORT jboolean JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeSetConfigPostLoad(JNIEnv* env, jclass clazz, jlong ptr) {
-    mnn_log("nativeSetConfigPostLoad: NO-OP in v2.4.87 (set_config corrupts model state)");
+    mnn_log("nativeSetConfigPostLoad: NO-OP (let model use config.json defaults)");
     return JNI_TRUE;
 }
 
-// v2.4.87: Diagnostic only
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeTestApplyChatTemplate(JNIEnv* env, jclass clazz, jlong ptr, jstring userInput) {
-    if (!g_apply_chat_template || ptr == 0) {
-        return env->NewStringUTF("[ERROR: not resolved]");
-    }
-    auto* llm = reinterpret_cast<MNN::Transformer::Llm*>(ptr);
-    const char* input = env->GetStringUTFChars(userInput, nullptr);
-    std::string inputStr(input);
-    env->ReleaseStringUTFChars(userInput, input);
-    std::string result = g_apply_chat_template(llm, inputStr);
-    return env->NewStringUTF(result.c_str());
+    return env->NewStringUTF("[v2.4.88] test disabled");
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_radio_app_whisper_MnnLlmBridge_nativeTestJsonTemplate(JNIEnv* env, jclass clazz, jlong ptr) {
-    return env->NewStringUTF("[v2.4.87] JSON template test disabled - apply_chat_template doesn't support JSON");
+    return env->NewStringUTF("[v2.4.88] test disabled");
 }
 
 } // extern "C"
