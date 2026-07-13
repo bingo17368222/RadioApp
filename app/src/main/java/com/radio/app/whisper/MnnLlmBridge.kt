@@ -372,7 +372,7 @@ class MnnLlmBridge {
                 java.io.FileWriter(classifyLogFile, true)
             } catch (_: Exception) { null }
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.84] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.85] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             for ((idx, group) in groups.withIndex()) {
@@ -462,16 +462,22 @@ class MnnLlmBridge {
             onProgress?.invoke(groups.size, groups.size, "")
             Log.i(TAG, "classifySubtitles: total results=${allResults.size}")
             // v2.4.63: Global garbage check - if ALL responses were garbage (model is broken),
-            // override all segments to 干货 since MNN classification is unreliable.
+            // v2.4.85: Use keyword-based classification instead of defaulting all to 干货
             val garbageCount = allResults.count { it.label == "GARBAGE" }
             if (garbageCount > 0 && garbageCount == allResults.size && allResults.size > 0) {
-                mnnLog("classifySubtitles: ALL ${allResults.size} responses were GARBAGE - model appears broken, overriding all to 干货")
+                mnnLog("classifySubtitles: ALL ${allResults.size} responses were GARBAGE - using keyword-based classification")
                 try {
-                    classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: ALL GARBAGE - overriding all to 干货\n")
-                    classifyLog?.flush()  // v2.4.67: Flush before returning
+                    classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: ALL GARBAGE - using keyword classification\n")
+                    classifyLog?.flush()
                     classifyLog?.close()
                 } catch (_: Exception) {}
-                return allResults.map { MnnSegmentResult(it.start, it.end, true, "干货", wasGarbage = true) }
+                // v2.4.85: Keyword-based fallback when MNN model is broken
+                return allResults.mapIndexed { idx, result ->
+                    val subtitleText = groups.getOrNull(idx)?.third ?: ""
+                    val (isDry, label) = keywordClassify(subtitleText)
+                    mnnLog("classifySubtitles: keyword fallback seg ${idx+1}: text='${subtitleText.take(60)}', result=$label")
+                    MnnSegmentResult(result.start, result.end, isDry, label, wasGarbage = true)
+                }
             }
             // v2.4.41: Close classify log
             try {
@@ -488,5 +494,58 @@ class MnnLlmBridge {
             val label: String,
             val wasGarbage: Boolean = false  // v2.4.82: true if MNN output was garbage
         )
+
+        // v2.4.85: Keyword-based classification fallback when MNN model is broken
+        // Returns (isDry, label) based on subtitle text content
+        private fun keywordClassify(text: String): Pair<Boolean, String> {
+            if (text.isBlank() || text.length < 5) {
+                // Very short or empty text → likely music/silence → 水货
+                return Pair(false, "水货")
+            }
+
+            // 水货 keywords (music, ads, entertainment, idle chat)
+            val waterKeywords = listOf(
+                "音乐", "歌曲", "演唱", "歌手", "伴奏", "旋律", "节奏", "播放歌曲",
+                "点歌", "点播", "一首歌", "这首歌", "那首歌", "请听", "请欣赏",
+                "广告", "赞助", "冠名", "特别支持", "品牌", "产品",
+                "短信", "微信", "互动", "游戏", "有奖", "竞猜", "抽奖",
+                "笑话", "搞笑", "娱乐",
+                "欢迎收听", "欢迎回来", "听众朋友", "各位听众",
+                "正在播放", "接下来是", "歌曲时间", "音乐时间"
+            )
+
+            // 干货 keywords (news, information, talk shows with substance)
+            val dryKeywords = listOf(
+                "新闻", "资讯", "报道", "访谈", "评论", "财经", "经济", "政治",
+                "国际", "社会", "科技", "教育", "健康", "法律", "民生", "公益",
+                "讲座", "解读", "分析", "观察", "热点", "焦点", "专题", "深度",
+                "今天的话题", "本期节目", "今天的节目", "我们来聊", "我们来看",
+                "主持人", "嘉宾", "专家", "教授", "博士", "分析师",
+                "据了", "根据", "数据显示", "统计", "调查",
+                "政策", "法规", "改革", "发展", "增长", "下降", "上升"
+            )
+
+            var waterScore = 0
+            var dryScore = 0
+
+            for (kw in waterKeywords) {
+                if (text.contains(kw)) waterScore++
+            }
+            for (kw in dryKeywords) {
+                if (text.contains(kw)) dryScore++
+            }
+
+            // If text is mostly Chinese characters and reasonably long, lean towards 干货
+            val cjkCount = text.count { it.code in 0x4E00..0x9FFF }
+            val textDensity = cjkCount.toDouble() / text.length
+
+            return when {
+                waterScore > dryScore -> Pair(false, "水货")
+                dryScore > 0 -> Pair(true, "干货")
+                textDensity > 0.3 && text.length > 30 -> Pair(true, "干货")  // Substantial Chinese text
+                textDensity < 0.1 -> Pair(false, "水货")  // Very little text → likely music
+                else -> Pair(true, "干货")  // Default to 干货
+            }
+        }
     }
 }

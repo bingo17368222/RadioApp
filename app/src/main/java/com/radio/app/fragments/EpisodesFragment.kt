@@ -434,12 +434,24 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         val isNoPreprocess = settings.isNoPreprocess(episode.id)
         val isDisliked = settings.isDisliked(episode.id) || settings.isDislikedByTitle(episode.stationId, episode.title)
 
+        // v2.4.85: Check if audio is cached
+        val audioFileName = try {
+            val url = java.net.URL(episode.audioUrl)
+            url.path.substringAfterLast("/")
+        } catch (e: Exception) {
+            episode.audioUrl.substringAfterLast("/")
+        }
+        val audioCacheFile = java.io.File(com.radio.app.RadioApplication.getEpisodesCacheDir(requireContext()), audioFileName)
+        val hasCachedAudio = audioCacheFile.exists() && audioCacheFile.length() > 1024
+
         val options = mutableListOf<String>()
         // Option 0: Toggle dislike
         options.add(if (isDisliked) "取消不喜欢" else "标记不喜欢")
         // Option 1: Delete subtitles (only if exists)
         if (hasSubtitles) options.add("删除字幕")
-        // Option 2: Toggle no-preprocess
+        // v2.4.85: Delete cached audio (only if cached)
+        if (hasCachedAudio) options.add("删除缓存")
+        // Option: Toggle no-preprocess
         options.add(if (isNoPreprocess) "取消无需预处理" else "标记无需预处理")
 
         val items = options.toTypedArray()
@@ -465,6 +477,31 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                             Toast.makeText(context, "已删除字幕", Toast.LENGTH_SHORT).show()
                         } catch (e: Exception) {
                             Toast.makeText(context, "删除字幕失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                        adapter?.notifyDataSetChanged()
+                    }
+                    "删除缓存" -> {
+                        // v2.4.85: Delete cached audio + subtitles + PCM
+                        try {
+                            // Delete audio cache
+                            if (audioCacheFile.exists()) {
+                                audioCacheFile.delete()
+                            }
+                            // Delete subtitles
+                            dbHelper.deleteTranscriptsByEpisode(episode.id)
+                            // Delete PCM files
+                            val pcmDir = com.radio.app.RadioApplication.getPcmCacheDir(requireContext())
+                            val fullPcm = java.io.File(pcmDir, "${episode.id}_full.pcm")
+                            if (fullPcm.exists()) fullPcm.delete()
+                            val fullInfo = java.io.File(pcmDir, "${episode.id}_full.info")
+                            if (fullInfo.exists()) fullInfo.delete()
+                            val chunkPcm = java.io.File(pcmDir, "${episode.id}_chunk.pcm")
+                            if (chunkPcm.exists()) chunkPcm.delete()
+                            // Reset subtitle complete status
+                            dbHelper.resetSubtitlesComplete(episode.id)
+                            Toast.makeText(context, "已删除缓存(${audioCacheFile.length() / 1024 / 1024}MB)", Toast.LENGTH_SHORT).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "删除缓存失败: ${e.message}", Toast.LENGTH_SHORT).show()
                         }
                         adapter?.notifyDataSetChanged()
                     }

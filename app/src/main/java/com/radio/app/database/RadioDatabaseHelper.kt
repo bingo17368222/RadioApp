@@ -252,6 +252,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.delete("transcript_engine", "episode_id = ?", arrayOf(episodeId))
     }
 
+    // v2.4.85: Reset subtitle complete status (for manual cache deletion)
+    fun resetSubtitlesComplete(episodeId: String) {
+        val db = writableDatabase
+        db.delete("transcript_engine", "episode_id = ?", arrayOf(episodeId))
+    }
+
     // [v2.1.5] Search transcripts by text content
     // [v2.1.8] Also return episode duration info
     fun searchTranscripts(query: String): List<Transcript> {
