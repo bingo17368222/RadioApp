@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 295
-        versionName "2.4.94"
+        versionCode 296
+        versionName "2.4.95"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -24,7 +24,8 @@ android {
             }
         }
         ndk {
-            abiFilters 'arm64-v8a', 'x86_64'
+            // v2.4.95: Only arm64-v8a to reduce APK size
+            abiFilters 'arm64-v8a'
         }
     }
 
@@ -62,7 +63,10 @@ android {
 
     packagingOptions {
         exclude 'lib/*/libvosk.so'
-        // v2.4.94: Prevent ONNX Runtime and TFLite .so conflicts
+        // v2.4.95: Exclude ONNX Runtime and TFLite .so from APK — downloaded at runtime
+        exclude 'lib/*/libonnxruntime.so'
+        exclude 'lib/*/libonnxruntime4j_jni.so'
+        exclude 'lib/*/libtensorflowlite_jni.so'
         exclude 'META-INF/INDEX.LIST'
         exclude 'META-INF/DEPENDENCIES'
     }
@@ -111,5 +115,11 @@ dependencies {
     implementation 'com.alphacephei:vosk-android:0.3.47'
 
     // v2.4.94: ONNX Runtime for Silero VAD (audio-based AI segmentation)
+    // v2.4.95: .so excluded from APK, downloaded at runtime
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.16.3'
+
+    // v2.4.95: TFLite for YAMNet audio classification (dual-model with Silero VAD)
+    // .so excluded from APK, downloaded at runtime
+    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+    implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
 }

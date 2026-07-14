@@ -85,7 +85,7 @@ class SettingsFragment : Fragment() {
         binding.spinnerSubtitleLang.adapter = langAdapter
         binding.spinnerVoiceLang.adapter = langAdapter
 
-        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "就AI听", "阿里MNN-LLM")
+        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "就AI听", "阿里MNN-LLM", "音频分段(VAD+YAMNet)")
         val aiModelAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, aiModelLabels)
         aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAiModel.adapter = aiModelAdapter
@@ -354,22 +354,13 @@ class SettingsFragment : Fragment() {
                     AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK,
                     AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR,
                     AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING,
-                    AppSettings.AI_MODEL_MNN_LLM
+                    AppSettings.AI_MODEL_MNN_LLM, AppSettings.AI_MODEL_AUDIO_VAD
                 )
                 settings.aiModel = models[position]
                 save()
                 Toast.makeText(requireContext(), "AI分段模型已切换: " + parent?.getItemAtPosition(position), Toast.LENGTH_SHORT).show()
             }
             override fun onNothingSelected(parent: AdapterView<*>?) {}
-        }
-
-        // [v2.4.26] Ali API Key input
-        binding.etAliApiKey.setText(settings.safeAliApiKey())
-        binding.etAliApiKey.setOnFocusChangeListener { _, hasFocus ->
-            if (!hasFocus && !suppressListeners) {
-                settings.aliApiKey = binding.etAliApiKey.text.toString().trim()
-                save()
-            }
         }
 
         binding.spinnerAsrProvider.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -549,7 +540,7 @@ class SettingsFragment : Fragment() {
 
         val aiModelListener = binding.spinnerAiModel.onItemSelectedListener
         binding.spinnerAiModel.onItemSelectedListener = null
-        val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING, AppSettings.AI_MODEL_MNN_LLM)
+        val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING, AppSettings.AI_MODEL_MNN_LLM, AppSettings.AI_MODEL_AUDIO_VAD)
         aiModels.indexOfFirst { it == settings.aiModel }.takeIf { it >= 0 }?.let { binding.spinnerAiModel.setSelection(it) }
         binding.spinnerAiModel.onItemSelectedListener = aiModelListener
 

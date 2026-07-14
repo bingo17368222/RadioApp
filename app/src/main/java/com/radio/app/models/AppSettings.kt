@@ -16,6 +16,7 @@ class AppSettings private constructor() {
         const val AI_MODEL_WHISPER = "whisper"
         const val AI_MODEL_JIU_AI_TING = "jiu-ai-ting"
         const val AI_MODEL_MNN_LLM = "mnn-llm"
+        const val AI_MODEL_AUDIO_VAD = "audio-vad"  // v2.4.95: Silero VAD + YAMNet 双模型音频分段
 
         const val ASR_BAIDU = "baidu"
         const val ASR_FUNASR = "funasr"
@@ -66,7 +67,6 @@ class AppSettings private constructor() {
 
     var aiModel: String = AI_MODEL_WENXIN
     var asrProvider: String = ASR_BAIDU
-    var aliApiKey: String = ""  // [v2.4.26] DashScope API key for Ali (通义千问) AI segmentation
     var voskModelDir: String = ""  // [v2.0.61] Issue 6 Fix: Save selected Vosk model directory name
     var whisperModelDir: String = ""  // [v2.2.9] Save selected Whisper model directory name (whisper-tiny, whisper-base, etc.)
     // [v2.0.50] Issue 3 Fix: Track Whisper crash count to permanently disable after 2 crashes
@@ -86,7 +86,7 @@ class AppSettings private constructor() {
     private var waterCombinationList: MutableList<WaterCombination> = mutableListOf()
     var preloadCache: Boolean = false
     var preloadCacheCount: Int = 10
-    var enablePreprocessing: Boolean = true
+    var enablePreprocessing: Boolean = false  // v2.4.95: Default off, user must enable
     var preprocessingCount: Int = 1
     var audioFocus: Boolean = true
     var continuousPlay: Boolean = true
@@ -113,7 +113,6 @@ class AppSettings private constructor() {
     fun safeVoiceLanguage(): String = voiceLanguage ?: LANG_CN
     fun safeUiTheme(): String = uiTheme ?: THEME_DARK
     fun safeAiModel(): String = aiModel ?: AI_MODEL_WENXIN
-    fun safeAliApiKey(): String = aliApiKey ?: ""
     fun safeAsrProvider(): String = asrProvider ?: ASR_BAIDU
     fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
 
@@ -141,7 +140,6 @@ class AppSettings private constructor() {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS)
         aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN
         asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
-        aliApiKey = prefs.getString("ali_api_key", "") ?: ""  // [v2.4.26]
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""  // [v2.0.61] Issue 6
         whisperModelDir = prefs.getString("whisper_model_dir", "") ?: ""  // [v2.2.9]
         whisperCrashCount = prefs.getInt("whisper_crash_count", 0)  // [v2.0.50]
@@ -293,7 +291,6 @@ class AppSettings private constructor() {
         prefs.edit().apply {
             putString("ai_model", aiModel)
             putString("asr_provider", asrProvider)
-            putString("ali_api_key", aliApiKey)  // [v2.4.26]
             putString("vosk_model_dir", voskModelDir)  // [v2.0.61] Issue 6
             putString("whisper_model_dir", whisperModelDir)  // [v2.2.9]
             putInt("whisper_crash_count", whisperCrashCount)  // [v2.0.50]

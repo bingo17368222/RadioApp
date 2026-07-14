@@ -203,7 +203,9 @@ object SegmentGenerator {
     /**
      * Post-segment an episode: generate segments and save to DB.
      * Called after subtitle generation completes.
-     * v2.4.94: Tries audio-based (YAMNet + Silero VAD) first, falls back to keyword-based.
+     * v2.4.95: Routes based on aiModel setting:
+     *   - AI_MODEL_AUDIO_VAD: audio-based (Silero VAD + YAMNet dual model)
+     *   - Other models: keyword-based
      * Replaces any existing simulated segments with real classified ones.
      */
     fun postSegmentKeyword(context: Context, episodeId: String, durationMs: Long) {
@@ -217,14 +219,14 @@ object SegmentGenerator {
                 return
             }
 
-            // v2.4.94: Try audio-based segmentation (YAMNet + Silero VAD) first
-            val audioSegments = tryGenerateAudioSegments(context, episodeId, durationMs)
-            val segments = if (audioSegments.isNotEmpty()) {
-                Log.i(TAG, "postSegmentKeyword: using audio-based segments (${audioSegments.size}) for episode=$episodeId")
-                audioSegments
+            val settings = com.radio.app.models.AppSettings.getInstance(context)
+            val segments = if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_AUDIO_VAD) {
+                // v2.4.95: Audio-based segmentation (Silero VAD + YAMNet)
+                Log.i(TAG, "postSegmentKeyword: using audio-vad mode for episode=$episodeId")
+                tryGenerateAudioSegments(context, episodeId, durationMs)
             } else {
-                // Fallback: keyword-based segments
-                Log.i(TAG, "postSegmentKeyword: audio segmentation unavailable, using keyword-based for episode=$episodeId")
+                // Keyword-based segments
+                Log.i(TAG, "postSegmentKeyword: using keyword-based for episode=$episodeId")
                 generateKeywordSegments(context, episodeId, durationMs)
             }
 

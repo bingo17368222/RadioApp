@@ -182,12 +182,26 @@ class OfflineEngineActivity : AppCompatActivity() {
             "vosk-model-en-us-daanzu-0.22"
         ),
 
-        // ===== v2.4.94: Silero VAD 音频分段模型 =====
+        // ===== v2.4.95: 音频分段模型 + 运行库（Silero VAD + YAMNet 双模型） =====
+        EngineInfo(
+            "音频分段运行库",
+            "ONNX Runtime + TFLite 原生库\n大小: 约7MB(压缩) | 用途: 音频分段AI运行时库\n状态: 支持下载\n包含: libonnxruntime.so, libtensorflowlite_jni.so等\n必需: 使用音频分段(VAD+YAMNet)方案前必须下载安装",
+            "约7MB",
+            "https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.94-audio-models/audio-segmentation-runtime.zip",
+            "audio-models"
+        ),
         EngineInfo(
             "Silero VAD 语音活动检测",
-            "Silero VAD ONNX 模型\n大小: 约2.3MB | 用途: 高精度语音活动检测\n状态: 支持下载\n适用: AI音频分段，检测语音存在\n说明: 基于Silero VAD + 能量特征分析，自动区分干货/水货片段，生成精确分段",
+            "Silero VAD ONNX 模型\n大小: 约2.3MB | 用途: 高精度语音活动检测\n状态: 支持下载\n适用: AI音频分段，检测语音存在\n说明: 与YAMNet组合使用，双模型分析PCM音频生成精确分段",
             "约2.3MB",
             "https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.94-audio-models/silero_vad.onnx",
+            "audio-models"
+        ),
+        EngineInfo(
+            "YAMNet 音频分类模型",
+            "Google YAMNet TFLite 模型\n大小: 约4.1MB | 用途: 音频分类(语音/音乐/静音等521类)\n状态: 支持下载\n适用: AI音频分段，区分干货/水货片段\n说明: 与Silero VAD组合使用，双模型分析PCM音频生成精确分段",
+            "约4.1MB",
+            "https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.94-audio-models/yamnet.tflite",
             "audio-models"
         )
     )
@@ -303,11 +317,18 @@ class OfflineEngineActivity : AppCompatActivity() {
         } else {
             val modelsDir = getExternalFilesDir("models")
             val modelDir = modelsDir?.let { File(it, engine.modelDir) }
-            val installed = modelDir?.exists() == true && getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && (when {
-                engine.modelDir.contains("vosk", ignoreCase = true) -> isValidVoskModelDir(modelDir)
-                engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
-                engine.modelDir.contains("mnn", ignoreCase = true) -> isValidMnnModelDir(modelDir)
-                else -> true
+            // v2.4.95: For audio-models, check specific files per engine entry
+            val installed = modelDir?.exists() == true && (when {
+                engine.modelDir.contains("vosk", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidVoskModelDir(modelDir)
+                engine.modelDir.contains("whisper", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidWhisperModelDir(modelDir)
+                engine.modelDir.contains("mnn", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidMnnModelDir(modelDir)
+                engine.modelDir.contains("audio-models") -> when {
+                    engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
+                    engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
+                    engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
+                    else -> false
+                }
+                else -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE
             })
             // Issue 13: 记录安装检查结果
             Log.d(TAG, "setupEngineCard: engine='${engine.name}', modelDir='${engine.modelDir}', installed=$installed")
@@ -315,10 +336,25 @@ class OfflineEngineActivity : AppCompatActivity() {
             if (installed) {
                 btnAction.text = "已安装(点击删除)"
                 btnAction.setOnClickListener {
-                    modelDir?.let { deleteRecursive(it) }
-                    btnAction.text = "安装"
-                    Toast.makeText(this, "${engine.name} 已删除", Toast.LENGTH_SHORT).show()
-                    modelDir?.let { dir -> bindInstallAction(engine, btnAction, progressBar, dir) }
+                    if (engine.modelDir.contains("audio-models")) {
+                        // v2.4.95: Only delete specific file, not entire directory
+                        when {
+                            engine.name.contains("运行库") -> {
+                                listOf("libonnxruntime.so", "libonnxruntime4j_jni.so", "libtensorflowlite_jni.so").forEach {
+                                    File(modelDir, it).delete()
+                                }
+                            }
+                            engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").delete()
+                            engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").delete()
+                        }
+                        Toast.makeText(this, "${engine.name} 已删除", Toast.LENGTH_SHORT).show()
+                        btnAction.text = "安装"
+                        modelDir?.let { dir -> bindInstallAction(engine, btnAction, progressBar, dir) }
+                    } else {
+                        modelDir?.let { deleteRecursive(it) }
+                        Toast.makeText(this, "${engine.name} 已删除", Toast.LENGTH_SHORT).show()
+                        modelDir?.let { dir -> bindInstallAction(engine, btnAction, progressBar, dir) }
+                    }
                 }
             } else {
                 // 检查是否有未完成的下载（支持断点续传）
@@ -1328,13 +1364,13 @@ class OfflineEngineActivity : AppCompatActivity() {
         writeEngineLog("isValidMnnModelDir: checking ${dir.absolutePath}, files=${dir.listFiles()?.map { "${it.name}(${it.length()})" }}")
         val result = run {
             if (!dir.isDirectory) return@run false
-            val hasLlmMnn = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn" && it.length() > 1_000_000 }
+            val hasLlmMnn = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn" && it.length() > 100_000 }
             val hasWeight = dir.walkTopDown().any { it.isFile && it.name == "llm.mnn.weight" && it.length() > 100_000_000 }
             val hasConfig = dir.walkTopDown().any { it.isFile && (it.name == "config.json" || it.name == "llm.mnn.json") }
             // v2.4.31: Also check for .so files in mnn-libs directory
             val libsDir = File(dir.parentFile, "mnn-libs")
             val hasLibllm = File(libsDir, "libllm.so").exists()
-            if (!hasLlmMnn) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn (>1MB)")
+            if (!hasLlmMnn) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn (>100KB)")
             if (!hasWeight) writeEngineLog("isValidMnnModelDir: MISSING llm.mnn.weight (>100MB)")
             if (!hasConfig) writeEngineLog("isValidMnnModelDir: MISSING config.json or llm.mnn.json")
             if (!hasLibllm) writeEngineLog("isValidMnnModelDir: MISSING libllm.so in mnn-libs")

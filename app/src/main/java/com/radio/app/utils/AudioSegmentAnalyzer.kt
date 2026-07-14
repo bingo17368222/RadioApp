@@ -3,89 +3,115 @@ package com.radio.app.utils
 import android.content.Context
 import android.util.Log
 import com.radio.app.models.VoiceSegment
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 import java.io.File
+import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.channels.FileChannel
 
 /**
- * v2.4.94: Audio-based AI segment analyzer using Silero VAD + energy features.
+ * v2.4.95: Audio-based AI segment analyzer using dual models.
  *
- * Primary mode: Silero VAD (ONNX, ~2.3MB) + energy-based classification
- * Optional mode: YAMNet (TFLite, ~4MB) if model is available
+ * Silero VAD (ONNX, ~2.3MB): High-precision voice activity detection
+ * YAMNet (TFLite, ~4.1MB): Audio classification (521 categories: Speech, Music, Silence, etc.)
  *
  * Processing:
  * 1. Read 16kHz mono PCM data
- * 2. Slide 0.5s window with 0.5s step
+ * 2. Slide window (YAMNet: 0.975s, Silero VAD: 0.5s step)
  * 3. For each window:
- *    - Run Silero VAD to get speech probability
- *    - Compute RMS energy, zero-crossing rate, spectral centroid
- *    - Classify: DRY (speech) / WATER (music/silence) / BOUNDARY
- * 4. Merge consecutive same-type frames into segments
+ *    - YAMNet: classify into Speech/Music/Silence probabilities
+ *    - Silero VAD: get speech probability
+ * 4. Fuse results: Speech+VAD → 干货, Music → 水货, Silence → boundary
+ * 5. Merge consecutive same-type frames into segments
+ *
+ * Requires runtime libraries (downloaded from offline engine management):
+ * - libonnxruntime.so, libonnxruntime4j_jni.so (for Silero VAD)
+ * - libtensorflowlite_jni.so (for YAMNet)
+ * - silero_vad.onnx (model file)
+ * - yamnet.tflite (model file)
  */
 object AudioSegmentAnalyzer {
     private const val TAG = "AudioSegmentAnalyzer"
 
-    private const val SAMPLE_RATE = 16000
-    private const val WINDOW_MS = 500
-    private const val WINDOW_SAMPLES = SAMPLE_RATE * WINDOW_MS / 1000  // 8000 samples
-    private const val STEP_MS = 500
-    private const val STEP_SAMPLES = SAMPLE_RATE * STEP_MS / 1000  // 8000 samples
+    // YAMNet: 16kHz, 0.975s window = 15600 samples
+    private const val YAMNET_SAMPLE_RATE = 16000
+    private const val YAMNET_WINDOW_SAMPLES = 15600
+    private const val YAMNET_NUM_CLASSES = 521
 
-    // Silero VAD parameters
-    private const val VAD_FRAME_SIZE = 512  // Silero expects 512 samples per frame
-    private const val VAD_THRESHOLD = 0.5f
-    private const val VAD_DRY_THRESHOLD = 0.45f  // Above this → likely speech
-    private const val VAD_WATER_THRESHOLD = 0.15f  // Below this → likely non-speech
+    // YAMNet class indices (from AudioSet ontology)
+    private const val YAMNET_IDX_SPEECH = 0       // Speech
+    private const val YAMNET_IDX_SILENCE = 78     // Silence
+    private const val YAMNET_IDX_MUSIC = 137      // Music
+    private const val YAMNET_IDX_SONG = 138       // Singing
 
-    // Energy thresholds (relative to max energy in file)
-    private const val ENERGY_SILENCE_RATIO = 0.05f  // Below 5% of max → silence
-    private const val ENERGY_MUSIC_RATIO = 0.3f   // Above 30% with low ZCR → music
+    // Frame step: 0.5s (8000 samples at 16kHz)
+    private const val FRAME_STEP_SAMPLES = 8000
 
-    // Zero-crossing rate thresholds
-    private const val ZCR_SPEECH_MIN = 0.02f   // Speech typically has ZCR > 0.02
-    private const val ZCR_MUSIC_MAX = 0.15f     // Music typically has ZCR < 0.15
+    // Silero VAD: 512 samples per chunk
+    private const val VAD_FRAME_SIZE = 512
+    private const val VAD_DRY_THRESHOLD = 0.45f
+    private const val VAD_WATER_THRESHOLD = 0.15f
 
+    // Energy thresholds (relative to max energy)
+    private const val ENERGY_SILENCE_RATIO = 0.05f
+    private const val ENERGY_MUSIC_RATIO = 0.3f
+
+    // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
 
-    private data class FrameResult(
-        val timestampMs: Long,
-        val type: FrameType,
-        val vadProb: Float,
-        val rmsEnergy: Float,
-        val zcr: Float,
-        val spectralCentroid: Float
-    )
+    /**
+     * Check if YAMNet model file exists.
+     */
+    fun isYamnetInstalled(modelDir: File): Boolean {
+        val f = File(modelDir, "yamnet.tflite")
+        return f.exists() && f.length() > 1_000_000
+    }
 
     /**
      * Check if Silero VAD model file exists.
      */
     fun isSileroVadInstalled(modelDir: File): Boolean {
-        val vadFile = File(modelDir, "silero_vad.onnx")
-        return vadFile.exists() && vadFile.length() > 50_000
+        val f = File(modelDir, "silero_vad.onnx")
+        return f.exists() && f.length() > 50_000
+    }
+
+    /**
+     * Check if native libraries are downloaded.
+     */
+    fun areNativeLibsDownloaded(modelDir: File): Boolean {
+        return NativeLibLoader.areLibsDownloaded(modelDir)
     }
 
     /**
      * Check if all required models are installed.
-     * v2.4.94: Only Silero VAD is required. YAMNet is optional.
+     * v2.4.95: Requires both YAMNet and Silero VAD + native libs.
      */
     fun isModelInstalled(modelDir: File): Boolean {
-        return isSileroVadInstalled(modelDir)
+        return isYamnetInstalled(modelDir) && isSileroVadInstalled(modelDir) && areNativeLibsDownloaded(modelDir)
     }
 
     /**
      * Get the model directory.
+     * v2.4.95: Uses same path as OfflineEngineActivity (models/audio-models).
      */
     fun getModelDir(context: Context): File {
-        val baseDir = File(android.os.Environment.getExternalStorageDirectory(),
-            "Android/data/${context.packageName}/files")
-        val modelDir = File(baseDir, "audio-models")
+        val modelsDir = context.getExternalFilesDir("models") ?: context.getExternalFilesDir(null)
+        val modelDir = File(modelsDir, "audio-models")
         if (!modelDir.exists()) modelDir.mkdirs()
+        // v2.4.95: Migrate from old path if needed
+        val oldDir = File(context.getExternalFilesDir(null), "audio-models")
+        if (oldDir.exists() && oldDir.listFiles()?.isNotEmpty() == true && modelDir.listFiles()?.isEmpty() == true) {
+            oldDir.copyRecursively(modelDir, overwrite = true)
+            Log.i(TAG, "Migrated audio models from ${oldDir.absolutePath} to ${modelDir.absolutePath}")
+        }
         return modelDir
     }
 
     /**
-     * Analyze PCM audio file and generate segments.
+     * Analyze PCM audio file and generate segments using dual models.
      *
      * @param context Application context
      * @param pcmFile 16kHz mono 16-bit PCM file
@@ -102,26 +128,45 @@ object AudioSegmentAnalyzer {
             return emptyList()
         }
 
-        val modelDir = getModelDir(context)
-        if (!isSileroVadInstalled(modelDir)) {
-            Log.w(TAG, "Silero VAD model not installed in ${modelDir.absolutePath}")
+        // v2.4.95: Load native libraries before any ONNX/TFLite usage
+        if (!NativeLibLoader.ensureLoaded(context)) {
+            Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime from offline engine management.")
             return emptyList()
         }
 
-        val vadFile = File(modelDir, "silero_vad.onnx")
+        val modelDir = getModelDir(context)
+        if (!isYamnetInstalled(modelDir) || !isSileroVadInstalled(modelDir)) {
+            Log.w(TAG, "Models not installed. YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
+            return emptyList()
+        }
 
-        // Load Silero VAD using ONNX Runtime
+        // Load YAMNet (TFLite)
+        val yamnetInterpreter = try {
+            loadYamnetModel(File(modelDir, "yamnet.tflite"))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load YAMNet: ${e.message}")
+            return emptyList()
+        }
+
+        // Load Silero VAD (ONNX Runtime via reflection)
         val vadSession = try {
-            loadSileroVad(vadFile)
+            loadSileroVad(File(modelDir, "silero_vad.onnx"))
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load Silero VAD: ${e.message}")
+            yamnetInterpreter?.close()
+            return emptyList()
+        }
+
+        if (yamnetInterpreter == null || vadSession == null) {
+            Log.e(TAG, "Failed to load models")
+            yamnetInterpreter?.close()
+            vadSession?.close()
             return emptyList()
         }
 
         try {
-            // Read PCM samples as float array
             val samples = readPcmAsFloats(pcmFile)
-            if (samples.size < WINDOW_SAMPLES) {
+            if (samples.size < YAMNET_WINDOW_SAMPLES) {
                 Log.w(TAG, "PCM too short: ${samples.size} samples")
                 return emptyList()
             }
@@ -129,27 +174,30 @@ object AudioSegmentAnalyzer {
             // Compute max energy for normalization
             var maxEnergy = 0f
             var pos = 0
-            while (pos + WINDOW_SAMPLES <= samples.size) {
-                val energy = computeRmsEnergy(samples, pos, WINDOW_SAMPLES)
+            while (pos + FRAME_STEP_SAMPLES <= samples.size) {
+                val winSize = minOf(YAMNET_WINDOW_SAMPLES, samples.size - pos)
+                val energy = computeRmsEnergy(samples, pos, winSize)
                 if (energy > maxEnergy) maxEnergy = energy
-                pos += STEP_SAMPLES
+                pos += FRAME_STEP_SAMPLES
             }
             if (maxEnergy < 1e-6f) maxEnergy = 1e-6f
-            Log.i(TAG, "PCM: ${samples.size} samples, maxEnergy=$maxEnergy, duration=${samples.size.toLong() * 1000 / SAMPLE_RATE}ms")
+            Log.i(TAG, "PCM: ${samples.size} samples, maxEnergy=$maxEnergy")
 
-            // Process frames
             val frameResults = mutableListOf<FrameResult>()
             pos = 0
 
-            // VAD state buffer (Silero uses LSTM state)
+            // VAD state buffer
             var vadStateH = FloatBuffer.wrap(FloatArray(64))
             var vadStateC = FloatBuffer.wrap(FloatArray(64))
 
-            while (pos + WINDOW_SAMPLES <= samples.size) {
-                val window = samples.copyOfRange(pos, pos + WINDOW_SAMPLES)
-                val timestampMs = (pos.toLong() * 1000 / SAMPLE_RATE)
+            while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+                val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
+                val timestampMs = (pos.toLong() * 1000 / YAMNET_SAMPLE_RATE)
 
-                // Silero VAD — process 512-sample chunks within the window
+                // YAMNet classification
+                val (yamnetSpeech, yamnetMusic, yamnetSilence) = classifyWithYamnet(yamnetInterpreter, window)
+
+                // Silero VAD
                 var vadProb = 0f
                 var vadChunks = 0
                 var vadPos = 0
@@ -164,29 +212,89 @@ object AudioSegmentAnalyzer {
                 }
                 if (vadChunks > 0) vadProb /= vadChunks
 
-                // Energy-based features
+                // Energy features (supplementary)
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
-                val centroid = computeSpectralCentroid(window)
 
-                // Classify frame
-                val type = classifyFrame(vadProb, rmsEnergy, zcr, centroid, maxEnergy)
-                frameResults.add(FrameResult(timestampMs, type, vadProb, rmsEnergy, zcr, centroid))
+                // Fuse: dual-model classification
+                val type = classifyFrameDualModel(
+                    yamnetSpeech, yamnetMusic, yamnetSilence, vadProb, rmsEnergy, zcr, maxEnergy
+                )
+                frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, rmsEnergy))
 
-                pos += STEP_SAMPLES
+                pos += FRAME_STEP_SAMPLES
             }
 
-            Log.i(TAG, "Analyzed ${frameResults.size} frames from ${samples.size} samples")
-
-            // Merge frames into segments
+            Log.i(TAG, "Analyzed ${frameResults.size} frames")
             val segments = mergeFramesIntoSegments(frameResults, durationMs)
             Log.i(TAG, "Generated ${segments.size} segments (dry=${segments.count { it.label == "干货" }}, water=${segments.count { it.label == "水货" }})")
             return segments
 
         } finally {
-            try { vadSession?.close() } catch (_: Exception) {}
+            yamnetInterpreter.close()
+            try { vadSession.close() } catch (_: Exception) {}
         }
     }
+
+    // ===== YAMNet (TFLite) =====
+
+    private fun loadYamnetModel(modelFile: File): Interpreter? {
+        return try {
+            val mappedBuffer = FileInputStream(modelFile).channel.map(
+                FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
+            )
+            val options = Interpreter.Options()
+            options.setNumThreads(2)
+            val interp = Interpreter(mappedBuffer, options)
+            Log.i(TAG, "YAMNet loaded: input=${interp.getInputTensor(0).shape().contentToString()}, output=${interp.getOutputTensor(0).shape().contentToString()}")
+            interp
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load YAMNet TFLite model: ${e.message}")
+            null
+        }
+    }
+
+    private fun classifyWithYamnet(
+        interpreter: Interpreter,
+        samples: FloatArray
+    ): Triple<Float, Float, Float> {
+        try {
+            // YAMNet input: [1, 15600] float
+            val inputBuffer = TensorBuffer.createFixedSize(
+                intArrayOf(1, YAMNET_WINDOW_SAMPLES),
+                org.tensorflow.lite.DataType.FLOAT32
+            )
+            inputBuffer.loadArray(samples)
+
+            // Output: [1, 521] float
+            val outputBuffer = TensorBuffer.createFixedSize(
+                intArrayOf(1, YAMNET_NUM_CLASSES),
+                org.tensorflow.lite.DataType.FLOAT32
+            )
+
+            interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
+            val scores = outputBuffer.floatArray
+
+            // Extract key categories (apply sigmoid to raw scores)
+            val speechProb = sigmoid(scores.getOrElse(YAMNET_IDX_SPEECH) { 0f })
+            val silenceProb = sigmoid(scores.getOrElse(YAMNET_IDX_SILENCE) { 0f })
+            val musicProb = maxOf(
+                sigmoid(scores.getOrElse(YAMNET_IDX_MUSIC) { 0f }),
+                sigmoid(scores.getOrElse(YAMNET_IDX_SONG) { 0f })
+            )
+            return Triple(speechProb, musicProb, silenceProb)
+        } catch (e: Exception) {
+            Log.e(TAG, "YAMNet classification failed: ${e.message}")
+            return Triple(0f, 0f, 0f)
+        }
+    }
+
+    private fun sigmoid(x: Float): Float {
+        val exp = kotlin.math.exp(-x.toDouble())
+        return (1.0 / (1.0 + exp)).toFloat()
+    }
+
+    // ===== Silero VAD (ONNX Runtime via reflection) =====
 
     private fun loadSileroVad(modelFile: File): AiSession? {
         return try {
@@ -205,74 +313,6 @@ object AudioSegmentAnalyzer {
         }
     }
 
-    private fun readPcmAsFloats(pcmFile: File): FloatArray {
-        val bytes = pcmFile.readBytes()
-        val samples = FloatArray(bytes.size / 2)
-        val byteBuffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in samples.indices) {
-            val shortVal = byteBuffer.short.toInt()
-            samples[i] = shortVal.toFloat() / 32768.0f
-        }
-        return samples
-    }
-
-    /**
-     * Compute RMS energy of a window.
-     */
-    private fun computeRmsEnergy(samples: FloatArray, offset: Int, length: Int): Float {
-        var sumSquares = 0.0
-        for (i in offset until offset + length) {
-            if (i < samples.size) {
-                sumSquares += samples[i].toDouble() * samples[i]
-            }
-        }
-        return kotlin.math.sqrt(sumSquares / length).toFloat()
-    }
-
-    /**
-     * Compute zero-crossing rate (fraction of samples that cross zero).
-     * Speech typically has ZCR 0.02-0.15, music has lower ZCR.
-     */
-    private fun computeZeroCrossingRate(samples: FloatArray): Float {
-        var crossings = 0
-        for (i in 1 until samples.size) {
-            if ((samples[i] >= 0) != (samples[i - 1] >= 0)) {
-                crossings++
-            }
-        }
-        return crossings.toFloat() / (samples.size - 1)
-    }
-
-    /**
-     * Compute spectral centroid (brightness indicator).
-     * Music typically has higher spectral centroid than speech.
-     * Uses a simple DFT approximation for efficiency.
-     */
-    private fun computeSpectralCentroid(samples: FloatArray): Float {
-        // Simple approximation: use energy in high-frequency band vs total
-        // Split into 4 frequency bands using simple averaging
-        val n = samples.size
-        val quarter = n / 4
-        var totalEnergy = 0.0
-        var highFreqEnergy = 0.0
-
-        for (i in 0 until n) {
-            val energy = samples[i].toDouble() * samples[i]
-            totalEnergy += energy
-            // Approximate high frequency content using difference between adjacent samples
-            if (i > 0) {
-                val diff = (samples[i] - samples[i - 1]).toDouble()
-                highFreqEnergy += diff * diff
-            }
-        }
-
-        if (totalEnergy < 1e-10) return 0f
-        return (highFreqEnergy / totalEnergy).toFloat()
-    }
-
-    /**
-     * Run Silero VAD inference using ONNX Runtime via reflection.
-     */
     private fun runSileroVad(
         session: AiSession?,
         chunk: FloatArray,
@@ -284,39 +324,32 @@ object AudioSegmentAnalyzer {
         try {
             val sessionObj = session.session
             val sessionClass = sessionObj.javaClass
-
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             val onnxTensorClass = Class.forName("ai.onnxruntime.OnnxTensor")
 
             val inputMap = HashMap<String, Any>()
-
-            // input tensor: float[1][512]
             val inputData = Array(1) { chunk }
             val inputTensor = onnxTensorClass
                 .getMethod("createTensor", envClass, FloatArray::class.java, LongArray::class.java)
                 .invoke(null, env, inputData, longArrayOf(1, chunk.size.toLong()))
             inputMap["input"] = inputTensor!!
 
-            // h state tensor: float[2, 1, 32]
             val hData = stateH.array()
             val hTensor = onnxTensorClass
                 .getMethod("createTensor", envClass, FloatArray::class.java, LongArray::class.java)
                 .invoke(null, env, hData, longArrayOf(2, 1, 32))
             inputMap["h"] = hTensor!!
 
-            // c state tensor: float[2, 1, 32]
             val cData = stateC.array()
             val cTensor = onnxTensorClass
                 .getMethod("createTensor", envClass, FloatArray::class.java, LongArray::class.java)
                 .invoke(null, env, cData, longArrayOf(2, 1, 32))
             inputMap["c"] = cTensor!!
 
-            // Run inference
             val runMethod = sessionClass.getMethod("run", Map::class.java)
             val results = runMethod.invoke(sessionObj, inputMap)
 
-            // Extract output
             val resultsClass = results.javaClass
             val getMethod = resultsClass.getMethod("get", String::class.java)
             val outputTensor = getMethod.invoke(results, "output")
@@ -335,7 +368,6 @@ object AudioSegmentAnalyzer {
                 else -> 0.5f
             }
 
-            // Extract new h and c states
             val newHTensor = getMethod.invoke(results, "hn")
             val newHValue = getValueMethod.invoke(newHTensor)
             val newHBuffer = when (newHValue) {
@@ -358,7 +390,6 @@ object AudioSegmentAnalyzer {
                 else -> stateC
             }
 
-            // Clean up
             try { resultsClass.getMethod("close").invoke(results) } catch (_: Exception) {}
             try { onnxTensorClass.getMethod("close").invoke(inputTensor) } catch (_: Exception) {}
             try { onnxTensorClass.getMethod("close").invoke(hTensor) } catch (_: Exception) {}
@@ -371,71 +402,102 @@ object AudioSegmentAnalyzer {
         }
     }
 
+    // ===== Feature computation =====
+
+    private fun readPcmAsFloats(pcmFile: File): FloatArray {
+        val bytes = pcmFile.readBytes()
+        val samples = FloatArray(bytes.size / 2)
+        val byteBuffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in samples.indices) {
+            samples[i] = byteBuffer.short.toFloat() / 32768.0f
+        }
+        return samples
+    }
+
+    private fun computeRmsEnergy(samples: FloatArray, offset: Int, length: Int): Float {
+        var sumSquares = 0.0
+        for (i in offset until offset + length) {
+            if (i < samples.size) sumSquares += samples[i].toDouble() * samples[i]
+        }
+        return kotlin.math.sqrt(sumSquares / length).toFloat()
+    }
+
+    private fun computeZeroCrossingRate(samples: FloatArray): Float {
+        var crossings = 0
+        for (i in 1 until samples.size) {
+            if ((samples[i] >= 0) != (samples[i - 1] >= 0)) crossings++
+        }
+        return crossings.toFloat() / (samples.size - 1)
+    }
+
+    // ===== Dual-model classification =====
+
     /**
-     * Classify a single frame based on VAD probability and energy features.
+     * Classify a frame using both YAMNet and Silero VAD outputs.
      *
-     * Rules:
-     * 1. Very low energy → SILENCE (boundary)
-     * 2. High VAD + high ZCR → DRY (speech/干货)
-     * 3. Low VAD + high energy + low ZCR → WATER (music/水货)
-     * 4. Low VAD + low energy → SILENCE
-     * 5. Moderate VAD → DRY (conservative, prefer content)
+     * Fusion rules:
+     * 1. YAMNet Silence + low VAD → SILENCE (boundary)
+     * 2. YAMNet Music high + VAD low → WATER (music/水货)
+     * 3. YAMNet Speech high + VAD high → DRY (干货)
+     * 4. Disagreement: trust VAD for speech, YAMNet for music
      */
-    private fun classifyFrame(
+    private fun classifyFrameDualModel(
+        yamnetSpeech: Float,
+        yamnetMusic: Float,
+        yamnetSilence: Float,
         vadProb: Float,
         rmsEnergy: Float,
         zcr: Float,
-        spectralCentroid: Float,
         maxEnergy: Float
     ): FrameType {
         val energyRatio = rmsEnergy / maxEnergy
 
-        // 1. Silence check
-        if (energyRatio < ENERGY_SILENCE_RATIO) {
+        // 1. Silence: both models agree on low energy
+        if (energyRatio < ENERGY_SILENCE_RATIO && vadProb < VAD_WATER_THRESHOLD) {
+            return FrameType.SILENCE
+        }
+        if (yamnetSilence > 0.6f && vadProb < 0.2f) {
             return FrameType.SILENCE
         }
 
-        // 2. High VAD → likely speech
-        if (vadProb > VAD_DRY_THRESHOLD) {
-            // Check if it's actually music with high energy and low ZCR
-            if (energyRatio > ENERGY_MUSIC_RATIO && zcr < ZCR_MUSIC_MAX && spectralCentroid < 0.1f) {
-                // Could be music — but VAD says speech, trust VAD
-                return FrameType.DRY
-            }
+        // 2. Music: YAMNet says music, VAD says no speech
+        if (yamnetMusic > 0.5f && vadProb < VAD_DRY_THRESHOLD) {
+            return FrameType.WATER
+        }
+
+        // 3. Speech: YAMNet says speech, VAD confirms
+        if (yamnetSpeech > 0.3f && vadProb > VAD_DRY_THRESHOLD) {
             return FrameType.DRY
         }
 
-        // 3. Low VAD with high energy → likely music
+        // 4. VAD says speech but YAMNet doesn't detect music → trust VAD
+        if (vadProb > VAD_DRY_THRESHOLD && yamnetMusic < 0.3f) {
+            return FrameType.DRY
+        }
+
+        // 5. YAMNet says music but VAD is moderate → trust YAMNet for music
+        if (yamnetMusic > 0.4f) {
+            return FrameType.WATER
+        }
+
+        // 6. Low VAD + high energy → water (non-speech content)
         if (vadProb < VAD_WATER_THRESHOLD && energyRatio > ENERGY_MUSIC_RATIO) {
             return FrameType.WATER
         }
 
-        // 4. Low VAD with low energy → silence
-        if (vadProb < VAD_WATER_THRESHOLD && energyRatio < ENERGY_SILENCE_RATIO * 2) {
-            return FrameType.SILENCE
-        }
-
-        // 5. Moderate VAD — check ZCR
-        if (zcr > ZCR_SPEECH_MIN) {
-            return FrameType.DRY  // Speech-like
-        }
-
-        // 6. Default: water (non-speech content)
-        return if (energyRatio > 0.15f) FrameType.WATER else FrameType.SILENCE
+        // 7. Default: use VAD as tiebreaker
+        return if (vadProb > 0.4f) FrameType.DRY else FrameType.WATER
     }
 
-    /**
-     * Merge consecutive frames of the same type into segments.
-     * Short segments (< 30s) are merged into neighbors.
-     * Silence segments act as boundaries.
-     */
+    // ===== Segment merging =====
+
     private fun mergeFramesIntoSegments(
         frames: List<FrameResult>,
         durationMs: Long
     ): List<VoiceSegment> {
         if (frames.isEmpty()) return emptyList()
 
-        val minSegmentMs = 30_000L  // 30 seconds minimum
+        val minSegmentMs = 30_000L
         val segments = mutableListOf<VoiceSegment>()
         var segStart = frames[0].timestampMs
         var segType = frames[0].type
@@ -447,7 +509,6 @@ object AudioSegmentAnalyzer {
                 if (segEnd - segStart >= minSegmentMs || segments.isEmpty()) {
                     segments.add(createSegment(segStart, segEnd, segType))
                 } else {
-                    // Too short — merge with previous segment
                     if (segments.isNotEmpty()) {
                         segments.last().end = segEnd
                     } else {
@@ -458,7 +519,6 @@ object AudioSegmentAnalyzer {
                 segType = frame.type
             }
         }
-        // Close last segment
         val lastEnd = durationMs
         if (lastEnd - segStart >= minSegmentMs || segments.isEmpty()) {
             segments.add(createSegment(segStart, lastEnd, segType))
@@ -470,51 +530,44 @@ object AudioSegmentAnalyzer {
         val merged = mutableListOf<VoiceSegment>()
         for (seg in segments) {
             if (seg.label == "静音") {
-                if (merged.isNotEmpty()) {
-                    merged.last().end = seg.end
-                }
+                if (merged.isNotEmpty()) merged.last().end = seg.end
             } else {
                 merged.add(seg)
             }
         }
-
-        // If all silence, create one dry segment covering everything
         if (merged.isEmpty()) {
             merged.add(VoiceSegment().apply {
-                start = 0L
-                end = durationMs
-                hasVoice = true
-                label = "干货"
-                isSimulated = false
+                start = 0L; end = durationMs; hasVoice = true; label = "干货"; isSimulated = false
             })
         }
-
         return merged
     }
 
     private fun createSegment(start: Long, end: Long, type: FrameType): VoiceSegment {
         return VoiceSegment().apply {
-            this.start = start
-            this.end = end
+            this.start = start; this.end = end
             this.hasVoice = type == FrameType.DRY
             this.label = when (type) {
-                FrameType.DRY -> "干货"
-                FrameType.WATER -> "水货"
-                FrameType.SILENCE -> "静音"
+                FrameType.DRY -> "干货"; FrameType.WATER -> "水货"; FrameType.SILENCE -> "静音"
             }
             this.isSimulated = false
         }
     }
 
-    /**
-     * Wrapper for ONNX Runtime session (uses Any to avoid hard import dependency).
-     */
+    // ===== Inner classes =====
+
+    private data class FrameResult(
+        val timestampMs: Long,
+        val type: FrameType,
+        val vadProb: Float,
+        val yamnetSpeech: Float,
+        val yamnetMusic: Float,
+        val rmsEnergy: Float
+    )
+
     private class AiSession(val session: Any) {
         fun close() {
-            try {
-                val closeMethod = session.javaClass.getMethod("close")
-                closeMethod.invoke(session)
-            } catch (_: Exception) {}
+            try { session.javaClass.getMethod("close").invoke(session) } catch (_: Exception) {}
         }
     }
 }
