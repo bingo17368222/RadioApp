@@ -5,46 +5,47 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.98: Runtime native library loader for ONNX Runtime and TFLite.
+ * v2.4.99: Runtime native library loader for ONNX Runtime.
  *
- * The .so files are excluded from the APK to reduce its size.
- * They are downloaded from the offline engine management and stored in the
- * audio-models directory (external storage).
+ * Only libonnxruntime.so (14.6MB) is excluded from the APK and downloaded at runtime.
+ * The JNI wrapper .so files (libonnxruntime4j_jni.so, libtensorflowlite_jni.so) are
+ * kept in the APK because the ONNX Runtime and TFLite Java SDKs call
+ * System.loadLibrary() internally, which only searches standard Android library paths.
  *
  * v2.4.98 FIX: Android SELinux prevents dlopen() from external storage paths.
- * Solution: Copy .so files to the app's internal code cache directory
+ * Solution: Copy libonnxruntime.so to the app's internal code cache directory
  * (getCodeCacheDir()) before calling System.load().
+ *
+ * v2.4.99 FIX: ONNX Runtime Java SDK calls System.loadLibrary("onnxruntime4j_jni")
+ * which cannot find libraries loaded via System.load(path). Keeping the JNI .so
+ * in the APK fixes this. When the JNI .so is loaded, the dynamic linker finds
+ * libonnxruntime.so already loaded (via our System.load()) as a dependency.
  */
 object NativeLibLoader {
     private const val TAG = "NativeLibLoader"
     private var loaded = false
 
-    // Required .so files for audio segmentation
-    private val REQUIRED_SO_FILES = listOf(
-        "libonnxruntime.so",
-        "libonnxruntime4j_jni.so",
-        "libtensorflowlite_jni.so"
-    )
+    // v2.4.99: Only libonnxruntime.so needs to be downloaded and loaded via System.load().
+    // The JNI wrapper .so files are in the APK and loaded via System.loadLibrary().
+    private const val REQUIRED_SO = "libonnxruntime.so"
 
     /**
-     * Check if all required .so files are downloaded (in external storage).
+     * Check if the required .so file is downloaded (in external storage).
      */
     fun areLibsDownloaded(modelDir: File): Boolean {
-        return REQUIRED_SO_FILES.all { File(modelDir, it).exists() }
+        return File(modelDir, REQUIRED_SO).exists()
     }
 
     /**
-     * v2.4.97: Get detailed status of each .so file for diagnostics.
+     * Get detailed status of the .so file for diagnostics.
      */
     fun getLibsStatus(modelDir: File): String {
-        return REQUIRED_SO_FILES.joinToString(", ") { name ->
-            val f = File(modelDir, name)
-            "$name=${if (f.exists()) "${f.length()}B" else "MISSING"}"
-        }
+        val f = File(modelDir, REQUIRED_SO)
+        return "$REQUIRED_SO=${if (f.exists()) "${f.length()}B" else "MISSING"}"
     }
 
     /**
-     * v2.4.98: Get the internal code cache directory for .so files.
+     * Get the internal code cache directory for .so files.
      * This is where we copy .so files so System.load() can work.
      */
     private fun getInternalLibDir(context: Context): File {
@@ -54,45 +55,12 @@ object NativeLibLoader {
     }
 
     /**
-     * v2.4.98: Check if .so files are already copied to internal storage.
-     */
-    private fun areLibsCopiedInternally(internalDir: File): Boolean {
-        return REQUIRED_SO_FILES.all { File(internalDir, it).exists() }
-    }
-
-    /**
-     * v2.4.98: Copy .so files from external storage to internal code cache.
-     * Only copies if the file doesn't exist or has a different size.
-     */
-    private fun copyLibsToInternal(externalDir: File, internalDir: File): Boolean {
-        for (soName in REQUIRED_SO_FILES) {
-            val srcFile = File(externalDir, soName)
-            val dstFile = File(internalDir, soName)
-            if (!srcFile.exists()) {
-                Log.e(TAG, "copyLibsToInternal: source missing: ${srcFile.absolutePath}")
-                return false
-            }
-            // Only copy if destination doesn't exist or size differs
-            if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
-                Log.i(TAG, "copyLibsToInternal: copying $soName (${srcFile.length()} bytes)")
-                try {
-                    srcFile.copyTo(dstFile, overwrite = true)
-                } catch (e: Exception) {
-                    Log.e(TAG, "copyLibsToInternal: failed to copy $soName: ${e.message}")
-                    return false
-                }
-            }
-        }
-        Log.i(TAG, "copyLibsToInternal: all .so files copied to ${internalDir.absolutePath}")
-        return true
-    }
-
-    /**
-     * Load all native libraries. Must be called before any ONNX Runtime or TFLite usage.
-     * Returns true if all libraries loaded successfully (or were already loaded).
+     * v2.4.99: Load libonnxruntime.so from downloaded location.
+     * Copies to internal codeCacheDir first (SELinux fix), then System.load().
      *
-     * v2.4.98: Copies .so files to internal codeCacheDir before System.load()
-     * to avoid SELinux dlopen failures on external storage paths.
+     * The JNI wrapper .so files (libonnxruntime4j_jni.so, libtensorflowlite_jni.so)
+     * are in the APK and will be found by System.loadLibrary() when the ONNX/TFLite
+     * Java SDKs initialize.
      */
     @Synchronized
     fun ensureLoaded(context: Context): Boolean {
@@ -100,70 +68,53 @@ object NativeLibLoader {
 
         val externalDir = AudioSegmentAnalyzer.getModelDir(context)
         val internalDir = getInternalLibDir(context)
+        val externalSo = File(externalDir, REQUIRED_SO)
+        val internalSo = File(internalDir, REQUIRED_SO)
 
         Log.i(TAG, "ensureLoaded: externalDir=${externalDir.absolutePath}, exists=${externalDir.exists()}")
         Log.i(TAG, "ensureLoaded: dir contents=${externalDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null"}")
-        Log.i(TAG, "ensureLoaded: libs status: ${getLibsStatus(externalDir)}")
+        Log.i(TAG, "ensureLoaded: $REQUIRED_SO status: ${getLibsStatus(externalDir)}")
 
-        // Step 1: Check if .so files are downloaded
-        if (!areLibsDownloaded(externalDir)) {
-            Log.e(TAG, "ensureLoaded: .so files not downloaded in ${externalDir.absolutePath}")
+        // Step 1: Check if .so file is downloaded
+        if (!externalSo.exists()) {
+            Log.e(TAG, "ensureLoaded: $REQUIRED_SO not downloaded in ${externalDir.absolutePath}")
             return false
         }
 
-        // Step 2: Copy .so files to internal storage (v2.4.98 fix)
-        if (!areLibsCopiedInternally(internalDir)) {
-            Log.i(TAG, "ensureLoaded: copying .so files to internal storage")
-            if (!copyLibsToInternal(externalDir, internalDir)) {
-                Log.e(TAG, "ensureLoaded: failed to copy .so files to internal storage")
+        // Step 2: Copy to internal storage if needed (SELinux fix)
+        if (!internalSo.exists() || internalSo.length() != externalSo.length()) {
+            Log.i(TAG, "ensureLoaded: copying $REQUIRED_SO (${externalSo.length()} bytes) to internal storage")
+            try {
+                externalSo.copyTo(internalSo, overwrite = true)
+            } catch (e: Exception) {
+                Log.e(TAG, "ensureLoaded: failed to copy $REQUIRED_SO: ${e.message}")
                 return false
-            }
-        } else {
-            // Verify internal copies are up-to-date (same size as external)
-            var needsRefresh = false
-            for (soName in REQUIRED_SO_FILES) {
-                val ext = File(externalDir, soName)
-                val int = File(internalDir, soName)
-                if (ext.length() != int.length()) {
-                    needsRefresh = true
-                    break
-                }
-            }
-            if (needsRefresh) {
-                Log.i(TAG, "ensureLoaded: refreshing .so files (size mismatch)")
-                if (!copyLibsToInternal(externalDir, internalDir)) {
-                    Log.e(TAG, "ensureLoaded: failed to refresh .so files")
-                    return false
-                }
             }
         }
 
         // Step 3: Load from internal storage
-        for (soName in REQUIRED_SO_FILES) {
-            val soFile = File(internalDir, soName)
-            if (!soFile.exists()) {
-                Log.e(TAG, "ensureLoaded: missing internal: ${soFile.absolutePath}")
+        if (!internalSo.exists()) {
+            Log.e(TAG, "ensureLoaded: missing internal: ${internalSo.absolutePath}")
+            return false
+        }
+        try {
+            Log.i(TAG, "ensureLoaded: loading $REQUIRED_SO (${internalSo.length()} bytes) from ${internalSo.parent}")
+            System.load(internalSo.absolutePath)
+            Log.i(TAG, "ensureLoaded: loaded $REQUIRED_SO")
+        } catch (e: UnsatisfiedLinkError) {
+            if (e.message?.contains("already loaded") == true || e.message?.contains("Library already loaded") == true) {
+                Log.i(TAG, "ensureLoaded: $REQUIRED_SO already loaded, continuing")
+            } else {
+                Log.e(TAG, "ensureLoaded: Failed to load $REQUIRED_SO: ${e.message}")
                 return false
             }
-            try {
-                Log.i(TAG, "ensureLoaded: loading ${soFile.name} (${soFile.length()} bytes) from ${soFile.parent}")
-                System.load(soFile.absolutePath)
-                Log.i(TAG, "ensureLoaded: loaded ${soFile.name}")
-            } catch (e: UnsatisfiedLinkError) {
-                if (e.message?.contains("already loaded") == true) {
-                    Log.i(TAG, "ensureLoaded: ${soFile.name} already loaded, continuing")
-                } else {
-                    Log.e(TAG, "ensureLoaded: Failed to load ${soFile.name}: ${e.message}")
-                    return false
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "ensureLoaded: Failed to load ${soFile.name}: ${e.message}")
-                return false
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "ensureLoaded: Failed to load $REQUIRED_SO: ${e.message}")
+            return false
         }
 
         loaded = true
-        Log.i(TAG, "ensureLoaded: All native libraries loaded successfully from ${internalDir.absolutePath}")
+        Log.i(TAG, "ensureLoaded: $REQUIRED_SO loaded successfully from ${internalSo.absolutePath}")
         return true
     }
 

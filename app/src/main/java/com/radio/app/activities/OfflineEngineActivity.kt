@@ -185,7 +185,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         // ===== v2.4.95: 音频分段模型 + 运行库（Silero VAD + YAMNet 双模型） =====
         EngineInfo(
             "音频分段运行库",
-            "ONNX Runtime + TFLite 原生库\n大小: 约7MB(压缩) | 用途: 音频分段AI运行时库\n状态: 支持下载\n包含: libonnxruntime.so, libtensorflowlite_jni.so等\n必需: 使用音频分段(VAD+YAMNet)方案前必须下载安装",
+            "ONNX Runtime 原生库\n大小: 约15MB(压缩) | 用途: 音频分段AI运行时库\n状态: 支持下载\n包含: libonnxruntime.so\n必需: 使用音频分段(VAD+YAMNet)方案前必须下载安装",
             "约7MB",
             "https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.94-audio-models/audio-segmentation-runtime.zip",
             "audio-models"
@@ -365,12 +365,10 @@ class OfflineEngineActivity : AppCompatActivity() {
                 }
                 engine.modelDir.contains("audio-models") -> when {
                     engine.name.contains("运行库") -> {
-                        // v2.4.97: Check all 3 .so files (matching NativeLibLoader)
+                        // v2.4.99: Only check libonnxruntime.so (JNI .so files are in APK)
                         val so1 = File(modelDir, "libonnxruntime.so").exists()
-                        val so2 = File(modelDir, "libonnxruntime4j_jni.so").exists()
-                        val so3 = File(modelDir, "libtensorflowlite_jni.so").exists()
-                        writeEngineLog("setupEngineCard: runtime check: onnxruntime=$so1, onnxruntime4j_jni=$so2, tflite_jni=$so3")
-                        so1 && so2 && so3
+                        writeEngineLog("setupEngineCard: runtime check: onnxruntime=$so1")
+                        so1
                     }
                     engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
                     engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
@@ -388,7 +386,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                         // v2.4.95: Only delete specific file, not entire directory
                         when {
                             engine.name.contains("运行库") -> {
-                                listOf("libonnxruntime.so", "libonnxruntime4j_jni.so", "libtensorflowlite_jni.so").forEach {
+                                listOf("libonnxruntime.so").forEach {
                                     File(modelDir, it).delete()
                                 }
                             }
@@ -1316,7 +1314,7 @@ class OfflineEngineActivity : AppCompatActivity() {
         // v2.4.96: For audio-models, check specific files (no MIN_INSTALL_SIZE check)
         if (engine.modelDir.contains("audio-models")) {
             val result = when {
-                engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libonnxruntime4j_jni.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
+                engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists()
                 engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
                 engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
                 else -> false
