@@ -241,11 +241,8 @@ object SegmentGenerator {
     }
 
     /**
-     * v2.4.94: Try to generate segments using YAMNet + Silero VAD audio analysis.
-     * Requires:
-     * 1. Audio models installed (yamnet.tflite + silero_vad.onnx)
-     * 2. PCM cache file exists for the episode
-     * Returns empty list if conditions not met.
+     * v2.4.96: Try to generate segments using audio analysis (Silero VAD + YAMNet).
+     * Uses the new analyzeEpisode method which finds PCM files automatically.
      */
     private fun tryGenerateAudioSegments(
         context: Context,
@@ -253,26 +250,7 @@ object SegmentGenerator {
         durationMs: Long
     ): List<VoiceSegment> {
         try {
-            val modelDir = AudioSegmentAnalyzer.getModelDir(context)
-            if (!AudioSegmentAnalyzer.isModelInstalled(modelDir)) {
-                Log.i(TAG, "tryGenerateAudioSegments: audio models not installed, skipping")
-                return emptyList()
-            }
-
-            // Find PCM file for this episode
-            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
-            var pcmFile = java.io.File(pcmCacheDir, "${episodeId}_full.pcm")
-            if (!pcmFile.exists() || pcmFile.length() < 16000) {
-                // Try alternate naming (without _full suffix)
-                pcmFile = java.io.File(pcmCacheDir, "${episodeId}.pcm")
-            }
-            if (!pcmFile.exists() || pcmFile.length() < 16000) {
-                Log.i(TAG, "tryGenerateAudioSegments: no PCM file found for $episodeId in ${pcmCacheDir.absolutePath}")
-                return emptyList()
-            }
-
-            Log.i(TAG, "tryGenerateAudioSegments: analyzing PCM ${pcmFile.name} (${pcmFile.length()} bytes) for episode=$episodeId")
-            val segments = AudioSegmentAnalyzer.analyzePcmFile(context, pcmFile, durationMs)
+            val segments = AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs)
             Log.i(TAG, "tryGenerateAudioSegments: got ${segments.size} segments from audio analysis")
             return segments
         } catch (e: Exception) {

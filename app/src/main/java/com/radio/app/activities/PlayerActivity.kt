@@ -1783,7 +1783,22 @@ class PlayerActivity : AppCompatActivity() {
                     // [v2.4.28] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
                     // If MNN fails, show error directly - NO fallback to keyword-based segmentation
                     var segments: List<VoiceSegment> = emptyList()
-                    if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
+                    if (aiModel == AppSettings.AI_MODEL_AUDIO_VAD) {
+                        // v2.4.96: Audio-based segmentation using Silero VAD + YAMNet dual model
+                        writeJitterLog("[v2.4.96] btnAiSegment: using audio-vad segmentation")
+                        runOnUiThread { Toast.makeText(this, "音频分段分析中(VAD+YAMNet)...", Toast.LENGTH_SHORT).show() }
+
+                        try {
+                            val segments_result = com.radio.app.utils.AudioSegmentAnalyzer.analyzeEpisode(
+                                this@PlayerActivity, episode.id, maxEnd.toLong()
+                            )
+                            writeJitterLog("[v2.4.96] btnAiSegment: audio-vad returned ${segments_result.size} segments")
+                            segments = segments_result
+                        } catch (e: Exception) {
+                            writeJitterLog("[v2.4.96] btnAiSegment: audio-vad error: ${e.message}")
+                            runOnUiThread { Toast.makeText(this, "音频分段失败: ${e.message}", Toast.LENGTH_LONG).show() }
+                        }
+                    } else if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
                         // v2.4.89: Support Qwen2.5-Coder-1.5B-Instruct-MNN (new), plus older model directories
                         val modelsDir = getExternalFilesDir("models")
                         var mnnModelDir = File(modelsDir, "mnn-llm/Qwen2.5-Coder-1.5B-Instruct-MNN")
@@ -1912,6 +1927,7 @@ class PlayerActivity : AppCompatActivity() {
                     val segElapsed = System.currentTimeMillis() - segStartTime
                     val segEngineName = when (aiModel) {
                         AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                        AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
                         AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
                         else -> "关键词"
                     }

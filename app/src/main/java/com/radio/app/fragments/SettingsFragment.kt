@@ -237,6 +237,12 @@ class SettingsFragment : Fragment() {
             settings.enablePreprocessing = isChecked
             save()
         }
+        // v2.4.96: Pre-generate subtitles independent toggle
+        binding.switchPreGenerateSubtitles.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.enablePreGenerateSubtitles = isChecked
+            save()
+        }
         binding.spinnerNotificationStyle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
@@ -483,6 +489,7 @@ class SettingsFragment : Fragment() {
         binding.switchRememberEpisode.isChecked = settings.rememberLastEpisode
         binding.switchWifiPrecache.isChecked = settings.wifiOnlyPreCache
         binding.switchPreprocessing.isChecked = settings.enablePreprocessing
+        binding.switchPreGenerateSubtitles.isChecked = settings.enablePreGenerateSubtitles  // v2.4.96
         val notificationStyle = settings.notificationStyle
         val notificationIndex = when (notificationStyle) {
             "compact" -> 1

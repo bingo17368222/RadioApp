@@ -132,7 +132,43 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="缓存完成后自动将音频解码为PCM格式并使用Whisper base模型预先生成完整字幕，加速播放时的字幕显示"
+                    android:text="缓存完成后自动将音频解码为PCM格式，加速播放时的字幕生成"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider"
+                android:layout_marginVertical="12dp" />
+            <!-- v2.4.96: 独立的预先生成字幕开关 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="预先生成字幕"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_pre_generate_subtitles"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="false" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="缓存完成后自动使用Whisper模型预先生成完整字幕，无需手动点击"
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:layout_marginTop="2dp" />

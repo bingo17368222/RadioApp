@@ -1754,9 +1754,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun startPreCacheSubtitleGeneration(episode: Episode) {
         val appSettings = AppSettings.getInstance(this)
-        // 只有预处理开关开启时才预生成字幕
-        if (!appSettings.enablePreprocessing) {
-            writePreCacheLog("startPreCacheSubtitleGeneration: preprocessing disabled, skipping")
+        // v2.4.96: Check independent pre-generate subtitles toggle
+        if (!appSettings.enablePreGenerateSubtitles) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: pre-generate subtitles disabled, skipping")
             return
         }
         val episodeId = episode.id
@@ -1866,8 +1866,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun patrolSubtitleGeneration() {
         val appSettings = AppSettings.getInstance(this)
-        if (!appSettings.enablePreprocessing) {
-            writePreCacheLog("patrolSubtitle: [v2.4.59] preprocessing disabled, skipping patrol")
+        // v2.4.96: Check independent pre-generate subtitles toggle
+        if (!appSettings.enablePreGenerateSubtitles) {
+            writePreCacheLog("patrolSubtitle: [v2.4.96] pre-generate subtitles disabled, skipping patrol")
             return
         }
         // [v2.4.13] Check if subtitle service is busy (cross-process via flag file)

@@ -317,11 +317,17 @@ class OfflineEngineActivity : AppCompatActivity() {
         } else {
             val modelsDir = getExternalFilesDir("models")
             val modelDir = modelsDir?.let { File(it, engine.modelDir) }
+            // v2.4.96: Log modelDir path for debugging
+            Log.d(TAG, "setupEngineCard: modelDir path=${modelDir?.absolutePath}, exists=${modelDir?.exists()}")
             // v2.4.95: For audio-models, check specific files per engine entry
             val installed = modelDir?.exists() == true && (when {
                 engine.modelDir.contains("vosk", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidVoskModelDir(modelDir)
                 engine.modelDir.contains("whisper", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidWhisperModelDir(modelDir)
-                engine.modelDir.contains("mnn", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidMnnModelDir(modelDir)
+                engine.modelDir.contains("mnn", ignoreCase = true) -> {
+                    val sizeOk = getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE
+                    writeEngineLog("setupEngineCard: MNN check: dirSize=${getDirTotalSize(modelDir)}, sizeOk=$sizeOk")
+                    sizeOk && isValidMnnModelDir(modelDir)
+                }
                 engine.modelDir.contains("audio-models") -> when {
                     engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
                     engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
@@ -1261,11 +1267,22 @@ class OfflineEngineActivity : AppCompatActivity() {
 
     private fun isEngineInstalled(engine: EngineInfo, modelDir: File?): Boolean {
         if (modelDir == null || !modelDir.exists()) {
-            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (modelDir null or missing)")
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (modelDir null or missing, path=${modelDir?.absolutePath})")
             return false
         }
+        // v2.4.96: For audio-models, check specific files (no MIN_INSTALL_SIZE check)
+        if (engine.modelDir.contains("audio-models")) {
+            val result = when {
+                engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
+                engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
+                engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
+                else -> false
+            }
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> $result (audio-models check)")
+            return result
+        }
         if (getDirTotalSize(modelDir) < MIN_INSTALL_SIZE) {
-            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (size < MIN_INSTALL_SIZE)")
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (size < MIN_INSTALL_SIZE, size=${getDirTotalSize(modelDir)})")
             return false
         }
         val result = when {

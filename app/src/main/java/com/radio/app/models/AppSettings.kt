@@ -86,7 +86,8 @@ class AppSettings private constructor() {
     private var waterCombinationList: MutableList<WaterCombination> = mutableListOf()
     var preloadCache: Boolean = false
     var preloadCacheCount: Int = 10
-    var enablePreprocessing: Boolean = false  // v2.4.95: Default off, user must enable
+    var enablePreprocessing: Boolean = false  // v2.4.95: Default off, controls PCM pre-decode
+    var enablePreGenerateSubtitles: Boolean = false  // v2.4.96: Independent toggle for pre-generating subtitles (default off)
     var preprocessingCount: Int = 1
     var audioFocus: Boolean = true
     var continuousPlay: Boolean = true
@@ -148,7 +149,8 @@ class AppSettings private constructor() {
         preloadCache = prefs.getBoolean("preload_cache", false)
         preloadCacheCount = prefs.getInt("preload_cache_count", 1)
         autoCache = prefs.getBoolean("auto_cache", false)
-        enablePreprocessing = prefs.getBoolean("enable_preprocessing", true)
+        enablePreprocessing = prefs.getBoolean("enable_preprocessing", false)  // v2.4.96: Default off
+        enablePreGenerateSubtitles = prefs.getBoolean("enable_pre_generate_subtitles", false)  // v2.4.96: Default off
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
         audioFocus = prefs.getBoolean("audio_focus", true)
         continuousPlay = prefs.getBoolean("continuous_play", true)
@@ -300,6 +302,7 @@ class AppSettings private constructor() {
             putInt("preload_cache_count", preloadCacheCount)
             putBoolean("auto_cache", autoCache)
             putBoolean("enable_preprocessing", enablePreprocessing)
+            putBoolean("enable_pre_generate_subtitles", enablePreGenerateSubtitles)  // v2.4.96
             putInt("preprocessing_count", preprocessingCount)
             putBoolean("audio_focus", audioFocus)
             putBoolean("continuous_play", continuousPlay)

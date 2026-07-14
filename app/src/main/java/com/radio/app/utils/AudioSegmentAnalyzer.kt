@@ -111,6 +111,197 @@ object AudioSegmentAnalyzer {
     }
 
     /**
+     * v2.4.96: Analyze an episode by finding its PCM file and running dual-model segmentation.
+     *
+     * PCM file search order:
+     * 1. Pre-decoded full PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_full.pcm
+     * 2. Pre-decoded 5-min PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_5min.pcm
+     * 3. Whisper chunk PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_chunk_*.pcm
+     * 4. Decode from cached audio file (mp4/m4a) to PCM on-the-fly
+     *
+     * @param context Application context
+     * @param episodeId Episode ID
+     * @param durationMs Duration in milliseconds
+     * @return List of VoiceSegments
+     */
+    fun analyzeEpisode(context: Context, episodeId: String, durationMs: Long): List<VoiceSegment> {
+        // v2.4.95: Load native libraries before any ONNX/TFLite usage
+        if (!NativeLibLoader.ensureLoaded(context)) {
+            Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime.")
+            throw RuntimeException("音频分段运行库未安装，请在离线引擎管理中下载")
+        }
+
+        val modelDir = getModelDir(context)
+        if (!isModelInstalled(modelDir)) {
+            Log.e(TAG, "Models not installed. YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
+            throw RuntimeException("音频分段模型未安装，请在离线引擎管理中下载 Silero VAD 和 YAMNet")
+        }
+
+        // v2.4.96: Find PCM file - prioritize pre-decoded files from preprocessing
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+        Log.i(TAG, "analyzeEpisode: searching for PCM in ${pcmCacheDir.absolutePath}")
+
+        // 1. Full PCM (from subtitle preprocessing)
+        var pcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+        if (pcmFile.exists() && pcmFile.length() > 16000) {
+            Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
+        } else {
+            // 2. 5-min PCM (from PCM pre-decode)
+            pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+            if (pcmFile.exists() && pcmFile.length() > 16000) {
+                Log.i(TAG, "analyzeEpisode: found 5min PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
+            } else {
+                // 3. Plain PCM (without suffix)
+                pcmFile = File(pcmCacheDir, "${episodeId}.pcm")
+                if (pcmFile.exists() && pcmFile.length() > 16000) {
+                    Log.i(TAG, "analyzeEpisode: found plain PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
+                } else {
+                    // 4. Decode from cached audio file
+                    pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir)
+                    if (pcmFile == null) {
+                        Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId")
+                        throw RuntimeException("未找到PCM音频文件，请先生成字幕或预解码音频")
+                    }
+                }
+            }
+        }
+
+        return analyzePcmFile(context, pcmFile, durationMs)
+    }
+
+    /**
+     * v2.4.96: Decode cached audio file to PCM using MediaExtractor + MediaCodec.
+     * This is a fallback when no pre-decoded PCM file exists.
+     */
+    private fun decodeAudioToPcm(context: Context, episodeId: String, outputDir: File): File? {
+        try {
+            val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
+            val audioFile = episodesDir.listFiles()?.find {
+                it.isFile && it.length() > 1024 && (
+                    it.name.startsWith(episodeId) ||
+                    it.name.startsWith(episodeId.substringBefore("-"))
+                ) && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac"))
+            }
+            if (audioFile == null) {
+                Log.e(TAG, "decodeAudioToPcm: no cached audio file found for $episodeId")
+                return null
+            }
+            Log.i(TAG, "decodeAudioToPcm: decoding ${audioFile.name} to PCM")
+
+            val outputFile = File(outputDir, "${episodeId}_full.pcm")
+            // Use Android MediaExtractor + MediaCodec to decode
+            val extractor = android.media.MediaExtractor()
+            extractor.setDataSource(audioFile.absolutePath)
+            val trackCount = extractor.trackCount
+            var audioTrackIndex = -1
+            for (i in 0 until trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    break
+                }
+            }
+            if (audioTrackIndex < 0) {
+                Log.e(TAG, "decodeAudioToPcm: no audio track found")
+                extractor.release()
+                return null
+            }
+            extractor.selectTrack(audioTrackIndex)
+            val inputFormat = extractor.getTrackFormat(audioTrackIndex)
+            val sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+            val channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+            val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+
+            // Create decoder
+            val decoder = android.media.MediaCodec.createDecoderByType(mime)
+            decoder.configure(inputFormat, null, null, 0)
+            decoder.start()
+
+            val bufferInfo = android.media.MediaCodec.BufferInfo()
+            val outputDirFile = outputFile
+            var totalPcmBytes = 0
+            val maxPcmBytes = 50 * 1024 * 1024  // 50MB max (~26 min at 16kHz mono)
+
+            // Resample to 16kHz mono if needed
+            val needResample = sampleRate != 16000 || channelCount != 1
+            val fos = java.io.FileOutputStream(outputDirFile)
+
+            try {
+                while (true) {
+                    val inputBufferIndex = decoder.dequeueInputBuffer(10000)
+                    if (inputBufferIndex >= 0) {
+                        val inputBuffer = decoder.getInputBuffer(inputBufferIndex) ?: continue
+                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        if (sampleSize < 0) {
+                            decoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        } else {
+                            decoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, extractor.sampleTime, 0)
+                            extractor.advance()
+                        }
+                    }
+
+                    val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000)
+                    if (outputBufferIndex >= 0) {
+                        val outputBuffer = decoder.getOutputBuffer(outputBufferIndex)
+                        if (outputBuffer != null && bufferInfo.size > 0) {
+                            val chunk = ByteArray(bufferInfo.size)
+                            outputBuffer.get(chunk)
+
+                            if (needResample) {
+                                // Simple downsample: take every Nth sample + mix channels
+                                val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                                val ratio = sampleRate / 16000
+                                val outSamples = pcmShort.remaining() / channelCount / ratio
+                                val outBuf = java.nio.ByteBuffer.allocate(outSamples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                var i = 0
+                                while (i + channelCount <= pcmShort.remaining()) {
+                                    if (i % (ratio * channelCount) == 0) {
+                                        var sum = 0
+                                        for (c in 0 until channelCount) {
+                                            sum += pcmShort.get(i + c)
+                                        }
+                                        outBuf.putShort((sum / channelCount).toShort())
+                                    }
+                                    i += channelCount
+                                }
+                                val outBytes = ByteArray(outBuf.position())
+                                outBuf.rewind()
+                                outBuf.get(outBytes)
+                                fos.write(outBytes)
+                                totalPcmBytes += outBytes.size
+                            } else {
+                                fos.write(chunk)
+                                totalPcmBytes += chunk.size
+                            }
+
+                            if (totalPcmBytes >= maxPcmBytes) {
+                                Log.i(TAG, "decodeAudioToPcm: reached max size limit ($maxPcmBytes bytes)")
+                                break
+                            }
+                        }
+                        decoder.releaseOutputBuffer(outputBufferIndex, false)
+                        if (bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            break
+                        }
+                    }
+                }
+            } finally {
+                fos.close()
+                decoder.stop()
+                decoder.release()
+                extractor.release()
+            }
+
+            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
+            return if (totalPcmBytes > 16000) outputFile else null
+        } catch (e: Exception) {
+            Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
+            return null
+        }
+    }
+
+    /**
      * Analyze PCM audio file and generate segments using dual models.
      *
      * @param context Application context
