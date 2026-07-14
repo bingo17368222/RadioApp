@@ -180,6 +180,15 @@ class OfflineEngineActivity : AppCompatActivity() {
             "约1.8GB",
             "https://ghfast.top/https://github.com/alphacep/vosk-space/releases/download/v0.3.47/vosk-model-en-us-daanzu-0.22.zip",
             "vosk-model-en-us-daanzu-0.22"
+        ),
+
+        // ===== v2.4.94: Silero VAD 音频分段模型 =====
+        EngineInfo(
+            "Silero VAD 语音活动检测",
+            "Silero VAD ONNX 模型\n大小: 约2.3MB | 用途: 高精度语音活动检测\n状态: 支持下载\n适用: AI音频分段，检测语音存在\n说明: 基于Silero VAD + 能量特征分析，自动区分干货/水货片段，生成精确分段",
+            "约2.3MB",
+            "https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.94-audio-models/silero_vad.onnx",
+            "audio-models"
         )
     )
 

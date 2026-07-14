@@ -201,9 +201,10 @@ object SegmentGenerator {
     }
 
     /**
-     * Post-segment an episode: generate keyword-based segments and save to DB.
+     * Post-segment an episode: generate segments and save to DB.
      * Called after subtitle generation completes.
-     * Replaces any existing simulated segments with real keyword-classified ones.
+     * v2.4.94: Tries audio-based (YAMNet + Silero VAD) first, falls back to keyword-based.
+     * Replaces any existing simulated segments with real classified ones.
      */
     fun postSegmentKeyword(context: Context, episodeId: String, durationMs: Long) {
         try {
@@ -215,14 +216,66 @@ object SegmentGenerator {
                 Log.i(TAG, "postSegmentKeyword: episode=$episodeId already has real segments, skipping")
                 return
             }
-            val segments = generateKeywordSegments(context, episodeId, durationMs)
+
+            // v2.4.94: Try audio-based segmentation (YAMNet + Silero VAD) first
+            val audioSegments = tryGenerateAudioSegments(context, episodeId, durationMs)
+            val segments = if (audioSegments.isNotEmpty()) {
+                Log.i(TAG, "postSegmentKeyword: using audio-based segments (${audioSegments.size}) for episode=$episodeId")
+                audioSegments
+            } else {
+                // Fallback: keyword-based segments
+                Log.i(TAG, "postSegmentKeyword: audio segmentation unavailable, using keyword-based for episode=$episodeId")
+                generateKeywordSegments(context, episodeId, durationMs)
+            }
+
             if (segments.isNotEmpty()) {
                 dbHelper.saveVoiceSegments(episodeId, segments)
                 dbHelper.updateEpisodeSegmentCount(episodeId, segments.size)
-                Log.i(TAG, "postSegmentKeyword: saved ${segments.size} keyword segments for episode=$episodeId")
+                Log.i(TAG, "postSegmentKeyword: saved ${segments.size} segments for episode=$episodeId")
             }
         } catch (e: Exception) {
             Log.e(TAG, "postSegmentKeyword failed: ${e.message}")
+        }
+    }
+
+    /**
+     * v2.4.94: Try to generate segments using YAMNet + Silero VAD audio analysis.
+     * Requires:
+     * 1. Audio models installed (yamnet.tflite + silero_vad.onnx)
+     * 2. PCM cache file exists for the episode
+     * Returns empty list if conditions not met.
+     */
+    private fun tryGenerateAudioSegments(
+        context: Context,
+        episodeId: String,
+        durationMs: Long
+    ): List<VoiceSegment> {
+        try {
+            val modelDir = AudioSegmentAnalyzer.getModelDir(context)
+            if (!AudioSegmentAnalyzer.isModelInstalled(modelDir)) {
+                Log.i(TAG, "tryGenerateAudioSegments: audio models not installed, skipping")
+                return emptyList()
+            }
+
+            // Find PCM file for this episode
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+            var pcmFile = java.io.File(pcmCacheDir, "${episodeId}_full.pcm")
+            if (!pcmFile.exists() || pcmFile.length() < 16000) {
+                // Try alternate naming (without _full suffix)
+                pcmFile = java.io.File(pcmCacheDir, "${episodeId}.pcm")
+            }
+            if (!pcmFile.exists() || pcmFile.length() < 16000) {
+                Log.i(TAG, "tryGenerateAudioSegments: no PCM file found for $episodeId in ${pcmCacheDir.absolutePath}")
+                return emptyList()
+            }
+
+            Log.i(TAG, "tryGenerateAudioSegments: analyzing PCM ${pcmFile.name} (${pcmFile.length()} bytes) for episode=$episodeId")
+            val segments = AudioSegmentAnalyzer.analyzePcmFile(context, pcmFile, durationMs)
+            Log.i(TAG, "tryGenerateAudioSegments: got ${segments.size} segments from audio analysis")
+            return segments
+        } catch (e: Exception) {
+            Log.e(TAG, "tryGenerateAudioSegments failed: ${e.message}")
+            return emptyList()
         }
     }
 }

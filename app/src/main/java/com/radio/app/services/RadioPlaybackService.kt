@@ -4761,18 +4761,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         "${targetStart.substring(0, 2)}:${targetStart.substring(2, 4)}-${targetEnd.substring(0, 2)}:${targetEnd.substring(2, 4)}"
                     } else ""
                     // [v2.0.98] Fix: Use real episode title when available (from matchEpisodeFallback).
-                    // Previously always constructed title from stationName + date + time, which:
-                    // 1. Produced empty stationName when currentEpisode.stationName was ""
-                    // 2. Lost the real program name (e.g., "唱行早高峰" became " 07月10日 17:00-19:00")
+                    // v2.4.94: Do NOT construct title from stationName + date + time — that causes
+                    // notification title confusion (title becomes "电台名 日期 时间段"). Date and time
+                    // are already shown in the notification subtext. Use real title only, or a simple
+                    // fallback like station name alone.
                     val realTitle = matchEpisodeFallback?.title ?: matchEpisode?.title
                     val constructedTitle: String = if (!realTitle.isNullOrBlank()) {
                         realTitle!!
                     } else {
-                        buildString {
-                            if (stationName.isNotBlank()) append(stationName)
-                            if (dateDisplay.isNotBlank()) append(" $dateDisplay")
-                            if (timeDisplay.isNotBlank()) append(" $timeDisplay")
-                        }.trim()
+                        // v2.4.94: Try to find title from episode_info DB table
+                        val dbEpisodeId = "${stationId}-$targetDate"
+                        val dbEp = try {
+                            com.radio.app.database.RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                                .getEpisodeInfo(dbEpisodeId)
+                        } catch (_: Exception) { null }
+                        val dbTitle = dbEp?.title?.takeIf { it.isNotBlank() && !it.startsWith("广播节目录音") }
+                        if (!dbTitle.isNullOrBlank()) {
+                            dbTitle!!
+                        } else {
+                            // v2.4.94: Use station name only, NOT date+time (they're in subtext)
+                            stationName.takeIf { it.isNotBlank() } ?: "广播节目"
+                        }
                     }
 
                     // [v2.0.43] Issue 1 Fix: Calculate duration from time slot to avoid duration=0

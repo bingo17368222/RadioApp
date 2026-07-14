@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 294
-        versionName "2.4.93"
+        versionCode 295
+        versionName "2.4.94"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -62,6 +62,9 @@ android {
 
     packagingOptions {
         exclude 'lib/*/libvosk.so'
+        // v2.4.94: Prevent ONNX Runtime and TFLite .so conflicts
+        exclude 'META-INF/INDEX.LIST'
+        exclude 'META-INF/DEPENDENCIES'
     }
 
     // Issue 5: Point to the CMakeLists.txt that builds libwhisper_jni.so
@@ -106,4 +109,7 @@ dependencies {
 
     // Vosk - 离线语音识别 (Java classes bundled, .so excluded - user downloads separately)
     implementation 'com.alphacephei:vosk-android:0.3.47'
+
+    // v2.4.94: ONNX Runtime for Silero VAD (audio-based AI segmentation)
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.16.3'
 }
