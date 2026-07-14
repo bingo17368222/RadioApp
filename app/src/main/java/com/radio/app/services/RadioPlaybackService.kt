@@ -2055,7 +2055,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // v2.4.93: Parse date from filename, skip if before current episode's date
                     val fileDateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(cachedName)
                     val fileDateStr = if (fileDateMatch != null) {
-                        "${fileDate.groupValues[1]}-${fileDate.groupValues[2]}-${fileDate.groupValues[3]}"
+                        "${fileDateMatch.groupValues[1]}-${fileDateMatch.groupValues[2]}-${fileDateMatch.groupValues[3]}"
                     } else ""
                     if (currentDateStr.isNotBlank() && fileDateStr.isNotBlank() && fileDateStr < currentDateStr) {
                         writePreCacheLog("patrolSubtitle: [v2.4.93] ORPHAN SKIP $cachedName: date $fileDateStr < current $currentDateStr (past episode)")
