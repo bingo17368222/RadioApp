@@ -360,7 +360,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                         }
                     }
                     
-                    writeEngineLog("setupEngineCard: MNN check: found=$found, foundDir=${foundDir.absolutePath}")
+                    writeEngineLog("setupEngineCard: MNN check: found=$found, foundDir=${foundDir?.absolutePath}")
                     found
                 }
                 engine.modelDir.contains("audio-models") -> when {
