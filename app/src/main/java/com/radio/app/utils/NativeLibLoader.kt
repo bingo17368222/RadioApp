@@ -37,21 +37,35 @@ object NativeLibLoader {
     }
 
     /**
+     * v2.4.97: Get detailed status of each .so file for diagnostics.
+     */
+    fun getLibsStatus(modelDir: File): String {
+        return REQUIRED_SO_FILES.joinToString(", ") { name ->
+            val f = File(modelDir, name)
+            "$name=${if (f.exists()) "${f.length()}B" else "MISSING"}"
+        }
+    }
+
+    /**
      * Load all native libraries. Must be called before any ONNX Runtime or TFLite usage.
      * Returns true if all libraries loaded successfully (or were already loaded).
      */
     @Synchronized
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
-        if (loadAttempted) return false  // Don't retry after failure
-        loadAttempted = true
+        // v2.4.97: Allow retry after failure (user may download runtime after first attempt)
 
         val modelDir = AudioSegmentAnalyzer.getModelDir(context)
 
+        // v2.4.97: Detailed logging for debugging
+        Log.i(TAG, "ensureLoaded: modelDir=${modelDir.absolutePath}, exists=${modelDir.exists()}")
+        Log.i(TAG, "ensureLoaded: dir contents=${modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null listFiles"}")
+        Log.i(TAG, "ensureLoaded: libs status: ${getLibsStatus(modelDir)}")
+
         if (!areLibsDownloaded(modelDir)) {
-            Log.w(TAG, "Native libs not downloaded in ${modelDir.absolutePath}")
-            Log.w(TAG, "Required: $REQUIRED_SO_FILES")
-            Log.w(TAG, "Found: ${modelDir.listFiles()?.map { it.name } ?: emptyList()}")
+            Log.e(TAG, "Native libs not downloaded in ${modelDir.absolutePath}")
+            Log.e(TAG, "Required: $REQUIRED_SO_FILES")
+            Log.e(TAG, "Found: ${modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null"}")
             return false
         }
 

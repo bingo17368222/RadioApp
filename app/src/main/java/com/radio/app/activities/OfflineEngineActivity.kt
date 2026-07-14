@@ -317,19 +317,36 @@ class OfflineEngineActivity : AppCompatActivity() {
         } else {
             val modelsDir = getExternalFilesDir("models")
             val modelDir = modelsDir?.let { File(it, engine.modelDir) }
-            // v2.4.96: Log modelDir path for debugging
-            Log.d(TAG, "setupEngineCard: modelDir path=${modelDir?.absolutePath}, exists=${modelDir?.exists()}")
-            // v2.4.95: For audio-models, check specific files per engine entry
-            val installed = modelDir?.exists() == true && (when {
+            // v2.4.97: Don't use modelDir.exists() — it can return false even when the directory exists
+            // on some Android devices due to filesystem/mount issues. Instead, check for key files directly.
+            writeEngineLog("setupEngineCard: modelDir path=${modelDir?.absolutePath}, exists=${modelDir?.exists()}, listFiles=${modelDir?.listFiles()?.map { "${it.name}(${it.length()})" }?.take(5)}")
+            // v2.4.97: Check by specific file existence instead of dir.exists()
+            val installed = modelDir != null && (when {
                 engine.modelDir.contains("vosk", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidVoskModelDir(modelDir)
                 engine.modelDir.contains("whisper", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidWhisperModelDir(modelDir)
                 engine.modelDir.contains("mnn", ignoreCase = true) -> {
-                    val sizeOk = getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE
-                    writeEngineLog("setupEngineCard: MNN check: dirSize=${getDirTotalSize(modelDir)}, sizeOk=$sizeOk")
-                    sizeOk && isValidMnnModelDir(modelDir)
+                    // v2.4.97: Use MnnLlmBridge.isModelInstalled() as primary check — it uses the same
+                    // file checks but is more reliable. Also check directly for llm.mnn.weight.
+                    val weightFile = File(modelDir, "llm.mnn.weight")
+                    val weightExists = weightFile.exists() && weightFile.length() > 100_000_000
+                    val mnnBridgeInstalled = try {
+                        com.radio.app.whisper.MnnLlmBridge.isModelInstalled(modelDir)
+                    } catch (e: Exception) {
+                        writeEngineLog("setupEngineCard: MNN bridge check error: ${e.message}")
+                        false
+                    }
+                    writeEngineLog("setupEngineCard: MNN check: weightExists=$weightExists (${weightFile.length()}), bridge=$mnnBridgeInstalled")
+                    weightExists || mnnBridgeInstalled
                 }
                 engine.modelDir.contains("audio-models") -> when {
-                    engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
+                    engine.name.contains("运行库") -> {
+                        // v2.4.97: Check all 3 .so files (matching NativeLibLoader)
+                        val so1 = File(modelDir, "libonnxruntime.so").exists()
+                        val so2 = File(modelDir, "libonnxruntime4j_jni.so").exists()
+                        val so3 = File(modelDir, "libtensorflowlite_jni.so").exists()
+                        writeEngineLog("setupEngineCard: runtime check: onnxruntime=$so1, onnxruntime4j_jni=$so2, tflite_jni=$so3")
+                        so1 && so2 && so3
+                    }
                     engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
                     engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
                     else -> false
@@ -1266,19 +1283,31 @@ class OfflineEngineActivity : AppCompatActivity() {
     }
 
     private fun isEngineInstalled(engine: EngineInfo, modelDir: File?): Boolean {
-        if (modelDir == null || !modelDir.exists()) {
-            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (modelDir null or missing, path=${modelDir?.absolutePath})")
+        // v2.4.97: Don't check dir.exists() — it can return false on some devices
+        if (modelDir == null) {
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> false (modelDir null)")
             return false
         }
         // v2.4.96: For audio-models, check specific files (no MIN_INSTALL_SIZE check)
         if (engine.modelDir.contains("audio-models")) {
             val result = when {
-                engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
+                engine.name.contains("运行库") -> File(modelDir, "libonnxruntime.so").exists() && File(modelDir, "libonnxruntime4j_jni.so").exists() && File(modelDir, "libtensorflowlite_jni.so").exists()
                 engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
                 engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
                 else -> false
             }
             writeEngineLog("isEngineInstalled: '${engine.name}' -> $result (audio-models check)")
+            return result
+        }
+        // v2.4.97: For MNN, check key file directly
+        if (engine.modelDir.contains("mnn", ignoreCase = true)) {
+            val weightFile = File(modelDir, "llm.mnn.weight")
+            val weightExists = weightFile.exists() && weightFile.length() > 100_000_000
+            val mnnBridgeInstalled = try {
+                com.radio.app.whisper.MnnLlmBridge.isModelInstalled(modelDir)
+            } catch (e: Exception) { false }
+            val result = weightExists || mnnBridgeInstalled
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> $result (MNN check: weight=$weightExists(${weightFile.length()}), bridge=$mnnBridgeInstalled)")
             return result
         }
         if (getDirTotalSize(modelDir) < MIN_INSTALL_SIZE) {
@@ -1288,7 +1317,6 @@ class OfflineEngineActivity : AppCompatActivity() {
         val result = when {
             engine.modelDir.contains("vosk", ignoreCase = true) -> isValidVoskModelDir(modelDir)
             engine.modelDir.contains("whisper", ignoreCase = true) -> isValidWhisperModelDir(modelDir)
-            engine.modelDir.contains("mnn", ignoreCase = true) -> isValidMnnModelDir(modelDir)
             else -> true
         }
         writeEngineLog("isEngineInstalled: '${engine.name}' -> $result")
