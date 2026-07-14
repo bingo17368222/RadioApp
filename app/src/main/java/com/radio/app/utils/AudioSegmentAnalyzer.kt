@@ -509,5 +509,12 @@ object AudioSegmentAnalyzer {
     /**
      * Wrapper for ONNX Runtime session (uses Any to avoid hard import dependency).
      */
-    private class AiSession(val session: Any)
+    private class AiSession(val session: Any) {
+        fun close() {
+            try {
+                val closeMethod = session.javaClass.getMethod("close")
+                closeMethod.invoke(session)
+            } catch (_: Exception) {}
+        }
+    }
 }
