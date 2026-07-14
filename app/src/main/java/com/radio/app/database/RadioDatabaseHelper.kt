@@ -567,6 +567,20 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
     }
 
+    // v2.4.92: Find episode by audio filename (for orphaned cached files not in preCacheList)
+    fun getEpisodeByAudioFileName(fileName: String): Episode? {
+        try {
+            val db = readableDatabase
+            val cursor = db.query(TABLE_EPISODE_INFO, null, "audio_url LIKE ?", arrayOf("%$fileName%"), null, null, null)
+            var ep: Episode? = null
+            if (cursor.moveToFirst()) ep = cursorToEpisode(cursor)
+            cursor.close()
+            return ep
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
     fun getEpisodesByDateAndStation(stationId: String, date: String): List<Episode> {
         val list = mutableListOf<Episode>()
         try {

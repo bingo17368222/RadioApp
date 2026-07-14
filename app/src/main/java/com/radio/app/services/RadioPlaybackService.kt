@@ -1301,10 +1301,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
             if (newEpisodes != null && newEpisodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
+                // v2.4.92: Do NOT exclude episodes whose audio is already cached.
+                // Previously, `extractCacheFileName(ep.audioUrl) !in cachedNames` filtered them out,
+                // which meant cached episodes were never added to the preCacheList, so the subtitle
+                // patrol could never find them for subtitle generation. Now we only filter by URL
+                // duplicates and disliked status — the download logic already skips cached files.
                 val validNewEpisodes = newEpisodes.filter { ep ->
                     ep.audioUrl.isNotBlank() &&
                     ep.audioUrl !in existingUrls &&
-                    extractCacheFileName(ep.audioUrl) !in cachedNames &&
                     ep.audioUrl.startsWith("http") &&
                     !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                 }
@@ -2023,7 +2027,60 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
-                writePreCacheLog("patrolSubtitle: [v2.4.82] all cached episodes already have complete subtitles (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+                writePreCacheLog("patrolSubtitle: [v2.4.92] patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+
+                // v2.4.92: Fallback — scan episodes directory for cached files NOT in preCacheList.
+                // This catches episodes that were cached (e.g., by direct playback) but never added
+                // to the preCacheList, so they were never checked for subtitle generation.
+                val preCacheFileNames = mutableSetOf<String>()
+                for (ep in preCacheList) {
+                    if (ep.audioUrl.isNotBlank()) {
+                        preCacheFileNames.add(extractCacheFileName(ep.audioUrl))
+                    }
+                }
+                var orphanFound = false
+                for (cachedName in cachedNames) {
+                    if (cachedName in preCacheFileNames) continue
+                    // Try to find episode in DB by audio filename
+                    val dbEp = try { dbHelper.getEpisodeByAudioFileName(cachedName) } catch (_: Exception) { null }
+                    val episodeId = dbEp?.id ?: cachedName.substringBeforeLast(".")
+                    // Skip if already has complete subtitles
+                    val isComplete = try { dbHelper.hasCompleteSubtitles(episodeId) } catch (_: Exception) { false }
+                    if (isComplete) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN SKIP $cachedName: subtitles already complete (id=$episodeId)")
+                        continue
+                    }
+                    // Skip if noPreprocess or disliked
+                    if (settings.isNoPreprocess(episodeId)) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN SKIP $cachedName: noPreprocess (id=$episodeId)")
+                        continue
+                    }
+                    if (settings.isDisliked(episodeId)) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN SKIP $cachedName: disliked (id=$episodeId)")
+                        continue
+                    }
+                    // Construct Episode and trigger subtitle generation
+                    val stationId = dbEp?.stationId ?: cachedName.substringBefore("_")
+                    val episodeTitle = dbEp?.title ?: cachedName.substringBeforeLast(".")
+                    val audioUrl = dbEp?.audioUrl ?: "https://placeholder/$cachedName"
+                    writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN FOUND: $cachedName has no subtitles (id=$episodeId), triggering generation")
+                    val orphanEp = Episode(
+                        id = episodeId,
+                        title = episodeTitle,
+                        audioUrl = audioUrl,
+                        stationId = stationId,
+                        stationName = dbEp?.stationName ?: "",
+                        duration = dbEp?.duration ?: 0,
+                        broadcastAt = dbEp?.broadcastAt ?: ""
+                    )
+                    startPreCacheSubtitleGeneration(orphanEp)
+                    orphanFound = true
+                    break  // Only generate one at a time
+                }
+                if (orphanFound) return@launch
+
+                writePreCacheLog("patrolSubtitle: [v2.4.92] no orphaned files found, all done")
+
                 // v2.4.82: If there are episodes without audio, trigger pre-cache download
                 if (withoutAudio > 0 && !isPrecaching) {
                     writePreCacheLog("patrolSubtitle: [v2.4.82] found $withoutAudio episodes without audio, triggering pre-cache download")
@@ -2031,26 +2088,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         serviceScope.launch { triggerPreCache() }
                     } catch (_: Exception) {}
                 }
-                // v2.4.81: Show one-time notification when patrol finds nothing to do
-                // but there are episodes without cached audio (need download first)
-                if (withoutAudio > 0 && withAudio > 0 && withSubtitles == withAudio) {
-                    try {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
-                                nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预生成字幕", NotificationManager.IMPORTANCE_LOW))
-                            }
+                // v2.4.92: Clear notification text — explain what was done and what will happen next
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                        if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
+                            nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预生成字幕", NotificationManager.IMPORTANCE_LOW))
                         }
-                        val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
-                            .setSmallIcon(android.R.drawable.ic_media_ff)
-                            .setContentTitle("预生成字幕")
-                            .setContentText("已有字幕: $withSubtitles 集, 待下载音频: $withoutAudio 集")
-                            .setAutoCancel(true)
-                            .build()
-                        val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                        notifManager.notify(2002, notif)
-                    } catch (_: Exception) {}
-                }
+                    }
+                    val notifText = when {
+                        withoutAudio > 0 && withSubtitles > 0 ->
+                            "字幕已完成${withSubtitles}集，剩余${withoutAudio}集将自动下载音频并生成字幕"
+                        withoutAudio > 0 && withSubtitles == 0 ->
+                            "${withoutAudio}集待下载音频后自动生成字幕"
+                        withoutAudio == 0 && withSubtitles > 0 ->
+                            "字幕已全部完成（${withSubtitles}集）"
+                        else -> "暂无待处理节目"
+                    }
+                    val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
+                        .setSmallIcon(android.R.drawable.ic_media_ff)
+                        .setContentTitle("预生成字幕")
+                        .setContentText(notifText)
+                        .setAutoCancel(true)
+                        .build()
+                    val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                    notifManager.notify(2002, notif)
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 writePreCacheLog("patrolSubtitle: [v2.4.13] patrol failed: ${e.message}")
             }
