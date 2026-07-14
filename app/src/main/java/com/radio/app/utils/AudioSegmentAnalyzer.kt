@@ -142,18 +142,18 @@ object AudioSegmentAnalyzer {
         Log.i(TAG, "analyzeEpisode: searching for PCM in ${pcmCacheDir.absolutePath}")
 
         // 1. Full PCM (from subtitle preprocessing)
-        var pcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
-        if (pcmFile.exists() && pcmFile.length() > 16000) {
+        var pcmFile: File? = File(pcmCacheDir, "${episodeId}_full.pcm")
+        if (pcmFile!!.exists() && pcmFile.length() > 16000) {
             Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
         } else {
             // 2. 5-min PCM (from PCM pre-decode)
             pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcmFile.exists() && pcmFile.length() > 16000) {
+            if (pcmFile!!.exists() && pcmFile.length() > 16000) {
                 Log.i(TAG, "analyzeEpisode: found 5min PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
             } else {
                 // 3. Plain PCM (without suffix)
                 pcmFile = File(pcmCacheDir, "${episodeId}.pcm")
-                if (pcmFile.exists() && pcmFile.length() > 16000) {
+                if (pcmFile!!.exists() && pcmFile.length() > 16000) {
                     Log.i(TAG, "analyzeEpisode: found plain PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
                 } else {
                     // 4. Decode from cached audio file
@@ -166,7 +166,7 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        return analyzePcmFile(context, pcmFile, durationMs)
+        return analyzePcmFile(context, pcmFile!!, durationMs)
     }
 
     /**
