@@ -5,22 +5,19 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.95: Runtime native library loader for ONNX Runtime and TFLite.
+ * v2.4.98: Runtime native library loader for ONNX Runtime and TFLite.
  *
  * The .so files are excluded from the APK to reduce its size.
  * They are downloaded from the offline engine management and stored in the
- * audio-models directory. This class loads them via System.load() before any
- * ONNX Runtime or TFLite class is accessed.
+ * audio-models directory (external storage).
  *
- * After System.load("/path/libonnxruntime.so"), the library is registered in
- * the JVM's loaded library table. When the ONNX Runtime's OrtEnvironment
- * static initializer calls System.loadLibrary("onnxruntime"), it finds the
- * library already loaded and returns immediately.
+ * v2.4.98 FIX: Android SELinux prevents dlopen() from external storage paths.
+ * Solution: Copy .so files to the app's internal code cache directory
+ * (getCodeCacheDir()) before calling System.load().
  */
 object NativeLibLoader {
     private const val TAG = "NativeLibLoader"
     private var loaded = false
-    private var loadAttempted = false
 
     // Required .so files for audio segmentation
     private val REQUIRED_SO_FILES = listOf(
@@ -30,7 +27,7 @@ object NativeLibLoader {
     )
 
     /**
-     * Check if all required .so files are downloaded.
+     * Check if all required .so files are downloaded (in external storage).
      */
     fun areLibsDownloaded(modelDir: File): Boolean {
         return REQUIRED_SO_FILES.all { File(modelDir, it).exists() }
@@ -47,55 +44,126 @@ object NativeLibLoader {
     }
 
     /**
+     * v2.4.98: Get the internal code cache directory for .so files.
+     * This is where we copy .so files so System.load() can work.
+     */
+    private fun getInternalLibDir(context: Context): File {
+        val dir = File(context.codeCacheDir, "audio-libs")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    /**
+     * v2.4.98: Check if .so files are already copied to internal storage.
+     */
+    private fun areLibsCopiedInternally(internalDir: File): Boolean {
+        return REQUIRED_SO_FILES.all { File(internalDir, it).exists() }
+    }
+
+    /**
+     * v2.4.98: Copy .so files from external storage to internal code cache.
+     * Only copies if the file doesn't exist or has a different size.
+     */
+    private fun copyLibsToInternal(externalDir: File, internalDir: File): Boolean {
+        for (soName in REQUIRED_SO_FILES) {
+            val srcFile = File(externalDir, soName)
+            val dstFile = File(internalDir, soName)
+            if (!srcFile.exists()) {
+                Log.e(TAG, "copyLibsToInternal: source missing: ${srcFile.absolutePath}")
+                return false
+            }
+            // Only copy if destination doesn't exist or size differs
+            if (!dstFile.exists() || dstFile.length() != srcFile.length()) {
+                Log.i(TAG, "copyLibsToInternal: copying $soName (${srcFile.length()} bytes)")
+                try {
+                    srcFile.copyTo(dstFile, overwrite = true)
+                } catch (e: Exception) {
+                    Log.e(TAG, "copyLibsToInternal: failed to copy $soName: ${e.message}")
+                    return false
+                }
+            }
+        }
+        Log.i(TAG, "copyLibsToInternal: all .so files copied to ${internalDir.absolutePath}")
+        return true
+    }
+
+    /**
      * Load all native libraries. Must be called before any ONNX Runtime or TFLite usage.
      * Returns true if all libraries loaded successfully (or were already loaded).
+     *
+     * v2.4.98: Copies .so files to internal codeCacheDir before System.load()
+     * to avoid SELinux dlopen failures on external storage paths.
      */
     @Synchronized
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
-        // v2.4.97: Allow retry after failure (user may download runtime after first attempt)
 
-        val modelDir = AudioSegmentAnalyzer.getModelDir(context)
+        val externalDir = AudioSegmentAnalyzer.getModelDir(context)
+        val internalDir = getInternalLibDir(context)
 
-        // v2.4.97: Detailed logging for debugging
-        Log.i(TAG, "ensureLoaded: modelDir=${modelDir.absolutePath}, exists=${modelDir.exists()}")
-        Log.i(TAG, "ensureLoaded: dir contents=${modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null listFiles"}")
-        Log.i(TAG, "ensureLoaded: libs status: ${getLibsStatus(modelDir)}")
+        Log.i(TAG, "ensureLoaded: externalDir=${externalDir.absolutePath}, exists=${externalDir.exists()}")
+        Log.i(TAG, "ensureLoaded: dir contents=${externalDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null"}")
+        Log.i(TAG, "ensureLoaded: libs status: ${getLibsStatus(externalDir)}")
 
-        if (!areLibsDownloaded(modelDir)) {
-            Log.e(TAG, "Native libs not downloaded in ${modelDir.absolutePath}")
-            Log.e(TAG, "Required: $REQUIRED_SO_FILES")
-            Log.e(TAG, "Found: ${modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null"}")
+        // Step 1: Check if .so files are downloaded
+        if (!areLibsDownloaded(externalDir)) {
+            Log.e(TAG, "ensureLoaded: .so files not downloaded in ${externalDir.absolutePath}")
             return false
         }
 
-        // Load in dependency order: onnxruntime first, then JNI bridge, then TFLite
+        // Step 2: Copy .so files to internal storage (v2.4.98 fix)
+        if (!areLibsCopiedInternally(internalDir)) {
+            Log.i(TAG, "ensureLoaded: copying .so files to internal storage")
+            if (!copyLibsToInternal(externalDir, internalDir)) {
+                Log.e(TAG, "ensureLoaded: failed to copy .so files to internal storage")
+                return false
+            }
+        } else {
+            // Verify internal copies are up-to-date (same size as external)
+            var needsRefresh = false
+            for (soName in REQUIRED_SO_FILES) {
+                val ext = File(externalDir, soName)
+                val int = File(internalDir, soName)
+                if (ext.length() != int.length()) {
+                    needsRefresh = true
+                    break
+                }
+            }
+            if (needsRefresh) {
+                Log.i(TAG, "ensureLoaded: refreshing .so files (size mismatch)")
+                if (!copyLibsToInternal(externalDir, internalDir)) {
+                    Log.e(TAG, "ensureLoaded: failed to refresh .so files")
+                    return false
+                }
+            }
+        }
+
+        // Step 3: Load from internal storage
         for (soName in REQUIRED_SO_FILES) {
-            val soFile = File(modelDir, soName)
+            val soFile = File(internalDir, soName)
             if (!soFile.exists()) {
-                Log.e(TAG, "Missing: ${soFile.absolutePath}")
+                Log.e(TAG, "ensureLoaded: missing internal: ${soFile.absolutePath}")
                 return false
             }
             try {
-                Log.i(TAG, "Loading native lib: ${soFile.name} (${soFile.length()} bytes)")
+                Log.i(TAG, "ensureLoaded: loading ${soFile.name} (${soFile.length()} bytes) from ${soFile.parent}")
                 System.load(soFile.absolutePath)
-                Log.i(TAG, "Loaded: ${soFile.name}")
+                Log.i(TAG, "ensureLoaded: loaded ${soFile.name}")
             } catch (e: UnsatisfiedLinkError) {
-                // Library might already be loaded by the system
                 if (e.message?.contains("already loaded") == true) {
-                    Log.i(TAG, "${soFile.name} already loaded, continuing")
+                    Log.i(TAG, "ensureLoaded: ${soFile.name} already loaded, continuing")
                 } else {
-                    Log.e(TAG, "Failed to load ${soFile.name}: ${e.message}")
+                    Log.e(TAG, "ensureLoaded: Failed to load ${soFile.name}: ${e.message}")
                     return false
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load ${soFile.name}: ${e.message}")
+                Log.e(TAG, "ensureLoaded: Failed to load ${soFile.name}: ${e.message}")
                 return false
             }
         }
 
         loaded = true
-        Log.i(TAG, "All native libraries loaded successfully")
+        Log.i(TAG, "ensureLoaded: All native libraries loaded successfully from ${internalDir.absolutePath}")
         return true
     }
 
@@ -104,6 +172,5 @@ object NativeLibLoader {
      */
     fun reset() {
         loaded = false
-        loadAttempted = false
     }
 }

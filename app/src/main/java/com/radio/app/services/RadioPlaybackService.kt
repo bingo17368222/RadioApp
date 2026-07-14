@@ -2942,10 +2942,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val timeStr = notificationTimeRange
         val contentText = buildString {
             append(if (playing) "正在播放" else "已暂停")
+            // v2.4.98: Combine date and start-end time as one unit
             if (dateStr.isNotBlank()) {
                 append(" · $dateStr")
-            }
-            if (timeStr.isNotBlank()) {
+                if (timeStr.isNotBlank()) append(" $timeStr")
+            } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")
             }
         }
@@ -3257,8 +3258,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val timeStr = notificationTimeRange
             val contentText = buildString {
                 append(if (playing) "正在播放" else "已暂停")
-                if (dateStr.isNotBlank()) append(" · $dateStr")
-                if (timeStr.isNotBlank()) append(" · $timeStr")
+                if (dateStr.isNotBlank()) {
+                    append(" · $dateStr")
+                    if (timeStr.isNotBlank()) append(" $timeStr")
+                } else if (timeStr.isNotBlank()) {
+                    append(" · $timeStr")
+                }
             }
             rv.setTextViewText(R.id.notification_subtitle, contentText)
             val fullSubText = buildNotificationSubText()
@@ -3289,10 +3294,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val timeStr = notificationTimeRange
         val contentText = buildString {
             append(if (playing) "正在播放" else "已暂停")
+            // v2.4.98: Combine date and start-end time as one unit
             if (dateStr.isNotBlank()) {
                 append(" · $dateStr")
-            }
-            if (timeStr.isNotBlank()) {
+                if (timeStr.isNotBlank()) append(" $timeStr")
+            } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")
             }
         }
@@ -3430,8 +3436,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val timeStr = notificationTimeRange
         val contentText = buildString {
             append(if (playing) "正在播放" else "已暂停")
-            if (dateStr.isNotBlank()) append(" · $dateStr")
-            if (timeStr.isNotBlank()) append(" · $timeStr")
+            // v2.4.98: Combine date and start-end time as one unit
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+                if (timeStr.isNotBlank()) append(" $timeStr")
+            } else if (timeStr.isNotBlank()) {
+                append(" · $timeStr")
+            }
         }
         remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
 

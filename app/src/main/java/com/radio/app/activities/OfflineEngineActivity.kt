@@ -325,18 +325,43 @@ class OfflineEngineActivity : AppCompatActivity() {
                 engine.modelDir.contains("vosk", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidVoskModelDir(modelDir)
                 engine.modelDir.contains("whisper", ignoreCase = true) -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE && isValidWhisperModelDir(modelDir)
                 engine.modelDir.contains("mnn", ignoreCase = true) -> {
-                    // v2.4.97: Use MnnLlmBridge.isModelInstalled() as primary check — it uses the same
-                    // file checks but is more reliable. Also check directly for llm.mnn.weight.
+                    // v2.4.98: Dynamically search mnn-llm/ subdirectories for any valid model
+                    val mnnBaseDir = File(modelsDir, "mnn-llm")
+                    writeEngineLog("setupEngineCard: MNN check: mnnBaseDir=${mnnBaseDir.absolutePath}, exists=${mnnBaseDir.exists()}, subDirs=${mnnBaseDir.listFiles()?.filter { it.isDirectory }?.map { it.name }}")
+                    
+                    // Try the configured modelDir first
                     val weightFile = File(modelDir, "llm.mnn.weight")
                     val weightExists = weightFile.exists() && weightFile.length() > 100_000_000
-                    val mnnBridgeInstalled = try {
-                        com.radio.app.whisper.MnnLlmBridge.isModelInstalled(modelDir)
-                    } catch (e: Exception) {
-                        writeEngineLog("setupEngineCard: MNN bridge check error: ${e.message}")
-                        false
+                    var found = weightExists
+                    var foundDir = modelDir
+                    
+                    // If not found, search all subdirectories of mnn-llm/
+                    if (!found && mnnBaseDir.exists()) {
+                        val subDirs = mnnBaseDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+                        for (subDir in subDirs) {
+                            val wf = File(subDir, "llm.mnn.weight")
+                            if (wf.exists() && wf.length() > 100_000_000) {
+                                writeEngineLog("setupEngineCard: MNN found in alternate dir: ${subDir.name} (weight=${wf.length()})")
+                                found = true
+                                foundDir = subDir
+                                break
+                            }
+                        }
                     }
-                    writeEngineLog("setupEngineCard: MNN check: weightExists=$weightExists (${weightFile.length()}), bridge=$mnnBridgeInstalled")
-                    weightExists || mnnBridgeInstalled
+                    
+                    // Also check via MnnLlmBridge
+                    if (!found) {
+                        val bridgeResult = try {
+                            com.radio.app.whisper.MnnLlmBridge.isModelInstalled(modelDir)
+                        } catch (e: Exception) { false }
+                        if (bridgeResult) {
+                            found = true
+                            foundDir = modelDir
+                        }
+                    }
+                    
+                    writeEngineLog("setupEngineCard: MNN check: found=$found, foundDir=${foundDir.absolutePath}")
+                    found
                 }
                 engine.modelDir.contains("audio-models") -> when {
                     engine.name.contains("运行库") -> {
@@ -1299,16 +1324,32 @@ class OfflineEngineActivity : AppCompatActivity() {
             writeEngineLog("isEngineInstalled: '${engine.name}' -> $result (audio-models check)")
             return result
         }
-        // v2.4.97: For MNN, check key file directly
+        // v2.4.98: For MNN, dynamically search mnn-llm/ subdirectories
         if (engine.modelDir.contains("mnn", ignoreCase = true)) {
+            val modelsDir = getExternalFilesDir("models")
+            val mnnBaseDir = modelsDir?.let { File(it, "mnn-llm") }
+            // Try configured path first
             val weightFile = File(modelDir, "llm.mnn.weight")
-            val weightExists = weightFile.exists() && weightFile.length() > 100_000_000
-            val mnnBridgeInstalled = try {
-                com.radio.app.whisper.MnnLlmBridge.isModelInstalled(modelDir)
-            } catch (e: Exception) { false }
-            val result = weightExists || mnnBridgeInstalled
-            writeEngineLog("isEngineInstalled: '${engine.name}' -> $result (MNN check: weight=$weightExists(${weightFile.length()}), bridge=$mnnBridgeInstalled)")
-            return result
+            var found = weightFile.exists() && weightFile.length() > 100_000_000
+            
+            // Search subdirectories if not found
+            if (!found && mnnBaseDir != null && mnnBaseDir.exists()) {
+                val subDirs = mnnBaseDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+                for (subDir in subDirs) {
+                    val wf = File(subDir, "llm.mnn.weight")
+                    if (wf.exists() && wf.length() > 100_000_000) {
+                        found = true
+                        break
+                    }
+                }
+            }
+            
+            // Also check via MnnLlmBridge
+            if (!found) {
+                found = try { com.radio.app.whisper.MnnLlmBridge.isModelInstalled(modelDir) } catch (e: Exception) { false }
+            }
+            writeEngineLog("isEngineInstalled: '${engine.name}' -> $found (MNN dynamic check)")
+            return found
         }
         if (getDirTotalSize(modelDir) < MIN_INSTALL_SIZE) {
             writeEngineLog("isEngineInstalled: '${engine.name}' -> false (size < MIN_INSTALL_SIZE, size=${getDirTotalSize(modelDir)})")
