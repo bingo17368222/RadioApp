@@ -1925,12 +1925,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     ?.map { it.name }?.toSet() ?: emptySet()
                 val settings = AppSettings.getInstance(this@RadioPlaybackService)
 
-                // [v2.4.19] Scan episodes after current first, then scan episodes before current
-                // This ensures all cached episodes get processed, not just future ones
+                // v2.4.93: Only scan episodes AFTER the current one.
+                // Previously also scanned episodes before current — this wasted resources
+                // processing past episodes that the user has already moved past.
                 val scanOrder = if (currentIdx >= 0) {
-                    ((currentIdx + 1) until preCacheList.size).toList() + (0 until currentIdx).toList()
+                    ((currentIdx + 1) until preCacheList.size).toList()
                 } else {
-                    (0 until preCacheList.size).toList()
+                    writePreCacheLog("patrolSubtitle: [v2.4.93] current episode not in preCacheList, cannot determine position — skipping patrol")
+                    emptyList()
                 }
 
                 // [v2.4.81] Better patrol logging: count what was scanned
@@ -2027,11 +2029,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
-                writePreCacheLog("patrolSubtitle: [v2.4.92] patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+                writePreCacheLog("patrolSubtitle: [v2.4.93] patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+
+                // v2.4.93: Only process episodes AFTER the current one.
+                // Parse current episode's date for comparison.
+                val currentDateStr = currentEp.broadcastAt?.take(10) ?: run {
+                    // Fallback: parse from URL (e.g., sijiache_20240806_0700_0900.mp4)
+                    val urlMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(currentEp.audioUrl ?: "")
+                    if (urlMatch != null) "${urlMatch.groupValues[1]}-${urlMatch.groupValues[2]}-${urlMatch.groupValues[3]}"
+                    else ""
+                }
+                writePreCacheLog("patrolSubtitle: [v2.4.93] current episode date=$currentDateStr, only processing episodes after this date")
 
                 // v2.4.92: Fallback — scan episodes directory for cached files NOT in preCacheList.
-                // This catches episodes that were cached (e.g., by direct playback) but never added
-                // to the preCacheList, so they were never checked for subtitle generation.
+                // v2.4.93: Restricted to only files dated >= current episode's date.
                 val preCacheFileNames = mutableSetOf<String>()
                 for (ep in preCacheList) {
                     if (ep.audioUrl.isNotBlank()) {
@@ -2041,6 +2052,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 var orphanFound = false
                 for (cachedName in cachedNames) {
                     if (cachedName in preCacheFileNames) continue
+                    // v2.4.93: Parse date from filename, skip if before current episode's date
+                    val fileDateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(cachedName)
+                    val fileDateStr = if (fileDateMatch != null) {
+                        "${fileDate.groupValues[1]}-${fileDate.groupValues[2]}-${fileDate.groupValues[3]}"
+                    } else ""
+                    if (currentDateStr.isNotBlank() && fileDateStr.isNotBlank() && fileDateStr < currentDateStr) {
+                        writePreCacheLog("patrolSubtitle: [v2.4.93] ORPHAN SKIP $cachedName: date $fileDateStr < current $currentDateStr (past episode)")
+                        continue
+                    }
                     // Try to find episode in DB by audio filename
                     val dbEp = try { dbHelper.getEpisodeByAudioFileName(cachedName) } catch (_: Exception) { null }
                     val episodeId = dbEp?.id ?: cachedName.substringBeforeLast(".")
@@ -2063,7 +2083,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val stationId = dbEp?.stationId ?: cachedName.substringBefore("_")
                     val episodeTitle = dbEp?.title ?: cachedName.substringBeforeLast(".")
                     val audioUrl = dbEp?.audioUrl ?: "https://placeholder/$cachedName"
-                    writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN FOUND: $cachedName has no subtitles (id=$episodeId), triggering generation")
+                    writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN FOUND: $cachedName (date=$fileDateStr) has no subtitles (id=$episodeId), triggering generation")
                     val orphanEp = Episode(
                         id = episodeId,
                         title = episodeTitle,
@@ -2079,7 +2099,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 if (orphanFound) return@launch
 
-                writePreCacheLog("patrolSubtitle: [v2.4.92] no orphaned files found, all done")
+                writePreCacheLog("patrolSubtitle: [v2.4.93] no future orphaned files found, all done")
 
                 // v2.4.82: If there are episodes without audio, trigger pre-cache download
                 if (withoutAudio > 0 && !isPrecaching) {
