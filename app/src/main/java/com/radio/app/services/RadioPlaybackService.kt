@@ -2892,7 +2892,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try { remoteViews.setTextViewText(R.id.rewind_text, "-${skipSeconds}s") } catch (_: Exception) {}
         try { remoteViews.setTextViewText(R.id.forward_text, "+${skipSeconds}s") } catch (_: Exception) {}
 
-        remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
+        // v2.4.101: Build displayTitle with date+time for all notification styles
+        val notifDateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        val notifTimeStr = notificationTimeRange
+        val displayTitle = buildString {
+            append(notificationTitle)
+            if (notifDateStr.isNotBlank()) {
+                append(" · $notifDateStr")
+                if (notifTimeStr.isNotBlank()) append(" $notifTimeStr")
+            }
+        }
+
+        remoteViews.setTextViewText(R.id.notification_title, displayTitle)
         remoteViews.setTextViewText(R.id.notification_subtitle,
             if (playing) "正在播放 $fullSubText" else "已暂停 $fullSubText")
 
@@ -2955,7 +2966,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
         writeNotifDetailLog("updateNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
-            .setContentTitle(notificationTitle)
+            .setContentTitle(displayTitle)
             .setContentText(fullSubText)
             .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
@@ -3253,9 +3264,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             rv.setImageViewResource(R.id.play_pause_icon,
                 if (playing) R.drawable.notif_pause else R.drawable.notif_play)
             rv.setTextViewText(R.id.play_pause_text, if (playing) "暂停" else "播放")
-            rv.setTextViewText(R.id.notification_title, notificationTitle)
             val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
             val timeStr = notificationTimeRange
+            // v2.4.101: Include date+time in title
+            val displayTitleProgress = buildString {
+                append(notificationTitle)
+                if (dateStr.isNotBlank()) {
+                    append(" · $dateStr")
+                    if (timeStr.isNotBlank()) append(" $timeStr")
+                }
+            }
+            rv.setTextViewText(R.id.notification_title, displayTitleProgress)
             val contentText = buildString {
                 append(if (playing) "正在播放" else "已暂停")
                 if (dateStr.isNotBlank()) {
@@ -3269,7 +3288,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val fullSubText = buildNotificationSubText()
             val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(notificationTitle)
+                .setContentTitle(displayTitleProgress)
                 .setContentText(fullSubText)
                 .setSubText(fullSubText)
                 .setCustomContentView(rv)
@@ -3292,6 +3311,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "buildMediaStyleNotification: BEFORE build - title='$notificationTitle', fullSubText='${buildNotificationSubText()}', date='$notificationDate', timeRange='$notificationTimeRange'")
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
         val timeStr = notificationTimeRange
+
+        // v2.4.101: Build displayTitle with date+time — used in BOTH expanded view title and contentTitle
+        // MIUI collapsed notifications only show contentTitle; expanded view shows notification_title TextView
+        val displayTitle = buildString {
+            append(notificationTitle)
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+                if (timeStr.isNotBlank()) append(" $timeStr")
+            }
+        }
+
         val contentText = buildString {
             append(if (playing) "正在播放" else "已暂停")
             // v2.4.98: Combine date and start-end time as one unit
@@ -3305,8 +3335,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // 创建展开视图（含进度条和50点seek）
         val expandedView = RemoteViews(packageName, R.layout.notification_media_expanded)
-        expandedView.setTextViewText(R.id.notification_title, notificationTitle)
-        writeNotifDetailLog("buildMediaStyleNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
+        expandedView.setTextViewText(R.id.notification_title, displayTitle)
+        writeNotifDetailLog("buildMediaStyleNotification: BEFORE setTextViewText - displayTitle='$displayTitle', notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
         expandedView.setTextViewText(R.id.notification_subtitle, contentText)
         writeNotifDetailLog("buildMediaStyleNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
 
@@ -3349,15 +3379,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Issue 4: Use fullSubText (with date/time) for setContentText so compact view shows date
         val fullSubText = buildNotificationSubText()
 
-        // v2.4.99: Append date+time to contentTitle for compact MediaStyle
-        // MIUI collapsed notifications don't show contentText/subText, only contentTitle.
-        val displayTitle = buildString {
-            append(notificationTitle)
-            if (dateStr.isNotBlank()) {
-                append(" · $dateStr")
-                if (timeStr.isNotBlank()) append(" $timeStr")
-            }
-        }
+        // v2.4.101: displayTitle already computed above with date+time
 
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
             .setContentTitle(displayTitle)
@@ -3441,9 +3463,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         applyThemeToNotification(remoteViews)
         // Issue 4: Set title and date/time on RemoteViews (contentText is hidden when custom layout is used)
-        remoteViews.setTextViewText(R.id.notification_title, notificationTitle)
+        // v2.4.101: Include date+time in title
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
         val timeStr = notificationTimeRange
+        val displayTitleBuild = buildString {
+            append(notificationTitle)
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+                if (timeStr.isNotBlank()) append(" $timeStr")
+            }
+        }
+        remoteViews.setTextViewText(R.id.notification_title, displayTitleBuild)
         val contentText = buildString {
             append(if (playing) "正在播放" else "已暂停")
             // v2.4.98: Combine date and start-end time as one unit

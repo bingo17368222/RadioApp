@@ -161,8 +161,8 @@ object AudioSegmentAnalyzer {
                     // 4. Decode from cached audio file
                     pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
                     if (pcmFile == null) {
-                        Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId")
-                        throw RuntimeException("未找到PCM音频文件，请先生成字幕或预解码音频")
+                        Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId (audioUrl=$audioUrl)")
+                        throw RuntimeException("无法获取音频数据: 未找到PCM缓存文件，本地无缓存音频，URL解码失败(可能需要联网)")
                     }
                 }
             }
@@ -213,6 +213,11 @@ object AudioSegmentAnalyzer {
             }
 
             if (audioFile == null) {
+                // v2.4.101: No cached file — try streaming from URL directly via MediaExtractor
+                if (audioUrl != null && audioUrl.startsWith("http")) {
+                    Log.i(TAG, "decodeAudioToPcm: no cached file, trying URL: $audioUrl")
+                    return decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"))
+                }
                 Log.e(TAG, "decodeAudioToPcm: no cached audio file found for $episodeId, files in episodes dir: ${cachedFiles.map { it.name }}")
                 return null
             }
@@ -327,6 +332,119 @@ object AudioSegmentAnalyzer {
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * v2.4.101: Download and decode audio from URL directly using MediaExtractor.
+     * MediaExtractor supports HTTP URLs natively. Decodes to 16kHz mono PCM.
+     */
+    private fun decodeUrlToPcm(audioUrl: String, outputFile: File): File? {
+        try {
+            Log.i(TAG, "decodeUrlToPcm: downloading and decoding from $audioUrl")
+            val extractor = android.media.MediaExtractor()
+            extractor.setDataSource(audioUrl)
+            val trackCount = extractor.trackCount
+            var audioTrackIndex = -1
+            for (i in 0 until trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    break
+                }
+            }
+            if (audioTrackIndex < 0) {
+                Log.e(TAG, "decodeUrlToPcm: no audio track found")
+                extractor.release()
+                return null
+            }
+            extractor.selectTrack(audioTrackIndex)
+            val inputFormat = extractor.getTrackFormat(audioTrackIndex)
+            val sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+            val channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+            val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+
+            val decoder = android.media.MediaCodec.createDecoderByType(mime)
+            decoder.configure(inputFormat, null, null, 0)
+            decoder.start()
+
+            val bufferInfo = android.media.MediaCodec.BufferInfo()
+            var totalPcmBytes = 0
+            val maxPcmBytes = 50 * 1024 * 1024  // 50MB max (~26 min at 16kHz mono)
+            val needResample = sampleRate != 16000 || channelCount != 1
+            val fos = java.io.FileOutputStream(outputFile)
+
+            try {
+                while (true) {
+                    val inputBufferIndex = decoder.dequeueInputBuffer(10000)
+                    if (inputBufferIndex >= 0) {
+                        val inputBuffer = decoder.getInputBuffer(inputBufferIndex) ?: continue
+                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        if (sampleSize < 0) {
+                            decoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        } else {
+                            decoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, extractor.sampleTime, 0)
+                            extractor.advance()
+                        }
+                    }
+
+                    val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000)
+                    if (outputBufferIndex >= 0) {
+                        val outputBuffer = decoder.getOutputBuffer(outputBufferIndex)
+                        if (outputBuffer != null && bufferInfo.size > 0) {
+                            val chunk = ByteArray(bufferInfo.size)
+                            outputBuffer.get(chunk)
+
+                            if (needResample) {
+                                val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                                val ratio = sampleRate / 16000
+                                val outSamples = pcmShort.remaining() / channelCount / ratio
+                                val outBuf = java.nio.ByteBuffer.allocate(outSamples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                var i = 0
+                                while (i + channelCount <= pcmShort.remaining()) {
+                                    if (i % (ratio * channelCount) == 0) {
+                                        var sum = 0
+                                        for (c in 0 until channelCount) {
+                                            sum += pcmShort.get(i + c)
+                                        }
+                                        outBuf.putShort((sum / channelCount).toShort())
+                                    }
+                                    i += channelCount
+                                }
+                                val outBytes = ByteArray(outBuf.position())
+                                outBuf.rewind()
+                                outBuf.get(outBytes)
+                                fos.write(outBytes)
+                                totalPcmBytes += outBytes.size
+                            } else {
+                                fos.write(chunk)
+                                totalPcmBytes += chunk.size
+                            }
+
+                            if (totalPcmBytes >= maxPcmBytes) {
+                                Log.i(TAG, "decodeUrlToPcm: reached max size limit ($maxPcmBytes bytes)")
+                                break
+                            }
+                        }
+                        decoder.releaseOutputBuffer(outputBufferIndex, false)
+                        if (bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            break
+                        }
+                    }
+                }
+            } finally {
+                fos.close()
+                decoder.stop()
+                decoder.release()
+                extractor.release()
+            }
+
+            Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
+            return if (totalPcmBytes > 16000) outputFile else null
+        } catch (e: Exception) {
+            Log.e(TAG, "decodeUrlToPcm failed: ${e.message}")
             return null
         }
     }

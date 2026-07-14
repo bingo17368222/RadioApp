@@ -1763,21 +1763,33 @@ class PlayerActivity : AppCompatActivity() {
             Thread {
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
-                    val transcriptCount = dbHelper.getTranscriptCount(episode.id)
-                    writeJitterLog("[v2.4.23] btnAiSegment: transcriptCount=$transcriptCount")
 
-                    // v2.4.74: Removed isComplete check - partial subtitles can also be used for AI segmentation
-                    if (transcriptCount < 1) {
-                        runOnUiThread {
-                            finishAiProcessing("segment")
-                            Toast.makeText(this, "无字幕，请先生成字幕", Toast.LENGTH_LONG).show()
+                    // v2.4.101: Audio-vad mode doesn't need subtitles - skip the check
+                    if (aiModel != AppSettings.AI_MODEL_AUDIO_VAD) {
+                        val transcriptCount = dbHelper.getTranscriptCount(episode.id)
+                        writeJitterLog("[v2.4.23] btnAiSegment: transcriptCount=$transcriptCount")
+
+                        // v2.4.74: Removed isComplete check - partial subtitles can also be used for AI segmentation
+                        if (transcriptCount < 1) {
+                            runOnUiThread {
+                                finishAiProcessing("segment")
+                                Toast.makeText(this, "无字幕，请先生成字幕", Toast.LENGTH_LONG).show()
+                            }
+                            return@Thread
                         }
-                        return@Thread
+                    } else {
+                        writeJitterLog("[v2.4.101] btnAiSegment: audio-vad mode, skipping subtitle check")
                     }
 
                     // Generate content-based segments from subtitles
                     // [v2.4.24] Use dur captured on main thread, fallback to maxEnd from DB
-                    val maxEnd = if (dur > 0) dur else dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
+                    // v2.4.101: For audio-vad, also fall back to episode duration if no subtitles
+                    val maxEnd = if (dur > 0) {
+                        dur
+                    } else {
+                        val transcriptMax = dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
+                        if (transcriptMax > 0) transcriptMax else episode.duration.toInt()
+                    }
                     writeJitterLog("[v2.4.27] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
 
                     // [v2.4.28] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
