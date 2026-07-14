@@ -48,7 +48,7 @@ object AudioSegmentAnalyzer {
 
     private enum class FrameType { DRY, WATER, SILENCE }
 
-    data class FrameResult(
+    private data class FrameResult(
         val timestampMs: Long,
         val type: FrameType,
         val vadProb: Float,
