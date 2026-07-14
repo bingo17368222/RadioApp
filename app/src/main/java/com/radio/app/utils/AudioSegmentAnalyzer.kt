@@ -112,6 +112,7 @@ object AudioSegmentAnalyzer {
 
     /**
      * v2.4.96: Analyze an episode by finding its PCM file and running dual-model segmentation.
+     * v2.4.99: Added audioUrl parameter for finding cached audio file.
      *
      * PCM file search order:
      * 1. Pre-decoded full PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_full.pcm
@@ -122,9 +123,10 @@ object AudioSegmentAnalyzer {
      * @param context Application context
      * @param episodeId Episode ID
      * @param durationMs Duration in milliseconds
+     * @param audioUrl Audio URL (for finding cached audio file)
      * @return List of VoiceSegments
      */
-    fun analyzeEpisode(context: Context, episodeId: String, durationMs: Long): List<VoiceSegment> {
+    fun analyzeEpisode(context: Context, episodeId: String, durationMs: Long, audioUrl: String? = null): List<VoiceSegment> {
         // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime.")
@@ -157,7 +159,7 @@ object AudioSegmentAnalyzer {
                     Log.i(TAG, "analyzeEpisode: found plain PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
                 } else {
                     // 4. Decode from cached audio file
-                    pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir)
+                    pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
                     if (pcmFile == null) {
                         Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId")
                         throw RuntimeException("未找到PCM音频文件，请先生成字幕或预解码音频")
@@ -171,19 +173,47 @@ object AudioSegmentAnalyzer {
 
     /**
      * v2.4.96: Decode cached audio file to PCM using MediaExtractor + MediaCodec.
+     * v2.4.99: Find audio file by URL-based filename (not episode ID).
      * This is a fallback when no pre-decoded PCM file exists.
      */
-    private fun decodeAudioToPcm(context: Context, episodeId: String, outputDir: File): File? {
+    private fun decodeAudioToPcm(context: Context, episodeId: String, outputDir: File, audioUrl: String? = null): File? {
         try {
             val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
-            val audioFile = episodesDir.listFiles()?.find {
-                it.isFile && it.length() > 1024 && (
-                    it.name.startsWith(episodeId) ||
-                    it.name.startsWith(episodeId.substringBefore("-"))
-                ) && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac"))
+            val cachedFiles = episodesDir.listFiles()?.filter {
+                it.isFile && it.length() > 1024 && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac"))
+            } ?: emptyList()
+
+            // v2.4.99: Find audio file by URL-based filename first
+            var audioFile: File? = null
+            if (audioUrl != null) {
+                val urlFileName = try {
+                    val path = java.net.URL(audioUrl).path
+                    path.substringAfterLast("/")
+                } catch (e: Exception) {
+                    audioUrl.substringAfterLast("/")
+                }
+                if (urlFileName.isNotBlank()) {
+                    audioFile = cachedFiles.find { it.name == urlFileName || it.name.startsWith(urlFileName.substringBeforeLast(".")) }
+                    Log.i(TAG, "decodeAudioToPcm: searching by URL filename '$urlFileName', found=${audioFile?.name}")
+                }
             }
+
+            // Fallback: search by episode ID prefix
             if (audioFile == null) {
-                Log.e(TAG, "decodeAudioToPcm: no cached audio file found for $episodeId")
+                audioFile = cachedFiles.find {
+                    it.name.startsWith(episodeId) || it.name.startsWith(episodeId.substringBefore("-"))
+                }
+                Log.i(TAG, "decodeAudioToPcm: searching by episodeId '$episodeId', found=${audioFile?.name}")
+            }
+
+            // Last resort: use the most recently modified audio file
+            if (audioFile == null && cachedFiles.isNotEmpty()) {
+                audioFile = cachedFiles.maxByOrNull { it.lastModified() }
+                Log.i(TAG, "decodeAudioToPcm: using most recent audio file: ${audioFile?.name}")
+            }
+
+            if (audioFile == null) {
+                Log.e(TAG, "decodeAudioToPcm: no cached audio file found for $episodeId, files in episodes dir: ${cachedFiles.map { it.name }}")
                 return null
             }
             Log.i(TAG, "decodeAudioToPcm: decoding ${audioFile.name} to PCM")
@@ -316,50 +346,32 @@ object AudioSegmentAnalyzer {
     ): List<VoiceSegment> {
         if (!pcmFile.exists() || pcmFile.length() < 16000) {
             Log.w(TAG, "PCM file too small or missing: ${pcmFile.absolutePath}")
-            return emptyList()
+            throw RuntimeException("PCM文件太小或不存在: ${pcmFile.name} (${pcmFile.length()} bytes)")
         }
 
         // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
-            Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime from offline engine management.")
-            return emptyList()
+            Log.e(TAG, "Native libraries not loaded.")
+            throw RuntimeException("音频分段运行库未加载，请重新下载运行库")
         }
 
         val modelDir = getModelDir(context)
         if (!isYamnetInstalled(modelDir) || !isSileroVadInstalled(modelDir)) {
             Log.w(TAG, "Models not installed. YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
-            return emptyList()
+            throw RuntimeException("模型未安装: YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
         }
 
-        // Load YAMNet (TFLite)
-        val yamnetInterpreter = try {
-            loadYamnetModel(File(modelDir, "yamnet.tflite"))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load YAMNet: ${e.message}")
-            return emptyList()
-        }
+        // Load YAMNet (TFLite) - throws exception on failure
+        val yamnetInterpreter = loadYamnetModel(File(modelDir, "yamnet.tflite"))
 
-        // Load Silero VAD (ONNX Runtime via reflection)
-        val vadSession = try {
-            loadSileroVad(File(modelDir, "silero_vad.onnx"))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load Silero VAD: ${e.message}")
-            yamnetInterpreter?.close()
-            return emptyList()
-        }
-
-        if (yamnetInterpreter == null || vadSession == null) {
-            Log.e(TAG, "Failed to load models")
-            yamnetInterpreter?.close()
-            vadSession?.close()
-            return emptyList()
-        }
+        // Load Silero VAD (ONNX Runtime via reflection) - throws exception on failure
+        val vadSession = loadSileroVad(File(modelDir, "silero_vad.onnx"))
 
         try {
             val samples = readPcmAsFloats(pcmFile)
             if (samples.size < YAMNET_WINDOW_SAMPLES) {
                 Log.w(TAG, "PCM too short: ${samples.size} samples")
-                return emptyList()
+                throw RuntimeException("PCM数据太短: ${samples.size} 样本 (需要至少 $YAMNET_WINDOW_SAMPLES)")
             }
 
             // Compute max energy for normalization
@@ -429,8 +441,8 @@ object AudioSegmentAnalyzer {
 
     // ===== YAMNet (TFLite) =====
 
-    private fun loadYamnetModel(modelFile: File): Interpreter? {
-        return try {
+    private fun loadYamnetModel(modelFile: File): Interpreter {
+        try {
             val mappedBuffer = FileInputStream(modelFile).channel.map(
                 FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
             )
@@ -438,10 +450,10 @@ object AudioSegmentAnalyzer {
             options.setNumThreads(2)
             val interp = Interpreter(mappedBuffer, options)
             Log.i(TAG, "YAMNet loaded: input=${interp.getInputTensor(0).shape().contentToString()}, output=${interp.getOutputTensor(0).shape().contentToString()}")
-            interp
+            return interp
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load YAMNet TFLite model: ${e.message}")
-            null
+            throw RuntimeException("YAMNet模型加载失败: ${e.message}", e)
         }
     }
 
@@ -487,8 +499,8 @@ object AudioSegmentAnalyzer {
 
     // ===== Silero VAD (ONNX Runtime via reflection) =====
 
-    private fun loadSileroVad(modelFile: File): AiSession? {
-        return try {
+    private fun loadSileroVad(modelFile: File): AiSession {
+        try {
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             val sessionOptionsClass = Class.forName("ai.onnxruntime.SessionOptions")
@@ -497,20 +509,19 @@ object AudioSegmentAnalyzer {
             val session = ortSessionClass
                 .getConstructor(envClass, String::class.java, sessionOptionsClass)
                 .newInstance(env, modelFile.absolutePath, sessionOptions)
-            AiSession(session)
+            return AiSession(session)
         } catch (e: Exception) {
             Log.e(TAG, "ONNX Runtime not available: ${e.message}")
-            null
+            throw RuntimeException("Silero VAD模型加载失败(ONNX Runtime): ${e.message}", e)
         }
     }
 
     private fun runSileroVad(
-        session: AiSession?,
+        session: AiSession,
         chunk: FloatArray,
         stateH: FloatBuffer,
         stateC: FloatBuffer
     ): Triple<Float, FloatBuffer, FloatBuffer> {
-        if (session == null) return Triple(0.5f, stateH, stateC)
 
         try {
             val sessionObj = session.session

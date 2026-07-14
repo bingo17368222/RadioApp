@@ -223,7 +223,11 @@ object SegmentGenerator {
             val segments = if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_AUDIO_VAD) {
                 // v2.4.95: Audio-based segmentation (Silero VAD + YAMNet)
                 Log.i(TAG, "postSegmentKeyword: using audio-vad mode for episode=$episodeId")
-                tryGenerateAudioSegments(context, episodeId, durationMs)
+                // v2.4.99: Look up audio URL from database for PCM file finding
+                val audioUrl = try {
+                    RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)?.audioUrl
+                } catch (_: Exception) { null }
+                tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
             } else {
                 // Keyword-based segments
                 Log.i(TAG, "postSegmentKeyword: using keyword-based for episode=$episodeId")
@@ -247,10 +251,11 @@ object SegmentGenerator {
     private fun tryGenerateAudioSegments(
         context: Context,
         episodeId: String,
-        durationMs: Long
+        durationMs: Long,
+        audioUrl: String? = null
     ): List<VoiceSegment> {
         try {
-            val segments = AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs)
+            val segments = AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl)
             Log.i(TAG, "tryGenerateAudioSegments: got ${segments.size} segments from audio analysis")
             return segments
         } catch (e: Exception) {

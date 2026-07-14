@@ -1790,7 +1790,7 @@ class PlayerActivity : AppCompatActivity() {
 
                         try {
                             val segments_result = com.radio.app.utils.AudioSegmentAnalyzer.analyzeEpisode(
-                                this@PlayerActivity, episode.id, maxEnd.toLong()
+                                this@PlayerActivity, episode.id, maxEnd.toLong(), episode.audioUrl
                             )
                             writeJitterLog("[v2.4.96] btnAiSegment: audio-vad returned ${segments_result.size} segments")
                             segments = segments_result

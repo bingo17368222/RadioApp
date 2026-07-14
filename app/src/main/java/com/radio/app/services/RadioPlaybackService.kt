@@ -3349,8 +3349,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Issue 4: Use fullSubText (with date/time) for setContentText so compact view shows date
         val fullSubText = buildNotificationSubText()
 
+        // v2.4.99: Append date+time to contentTitle for compact MediaStyle
+        // MIUI collapsed notifications don't show contentText/subText, only contentTitle.
+        val displayTitle = buildString {
+            append(notificationTitle)
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+                if (timeStr.isNotBlank()) append(" $timeStr")
+            }
+        }
+
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
-            .setContentTitle(notificationTitle)
+            .setContentTitle(displayTitle)
             .setContentText(fullSubText)
             .setSubText(buildNotificationSubText())
             .setSmallIcon(R.drawable.ic_notification)
