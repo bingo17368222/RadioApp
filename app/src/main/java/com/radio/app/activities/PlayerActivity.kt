@@ -875,10 +875,15 @@ class PlayerActivity : AppCompatActivity() {
                     // shows 100% (full) for the new episode until ExoPlayer catches up.
                     // Fix: If position is >90% of the OLD episode's duration, it's likely a
                     // stale position from the old episode — skip it and wait for a valid position.
+                    // v2.4.91: Add 5-second timeout to prevent UI from being stuck indefinitely.
                     val oldDuration = currentPlaybackDurationMs
-                    if (oldDuration > 10000 && position > oldDuration * 0.9) {
-                        writeJitterLog("[v2.4.70] onPositionChanged: episode changed to $currentEpId, but pos=$position is near old duration=$oldDuration (>90%), likely stale — waiting for new episode position")
+                    val timeSinceEpisodeChange = now - (jitterSyncTimeMs)
+                    if (oldDuration > 10000 && position > oldDuration * 0.9 && timeSinceEpisodeChange < 5000) {
+                        writeJitterLog("[v2.4.91] onPositionChanged: episode changed to $currentEpId, but pos=$position is near old duration=$oldDuration (>90%), likely stale — waiting (timeout in ${(5000-timeSinceEpisodeChange)/1000}s)")
                         return@runOnUiThread
+                    }
+                    if (oldDuration > 10000 && position > oldDuration * 0.9 && timeSinceEpisodeChange >= 5000) {
+                        writeJitterLog("[v2.4.91] onPositionChanged: stale position timeout expired, accepting pos=$position")
                     }
                     // [v2.0.73] Issue 1 Fix: Don't accept position=0 on episode change (player not ready yet).
                     // Wait for a valid position (>2s) before setting baseline, otherwise UI flashes 0.
@@ -2634,10 +2639,16 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun formatTime(millis: Int): String {
+        // v2.4.91: Support hours for content longer than 60 minutes
         val seconds = millis / 1000
-        val minutes = seconds / 60
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
         val secs = seconds % 60
-        return String.format("%02d:%02d", minutes, secs)
+        return if (hours > 0) {
+            String.format("%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            String.format("%02d:%02d", minutes, secs)
+        }
     }
 
     private fun getCurrentAiModelLabel(): String {
@@ -2915,7 +2926,9 @@ class PlayerActivity : AppCompatActivity() {
         var skipCount = 0
         while (targetIdx < episodes.size && skipCount < 20) {
             val ep = episodes[targetIdx]
-            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+            // v2.4.91: Skip no-preprocess episodes in continuous play
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                && !settings.isNoPreprocess(ep.id ?: "")) {
                 // Found a non-disliked episode
                 currentEpisode = ep
                 // Issue 10 Fix 2: clear old subtitles when switching to next episode

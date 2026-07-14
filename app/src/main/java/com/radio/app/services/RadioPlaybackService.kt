@@ -1442,7 +1442,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (ep.id == curId || ep.audioUrl == currentPlayingUrl) foundCurrent = true
                 continue
             }
-            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+            // v2.4.91: Skip no-preprocess episodes in continuous play
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                && !settings.isNoPreprocess(ep.id ?: "")) {
                 return ep
             }
         }
@@ -1820,6 +1822,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] error saving episode_info: ${e.message}")
         }
 
+        // v2.4.91: Pre-segment with fixed 15-minute segments before subtitle generation
+        // This gives immediate segment count in the episode list
+        try {
+            val epDuration = episode.duration?.let { if (it in 60..100000) it * 1000 else 0 } ?: 0
+            val durationMs = if (epDuration > 60000) epDuration.toLong() else 7200_000L // default 2h
+            com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
+        } catch (e: Exception) {
+            writePreCacheLog("startPreCacheSubtitleGeneration: pre-segment failed: ${e.message}")
+        }
+
         // 发送Intent启动SubtitleGeneratorService，使用"precache_subtitle"作为任务类型
         // 添加extra标记force_whisper_base=true，让SubtitleGeneratorService使用Whisper base模型
         val subtitleIntent = android.content.Intent(this, com.radio.app.services.SubtitleGeneratorService::class.java).apply {
@@ -1962,6 +1974,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                     if (isComplete) {
                         withSubtitles++
+                        // v2.4.91: Auto-generate keyword-based segments after subtitles complete
+                        try {
+                            val existingSegs = dbHelper.getVoiceSegments(ep.id)
+                            val hasRealSegs = existingSegs.any { !it.isSimulated }
+                            if (!hasRealSegs) {
+                                val epDuration = ep.duration?.let { if (it in 60..100000) it * 1000 else 0 } ?: 0
+                                val durMs = if (epDuration > 60000) epDuration.toLong() else 7200_000L
+                                writePreCacheLog("patrolSubtitle: [v2.4.91] subtitles complete but no real segments, auto-segmenting ${ep.id}")
+                                com.radio.app.utils.SegmentGenerator.postSegmentKeyword(this@RadioPlaybackService, ep.id, durMs)
+                            }
+                        } catch (e: Exception) {
+                            writePreCacheLog("patrolSubtitle: [v2.4.91] auto-segment failed for ${ep.id}: ${e.message}")
+                        }
                         continue
                     }
 
@@ -3096,22 +3121,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // prevents redundant updates when nothing has changed, so the posDelta check was redundant
         // and harmful — it prevented legitimate updates (e.g., play/pause state changes).
         val isReset = lastNotifiedPosition < 0
+        // v2.4.91: Save previous position before overwriting, to detect if position actually changed
+        val prevNotifiedPos = lastNotifiedPosition
+        val posChanged = !isReset && abs(pos - prevNotifiedPos) > 500
         lastNotifiedPosition = pos
 
         if (isReset) {
             writeServiceLog("notification", "[v2.0.87-PROGRESS-POLL] RESET detected (lastNotifiedPosition was <0), forcing full notification rebuild. pos=$pos, dur=$dur")
-        } else {
+        } else if (posChanged) {
             writeServiceLog("notification", "[v2.0.87-PROGRESS-POLL] updating notification. pos=$pos, dur=$dur")
+        } else {
+            // v2.4.91: Position unchanged (frozen/buffering) — skip forced rebuild to prevent "几秒循环"
+            writeServiceLog("notification", "[v2.4.91-PROGRESS-POLL] pos unchanged ($pos), skipping forced rebuild")
         }
 
         // [v2.0.75] Issue 5 Fix: non-minimal样式必须正确推送通知。
         // v2.0.74 bug: 只调用updateNotification()返回Notification对象但不manager.notify()，
         // 导致compact/full样式的进度轮询更新从未显示！
+        // v2.4.91: Only force update when position changed or on reset, NOT every poll.
+        // Previously forceNotificationUpdate=true was set every 5s for non-minimal styles,
+        // causing notification to rebuild every 5s even when nothing changed (e.g., position
+        // frozen at 90 min during buffering). This caused "通知栏几秒循环" bug.
         if (notificationStyle != "minimal") {
-            // Force update to bypass content hash deduplication (which uses 0 for position when prepared=false)
-            forceNotificationUpdate = true
-            lastNotificationContentHash = 0
-            writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, calling notifyNotification() for progress refresh")
+            if (isReset || posChanged) {
+                forceNotificationUpdate = true
+                lastNotificationContentHash = 0
+                writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, calling notifyNotification() for progress refresh")
+            }
             notifyNotification()
             return
         }
@@ -3381,9 +3417,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun formatTimeNotif(seconds: Int): String {
-        val minutes = seconds / 60
+        // v2.4.91: Support hours for content longer than 60 minutes
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
         val secs = seconds % 60
-        return String.format("%02d:%02d", minutes, secs)
+        return if (hours > 0) {
+            String.format("%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            String.format("%02d:%02d", minutes, secs)
+        }
     }
 
     private fun loadSettings() {
@@ -4868,7 +4910,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     if (ep.id == curId) foundCurrent = true
                     continue
                 }
-                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                    && !settings.isNoPreprocess(ep.id ?: "")) {
                     nextEpisode = ep
                     break
                 }
