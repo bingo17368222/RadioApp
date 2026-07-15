@@ -615,19 +615,24 @@ object AudioSegmentAnalyzer {
         return (1.0 / (1.0 + exp)).toFloat()
     }
 
-    // ===== Silero VAD (ONNX Runtime direct API) =====
-    // v2.4.106: Use env.createSession() to avoid SessionOptions class
-    // which is NOT included in onnxruntime-android:1.16.3 AAR's DEX
+    // ===== Silero VAD (ONNX Runtime via reflection, no SessionOptions) =====
+    // v2.4.106: SessionOptions class is NOT in onnxruntime-android:1.16.3 AAR.
+    // Use env.createSession(String) which creates session with default options.
 
     private fun loadSileroVad(modelFile: File): AiSession {
         try {
-            Log.i(TAG, "loadSileroVad: getting OrtEnvironment...")
-            val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
-            Log.i(TAG, "loadSileroVad: creating session from ${modelFile.name}...")
-            // Use createSession(String) which internally uses default SessionOptions
-            // (null options = native defaults). Avoids needing SessionOptions class.
-            val session = env.createSession(modelFile.absolutePath)
-            Log.i(TAG, "loadSileroVad: session created, inputs=${session.inputNames}, outputs=${session.outputNames}")
+            val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
+            val env = envClass.getMethod("getEnvironment").invoke(null)
+            Log.i(TAG, "loadSileroVad: OrtEnvironment obtained")
+
+            // v2.4.106: Use createSession(String) instead of OrtSession constructor
+            // which requires SessionOptions (not available in Android AAR)
+            val createSessionMethod = envClass.methods.first {
+                it.name == "createSession" && it.parameterTypes.size == 1 &&
+                it.parameterTypes[0] == String::class.java
+            }
+            val session = createSessionMethod.invoke(env, modelFile.absolutePath)
+            Log.i(TAG, "loadSileroVad: session created from ${modelFile.name}")
             return AiSession(session)
         } catch (e: Throwable) {
             Log.e(TAG, "loadSileroVad FAILED: ${e.javaClass.name}: ${e.message}", e)
@@ -643,45 +648,45 @@ object AudioSegmentAnalyzer {
     ): Triple<Float, FloatBuffer, FloatBuffer> {
 
         try {
-            // v2.4.106: Direct API with ByteBuffer (createTensorFromBuffer)
-            // createTensor overloads don't resolve in Kotlin with onnxruntime-android 1.16.3
-            val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
+            // v2.4.106: All ONNX Runtime calls via reflection (Android AAR has different method signatures)
+            val sessionObj = session.session
+            val sessionClass = sessionObj.javaClass
+            val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
+            val env = envClass.getMethod("getEnvironment").invoke(null)
+            val onnxTensorClass = Class.forName("ai.onnxruntime.OnnxTensor")
 
-            fun floatArrayToBuffer(arr: FloatArray): java.nio.ByteBuffer {
-                val buf = java.nio.ByteBuffer.allocateDirect(arr.size * 4).order(java.nio.ByteOrder.nativeOrder())
-                buf.asFloatBuffer().put(arr)
-                return buf
+            // Find createTensor(OrtEnvironment, float[], long[]) method
+            val createTensorMethod = onnxTensorClass.methods.first {
+                it.name == "createTensor" && it.parameterTypes.size == 3 &&
+                it.parameterTypes[0] == envClass &&
+                it.parameterTypes[1] == FloatArray::class.java &&
+                it.parameterTypes[2] == LongArray::class.java
             }
 
-            // Input: shape [1, chunk.size]
-            val inputBuf = floatArrayToBuffer(chunk)
-            val inputTensor = ai.onnxruntime.OnnxTensor.createTensorFromBuffer(
-                env, inputBuf, longArrayOf(1, chunk.size.toLong()), ai.onnxruntime.OnnxJavaType.FLOAT
-            )
+            // For 2D input [1, chunkSize], wrap as float[] with shape [1, chunkSize]
+            // Silero VAD expects input shape [batch, samples] = [1, 512]
+            val inputTensor = createTensorMethod.invoke(null, env, chunk, longArrayOf(1, chunk.size.toLong()))
 
-            // h state: shape [2, 1, 32]
             val hData = stateH.array()
-            val hBuf = floatArrayToBuffer(hData)
-            val hTensor = ai.onnxruntime.OnnxTensor.createTensorFromBuffer(
-                env, hBuf, longArrayOf(2, 1, 32), ai.onnxruntime.OnnxJavaType.FLOAT
-            )
+            val hTensor = createTensorMethod.invoke(null, env, hData, longArrayOf(2, 1, 32))
 
-            // c state: shape [2, 1, 32]
             val cData = stateC.array()
-            val cBuf = floatArrayToBuffer(cData)
-            val cTensor = ai.onnxruntime.OnnxTensor.createTensorFromBuffer(
-                env, cBuf, longArrayOf(2, 1, 32), ai.onnxruntime.OnnxJavaType.FLOAT
-            )
+            val cTensor = createTensorMethod.invoke(null, env, cData, longArrayOf(2, 1, 32))
 
-            val inputMap = HashMap<String, ai.onnxruntime.OnnxTensor>()
-            inputMap["input"] = inputTensor
-            inputMap["h"] = hTensor
-            inputMap["c"] = cTensor
+            val inputMap = HashMap<String, Any>()
+            inputMap["input"] = inputTensor!!
+            inputMap["h"] = hTensor!!
+            inputMap["c"] = cTensor!!
 
-            val results = session.session.run(inputMap)
+            val runMethod = sessionClass.getMethod("run", Map::class.java)
+            val results = runMethod.invoke(sessionObj, inputMap)
 
-            val outputTensor = results.get("output").get()
-            val outputValue = outputTensor.value
+            val resultsClass = results.javaClass
+            val getMethod = resultsClass.getMethod("get", String::class.java)
+            val outputTensor = getMethod.invoke(results, "output")
+            val getValueMethod = outputTensor.javaClass.getMethod("getValue")
+            val outputValue = getValueMethod.invoke(outputTensor)
+
             val prob = when (outputValue) {
                 is FloatArray -> outputValue[0]
                 is Array<*> -> {
@@ -694,8 +699,8 @@ object AudioSegmentAnalyzer {
                 else -> 0.5f
             }
 
-            val newHTensor = results.get("hn").get()
-            val newHValue = newHTensor.value
+            val newHTensor = getMethod.invoke(results, "hn")
+            val newHValue = getValueMethod.invoke(newHTensor)
             val newHBuffer = when (newHValue) {
                 is FloatArray -> FloatBuffer.wrap(newHValue)
                 is Array<*> -> {
@@ -705,8 +710,8 @@ object AudioSegmentAnalyzer {
                 else -> stateH
             }
 
-            val newCTensor = results.get("cn").get()
-            val newCValue = newCTensor.value
+            val newCTensor = getMethod.invoke(results, "cn")
+            val newCValue = getValueMethod.invoke(newCTensor)
             val newCBuffer = when (newCValue) {
                 is FloatArray -> FloatBuffer.wrap(newCValue)
                 is Array<*> -> {
@@ -716,10 +721,10 @@ object AudioSegmentAnalyzer {
                 else -> stateC
             }
 
-            try { results.close() } catch (_: Exception) {}
-            try { inputTensor.close() } catch (_: Exception) {}
-            try { hTensor.close() } catch (_: Exception) {}
-            try { cTensor.close() } catch (_: Exception) {}
+            try { resultsClass.getMethod("close").invoke(results) } catch (_: Exception) {}
+            try { onnxTensorClass.getMethod("close").invoke(inputTensor) } catch (_: Exception) {}
+            try { onnxTensorClass.getMethod("close").invoke(hTensor) } catch (_: Exception) {}
+            try { onnxTensorClass.getMethod("close").invoke(cTensor) } catch (_: Exception) {}
 
             return Triple(prob, newHBuffer, newCBuffer)
         } catch (e: Throwable) {
@@ -891,9 +896,9 @@ object AudioSegmentAnalyzer {
         val rmsEnergy: Float
     )
 
-    private class AiSession(val session: ai.onnxruntime.OrtSession) {
+    private class AiSession(val session: Any) {
         fun close() {
-            try { session.close() } catch (_: Exception) {}
+            try { session.javaClass.getMethod("close").invoke(session) } catch (_: Exception) {}
         }
     }
 }
