@@ -36,6 +36,35 @@ import java.nio.channels.FileChannel
 object AudioSegmentAnalyzer {
     private const val TAG = "AudioSegmentAnalyzer"
 
+    // v2.4.115: File-based logger for VAD diagnostics (Log.i/Log.e not captured by app's log system)
+    private var logFile: File? = null
+    private var logContext: Context? = null
+
+    // v2.4.115: Counter for limiting diagnostic logs in runSileroVad
+    @Volatile
+    private var vadRunCount: Int = 0
+
+    fun setLogContext(context: Context) {
+        logContext = context
+        try {
+            val logDir = File(context.getExternalFilesDir(null), "logs/audio_segment")
+            if (!logDir.exists()) logDir.mkdirs()
+            logFile = File(logDir, "audio_segment.log")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create log file: ${e.message}")
+        }
+    }
+
+    private fun vadLog(msg: String) {
+        Log.i(TAG, msg)
+        try {
+            val timestamp = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            logFile?.let { f ->
+                f.appendText("[$timestamp] $msg\n")
+            }
+        } catch (_: Exception) {}
+    }
+
     // YAMNet: 16kHz, 0.975s window = 15600 samples
     private const val YAMNET_SAMPLE_RATE = 16000
     private const val YAMNET_WINDOW_SAMPLES = 15600
@@ -127,6 +156,9 @@ object AudioSegmentAnalyzer {
      * @return List of VoiceSegments
      */
     fun analyzeEpisode(context: Context, episodeId: String, durationMs: Long, audioUrl: String? = null): List<VoiceSegment> {
+        // v2.4.115: Initialize file-based logger for VAD diagnostics
+        setLogContext(context)
+
         // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime.")
@@ -527,7 +559,7 @@ object AudioSegmentAnalyzer {
                     val chunk = window.copyOfRange(vadPos, vadPos + VAD_FRAME_SIZE)
                     val (prob, newState) = runSileroVad(vadModel, chunk, vadState)
                     if (frameResults.size < 3 && vadChunks < 10) {
-                        Log.i(TAG, "VAD chunk #$vadChunks: prob=$prob, energy=${computeRmsEnergy(chunk, 0, chunk.size)}")
+                        vadLog("VAD chunk #$vadChunks: prob=$prob, energy=${computeRmsEnergy(chunk, 0, chunk.size)}")
                     }
                     vadProb += prob
                     vadChunks++
@@ -580,7 +612,7 @@ object AudioSegmentAnalyzer {
             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
             // which extends Error, not Exception. When libtensorflowlite_jni.so is not
             // loaded, the Interpreter constructor throws UnsatisfiedLinkError.
-            Log.e(TAG, "Failed to load YAMNet TFLite model: ${e.javaClass.name}: ${e.message}", e)
+            vadLog("Failed to load YAMNet TFLite model: ${e.javaClass.name}: ${e.message}")
             throw RuntimeException("YAMNet模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
         }
     }
@@ -646,14 +678,14 @@ object AudioSegmentAnalyzer {
         try {
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
-            Log.i(TAG, "loadSileroVad: OrtEnvironment obtained")
+            vadLog("loadSileroVad: OrtEnvironment obtained")
 
             val createSessionMethod = envClass.methods.first {
                 it.name == "createSession" && it.parameterTypes.size == 1 &&
                 it.parameterTypes[0] == String::class.java
             }
             val session = createSessionMethod.invoke(env, modelFile.absolutePath)
-            Log.i(TAG, "loadSileroVad: session created from ${modelFile.name} (${modelFile.length()} bytes)")
+            vadLog("loadSileroVad: session created from ${modelFile.name} (${modelFile.length()} bytes)")
 
             val sessionObj = session!!
             val sessionClass = sessionObj.javaClass
@@ -663,7 +695,7 @@ object AudioSegmentAnalyzer {
                 val getInputNamesMethod = sessionClass.getMethod("getInputNames")
                 (getInputNamesMethod.invoke(sessionObj) as? Set<String>) ?: emptySet()
             } catch (e: Exception) {
-                Log.w(TAG, "loadSileroVad: getInputNames failed: ${e.message}")
+                vadLog("loadSileroVad WARN: getInputNames failed: ${e.message}")
                 emptySet()
             }
 
@@ -671,11 +703,11 @@ object AudioSegmentAnalyzer {
                 val getOutputNamesMethod = sessionClass.getMethod("getOutputNames")
                 (getOutputNamesMethod.invoke(sessionObj) as? Set<String>) ?: emptySet()
             } catch (e: Exception) {
-                Log.w(TAG, "loadSileroVad: getOutputNames failed: ${e.message}")
+                vadLog("loadSileroVad WARN: getOutputNames failed: ${e.message}")
                 emptySet()
             }
 
-            Log.i(TAG, "loadSileroVad: inputNames=$inputNames, outputNames=$outputNames")
+            vadLog("loadSileroVad: inputNames=$inputNames, outputNames=$outputNames")
 
             // Detect model version
             // v2.4.113: If getInputNames() failed (returned empty set), default to v3/v4
@@ -684,7 +716,7 @@ object AudioSegmentAnalyzer {
             val isV4Style = if (inputNames.isNotEmpty()) {
                 inputNames.contains("state")
             } else {
-                Log.w(TAG, "loadSileroVad: getInputNames returned empty, defaulting to v3/v4 (2.3MB model is v3/v4)")
+                vadLog("loadSileroVad WARN: getInputNames returned empty, defaulting to v3/v4 (2.3MB model is v3/v4)")
                 true
             }
             val stateInputName = if (isV4Style) "state" else "h"
@@ -720,13 +752,13 @@ object AudioSegmentAnalyzer {
                             val shape = getShapeMethod.invoke(tensorInfo) as? LongArray
                             if (shape != null && shape.isNotEmpty()) {
                                 stateShape = shape
-                                Log.i(TAG, "loadSileroVad: state '$stateInputName' shape=${shape.contentToString()}")
+                                vadLog("loadSileroVad: state '$stateInputName' shape=${shape.contentToString()}")
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "loadSileroVad: getInputInfo failed: ${e.message}")
+                vadLog("loadSileroVad WARN: getInputInfo failed: ${e.message}")
             }
 
             // Calculate total state buffer size
@@ -746,7 +778,7 @@ object AudioSegmentAnalyzer {
             val stateElementCount = safeShape.fold(1L) { acc, dim -> acc * dim }.toInt()
             val stateSize = if (isV4Style) stateElementCount else stateElementCount * 2
 
-            Log.i(TAG, "loadSileroVad: model version=${if (isV4Style) "v3/v4" else "v1/v2"}, " +
+            vadLog("loadSileroVad: model version=${if (isV4Style) "v3/v4" else "v1/v2"}, " +
                     "hasSr=$hasSr, stateShape=${stateShape.contentToString()} (safe=${safeShape.contentToString()}), " +
                     "stateSize=$stateSize, " +
                     "outputProbName='$outputProbName', outputStateName='$outputStateName'")
@@ -762,7 +794,7 @@ object AudioSegmentAnalyzer {
                 outputStateName = outputStateName
             )
         } catch (e: Throwable) {
-            Log.e(TAG, "loadSileroVad FAILED: ${e.javaClass.name}: ${e.message}", e)
+            vadLog("loadSileroVad FAILED: ${e.javaClass.name}: ${e.message}")
             throw RuntimeException("Silero VAD模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
         }
     }
@@ -774,6 +806,7 @@ object AudioSegmentAnalyzer {
     ): Pair<Float, FloatBuffer> {
 
         try {
+            vadRunCount++
             val sessionObj = model.session.session
             val sessionClass = sessionObj.javaClass
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
@@ -803,7 +836,7 @@ object AudioSegmentAnalyzer {
                     try {
                         return method.invoke(null, env, data, shape)
                     } catch (e: Exception) {
-                        Log.w(TAG, "createTensor FAILED with param=${paramType.simpleName}: ${e.message}")
+                        vadLog("createTensor WARN: FAILED with param=${paramType.simpleName}: ${e.message}")
                     }
                 }
                 return null
@@ -824,13 +857,18 @@ object AudioSegmentAnalyzer {
                     ?: throw RuntimeException("createTensor failed for state")
                 inputMap["state"] = stateTensor!!
 
-                // "sr" input (sample rate) — required by v3/v4 models
-                if (model.inputNames.contains("sr")) {
-                    val srTensor = createTensor(longArrayOf(16000L), longArrayOf(1))
-                        ?: createTensor(longArrayOf(16000L), longArrayOf())
-                    if (srTensor != null) {
-                        inputMap["sr"] = srTensor
-                    }
+                // v2.4.115 CRITICAL FIX: "sr" input is REQUIRED by all v3/v4 models.
+                // Previously checked model.inputNames.contains("sr"), but when getInputNames()
+                // fails (returns empty set on some devices), "sr" was never added → session.run()
+                // throws → catch returns 0.5f → all chunks classified as speech → 1 segment.
+                // Now: always add "sr" for v3/v4 models.
+                // v3/v4 sr is a scalar int64 (shape []); try scalar first, then [1] fallback.
+                val srTensor = createTensor(longArrayOf(16000L), longArrayOf())
+                    ?: createTensor(longArrayOf(16000L), longArrayOf(1))
+                if (srTensor != null) {
+                    inputMap["sr"] = srTensor
+                } else {
+                    vadLog("runSileroVad WARN: Failed to create sr tensor (scalar and [1] both failed)")
                 }
             } else {
                 // v1/v2: separate "h" and "c" inputs
@@ -847,14 +885,19 @@ object AudioSegmentAnalyzer {
                     ?: throw RuntimeException("createTensor failed for c")
                 inputMap["c"] = cTensor!!
 
-                // Some v2 models also have "sr" input
-                if (model.inputNames.contains("sr")) {
+                // v2.4.115: Same fix — always add "sr" for v2 models that use it
+                if (model.inputNames.isEmpty() || model.inputNames.contains("sr")) {
                     val srTensor = createTensor(longArrayOf(16000L), longArrayOf(1))
                         ?: createTensor(longArrayOf(16000L), longArrayOf())
                     if (srTensor != null) {
                         inputMap["sr"] = srTensor
                     }
                 }
+            }
+
+            // v2.4.115: Log input map before inference (first 3 calls only)
+            if (vadRunCount < 3) {
+                vadLog("runSileroVad: inputMap keys=${inputMap.keys}, isV4Style=${model.isV4Style}, stateSize=${model.stateSize}")
             }
 
             // Run inference
@@ -920,7 +963,7 @@ object AudioSegmentAnalyzer {
 
             return Pair(prob, newBuffer)
         } catch (e: Throwable) {
-            Log.e(TAG, "Silero VAD inference failed: ${e.javaClass.name}: ${e.message}", e)
+            vadLog("Silero VAD inference FAILED: ${e.javaClass.name}: ${e.message}")
             return Pair(0.5f, state)
         }
     }

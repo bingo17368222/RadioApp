@@ -13,7 +13,7 @@ android {
         minSdk 24
         targetSdk 33
         versionCode 315
-        versionName "2.4.114"
+        versionName "2.4.115"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)

@@ -4578,7 +4578,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Normal playback: maintain monotonic position (never go backward)
         // Only update from rawPos if player is prepared and position moves forward
         if (prepared && rawPos > authoritativePosition) {
-            authoritativePosition = rawPos
+            // v2.4.115: CRITICAL FIX - Don't update authoritativePosition with stale rawPos.
+            // After setMediaItem(newItem, startPos), ExoPlayer may still report the OLD
+            // episode's position (e.g., 1306986 when startPos=575353). If we blindly
+            // update authoritativePosition to this stale value, then:
+            // 1. saveCurrentPosition() saves the stale position to the new episode's record
+            // 2. The REJECTED check (pos vs expectedPos) becomes useless because both
+            //    are the same stale value (authoritativePosition was overwritten)
+            //
+            // Fix: Within 10s of episode switch, reject rawPos that is far from
+            // authoritativePosition (delta > 30s). This is likely a stale position
+            // from the old episode, not a legitimate playback advance.
+            val withinSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 10000
+            if (withinSwitchWindow && authoritativePosition > 0) {
+                val delta = rawPos - authoritativePosition
+                if (delta > 30000) {
+                    writeServiceLog("playback", "[v2.4.115] getCurrentPosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, delta=${delta}ms, within 10s switch window)")
+                    // Don't update authoritativePosition - keep the correct startPos
+                } else {
+                    authoritativePosition = rawPos
+                }
+            } else {
+                authoritativePosition = rawPos
+            }
         }
         // Also maintain maxKnownPosition for backward compatibility
         if (rawPos > maxKnownPosition && prepared) {
