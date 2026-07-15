@@ -643,17 +643,35 @@ object AudioSegmentAnalyzer {
     ): Triple<Float, FloatBuffer, FloatBuffer> {
 
         try {
-            // v2.4.106: Direct API instead of reflection
+            // v2.4.106: Direct API with ByteBuffer (createTensorFromBuffer)
+            // createTensor overloads don't resolve in Kotlin with onnxruntime-android 1.16.3
             val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
 
-            val inputData = Array(1) { chunk }
-            val inputTensor = ai.onnxruntime.OnnxTensor.createTensor(env, inputData, longArrayOf(1, chunk.size.toLong()))
+            fun floatArrayToBuffer(arr: FloatArray): java.nio.ByteBuffer {
+                val buf = java.nio.ByteBuffer.allocateDirect(arr.size * 4).order(java.nio.ByteOrder.nativeOrder())
+                buf.asFloatBuffer().put(arr)
+                return buf
+            }
 
+            // Input: shape [1, chunk.size]
+            val inputBuf = floatArrayToBuffer(chunk)
+            val inputTensor = ai.onnxruntime.OnnxTensor.createTensorFromBuffer(
+                env, inputBuf, longArrayOf(1, chunk.size.toLong()), ai.onnxruntime.OnnxJavaType.FLOAT
+            )
+
+            // h state: shape [2, 1, 32]
             val hData = stateH.array()
-            val hTensor = ai.onnxruntime.OnnxTensor.createTensor(env, hData, longArrayOf(2, 1, 32))
+            val hBuf = floatArrayToBuffer(hData)
+            val hTensor = ai.onnxruntime.OnnxTensor.createTensorFromBuffer(
+                env, hBuf, longArrayOf(2, 1, 32), ai.onnxruntime.OnnxJavaType.FLOAT
+            )
 
+            // c state: shape [2, 1, 32]
             val cData = stateC.array()
-            val cTensor = ai.onnxruntime.OnnxTensor.createTensor(env, cData, longArrayOf(2, 1, 32))
+            val cBuf = floatArrayToBuffer(cData)
+            val cTensor = ai.onnxruntime.OnnxTensor.createTensorFromBuffer(
+                env, cBuf, longArrayOf(2, 1, 32), ai.onnxruntime.OnnxJavaType.FLOAT
+            )
 
             val inputMap = HashMap<String, ai.onnxruntime.OnnxTensor>()
             inputMap["input"] = inputTensor
