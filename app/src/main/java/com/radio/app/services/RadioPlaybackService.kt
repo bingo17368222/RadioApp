@@ -770,6 +770,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 Log.e(TAG, "ExoPlayer error: $errMsg")
                                 writeServiceLog("playback", "onPlayerError: $errMsg, retryCount=$errorRetryCount")
                                 prepared = false
+                                // v2.4.111: Clear episodeSwitching on player error so that
+                                // saveCurrentPosition() resumes working during error recovery.
+                                // Previously, episodeSwitching stayed true for 28+ seconds during
+                                // Source error retries, blocking 54 consecutive position saves.
+                                if (episodeSwitching) {
+                                    episodeSwitching = false
+                                    writeServiceLog("playback", "[v2.4.111] onPlayerError: cleared episodeSwitching (was true, blocking saves)")
+                                }
                                 errorRetryCount++
 
                                 // Cancel any previous pending retry (fully null-safe)

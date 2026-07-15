@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 311
-        versionName "2.4.110"
+        versionCode 312
+        versionName "2.4.111"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -69,6 +69,29 @@ android {
         // calls dlopen which searches the APK lib/ dir for DT_NEEDED libs.
         // System.load() by absolute path doesn't make the .so visible to dlopen's
         // DT_NEEDED resolution on Android 12+ (namespace linker issue).
+
+        // v2.4.111: Exclude Whisper native libraries from APK (~3.1MB savings).
+        // These are downloaded at runtime via whisper-engine.zip in OfflineEngineActivity.
+        // SubtitleGeneratorService.loadWhisperNativeLibrary() falls back to external
+        // storage loading when System.loadLibrary fails.
+        // Note: libwhisper_jni.so is NOT excluded — it's built from source and is
+        // the JNI bridge that loads the other .so files.
+        exclude 'lib/*/libggml-base-whisper.so'
+        exclude 'lib/*/libggml-cpu-whisper.so'
+        exclude 'lib/*/libggml-whisper.so'
+        exclude 'lib/*/libwhisper.so'
+
+        // v2.4.111: Exclude MNN GPU backends (~2.9MB savings).
+        // MNN loads these via dlopen in mnn_llm_jni.cpp (lines 211-212).
+        // If not found, MNN falls back to CPU backend. No DT_NEEDED dependency.
+        exclude 'lib/*/libMNN_Vulkan.so'
+        exclude 'lib/*/libMNN_CL.so'
+
+        // v2.4.111: Exclude MNN optional modules (~1.1MB savings).
+        // These are loaded via dlopen without return value check (optional).
+        exclude 'lib/*/libMNNOpenCV.so'
+        exclude 'lib/*/libMNNAudio.so'
+
         exclude 'META-INF/INDEX.LIST'
         exclude 'META-INF/DEPENDENCIES'
     }

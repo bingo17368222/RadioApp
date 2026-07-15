@@ -483,7 +483,7 @@ object AudioSegmentAnalyzer {
         val yamnetInterpreter = loadYamnetModel(File(modelDir, "yamnet.tflite"))
 
         // Load Silero VAD (ONNX Runtime via reflection) - throws exception on failure
-        val vadSession = loadSileroVad(File(modelDir, "silero_vad.onnx"))
+        val vadModel = loadSileroVad(File(modelDir, "silero_vad.onnx"))
 
         try {
             val samples = readPcmAsFloats(pcmFile)
@@ -507,9 +507,10 @@ object AudioSegmentAnalyzer {
             val frameResults = mutableListOf<FrameResult>()
             pos = 0
 
-            // VAD state buffer
-            var vadStateH = FloatBuffer.wrap(FloatArray(64))
-            var vadStateC = FloatBuffer.wrap(FloatArray(64))
+            // VAD state buffer - size depends on model version
+            // v1/v2: separate h [2,1,32] and c [2,1,32] → 64 floats each
+            // v3/v4: combined state [2,1,N] → N*2 floats
+            var vadState = FloatBuffer.wrap(FloatArray(vadModel.stateSize))
 
             while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
                 val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
@@ -524,15 +525,13 @@ object AudioSegmentAnalyzer {
                 var vadPos = 0
                 while (vadPos + VAD_FRAME_SIZE <= window.size) {
                     val chunk = window.copyOfRange(vadPos, vadPos + VAD_FRAME_SIZE)
-                    val (prob, newH, newC) = runSileroVad(vadSession, chunk, vadStateH, vadStateC)
-                    // v2.4.109: Log first 10 VAD probabilities for diagnostics
+                    val (prob, newState) = runSileroVad(vadModel, chunk, vadState)
                     if (frameResults.size < 3 && vadChunks < 10) {
                         Log.i(TAG, "VAD chunk #$vadChunks: prob=$prob, energy=${computeRmsEnergy(chunk, 0, chunk.size)}")
                     }
                     vadProb += prob
                     vadChunks++
-                    vadStateH = newH
-                    vadStateC = newC
+                    vadState = newState
                     vadPos += VAD_FRAME_SIZE
                 }
                 if (vadChunks > 0) vadProb /= vadChunks
@@ -561,7 +560,7 @@ object AudioSegmentAnalyzer {
 
         } finally {
             yamnetInterpreter.close()
-            try { vadSession.close() } catch (_: Exception) {}
+            try { vadModel.session.close() } catch (_: Exception) {}
         }
     }
 
@@ -624,24 +623,118 @@ object AudioSegmentAnalyzer {
     }
 
     // ===== Silero VAD (ONNX Runtime via reflection, no SessionOptions) =====
-    // v2.4.106: SessionOptions class is NOT in onnxruntime-android:1.16.3 AAR.
-    // Use env.createSession(String) which creates session with default options.
+    // v2.4.111: Query model's actual input/output names and adapt to model version.
+    // Root cause of "1 segment" bug: code used v1/v2 names ("h", "c", "output", "hn", "cn")
+    // but the 2.3MB model is v3/v4 which uses "state", "sr", "prob", "stateN".
+    // session.run() with wrong input names throws, caught by outer catch → 0.5f for all chunks.
 
-    private fun loadSileroVad(modelFile: File): AiSession {
+    private data class VadModelInfo(
+        val session: AiSession,
+        val inputNames: Set<String>,
+        val outputNames: Set<String>,
+        val isV4Style: Boolean,     // true if model uses "state" input (v3/v4)
+        val stateSize: Int,         // total float elements in state buffer
+        val stateShape: LongArray,  // shape of state tensor
+        val outputProbName: String, // "output" (v1/v2) or "prob" (v3/v4)
+        val outputStateName: String // "hn" (v1/v2) or "stateN" (v3/v4)
+    )
+
+    private fun loadSileroVad(modelFile: File): VadModelInfo {
         try {
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             Log.i(TAG, "loadSileroVad: OrtEnvironment obtained")
 
-            // v2.4.106: Use createSession(String) instead of OrtSession constructor
-            // which requires SessionOptions (not available in Android AAR)
             val createSessionMethod = envClass.methods.first {
                 it.name == "createSession" && it.parameterTypes.size == 1 &&
                 it.parameterTypes[0] == String::class.java
             }
             val session = createSessionMethod.invoke(env, modelFile.absolutePath)
-            Log.i(TAG, "loadSileroVad: session created from ${modelFile.name}")
-            return AiSession(session)
+            Log.i(TAG, "loadSileroVad: session created from ${modelFile.name} (${modelFile.length()} bytes)")
+
+            val sessionObj = session!!
+            val sessionClass = sessionObj.javaClass
+
+            // v2.4.111: Query actual input/output names from the model
+            val inputNames: Set<String> = try {
+                val getInputNamesMethod = sessionClass.getMethod("getInputNames")
+                (getInputNamesMethod.invoke(sessionObj) as? Set<String>) ?: emptySet()
+            } catch (e: Exception) {
+                Log.w(TAG, "loadSileroVad: getInputNames failed: ${e.message}")
+                emptySet()
+            }
+
+            val outputNames: Set<String> = try {
+                val getOutputNamesMethod = sessionClass.getMethod("getOutputNames")
+                (getOutputNamesMethod.invoke(sessionObj) as? Set<String>) ?: emptySet()
+            } catch (e: Exception) {
+                Log.w(TAG, "loadSileroVad: getOutputNames failed: ${e.message}")
+                emptySet()
+            }
+
+            Log.i(TAG, "loadSileroVad: inputNames=$inputNames, outputNames=$outputNames")
+
+            // Detect model version
+            val isV4Style = inputNames.contains("state")
+            val stateInputName = if (isV4Style) "state" else (if (inputNames.contains("h")) "h" else "h")
+            val hasSr = inputNames.contains("sr")
+
+            // Determine output names
+            val outputProbName = when {
+                outputNames.contains("prob") -> "prob"
+                outputNames.contains("output") -> "output"
+                else -> "output"
+            }
+            val outputStateName = when {
+                outputNames.contains("stateN") -> "stateN"
+                outputNames.contains("hn") -> "hn"
+                else -> "hn"
+            }
+
+            // Query state shape from model metadata
+            var stateShape = longArrayOf(2, 1, 32)  // default for v1/v2
+            try {
+                val getInputInfoMethod = sessionClass.getMethod("getInputInfo")
+                val inputInfo = getInputInfoMethod.invoke(sessionObj) as? Map<*, *>
+                if (inputInfo != null) {
+                    val stateNodeInfo = inputInfo[stateInputName]
+                    if (stateNodeInfo != null) {
+                        val getInfoMethod = stateNodeInfo.javaClass.getMethod("getInfo")
+                        val tensorInfo = getInfoMethod.invoke(stateNodeInfo)
+                        if (tensorInfo != null) {
+                            val getShapeMethod = tensorInfo.javaClass.getMethod("getShape")
+                            val shape = getShapeMethod.invoke(tensorInfo) as? LongArray
+                            if (shape != null && shape.isNotEmpty()) {
+                                stateShape = shape
+                                Log.i(TAG, "loadSileroVad: state '$stateInputName' shape=${shape.contentToString()}")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "loadSileroVad: getInputInfo failed: ${e.message}")
+            }
+
+            // Calculate total state buffer size
+            // For v1/v2: two buffers of stateShape, total = 2 * product(stateShape)
+            // For v3/v4: one buffer of stateShape
+            val stateElementCount = stateShape.fold(1L) { acc, dim -> acc * dim }.toInt()
+            val stateSize = if (isV4Style) stateElementCount else stateElementCount * 2
+
+            Log.i(TAG, "loadSileroVad: model version=${if (isV4Style) "v3/v4" else "v1/v2"}, " +
+                    "hasSr=$hasSr, stateShape=${stateShape.contentToString()}, stateSize=$stateSize, " +
+                    "outputProbName='$outputProbName', outputStateName='$outputStateName'")
+
+            return VadModelInfo(
+                session = AiSession(session),
+                inputNames = inputNames,
+                outputNames = outputNames,
+                isV4Style = isV4Style,
+                stateSize = stateSize,
+                stateShape = stateShape,
+                outputProbName = outputProbName,
+                outputStateName = outputStateName
+            )
         } catch (e: Throwable) {
             Log.e(TAG, "loadSileroVad FAILED: ${e.javaClass.name}: ${e.message}", e)
             throw RuntimeException("Silero VAD模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
@@ -649,32 +742,28 @@ object AudioSegmentAnalyzer {
     }
 
     private fun runSileroVad(
-        session: AiSession,
+        model: VadModelInfo,
         chunk: FloatArray,
-        stateH: FloatBuffer,
-        stateC: FloatBuffer
-    ): Triple<Float, FloatBuffer, FloatBuffer> {
+        state: FloatBuffer
+    ): Pair<Float, FloatBuffer> {
 
         try {
-            // v2.4.110: All ONNX Runtime calls via reflection
-            val sessionObj = session.session
+            val sessionObj = model.session.session
             val sessionClass = sessionObj.javaClass
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             val onnxTensorClass = Class.forName("ai.onnxruntime.OnnxTensor")
 
-            // v2.4.110: Sort createTensor methods to prefer float[] over Object parameter.
-            // Previous code iterated methods in arbitrary order; if the Object overload
-            // was tried first, it could "succeed" but create a tensor with wrong data.
+            // v2.4.110: Sort createTensor methods to prefer specific types over Object
             val tensorMethods = onnxTensorClass.methods.filter {
                 it.name == "createTensor" &&
                 it.parameterTypes.size == 3 &&
                 it.parameterTypes[0] == envClass &&
                 it.parameterTypes[2] == LongArray::class.java
             }.sortedByDescending { method ->
-                // Prefer float[] (most specific) over Object (generic)
                 when (method.parameterTypes[1]) {
-                    FloatArray::class.java -> 2
+                    FloatArray::class.java -> 3
+                    LongArray::class.java -> 2
                     java.lang.Object::class.java, Any::class.java -> 0
                     else -> 1
                 }
@@ -694,35 +783,62 @@ object AudioSegmentAnalyzer {
                 return null
             }
 
-            // Input: shape [1, chunk.size]
-            val inputTensor = createTensor(chunk, longArrayOf(1, chunk.size.toLong()))
-                ?: throw RuntimeException("No createTensor method matched for float[] input")
-
-            val hData = stateH.array()
-            val hTensor = createTensor(hData, longArrayOf(2, 1, 32))
-                ?: throw RuntimeException("No createTensor method matched for h state")
-
-            val cData = stateC.array()
-            val cTensor = createTensor(cData, longArrayOf(2, 1, 32))
-                ?: throw RuntimeException("No createTensor method matched for c state")
-
+            // Build input map with correct names based on model version
             val inputMap = HashMap<String, Any>()
-            inputMap["input"] = inputTensor!!
-            inputMap["h"] = hTensor!!
-            inputMap["c"] = cTensor!!
 
+            // "input" tensor: shape [1, chunk.size] — same for all versions
+            val inputTensor = createTensor(chunk, longArrayOf(1, chunk.size.toLong()))
+                ?: throw RuntimeException("createTensor failed for input")
+            inputMap[model.inputNames.firstOrNull() ?: "input"] = inputTensor
+
+            if (model.isV4Style) {
+                // v3/v4: single "state" input
+                val stateData = state.array()
+                val stateTensor = createTensor(stateData, model.stateShape)
+                    ?: throw RuntimeException("createTensor failed for state")
+                inputMap["state"] = stateTensor!!
+
+                // "sr" input (sample rate) — required by v3/v4 models
+                if (model.inputNames.contains("sr")) {
+                    val srTensor = createTensor(longArrayOf(16000L), longArrayOf(1))
+                        ?: createTensor(longArrayOf(16000L), longArrayOf())
+                    if (srTensor != null) {
+                        inputMap["sr"] = srTensor
+                    }
+                }
+            } else {
+                // v1/v2: separate "h" and "c" inputs
+                val stateData = state.array()
+                val halfSize = model.stateSize / 2
+                val hData = stateData.copyOfRange(0, halfSize)
+                val cData = stateData.copyOfRange(halfSize, model.stateSize)
+
+                val hTensor = createTensor(hData, model.stateShape)
+                    ?: throw RuntimeException("createTensor failed for h")
+                inputMap["h"] = hTensor!!
+
+                val cTensor = createTensor(cData, model.stateShape)
+                    ?: throw RuntimeException("createTensor failed for c")
+                inputMap["c"] = cTensor!!
+
+                // Some v2 models also have "sr" input
+                if (model.inputNames.contains("sr")) {
+                    val srTensor = createTensor(longArrayOf(16000L), longArrayOf(1))
+                        ?: createTensor(longArrayOf(16000L), longArrayOf())
+                    if (srTensor != null) {
+                        inputMap["sr"] = srTensor
+                    }
+                }
+            }
+
+            // Run inference
             val runMethod = sessionClass.getMethod("run", Map::class.java)
             val results = runMethod.invoke(sessionObj, inputMap)
 
             val resultsClass = results.javaClass
             val getMethod = resultsClass.getMethod("get", String::class.java)
 
-            // v2.4.110: Use getFloatBuffer() instead of getValue() to extract tensor data.
-            // getValue() returns multidimensional Java arrays (float[][][] for 3D state tensors).
-            // The old code tried to cast 3D array elements to Float, which threw ClassCastException.
-            // The outer catch returned (0.5f, oldState) for every chunk, so VAD always output 0.5.
-            // getFloatBuffer() returns a flat FloatBuffer regardless of tensor shape, avoiding
-            // the multidimensional array parsing issue entirely.
+            // Use getFloatBuffer() for output extraction (works for any tensor shape)
             val getFloatBufferMethod = onnxTensorClass.getMethod("getFloatBuffer")
 
             fun tensorToFloatArray(tensor: Any): FloatArray {
@@ -732,30 +848,54 @@ object AudioSegmentAnalyzer {
                 return arr
             }
 
-            // Output tensor: shape [1, 1] → read first float
-            val outputTensor = getMethod.invoke(results, "output")
+            // Extract probability output
+            val outputTensor = getMethod.invoke(results, model.outputProbName)
             val outputArr = tensorToFloatArray(outputTensor)
             val prob = if (outputArr.isNotEmpty()) outputArr[0] else 0.5f
 
-            // hn tensor: shape [2, 1, 32] → 64 floats
-            val newHTensor = getMethod.invoke(results, "hn")
-            val newHArr = tensorToFloatArray(newHTensor)
-            val newHBuffer = if (newHArr.size >= 64) FloatBuffer.wrap(newHArr) else stateH
+            // Extract new state
+            val newStateTensor = getMethod.invoke(results, model.outputStateName)
+            val newStateArr = tensorToFloatArray(newStateTensor)
 
-            // cn tensor: shape [2, 1, 32] → 64 floats
-            val newCTensor = getMethod.invoke(results, "cn")
-            val newCArr = tensorToFloatArray(newCTensor)
-            val newCBuffer = if (newCArr.size >= 64) FloatBuffer.wrap(newCArr) else stateC
+            // Build new state FloatBuffer
+            val newBuffer: FloatBuffer
+            if (model.isV4Style) {
+                // v3/v4: single "stateN" output
+                newBuffer = if (newStateArr.size >= model.stateSize) {
+                    FloatBuffer.wrap(newStateArr.copyOf(model.stateSize))
+                } else {
+                    FloatBuffer.wrap(FloatArray(model.stateSize))
+                }
+            } else {
+                // v1/v2: two outputs "hn" and "cn" — concatenate into single buffer
+                val hnTensor = getMethod.invoke(results, model.outputStateName) // "hn"
+                val hnArr = tensorToFloatArray(hnTensor)
 
+                // For v1/v2, also get "cn" output
+                val cnName = if (model.outputNames.contains("cn")) "cn" else "cn"
+                val cnTensor = getMethod.invoke(results, cnName)
+                val cnArr = tensorToFloatArray(cnTensor)
+
+                val combined = FloatArray(model.stateSize)
+                val halfSize = model.stateSize / 2
+                System.arraycopy(hnArr, 0, combined, 0, minOf(halfSize, hnArr.size))
+                System.arraycopy(cnArr, 0, combined, halfSize, minOf(halfSize, cnArr.size))
+                newBuffer = FloatBuffer.wrap(combined)
+            }
+
+            // Cleanup
             try { resultsClass.getMethod("close").invoke(results) } catch (_: Exception) {}
             try { onnxTensorClass.getMethod("close").invoke(inputTensor) } catch (_: Exception) {}
-            try { onnxTensorClass.getMethod("close").invoke(hTensor) } catch (_: Exception) {}
-            try { onnxTensorClass.getMethod("close").invoke(cTensor) } catch (_: Exception) {}
+            for (v in inputMap.values) {
+                if (v !== inputTensor) {
+                    try { onnxTensorClass.getMethod("close").invoke(v) } catch (_: Exception) {}
+                }
+            }
 
-            return Triple(prob, newHBuffer, newCBuffer)
+            return Pair(prob, newBuffer)
         } catch (e: Throwable) {
             Log.e(TAG, "Silero VAD inference failed: ${e.javaClass.name}: ${e.message}", e)
-            return Triple(0.5f, stateH, stateC)
+            return Pair(0.5f, state)
         }
     }
 
