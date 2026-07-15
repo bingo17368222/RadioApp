@@ -3888,6 +3888,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("playback", "playEpisode: episode is NULL, ignoring")
             return
         }
+
+        // v2.4.106: Force-save current episode's position BEFORE switching.
+        // Previously, position was only saved by periodic timer (every 5s) and
+        // on pause. If user switches episodes quickly, the current episode's
+        // position might not be saved, causing progress to be lost.
+        if (currentEpisode != null && currentEpisode?.id != episode.id) {
+            val oldEp = currentEpisode!!
+            val oldPos = getCurrentPosition()
+            if (oldPos > 1000 && oldEp.id?.isNotBlank() == true) {
+                getSharedPreferences("playback_positions", MODE_PRIVATE)
+                    .edit().putLong(oldEp.id!!, oldPos).commit()
+                writeServiceLog("playback", "[v2.4.106] playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
+            }
+        }
         val epTitle = try { episode.title ?: "unknown" } catch (_: Exception) { "unknown" }
         val epAudioUrl = try { episode.audioUrl ?: "" } catch (_: Exception) { "" }
         Log.d(TAG, "playEpisode called: $epTitle, playbackStarted before: $playbackStarted, prepared=$prepared, url=$epAudioUrl, startPositionMs=$startPositionMs")
