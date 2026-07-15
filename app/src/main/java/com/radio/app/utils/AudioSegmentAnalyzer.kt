@@ -656,37 +656,39 @@ object AudioSegmentAnalyzer {
     ): Triple<Float, FloatBuffer, FloatBuffer> {
 
         try {
-            // v2.4.108: All ONNX Runtime calls via reflection
-            // Try EACH createTensor method until one works (Android AAR has multiple overloads)
+            // v2.4.110: All ONNX Runtime calls via reflection
             val sessionObj = session.session
             val sessionClass = sessionObj.javaClass
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             val onnxTensorClass = Class.forName("ai.onnxruntime.OnnxTensor")
 
-            // v2.4.108: Log ALL createTensor methods for diagnostics
-            onnxTensorClass.methods.filter { it.name == "createTensor" }.forEach { m ->
-                Log.i(TAG, "runSileroVad: createTensor(${m.parameterTypes.joinToString { it.simpleName }})")
+            // v2.4.110: Sort createTensor methods to prefer float[] over Object parameter.
+            // Previous code iterated methods in arbitrary order; if the Object overload
+            // was tried first, it could "succeed" but create a tensor with wrong data.
+            val tensorMethods = onnxTensorClass.methods.filter {
+                it.name == "createTensor" &&
+                it.parameterTypes.size == 3 &&
+                it.parameterTypes[0] == envClass &&
+                it.parameterTypes[2] == LongArray::class.java
+            }.sortedByDescending { method ->
+                // Prefer float[] (most specific) over Object (generic)
+                when (method.parameterTypes[1]) {
+                    FloatArray::class.java -> 2
+                    java.lang.Object::class.java, Any::class.java -> 0
+                    else -> 1
+                }
             }
 
-            // v2.4.108: Try each createTensor method with 3 params (env, data, shape)
             fun createTensor(data: Any, shape: LongArray): Any? {
-                for (method in onnxTensorClass.methods) {
-                    if (method.name != "createTensor") continue
-                    if (method.parameterTypes.size != 3) continue
-                    if (method.parameterTypes[0] != envClass) continue
-                    if (method.parameterTypes[2] != LongArray::class.java) continue
+                for (method in tensorMethods) {
                     val paramType = method.parameterTypes[1]
-                    // Try if data is assignable to the method's parameter type
-                    if (!paramType.isAssignableFrom(data.javaClass) && 
-                        !(paramType == Any::class.java || paramType == java.lang.Object::class.java)) continue
+                    if (!paramType.isAssignableFrom(data.javaClass) &&
+                        !(paramType == java.lang.Object::class.java || paramType == Any::class.java)) continue
                     try {
-                        val result = method.invoke(null, env, data, shape)
-                        Log.i(TAG, "runSileroVad: createTensor SUCCESS with param=${paramType.simpleName}, data=${data.javaClass.simpleName}")
-                        return result
+                        return method.invoke(null, env, data, shape)
                     } catch (e: Exception) {
-                        Log.w(TAG, "runSileroVad: createTensor FAILED with param=${paramType.simpleName}: ${e.message}")
-                        // try next method
+                        Log.w(TAG, "createTensor FAILED with param=${paramType.simpleName}: ${e.message}")
                     }
                 }
                 return null
@@ -714,43 +716,36 @@ object AudioSegmentAnalyzer {
 
             val resultsClass = results.javaClass
             val getMethod = resultsClass.getMethod("get", String::class.java)
+
+            // v2.4.110: Use getFloatBuffer() instead of getValue() to extract tensor data.
+            // getValue() returns multidimensional Java arrays (float[][][] for 3D state tensors).
+            // The old code tried to cast 3D array elements to Float, which threw ClassCastException.
+            // The outer catch returned (0.5f, oldState) for every chunk, so VAD always output 0.5.
+            // getFloatBuffer() returns a flat FloatBuffer regardless of tensor shape, avoiding
+            // the multidimensional array parsing issue entirely.
+            val getFloatBufferMethod = onnxTensorClass.getMethod("getFloatBuffer")
+
+            fun tensorToFloatArray(tensor: Any): FloatArray {
+                val fb = getFloatBufferMethod.invoke(tensor) as FloatBuffer
+                val arr = FloatArray(fb.remaining())
+                fb.get(arr)
+                return arr
+            }
+
+            // Output tensor: shape [1, 1] → read first float
             val outputTensor = getMethod.invoke(results, "output")
-            val getValueMethod = outputTensor.javaClass.getMethod("getValue")
-            val outputValue = getValueMethod.invoke(outputTensor)
+            val outputArr = tensorToFloatArray(outputTensor)
+            val prob = if (outputArr.isNotEmpty()) outputArr[0] else 0.5f
 
-            val prob = when (outputValue) {
-                is FloatArray -> outputValue[0]
-                is Array<*> -> {
-                    val inner = outputValue[0]
-                    when (inner) {
-                        is FloatArray -> inner[0]
-                        else -> 0.5f
-                    }
-                }
-                else -> 0.5f
-            }
-
+            // hn tensor: shape [2, 1, 32] → 64 floats
             val newHTensor = getMethod.invoke(results, "hn")
-            val newHValue = getValueMethod.invoke(newHTensor)
-            val newHBuffer = when (newHValue) {
-                is FloatArray -> FloatBuffer.wrap(newHValue)
-                is Array<*> -> {
-                    val flat = (newHValue as Array<*>).map { it as Float }.toFloatArray()
-                    FloatBuffer.wrap(flat)
-                }
-                else -> stateH
-            }
+            val newHArr = tensorToFloatArray(newHTensor)
+            val newHBuffer = if (newHArr.size >= 64) FloatBuffer.wrap(newHArr) else stateH
 
+            // cn tensor: shape [2, 1, 32] → 64 floats
             val newCTensor = getMethod.invoke(results, "cn")
-            val newCValue = getValueMethod.invoke(newCTensor)
-            val newCBuffer = when (newCValue) {
-                is FloatArray -> FloatBuffer.wrap(newCValue)
-                is Array<*> -> {
-                    val flat = (newCValue as Array<*>).map { it as Float }.toFloatArray()
-                    FloatBuffer.wrap(flat)
-                }
-                else -> stateC
-            }
+            val newCArr = tensorToFloatArray(newCTensor)
+            val newCBuffer = if (newCArr.size >= 64) FloatBuffer.wrap(newCArr) else stateC
 
             try { resultsClass.getMethod("close").invoke(results) } catch (_: Exception) {}
             try { onnxTensorClass.getMethod("close").invoke(inputTensor) } catch (_: Exception) {}

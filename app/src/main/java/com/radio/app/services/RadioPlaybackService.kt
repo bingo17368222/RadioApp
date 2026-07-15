@@ -3131,6 +3131,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
         if (dur <= 0) {
+            // v2.4.110: During episode switching, getSafeDuration() returns 0 because
+            // player.duration is ignored (episodeSwitching=true) and episode duration
+            // may not be available yet. Previously this forced a full notification rebuild
+            // every 5 seconds, causing the notification progress bar to reset/loop.
+            // Now: skip the rebuild during episode switching; the notification will be
+            // properly updated when STATE_READY fires (clears episodeSwitching).
+            if (episodeSwitching || !prepared) {
+                writeServiceLog("notification", "[v2.4.110-PROGRESS-POLL] dur<=0 but episodeSwitching=$episodeSwitching, prepared=$prepared, SKIPPING rebuild (will update on STATE_READY)")
+                return
+            }
             writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] dur<=0, forcing full notification rebuild to recover")
             // [v2.0.75] Issue 5: dur<=0时不要直接返回，强制重建通知恢复进度条
             forceNotificationUpdate = true
@@ -4297,13 +4307,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
     fun seekTo(pos: Long) {
         if (isLive) return
-        // v2.4.109: Log caller stack trace to identify who is calling seekTo
-        val callerTrace = Thread.currentThread().stackTrace
-            .drop(2)  // skip getStackTrace and seekTo itself
-            .take(5)
-            .joinToString(" <- ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
-        writeServiceLog("playback", "[v2.4.109] seekTo($pos) called by: $callerTrace")
-        Log.i(TAG, "[v2.4.109] seekTo($pos) called by: $callerTrace")
+        // v2.4.110: Block ALL seekTo calls during episode switching.
+        // During episode switch, playEpisode() sets the start position via
+        // setMediaItem(item, startPos). External callers (MediaSession onSeekTo,
+        // Activity reconnection, etc.) may call seekTo with OLD saved positions
+        // that override the correct start position. Since the start position is
+        // already set, any seekTo during this window is unnecessary and harmful.
+        if (episodeSwitching) {
+            writeServiceLog("playback", "[v2.4.110] seekTo($pos) BLOCKED (episodeSwitching=true, start pos already set via setMediaItem)")
+            return
+        }
         val now = System.currentTimeMillis()
         // [v2.1.7] Removed largeBackward and zeroStorm anti-seek-storm protections.
         // These protections blocked ALL legitimate backward seeks >45s, including:
