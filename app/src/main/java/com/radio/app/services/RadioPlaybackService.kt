@@ -2677,6 +2677,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: BLOCKED (isSeekingToPosition=$isSeekingToPosition, pendingStartPosition=$pendingStartPosition)")
             return
         }
+        // v2.4.108: Block saves during episode switching to prevent old position being
+        // saved under new episode's ID. episodeSwitching is set in playEpisode() and
+        // cleared in STATE_READY. If the player hasn't reached STATE_READY for the new
+        // episode yet, the position is still from the old episode.
+        if (episodeSwitching) {
+            writeServiceLog("playback", "[v2.4.108] saveCurrentPosition: BLOCKED (episodeSwitching=true)")
+            return
+        }
         // v2.4.36: Reduced from 30000ms to 5000ms - 30s block was too long, causing
         // positions to not be saved for 30 seconds after starting playback.
         if (System.currentTimeMillis() - lastPositionRestoreTime < 5000) {
@@ -3236,19 +3244,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // [v2.0.75] Issue 5 Fix: non-minimal样式必须正确推送通知。
-        // v2.0.74 bug: 只调用updateNotification()返回Notification对象但不manager.notify()，
-        // 导致compact/full样式的进度轮询更新从未显示！
         // v2.4.91: Only force update when position changed or on reset, NOT every poll.
-        // Previously forceNotificationUpdate=true was set every 5s for non-minimal styles,
-        // causing notification to rebuild every 5s even when nothing changed (e.g., position
-        // frozen at 90 min during buffering). This caused "通知栏几秒循环" bug.
+        // v2.4.108: Also SKIP notifyNotification() entirely when position is unchanged
+        // to prevent progress bar animation restart (the "几秒循环" bug).
         if (notificationStyle != "minimal") {
             if (isReset || posChanged) {
                 forceNotificationUpdate = true
                 lastNotificationContentHash = 0
                 writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, calling notifyNotification() for progress refresh")
+                notifyNotification()
+            } else {
+                writeServiceLog("notification", "[v2.4.108-PROGRESS-POLL] pos unchanged ($pos), SKIPPING notifyNotification() to prevent progress bar loop")
             }
-            notifyNotification()
             return
         }
 
@@ -3886,10 +3893,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     .edit().putLong(oldEp.id!!, oldPos).commit()
                 writeServiceLog("playback", "[v2.4.106] playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
             }
-            // v2.4.107: Block periodic saveCurrentPosition for 5s after switching episodes.
-            // Without this, the periodic timer saves the OLD position under the NEW
-            // episode's ID because the player hasn't seeked to the new position yet.
-            lastPositionRestoreTime = System.currentTimeMillis()
+            // v2.4.108: episodeSwitching flag (set above) now blocks saveCurrentPosition
+            // until STATE_READY fires for the new episode. No need for lastPositionRestoreTime.
         }
         val epTitle = try { episode.title ?: "unknown" } catch (_: Exception) { "unknown" }
         val epAudioUrl = try { episode.audioUrl ?: "" } catch (_: Exception) { "" }
@@ -4084,31 +4089,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         ensurePlayerInitialized()
         try {
             player?.let {
-                // [v2.3.0-fix] Stop and clear previous media before setting new one.
-                // This ensures ExoPlayer exits any error state from a previous failed episode,
-                // preventing cascading playback failures.
-                try { it.stop() } catch (_: Exception) {}
-                it.clearMediaItems()
-                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                // v2.4.108: Remove stop() + clearMediaItems() which caused player stall.
+                // stop() puts player in STATE_IDLE, and subsequent seekTo() doesn't
+                // take effect. Instead, use setMediaItem(item, startPos) which sets
+                // the start position BEFORE loading, so ExoPlayer seeks during
+                // initial buffering rather than after.
+                // setMediaItem() already replaces all previous items (no need for clearMediaItems).
                 if (startPositionMs >= 0) {
                     // [v2.2.2] Set playWhenReady=true so playback starts after seek
-                    // v2.0.53 set playWhenReady=false which prevented playback from starting
                     it.playWhenReady = true
-                    // [v2.0.53] Issue 1 Fix: Seek BEFORE first STATE_READY
-                    // This avoids the STATE_READY→seek→STATE_BUFFERING→STATE_READY cycle
+                    // v2.4.108: Use setMediaItem(item, startPos) instead of setMediaItem(item) + seekTo()
+                    // This sets the start position before the media is loaded, which is more reliable.
+                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl), startPositionMs)
                     it.prepare()
-                    // Seek after prepare - ExoPlayer will seek during initial buffering
-                    it.seekTo(startPositionMs)
                     // [v2.0.54] Clear positionRestoreRequested so STATE_READY doesn't seek again
                     positionRestoreRequested = false
                     // v2.4.46: CRITICAL FIX - Also clear pendingStartPosition!
-                    // Without this, saveCurrentPosition() was BLOCKED forever.
-                    // The seek was done before prepare, so STATE_READY won't enter the
-                    // positionRestoreRequested branch to clear it. 835 saves were blocked.
                     pendingStartPosition = -1L
-                    writeServiceLog("playback", "[v2.4.46] playEpisode: prepared + seekTo($startPositionMs), cleared pendingStartPosition")
+                    writeServiceLog("playback", "[v2.4.108] playEpisode: setMediaItem+startPos($startPositionMs), prepared")
                 } else {
                     it.playWhenReady = true
+                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
                     it.prepare()
                 }
             }

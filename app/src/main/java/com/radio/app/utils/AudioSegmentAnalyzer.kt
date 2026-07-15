@@ -648,31 +648,53 @@ object AudioSegmentAnalyzer {
     ): Triple<Float, FloatBuffer, FloatBuffer> {
 
         try {
-            // v2.4.107: All ONNX Runtime calls via reflection
-            // The Android AAR's createTensor uses Object parameter (not float[])
+            // v2.4.108: All ONNX Runtime calls via reflection
+            // Try EACH createTensor method until one works (Android AAR has multiple overloads)
             val sessionObj = session.session
             val sessionClass = sessionObj.javaClass
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             val onnxTensorClass = Class.forName("ai.onnxruntime.OnnxTensor")
 
-            // v2.4.107: Find createTensor method with Object parameter (Android AAR uses Object, not float[])
-            val createTensorMethod = onnxTensorClass.methods.first {
-                it.name == "createTensor" && it.parameterTypes.size == 3 &&
-                it.parameterTypes[0] == envClass &&
-                it.parameterTypes[1] == Any::class.java &&
-                it.parameterTypes[2] == LongArray::class.java
+            // v2.4.108: Log ALL createTensor methods for diagnostics
+            onnxTensorClass.methods.filter { it.name == "createTensor" }.forEach { m ->
+                Log.i(TAG, "runSileroVad: createTensor(${m.parameterTypes.joinToString { it.simpleName }})")
             }
-            Log.d(TAG, "runSileroVad: createTensor method found: ${createTensorMethod.parameterTypes.joinToString { it.simpleName }}")
+
+            // v2.4.108: Try each createTensor method with 3 params (env, data, shape)
+            fun createTensor(data: Any, shape: LongArray): Any? {
+                for (method in onnxTensorClass.methods) {
+                    if (method.name != "createTensor") continue
+                    if (method.parameterTypes.size != 3) continue
+                    if (method.parameterTypes[0] != envClass) continue
+                    if (method.parameterTypes[2] != LongArray::class.java) continue
+                    val paramType = method.parameterTypes[1]
+                    // Try if data is assignable to the method's parameter type
+                    if (!paramType.isAssignableFrom(data.javaClass) && 
+                        !(paramType == Any::class.java || paramType == java.lang.Object::class.java)) continue
+                    try {
+                        val result = method.invoke(null, env, data, shape)
+                        Log.i(TAG, "runSileroVad: createTensor SUCCESS with param=${paramType.simpleName}, data=${data.javaClass.simpleName}")
+                        return result
+                    } catch (e: Exception) {
+                        Log.w(TAG, "runSileroVad: createTensor FAILED with param=${paramType.simpleName}: ${e.message}")
+                        // try next method
+                    }
+                }
+                return null
+            }
 
             // Input: shape [1, chunk.size]
-            val inputTensor = createTensorMethod.invoke(null, env, chunk, longArrayOf(1, chunk.size.toLong()))
+            val inputTensor = createTensor(chunk, longArrayOf(1, chunk.size.toLong()))
+                ?: throw RuntimeException("No createTensor method matched for float[] input")
 
             val hData = stateH.array()
-            val hTensor = createTensorMethod.invoke(null, env, hData, longArrayOf(2, 1, 32))
+            val hTensor = createTensor(hData, longArrayOf(2, 1, 32))
+                ?: throw RuntimeException("No createTensor method matched for h state")
 
             val cData = stateC.array()
-            val cTensor = createTensorMethod.invoke(null, env, cData, longArrayOf(2, 1, 32))
+            val cTensor = createTensor(cData, longArrayOf(2, 1, 32))
+                ?: throw RuntimeException("No createTensor method matched for c state")
 
             val inputMap = HashMap<String, Any>()
             inputMap["input"] = inputTensor!!
