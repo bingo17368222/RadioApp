@@ -621,8 +621,7 @@ object AudioSegmentAnalyzer {
         try {
             // v2.4.102: Use direct API instead of reflection to prevent ProGuard stripping
             val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
-            val sessionOptions = ai.onnxruntime.SessionOptions()
-            val session = ai.onnxruntime.OrtSession(env, modelFile.absolutePath, sessionOptions)
+            val session = ai.onnxruntime.OrtSession(env, modelFile.absolutePath)
             Log.i(TAG, "Silero VAD loaded: inputs=${session.inputNames}, outputs=${session.outputNames}")
             return AiSession(session)
         } catch (e: Exception) {
