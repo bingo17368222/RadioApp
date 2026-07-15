@@ -5,31 +5,31 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.99: Runtime native library loader for ONNX Runtime.
+ * v2.4.104: Load libonnxruntime.so from the APK (not external storage).
  *
- * Only libonnxruntime.so (14.6MB) is excluded from the APK and downloaded at runtime.
- * The JNI wrapper .so files (libonnxruntime4j_jni.so, libtensorflowlite_jni.so) are
- * kept in the APK because the ONNX Runtime and TFLite Java SDKs call
- * System.loadLibrary() internally, which only searches standard Android library paths.
+ * Root cause of previous failures (v2.4.97-v2.4.103):
+ * - System.load(absolutePath) loads the .so into a different linker namespace
+ *   than System.loadLibrary(). When ONNX Runtime's static initializer calls
+ *   System.loadLibrary("onnxruntime4j_jni"), dlopen resolves the
+ *   DT_NEEDED(libonnxruntime.so) dependency by searching the APK's lib/
+ *   directory — but libonnxruntime.so was NOT in the APK (it was excluded
+ *   and loaded via System.load() from external storage). The System.load()
+ *   copy was invisible to dlopen's DT_NEEDED resolution on Android 12+.
  *
- * v2.4.98 FIX: Android SELinux prevents dlopen() from external storage paths.
- * Solution: Copy libonnxruntime.so to the app's internal code cache directory
- * (getCodeCacheDir()) before calling System.load().
+ * Fix (v2.4.103+):
+ * - Include libonnxruntime.so in the APK (remove the exclude rule)
+ * - Call System.loadLibrary("onnxruntime") instead of System.load(path)
+ *   This loads from the APK's lib/ directory, in the SAME namespace as
+ *   System.loadLibrary("onnxruntime4j_jni"), so DT_NEEDED resolution works.
  *
- * v2.4.99 FIX: ONNX Runtime Java SDK calls System.loadLibrary("onnxruntime4j_jni")
- * which cannot find libraries loaded via System.load(path). Keeping the JNI .so
- * in the APK fixes this. When the JNI .so is loaded, the dynamic linker finds
- * libonnxruntime.so already loaded (via our System.load()) as a dependency.
+ * The external copy (downloaded via audio-models package) is no longer needed
+ * but is kept for backward compatibility (older APK versions without the .so
+ * in the APK still need it).
  */
 object NativeLibLoader {
     private const val TAG = "NativeLibLoader"
     private var loaded = false
 
-    // v2.4.103: libonnxruntime.so is now included in the APK.
-    // System.load() is still called for backward compatibility (if user has
-    // downloaded the audio-models package), but it's no longer required.
-    // The .so in the APK's lib/ directory is found by dlopen when
-    // libonnxruntime4j_jni.so is loaded via System.loadLibrary().
     private const val REQUIRED_SO = "libonnxruntime.so"
 
     /**
@@ -48,77 +48,77 @@ object NativeLibLoader {
     }
 
     /**
-     * Get the internal code cache directory for .so files.
-     * This is where we copy .so files so System.load() can work.
-     */
-    private fun getInternalLibDir(context: Context): File {
-        val dir = File(context.codeCacheDir, "audio-libs")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
-    }
-
-    /**
-     * v2.4.99: Load libonnxruntime.so from downloaded location.
-     * Copies to internal codeCacheDir first (SELinux fix), then System.load().
+     * v2.4.104: Load libonnxruntime.so using System.loadLibrary() (from APK).
      *
-     * The JNI wrapper .so files (libonnxruntime4j_jni.so, libtensorflowlite_jni.so)
-     * are in the APK and will be found by System.loadLibrary() when the ONNX/TFLite
-     * Java SDKs initialize.
+     * Previous versions used System.load(absolutePath) which loads into a
+     * different linker namespace, making the .so invisible to DT_NEEDED
+     * resolution when libonnxruntime4j_jni.so is loaded later.
+     *
+     * Now we try System.loadLibrary("onnxruntime") first, which loads from
+     * the APK's lib/ directory in the correct namespace. If that fails
+     * (e.g., .so not in APK on older builds), fall back to System.load().
      */
     @Synchronized
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
 
+        Log.i(TAG, "ensureLoaded: starting (v2.4.104)")
+
+        // v2.4.104: Try loading from APK first (correct linker namespace)
+        try {
+            System.loadLibrary("onnxruntime")
+            loaded = true
+            Log.i(TAG, "ensureLoaded: loaded libonnxruntime.so from APK via System.loadLibrary()")
+            return true
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "ensureLoaded: System.loadLibrary(\"onnxruntime\") failed: ${e.message}")
+            // Fall through to external storage fallback
+        }
+
+        // Fallback: Load from external storage (downloaded audio-models package)
+        // This is for backward compatibility with APKs that don't include libonnxruntime.so
         val externalDir = AudioSegmentAnalyzer.getModelDir(context)
-        val internalDir = getInternalLibDir(context)
+        val internalDir = File(context.codeCacheDir, "audio-libs")
+        if (!internalDir.exists()) internalDir.mkdirs()
         val externalSo = File(externalDir, REQUIRED_SO)
         val internalSo = File(internalDir, REQUIRED_SO)
 
-        Log.i(TAG, "ensureLoaded: externalDir=${externalDir.absolutePath}, exists=${externalDir.exists()}")
-        Log.i(TAG, "ensureLoaded: dir contents=${externalDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: "null"}")
-        Log.i(TAG, "ensureLoaded: $REQUIRED_SO status: ${getLibsStatus(externalDir)}")
+        Log.i(TAG, "ensureLoaded: fallback to external, externalDir=${externalDir.absolutePath}, exists=${externalDir.exists()}")
 
-        // Step 1: Check if .so file is downloaded
         if (!externalSo.exists()) {
-            Log.e(TAG, "ensureLoaded: $REQUIRED_SO not downloaded in ${externalDir.absolutePath}")
+            Log.e(TAG, "ensureLoaded: $REQUIRED_SO not found in APK or external storage")
             return false
         }
 
-        // Step 2: Copy to internal storage if needed (SELinux fix)
+        // Copy to internal storage (SELinux fix for external storage paths)
         if (!internalSo.exists() || internalSo.length() != externalSo.length()) {
             Log.i(TAG, "ensureLoaded: copying $REQUIRED_SO (${externalSo.length()} bytes) to internal storage")
             try {
                 externalSo.copyTo(internalSo, overwrite = true)
             } catch (e: Exception) {
-                Log.e(TAG, "ensureLoaded: failed to copy $REQUIRED_SO: ${e.message}")
+                Log.e(TAG, "ensureLoaded: failed to copy: ${e.message}")
                 return false
             }
         }
 
-        // Step 3: Load from internal storage
-        if (!internalSo.exists()) {
-            Log.e(TAG, "ensureLoaded: missing internal: ${internalSo.absolutePath}")
-            return false
-        }
         try {
-            Log.i(TAG, "ensureLoaded: loading $REQUIRED_SO (${internalSo.length()} bytes) from ${internalSo.parent}")
+            Log.i(TAG, "ensureLoaded: loading from internal: ${internalSo.absolutePath}")
             System.load(internalSo.absolutePath)
-            Log.i(TAG, "ensureLoaded: loaded $REQUIRED_SO")
+            loaded = true
+            Log.i(TAG, "ensureLoaded: loaded $REQUIRED_SO from internal storage")
+            return true
         } catch (e: UnsatisfiedLinkError) {
             if (e.message?.contains("already loaded") == true || e.message?.contains("Library already loaded") == true) {
-                Log.i(TAG, "ensureLoaded: $REQUIRED_SO already loaded, continuing")
-            } else {
-                Log.e(TAG, "ensureLoaded: Failed to load $REQUIRED_SO: ${e.message}")
-                return false
+                loaded = true
+                Log.i(TAG, "ensureLoaded: already loaded, continuing")
+                return true
             }
+            Log.e(TAG, "ensureLoaded: Failed to load: ${e.message}")
+            return false
         } catch (e: Exception) {
-            Log.e(TAG, "ensureLoaded: Failed to load $REQUIRED_SO: ${e.message}")
+            Log.e(TAG, "ensureLoaded: Failed to load: ${e.message}")
             return false
         }
-
-        loaded = true
-        Log.i(TAG, "ensureLoaded: $REQUIRED_SO loaded successfully from ${internalSo.absolutePath}")
-        return true
     }
 
     /**
