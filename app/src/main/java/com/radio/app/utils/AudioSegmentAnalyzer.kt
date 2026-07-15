@@ -576,9 +576,12 @@ object AudioSegmentAnalyzer {
             val interp = Interpreter(mappedBuffer, options)
             Log.i(TAG, "YAMNet loaded: input=${interp.getInputTensor(0).shape().contentToString()}, output=${interp.getOutputTensor(0).shape().contentToString()}")
             return interp
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load YAMNet TFLite model: ${e.message}")
-            throw RuntimeException("YAMNet模型加载失败: ${e.message}", e)
+        } catch (e: Throwable) {
+            // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
+            // which extends Error, not Exception. When libtensorflowlite_jni.so is not
+            // loaded, the Interpreter constructor throws UnsatisfiedLinkError.
+            Log.e(TAG, "Failed to load YAMNet TFLite model: ${e.javaClass.name}: ${e.message}", e)
+            throw RuntimeException("YAMNet模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
         }
     }
 

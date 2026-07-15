@@ -221,6 +221,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationHandler: Handler? = null
     private var notificationRunnable: Runnable? = null
     private var lastNotifiedPosition = -1L
+    // v2.4.112: Track last RESET-triggered full rebuild to prevent notification burst.
+    // When episode switch sets lastNotifiedPosition=-1, the progress poll detects RESET
+    // and forces a full rebuild. Without this guard, multiple polls within a few seconds
+    // each trigger a separate rebuild (2-5 manager.notify calls in 1.5-3 seconds).
+    private var lastResetRebuildTime = 0L
     // [v2.4.6] Track when playback gets stuck near the end of an episode.
     // ExoPlayer sometimes doesn't fire STATE_ENDED when audio reaches the end,
     // leaving the player in STATE_READY with isPlaying=true but position frozen
@@ -3256,6 +3261,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         lastNotifiedPosition = pos
 
         if (isReset) {
+            // v2.4.112: Prevent notification burst during episode switch.
+            // Multiple RESET detections (from playEpisode + state transitions + progress poll)
+            // each force a full rebuild, causing 2-5 manager.notify calls in 1.5-3 seconds.
+            // Now: only allow one RESET-triggered rebuild per 5 seconds.
+            val now = System.currentTimeMillis()
+            if (now - lastResetRebuildTime < 5000) {
+                writeServiceLog("notification", "[v2.4.112-PROGRESS-POLL] RESET detected but throttled (last rebuild ${now - lastResetRebuildTime}ms ago), skipping. pos=$pos, dur=$dur")
+                // Still update position tracking, just don't force rebuild
+                return
+            }
+            lastResetRebuildTime = now
             writeServiceLog("notification", "[v2.0.87-PROGRESS-POLL] RESET detected (lastNotifiedPosition was <0), forcing full notification rebuild. pos=$pos, dur=$dur")
         } else if (posChanged) {
             writeServiceLog("notification", "[v2.0.87-PROGRESS-POLL] updating notification. pos=$pos, dur=$dur")

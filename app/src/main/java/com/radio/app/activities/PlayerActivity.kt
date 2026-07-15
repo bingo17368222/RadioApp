@@ -1806,9 +1806,11 @@ class PlayerActivity : AppCompatActivity() {
                             )
                             writeJitterLog("[v2.4.96] btnAiSegment: audio-vad returned ${segments_result.size} segments")
                             segments = segments_result
-                        } catch (e: Exception) {
-                            writeJitterLog("[v2.4.96] btnAiSegment: audio-vad error: ${e.message}")
-                            runOnUiThread { Toast.makeText(this, "音频分段失败: ${e.message}", Toast.LENGTH_LONG).show() }
+                        } catch (e: Throwable) {
+                            // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
+                            // and NoClassDefFoundError which extend Error, not Exception.
+                            writeJitterLog("[v2.4.96] btnAiSegment: audio-vad error: ${e.javaClass.simpleName}: ${e.message}")
+                            runOnUiThread { Toast.makeText(this, "音频分段失败: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show() }
                         }
                     } else if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
                         // v2.4.89: Support Qwen2.5-Coder-1.5B-Instruct-MNN (new), plus older model directories

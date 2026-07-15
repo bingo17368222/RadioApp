@@ -5,114 +5,135 @@ import android.util.Log
 import java.io.File
 
 /**
- * v2.4.105: Pre-load ALL native libraries from the APK.
+ * v2.4.112: Pre-load ALL native libraries from the APK or external storage.
  *
- * Root cause of ALL previous failures (v2.4.97-v2.4.104):
- * The ONNX Runtime static initializer (OrtEnvironment.<clinit>) calls
- * System.loadLibrary("onnxruntime4j_jni"). If this fails for ANY reason
- * (e.g., DT_NEEDED resolution, linker namespace, etc.), the class is
- * marked "erroneous" and ALL subsequent ONNX Runtime usage fails.
+ * Root cause of v2.4.111 VAD failure (-256 error):
+ * When System.loadLibrary() failed for onnxruntime4j_jni or tensorflowlite_jni
+ * (e.g., DT_NEEDED resolution, linker namespace), the fallback path only loaded
+ * libonnxruntime.so via System.load() and returned true. This left TFLite and
+ * ONNX Runtime JNI libraries unloaded, causing "audio-vad error: -256".
  *
- * The error "ai.onnxruntime.SessionOptions" in logs is misleading —
- * it's actually a NoClassDefFoundError caused by OrtEnvironment being
- * in an erroneous state after a failed static init.
+ * Fix: The fallback now loads ALL three libraries from external storage, not
+ * just libonnxruntime.so. Each library is loaded via System.load(absolutePath)
+ * from the model directory (or copied to codeCacheDir first for permission).
  *
- * Fix: Pre-load ALL .so files from the APK in the correct order:
- * 1. libonnxruntime.so (the main library)
- * 2. libonnxruntime4j_jni.so (JNI wrapper, depends on libonnxruntime.so)
- * 3. libtensorflowlite_jni.so (TFLite JNI wrapper)
- *
- * When the ONNX Runtime static initializer later calls
- * System.loadLibrary("onnxruntime4j_jni"), the library is already
- * loaded → no-op → static init succeeds.
+ * Also: loadYamnetModel and PlayerActivity now catch Throwable, not just Exception,
+ * to properly catch UnsatisfiedLinkError (extends Error, not Exception).
  */
 object NativeLibLoader {
     private const val TAG = "NativeLibLoader"
     private var loaded = false
 
-    private const val REQUIRED_SO = "libonnxruntime.so"
+    // All three libraries required for audio segmentation
+    private val ALL_LIBS = listOf(
+        "libonnxruntime.so",         // Main ONNX Runtime library
+        "libonnxruntime4j_jni.so",   // JNI wrapper (DT_NEEDED on libonnxruntime.so)
+        "libtensorflowlite_jni.so"   // TFLite JNI wrapper
+    )
 
     fun areLibsDownloaded(modelDir: File): Boolean {
-        return File(modelDir, REQUIRED_SO).exists()
+        return ALL_LIBS.all { File(modelDir, it).exists() }
     }
 
     fun getLibsStatus(modelDir: File): String {
-        val f = File(modelDir, REQUIRED_SO)
-        return "$REQUIRED_SO=${if (f.exists()) "${f.length()}B" else "MISSING"}"
+        return ALL_LIBS.joinToString(", ") { lib ->
+            val f = File(modelDir, lib)
+            "$lib=${if (f.exists()) "${f.length()}B" else "MISSING"}"
+        }
     }
 
     @Synchronized
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
 
-        Log.i(TAG, "ensureLoaded: starting (v2.4.105)")
+        Log.i(TAG, "ensureLoaded: starting (v2.4.112)")
 
-        // v2.4.105: Pre-load ALL native libraries from APK in dependency order.
-        // This ensures that when ONNX Runtime's static initializer calls
-        // System.loadLibrary("onnxruntime4j_jni"), the library is already loaded.
-        val libsToLoad = listOf(
-            "onnxruntime",           // libonnxruntime.so (main library)
-            "onnxruntime4j_jni",     // libonnxruntime4j_jni.so (JNI wrapper, depends on onnxruntime)
-            "tensorflowlite_jni"     // libtensorflowlite_jni.so (TFLite JNI wrapper)
+        // Step 1: Try loading ALL libraries from APK via System.loadLibrary
+        val apkLibNames = listOf(
+            "onnxruntime",           // libonnxruntime.so
+            "onnxruntime4j_jni",     // libonnxruntime4j_jni.so
+            "tensorflowlite_jni"     // libtensorflowlite_jni.so
         )
 
-        var allLoaded = true
-        for (libName in libsToLoad) {
+        var apkAllLoaded = true
+        val apkLoadedLibs = mutableListOf<String>()
+        for (libName in apkLibNames) {
             try {
                 System.loadLibrary(libName)
-                Log.i(TAG, "ensureLoaded: loaded lib$libName.so from APK")
+                apkLoadedLibs.add(libName)
+                Log.i(TAG, "ensureLoaded: APK loaded lib$libName.so")
             } catch (e: UnsatisfiedLinkError) {
                 if (e.message?.contains("already loaded") == true ||
                     e.message?.contains("Library already loaded") == true) {
-                    Log.i(TAG, "ensureLoaded: lib$libName.so already loaded")
+                    apkLoadedLibs.add(libName)
+                    Log.i(TAG, "ensureLoaded: lib$libName.so already loaded (APK)")
                 } else {
-                    Log.e(TAG, "ensureLoaded: FAILED to load lib$libName.so: ${e.message}")
-                    allLoaded = false
+                    Log.e(TAG, "ensureLoaded: APK FAILED lib$libName.so: ${e.message}")
+                    apkAllLoaded = false
                 }
             }
         }
 
-        if (allLoaded) {
+        if (apkAllLoaded) {
             loaded = true
-            Log.i(TAG, "ensureLoaded: ALL native libraries loaded successfully from APK")
+            Log.i(TAG, "ensureLoaded: ALL native libraries loaded from APK successfully")
             return true
         }
 
-        // Fallback: try loading from external storage (downloaded audio-models package)
-        Log.w(TAG, "ensureLoaded: APK loading failed, trying external storage fallback")
+        // Step 2: Fallback - load missing libraries from external storage (audio-models dir)
+        Log.w(TAG, "ensureLoaded: APK loading incomplete ($apkLoadedLibs loaded), trying external storage")
         val externalDir = AudioSegmentAnalyzer.getModelDir(context)
         val internalDir = File(context.codeCacheDir, "audio-libs")
         if (!internalDir.exists()) internalDir.mkdirs()
-        val externalSo = File(externalDir, REQUIRED_SO)
-        val internalSo = File(internalDir, REQUIRED_SO)
 
-        if (!externalSo.exists()) {
-            Log.e(TAG, "ensureLoaded: $REQUIRED_SO not found in APK or external storage")
-            return false
-        }
+        // v2.4.112: Load ALL missing libraries from external storage, not just libonnxruntime.so
+        // Map: external filename → short name for System.loadLibrary check
+        val externalLibFiles = listOf(
+            "libonnxruntime.so" to "onnxruntime",
+            "libonnxruntime4j_jni.so" to "onnxruntime4j_jni",
+            "libtensorflowlite_jni.so" to "tensorflowlite_jni"
+        )
 
-        if (!internalSo.exists() || internalSo.length() != externalSo.length()) {
-            try {
-                externalSo.copyTo(internalSo, overwrite = true)
-            } catch (e: Exception) {
-                Log.e(TAG, "ensureLoaded: failed to copy: ${e.message}")
+        for ((soFileName, shortName) in externalLibFiles) {
+            // Skip if already loaded from APK
+            if (shortName in apkLoadedLibs) {
+                Log.i(TAG, "ensureLoaded: $soFileName already loaded from APK, skipping external")
+                continue
+            }
+
+            val externalSo = File(externalDir, soFileName)
+            if (!externalSo.exists()) {
+                Log.e(TAG, "ensureLoaded: $soFileName not found in external storage")
                 return false
             }
+
+            // Copy to internal dir (codeCacheDir) for reliable System.load()
+            val internalSo = File(internalDir, soFileName)
+            if (!internalSo.exists() || internalSo.length() != externalSo.length()) {
+                try {
+                    externalSo.copyTo(internalSo, overwrite = true)
+                } catch (e: Exception) {
+                    Log.e(TAG, "ensureLoaded: failed to copy $soFileName: ${e.message}")
+                    return false
+                }
+            }
+
+            try {
+                System.load(internalSo.absolutePath)
+                Log.i(TAG, "ensureLoaded: loaded $soFileName from internal storage (fallback)")
+            } catch (e: UnsatisfiedLinkError) {
+                if (e.message?.contains("already loaded") == true) {
+                    Log.i(TAG, "ensureLoaded: $soFileName already loaded (fallback)")
+                } else {
+                    Log.e(TAG, "ensureLoaded: FAILED to load $soFileName from internal: ${e.message}")
+                    return false
+                }
+            }
         }
 
-        try {
-            System.load(internalSo.absolutePath)
-            loaded = true
-            Log.i(TAG, "ensureLoaded: loaded $REQUIRED_SO from internal storage (fallback)")
-            return true
-        } catch (e: UnsatisfiedLinkError) {
-            if (e.message?.contains("already loaded") == true) {
-                loaded = true
-                return true
-            }
-            Log.e(TAG, "ensureLoaded: fallback also failed: ${e.message}")
-            return false
-        }
+        loaded = true
+        Log.i(TAG, "ensureLoaded: ALL native libraries loaded (APK + external fallback)")
+        return true
     }
 
     fun reset() {
