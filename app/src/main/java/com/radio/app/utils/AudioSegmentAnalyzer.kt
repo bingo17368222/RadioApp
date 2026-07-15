@@ -525,6 +525,10 @@ object AudioSegmentAnalyzer {
                 while (vadPos + VAD_FRAME_SIZE <= window.size) {
                     val chunk = window.copyOfRange(vadPos, vadPos + VAD_FRAME_SIZE)
                     val (prob, newH, newC) = runSileroVad(vadSession, chunk, vadStateH, vadStateC)
+                    // v2.4.109: Log first 10 VAD probabilities for diagnostics
+                    if (frameResults.size < 3 && vadChunks < 10) {
+                        Log.i(TAG, "VAD chunk #$vadChunks: prob=$prob, energy=${computeRmsEnergy(chunk, 0, chunk.size)}")
+                    }
                     vadProb += prob
                     vadChunks++
                     vadStateH = newH
@@ -532,6 +536,10 @@ object AudioSegmentAnalyzer {
                     vadPos += VAD_FRAME_SIZE
                 }
                 if (vadChunks > 0) vadProb /= vadChunks
+                // v2.4.109: Log averaged VAD prob for first 5 frames
+                if (frameResults.size < 5) {
+                    Log.i(TAG, "VAD frame #${frameResults.size}: avgProb=$vadProb, vadChunks=$vadChunks, energy=${computeRmsEnergy(window, 0, window.size)}")
+                }
 
                 // Energy features (supplementary)
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)

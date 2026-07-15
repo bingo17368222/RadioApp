@@ -3018,13 +3018,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Cancel any pending delayed notification
         pendingNotificationRunnable?.let { notificationHandler!!.removeCallbacks(it) }
 
-        if (elapsed < 500) {
+        // v2.4.109: Increased debounce from 500ms to 1500ms to prevent notification burst
+        // during state transitions (PAUSED→PLAYING + PROGRESS-POLL within 1 second).
+        // Multiple notifyNotification() calls within 1.5s are coalesced into one update.
+        if (elapsed < 1500) {
             // Debounce: schedule a delayed update
             pendingNotificationRunnable = Runnable {
                 lastNotificationTime = System.currentTimeMillis()
                 doNotifyNotification()
             }
-            notificationHandler!!.postDelayed(pendingNotificationRunnable!!, 500 - elapsed)
+            notificationHandler!!.postDelayed(pendingNotificationRunnable!!, 1500 - elapsed)
             return
         }
 
@@ -4294,6 +4297,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
     fun seekTo(pos: Long) {
         if (isLive) return
+        // v2.4.109: Log caller stack trace to identify who is calling seekTo
+        val callerTrace = Thread.currentThread().stackTrace
+            .drop(2)  // skip getStackTrace and seekTo itself
+            .take(5)
+            .joinToString(" <- ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+        writeServiceLog("playback", "[v2.4.109] seekTo($pos) called by: $callerTrace")
+        Log.i(TAG, "[v2.4.109] seekTo($pos) called by: $callerTrace")
         val now = System.currentTimeMillis()
         // [v2.1.7] Removed largeBackward and zeroStorm anti-seek-storm protections.
         // These protections blocked ALL legitimate backward seeks >45s, including:
