@@ -25,8 +25,11 @@ object NativeLibLoader {
     private const val TAG = "NativeLibLoader"
     private var loaded = false
 
-    // v2.4.99: Only libonnxruntime.so needs to be downloaded and loaded via System.load().
-    // The JNI wrapper .so files are in the APK and loaded via System.loadLibrary().
+    // v2.4.103: libonnxruntime.so is now included in the APK.
+    // System.load() is still called for backward compatibility (if user has
+    // downloaded the audio-models package), but it's no longer required.
+    // The .so in the APK's lib/ directory is found by dlopen when
+    // libonnxruntime4j_jni.so is loaded via System.loadLibrary().
     private const val REQUIRED_SO = "libonnxruntime.so"
 
     /**

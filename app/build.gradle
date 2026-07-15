@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 303
-        versionName "2.4.102"
+        versionCode 304
+        versionName "2.4.103"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -63,10 +63,12 @@ android {
 
     packagingOptions {
         exclude 'lib/*/libvosk.so'
-        // v2.4.99: Only exclude libonnxruntime.so (14.6MB) — downloaded at runtime.
-        // Keep JNI wrapper .so in APK: ONNX/TFLite Java SDKs call System.loadLibrary()
-        // internally, which needs the .so in the standard library path.
-        exclude 'lib/*/libonnxruntime.so'
+        // v2.4.103: Include libonnxruntime.so in APK (14.6MB).
+        // It must be in the standard library path because libonnxruntime4j_jni.so
+        // has DT_NEEDED dependency on it. System.loadLibrary("onnxruntime4j_jni")
+        // calls dlopen which searches the APK lib/ dir for DT_NEEDED libs.
+        // System.load() by absolute path doesn't make the .so visible to dlopen's
+        // DT_NEEDED resolution on Android 12+ (namespace linker issue).
         exclude 'META-INF/INDEX.LIST'
         exclude 'META-INF/DEPENDENCIES'
     }
