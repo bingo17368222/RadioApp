@@ -622,12 +622,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val effectiveDur = if (dur > 0) dur else (episode.duration.times(1000))
         // v2.4.102: Include date+time in title for MIUI MediaStyle notification
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        // v2.4.107: Title = title + time range (no date). Date stays in subtitle only.
         val displayTitle = buildString {
             append(episode.title)
-            if (dateStr.isNotBlank()) {
-                append(" · $dateStr")
-                if (notificationTimeRange.isNotBlank()) append(" $notificationTimeRange")
-            }
+            if (notificationTimeRange.isNotBlank()) append(" $notificationTimeRange")
         }
         val metadata = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, displayTitle)
@@ -2901,15 +2899,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try { remoteViews.setTextViewText(R.id.rewind_text, "-${skipSeconds}s") } catch (_: Exception) {}
         try { remoteViews.setTextViewText(R.id.forward_text, "+${skipSeconds}s") } catch (_: Exception) {}
 
-        // v2.4.101: Build displayTitle with date+time for all notification styles
-        val notifDateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        // v2.4.107: Title = title + time range (no date)
         val notifTimeStr = notificationTimeRange
         val displayTitle = buildString {
             append(notificationTitle)
-            if (notifDateStr.isNotBlank()) {
-                append(" · $notifDateStr")
-                if (notifTimeStr.isNotBlank()) append(" $notifTimeStr")
-            }
+            if (notifTimeStr.isNotBlank()) append(" $notifTimeStr")
         }
 
         remoteViews.setTextViewText(R.id.notification_title, displayTitle)
@@ -3275,13 +3269,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             rv.setTextViewText(R.id.play_pause_text, if (playing) "暂停" else "播放")
             val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
             val timeStr = notificationTimeRange
-            // v2.4.101: Include date+time in title
+            // v2.4.107: Title = title + time range (no date)
             val displayTitleProgress = buildString {
                 append(notificationTitle)
-                if (dateStr.isNotBlank()) {
-                    append(" · $dateStr")
-                    if (timeStr.isNotBlank()) append(" $timeStr")
-                }
+                if (timeStr.isNotBlank()) append(" $timeStr")
             }
             rv.setTextViewText(R.id.notification_title, displayTitleProgress)
             val contentText = buildString {
@@ -3321,14 +3312,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
         val timeStr = notificationTimeRange
 
-        // v2.4.101: Build displayTitle with date+time — used in BOTH expanded view title and contentTitle
-        // MIUI collapsed notifications only show contentTitle; expanded view shows notification_title TextView
+        // v2.4.107: Title = title + time range (no date). Date stays in subtitle only.
         val displayTitle = buildString {
             append(notificationTitle)
-            if (dateStr.isNotBlank()) {
-                append(" · $dateStr")
-                if (timeStr.isNotBlank()) append(" $timeStr")
-            }
+            if (timeStr.isNotBlank()) append(" $timeStr")
         }
 
         val contentText = buildString {
@@ -3475,12 +3462,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.101: Include date+time in title
         val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
         val timeStr = notificationTimeRange
+        // v2.4.107: Title = title + time range (no date)
         val displayTitleBuild = buildString {
             append(notificationTitle)
-            if (dateStr.isNotBlank()) {
-                append(" · $dateStr")
-                if (timeStr.isNotBlank()) append(" $timeStr")
-            }
+            if (timeStr.isNotBlank()) append(" $timeStr")
         }
         remoteViews.setTextViewText(R.id.notification_title, displayTitleBuild)
         val contentText = buildString {
@@ -3901,6 +3886,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     .edit().putLong(oldEp.id!!, oldPos).commit()
                 writeServiceLog("playback", "[v2.4.106] playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
             }
+            // v2.4.107: Block periodic saveCurrentPosition for 5s after switching episodes.
+            // Without this, the periodic timer saves the OLD position under the NEW
+            // episode's ID because the player hasn't seeked to the new position yet.
+            lastPositionRestoreTime = System.currentTimeMillis()
         }
         val epTitle = try { episode.title ?: "unknown" } catch (_: Exception) { "unknown" }
         val epAudioUrl = try { episode.audioUrl ?: "" } catch (_: Exception) { "" }

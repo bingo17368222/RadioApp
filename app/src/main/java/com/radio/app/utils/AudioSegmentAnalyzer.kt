@@ -648,23 +648,24 @@ object AudioSegmentAnalyzer {
     ): Triple<Float, FloatBuffer, FloatBuffer> {
 
         try {
-            // v2.4.106: All ONNX Runtime calls via reflection (Android AAR has different method signatures)
+            // v2.4.107: All ONNX Runtime calls via reflection
+            // The Android AAR's createTensor uses Object parameter (not float[])
             val sessionObj = session.session
             val sessionClass = sessionObj.javaClass
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
             val env = envClass.getMethod("getEnvironment").invoke(null)
             val onnxTensorClass = Class.forName("ai.onnxruntime.OnnxTensor")
 
-            // Find createTensor(OrtEnvironment, float[], long[]) method
+            // v2.4.107: Find createTensor method with Object parameter (Android AAR uses Object, not float[])
             val createTensorMethod = onnxTensorClass.methods.first {
                 it.name == "createTensor" && it.parameterTypes.size == 3 &&
                 it.parameterTypes[0] == envClass &&
-                it.parameterTypes[1] == FloatArray::class.java &&
+                it.parameterTypes[1] == Any::class.java &&
                 it.parameterTypes[2] == LongArray::class.java
             }
+            Log.d(TAG, "runSileroVad: createTensor method found: ${createTensorMethod.parameterTypes.joinToString { it.simpleName }}")
 
-            // For 2D input [1, chunkSize], wrap as float[] with shape [1, chunkSize]
-            // Silero VAD expects input shape [batch, samples] = [1, 512]
+            // Input: shape [1, chunk.size]
             val inputTensor = createTensorMethod.invoke(null, env, chunk, longArrayOf(1, chunk.size.toLong()))
 
             val hData = stateH.array()
