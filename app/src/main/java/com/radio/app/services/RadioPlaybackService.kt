@@ -620,8 +620,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 优先使用播放器实际时长，未准备好时回退到节目元数据时长（毫秒）
         val dur = player?.duration ?: 0L
         val effectiveDur = if (dur > 0) dur else (episode.duration.times(1000))
+        // v2.4.102: Include date+time in title for MIUI MediaStyle notification
+        val dateStr = if (notificationDate.length >= 10) notificationDate.substring(5, 10) else ""
+        val displayTitle = buildString {
+            append(episode.title)
+            if (dateStr.isNotBlank()) {
+                append(" · $dateStr")
+                if (notificationTimeRange.isNotBlank()) append(" $notificationTimeRange")
+            }
+        }
         val metadata = MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, episode.title)
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, displayTitle)
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, notificationDate)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, notificationTimeRange)
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, effectiveDur)
