@@ -374,6 +374,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // ExoPlayer reports backward positions during re-buffering; this ensures we never go backward
     private var maxKnownPosition = 0L
     private var lastPositionRestoreTime = 0L
+    // v2.4.116: Track the start position for the current episode. Used to validate rawPos
+    // from ExoPlayer. Unlike the 10s switch window, this check is ALWAYS active because
+    // ExoPlayer can report stale old-episode positions even 12+ seconds after setMediaItem.
+    @Volatile
+    private var episodeStartPos = 0L
+    // v2.4.116: Counter for stale position rejections (reset on episode switch)
+    @Volatile
+    private var stalePosRejectCount = 0
     // [v2.0.77] Issue 1 Fix: seekTo debounce/duplicate protection to prevent seekTo(0) storms.
     // Logs show repeated skipBackward/seekTo(0) calls at ~300ms intervals (likely misfiring
     // notification PendingIntents or headset button repeats). Rate-limit seeks and ignore
@@ -2712,17 +2720,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.36: Allow saving even at pos=0 - previously pos<=0 was skipped, but
         // this meant if user started playing from beginning, position was never saved.
         if (pos < 0) return
-        // v2.4.114: Reject saves where the position is far from the expected start position.
-        // Root cause: after setMediaItem(newItem, startPos), ExoPlayer may still report
-        // the old episode's position (e.g., 3903787 when startPos=695140). This stale
-        // position gets saved to the new episode's SharedPreferences, corrupting its progress.
-        // We check if the position is within 30 seconds of the expected position. If not,
-        // it's likely a stale position from the old episode.
-        val expectedPos = authoritativePosition
-        if (expectedPos > 0 && pos > 0) {
-            val delta = kotlin.math.abs(pos - expectedPos)
-            if (delta > 30000) {
-                writeServiceLog("playback", "[v2.4.114] saveCurrentPosition: REJECTED (pos=$pos far from expected=$expectedPos, delta=${delta}ms, likely stale)")
+        // v2.4.116: Reject saves where the position is far from the episode's start position.
+        // v2.4.114 compared pos with authoritativePosition, but these were the SAME variable
+        // (getCurrentPosition returns authoritativePosition), so delta was always 0.
+        // v2.4.116 compares pos with episodeStartPos (a separate fixed reference point).
+        // If pos is more than 120s ahead of episodeStartPos, it's likely stale.
+        val expectedStart = episodeStartPos
+        if (expectedStart > 0 && pos > 0) {
+            val delta = pos - expectedStart
+            // Allow up to 120s ahead of start position (accounts for elapsed playback time).
+            // Beyond that, the position is definitely stale from the old episode.
+            // Also check if pos is BEHIND episodeStartPos by more than 5s (shouldn't go backward).
+            if (delta > 120000 || delta < -5000) {
+                writeServiceLog("playback", "[v2.4.116] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms, likely stale)")
                 return
             }
         }
@@ -3310,7 +3320,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (notificationStyle != "minimal") {
             if (isReset || posChanged) {
                 forceNotificationUpdate = true
-                lastNotificationContentHash = 0
+                // v2.4.116: DON'T reset lastNotificationContentHash to 0 here.
+                // forceNotificationUpdate=true already bypasses the hash check in
+                // doNotifyNotification(). Resetting the hash destroys the dedup
+                // state, causing the next non-forced poll to always rebuild even
+                // when content hasn't changed.
                 writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, calling notifyNotification() for progress refresh")
                 notifyNotification()
             } else {
@@ -4016,6 +4030,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!isSameEpisode) {
             authoritativePosition = if (startPositionMs >= 0) startPositionMs else 0L
             maxKnownPosition = authoritativePosition
+            // v2.4.116: Save the episode start position for continuous stale-position validation.
+            // Unlike lastPositionRestoreTime (10s window), episodeStartPos is ALWAYS checked in
+            // getCurrentPosition() to reject rawPos values that are far behind the start position
+            // (indicating they come from the old episode leaking through ExoPlayer).
+            episodeStartPos = if (startPositionMs >= 0) startPositionMs else 0L
+            // v2.4.116: Reset stale position rejection counter for new episode
+            stalePosRejectCount = 0
             // [v2.0.92] Reset lastValidDurationMs to prevent getSafeDuration() from returning
             // the old episode's duration during the transition window, which causes the
             // notification progress bar to show 100% (old pos / old dur).
@@ -4397,6 +4418,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         isSeekingToPosition = true
         seekTargetPosition = pos
         authoritativePosition = pos
+        // v2.4.116: Update episodeStartPos on user seek so the REJECTED check in
+        // saveCurrentPosition uses the seeked position as the new reference point.
+        episodeStartPos = pos
+        stalePosRejectCount = 0
         // [v2.0.91] Only update maxKnownPosition when seeking FORWARD — never lower it.
         // maxKnownPosition is used for anti-storm detection (zeroStorm, largeBackward) and must
         // remain monotonic. When user skips backward or a misfire seeks to 0, maxKnownPosition
@@ -4578,26 +4603,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Normal playback: maintain monotonic position (never go backward)
         // Only update from rawPos if player is prepared and position moves forward
         if (prepared && rawPos > authoritativePosition) {
-            // v2.4.115: CRITICAL FIX - Don't update authoritativePosition with stale rawPos.
-            // After setMediaItem(newItem, startPos), ExoPlayer may still report the OLD
-            // episode's position (e.g., 1306986 when startPos=575353). If we blindly
-            // update authoritativePosition to this stale value, then:
-            // 1. saveCurrentPosition() saves the stale position to the new episode's record
-            // 2. The REJECTED check (pos vs expectedPos) becomes useless because both
-            //    are the same stale value (authoritativePosition was overwritten)
+            // v2.4.116: CRITICAL FIX - Always validate rawPos against authoritativePosition.
+            // v2.4.115 only checked within a 10s window, but logs show stale old-episode
+            // positions leaking through 12+ seconds after setMediaItem. Example:
+            //   episode 08-08-9 started at 4016, but 12s later rawPos=1026717 (from 08-08-3).
+            //   The 10s window expired, so authoritativePosition was blindly set to 1026717,
+            //   corrupting the new episode's saved position.
             //
-            // Fix: Within 10s of episode switch, reject rawPos that is far from
-            // authoritativePosition (delta > 30s). This is likely a stale position
-            // from the old episode, not a legitimate playback advance.
-            val withinSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 10000
-            if (withinSwitchWindow && authoritativePosition > 0) {
-                val delta = rawPos - authoritativePosition
-                if (delta > 30000) {
-                    writeServiceLog("playback", "[v2.4.115] getCurrentPosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, delta=${delta}ms, within 10s switch window)")
-                    // Don't update authoritativePosition - keep the correct startPos
-                } else {
-                    authoritativePosition = rawPos
+            // Fix: ALWAYS reject rawPos that is >60s ahead of authoritativePosition.
+            // In a single 500ms poll, position should never jump 60 seconds. If it does,
+            // it's definitely a stale position from the old episode leaking through ExoPlayer.
+            val delta = rawPos - authoritativePosition
+            if (delta > 60000) {
+                // v2.4.116: Log first 5 rejections per episode switch for diagnosis
+                if (stalePosRejectCount < 5) {
+                    stalePosRejectCount++
+                    writeServiceLog("playback", "[v2.4.116] getCurrentPosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, episodeStartPos=$episodeStartPos, delta=${delta}ms, rejectCount=$stalePosRejectCount)")
                 }
+                // Don't update authoritativePosition - keep the correct position
             } else {
                 authoritativePosition = rawPos
             }

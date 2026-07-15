@@ -47,9 +47,13 @@ object AudioSegmentAnalyzer {
     fun setLogContext(context: Context) {
         logContext = context
         try {
-            val logDir = File(context.getExternalFilesDir(null), "logs/audio_segment")
+            // v2.4.116: Use RadioApplication.getLogDir() so logs are collected by the log system.
+            // Previously used getExternalFilesDir(null)/logs/audio_segment/ which is a different path.
+            val baseLogDir = com.radio.app.RadioApplication.getLogDir(context)
+            val logDir = File(baseLogDir, "audio_segment")
             if (!logDir.exists()) logDir.mkdirs()
             logFile = File(logDir, "audio_segment.log")
+            vadLog("=== setLogContext: logFile=${logFile?.absolutePath} ===")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create log file: ${e.message}")
         }
