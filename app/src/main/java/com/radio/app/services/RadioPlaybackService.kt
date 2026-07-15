@@ -2700,8 +2700,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // v2.4.36: Reduced from 30000ms to 5000ms - 30s block was too long, causing
         // positions to not be saved for 30 seconds after starting playback.
-        if (System.currentTimeMillis() - lastPositionRestoreTime < 5000) {
-            writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: BLOCKED (within 5s of restore)")
+        // v2.4.114: Increased from 5000ms to 10000ms. Logs show stale positions being
+        // saved 8.9 seconds after episode switch (5s window expired at 5s, stale save
+        // happened at 8.9s). 10s window covers the full stale position period.
+        if (System.currentTimeMillis() - lastPositionRestoreTime < 10000) {
+            writeServiceLog("playback", "[v2.4.114] saveCurrentPosition: BLOCKED (within 10s of restore)")
             return
         }
         val ep = currentEpisode ?: return
@@ -2709,6 +2712,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.36: Allow saving even at pos=0 - previously pos<=0 was skipped, but
         // this meant if user started playing from beginning, position was never saved.
         if (pos < 0) return
+        // v2.4.114: Reject saves where the position is far from the expected start position.
+        // Root cause: after setMediaItem(newItem, startPos), ExoPlayer may still report
+        // the old episode's position (e.g., 3903787 when startPos=695140). This stale
+        // position gets saved to the new episode's SharedPreferences, corrupting its progress.
+        // We check if the position is within 30 seconds of the expected position. If not,
+        // it's likely a stale position from the old episode.
+        val expectedPos = authoritativePosition
+        if (expectedPos > 0 && pos > 0) {
+            val delta = kotlin.math.abs(pos - expectedPos)
+            if (delta > 30000) {
+                writeServiceLog("playback", "[v2.4.114] saveCurrentPosition: REJECTED (pos=$pos far from expected=$expectedPos, delta=${delta}ms, likely stale)")
+                return
+            }
+        }
         // v2.4.63: Use episode ID as the primary key (unique per episode).
         // Previously used stationId::title which is shared across different dates of the
         // same program, causing position to be overwritten when switching between dates.
@@ -3179,11 +3196,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v2.4.84: If pos > dur (position EXCEEDS duration), trigger immediately!
             // No need to wait 15s - the audio is clearly done.
             val isPastEnd = pos > dur
-            // v2.4.113: Skip isPastEnd/isNearOrPastEnd if within 5 seconds of episode switch.
-            // Root cause: after setMediaItem(newItem, startPos), getCurrentPosition() may still
-            // return old episode's position which is > new episode's duration. This falsely
-            // triggers isPastEnd → clearSavedPosition → autoPlayNextEpisode with wrong startPos.
-            val withinEpisodeSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 5000
+            // v2.4.113: Skip isPastEnd/isNearOrPastEnd if within 10 seconds of episode switch.
+             // v2.4.114: Increased from 5s to 10s to match saveCurrentPosition block window.
+             // Root cause: after setMediaItem(newItem, startPos), getCurrentPosition() may still
+             // return old episode's position which is > new episode's duration. This falsely
+             // triggers isPastEnd → clearSavedPosition → autoPlayNextEpisode with wrong startPos.
+             val withinEpisodeSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 10000
             if (isPastEnd && !withinEpisodeSwitchWindow) {
                 writeServiceLog("notification", "[v2.4.86] PAST-END: pos=$pos > dur=$dur, clearing progress and triggering autoPlayNextEpisode")
                 // v2.4.86: Clear saved progress BEFORE switching to next episode
