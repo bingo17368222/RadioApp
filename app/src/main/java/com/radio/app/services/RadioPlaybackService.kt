@@ -335,7 +335,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         audioFocusHandler.post { play() }
                     }
                     forceNotificationUpdate = true
-                    lastNotificationContentHash = 0
+                    // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
                     updateNotification()
                     return
                 } else {
@@ -382,6 +382,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // v2.4.116: Counter for stale position rejections (reset on episode switch)
     @Volatile
     private var stalePosRejectCount = 0
+
+    // v2.4.117: Centralized position update with stale-value rejection.
+    // ALL code paths that update authoritativePosition from player position must use this.
+    // Prevents old episode's position from leaking into the new episode.
+    private fun safeUpdatePosition(rawPos: Long): Boolean {
+        if (rawPos <= authoritativePosition) return false
+        val delta = rawPos - authoritativePosition
+        if (delta > 60000 && episodeStartPos > 0) {
+            // Position jumped >60s in a single update — definitely stale from old episode.
+            if (stalePosRejectCount < 5) {
+                stalePosRejectCount++
+                writeServiceLog("playback", "[v2.4.117] safeUpdatePosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, episodeStartPos=$episodeStartPos, delta=${delta}ms, count=$stalePosRejectCount)")
+            }
+            return false
+        }
+        authoritativePosition = rawPos
+        if (rawPos > maxKnownPosition) maxKnownPosition = rawPos
+        return true
+    }
     // [v2.0.77] Issue 1 Fix: seekTo debounce/duplicate protection to prevent seekTo(0) storms.
     // Logs show repeated skipBackward/seekTo(0) calls at ~300ms intervals (likely misfiring
     // notification PendingIntents or headset button repeats). Rate-limit seeks and ignore
@@ -675,10 +694,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 // the seek target, leading to UI flicker and apparent backtracking.
                                 if (actualPos >= seekTargetPosition - 2000) {
                                     isSeekingToPosition = false
-                                    if (actualPos > authoritativePosition) {
-                                        authoritativePosition = actualPos
-                                        maxKnownPosition = actualPos
-                                    }
+                                    safeUpdatePosition(actualPos)
                                 } else {
                                     Log.d(TAG, "[v2.0.91] onPositionDiscontinuity: still seeking, actualPos=$actualPos < target-2000=${seekTargetPosition-2000}, keeping isSeekingToPosition=true")
                                 }
@@ -686,10 +702,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 notifyNotification()
                                 startPositionSaver()
                             } else {
-                                if (actualPos > authoritativePosition) {
-                                    authoritativePosition = actualPos
-                                    maxKnownPosition = actualPos
-                                }
+                                safeUpdatePosition(actualPos)
                             }
                         }
                         override fun onPlaybackStateChanged(state: Int) {
@@ -705,10 +718,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         if (curPos >= seekTargetPosition - 2000) {
                                             Log.d(TAG, "[v2.0.65] STATE_READY: pos=$curPos near target=$seekTargetPosition, clearing seeking state")
                                             isSeekingToPosition = false
-                                            if (curPos > authoritativePosition) {
-                                                authoritativePosition = curPos
-                                                maxKnownPosition = curPos
-                                            }
+                                            safeUpdatePosition(curPos)
                                         } else {
                                             Log.d(TAG, "[v2.0.65] STATE_READY: pos=$curPos NOT near target=$seekTargetPosition, keeping seeking state, authPos=$authoritativePosition")
                                         }
@@ -771,7 +781,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         autoPlayNextEpisode()
                                     } else {
                                         forceNotificationUpdate = true
-                                        lastNotificationContentHash = 0
+                                        // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
                                         updateNotification()
                                     }
                                 }
@@ -879,7 +889,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             // [v2.0.76] If effective playing state changed, force notification update to sync button state
                             if (effectivePlaying != (playbackStarted && !userPaused && !pausedByAudioFocus)) {
                                 forceNotificationUpdate = true
-                                lastNotificationContentHash = 0
+                                // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
                                 notifyNotification()
                             }
                         }
@@ -3184,7 +3194,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] dur<=0, forcing full notification rebuild to recover")
             // [v2.0.75] Issue 5: dur<=0时不要直接返回，强制重建通知恢复进度条
             forceNotificationUpdate = true
-            lastNotificationContentHash = 0
+            // v2.4.117: removed — forceNotificationUpdate=true is sufficient
             notifyNotification()
             return
         }
@@ -3227,7 +3237,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     autoPlayNextEpisode()
                 } else {
                     forceNotificationUpdate = true
-                    lastNotificationContentHash = 0
+                    // v2.4.117: removed — forceNotificationUpdate=true is sufficient
                     updateNotification()
                 }
                 return
@@ -3256,7 +3266,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             autoPlayNextEpisode()
                         } else {
                             forceNotificationUpdate = true
-                            lastNotificationContentHash = 0
+                            // v2.4.117: removed — forceNotificationUpdate=true is sufficient
                             updateNotification()
                         }
                         return
@@ -3380,7 +3390,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] minimal update FAILED: ${e.message}, falling back to notifyNotification()")
             forceNotificationUpdate = true
-            lastNotificationContentHash = 0
+            // v2.4.117: removed — forceNotificationUpdate=true is sufficient
             notifyNotification()
         }
     }
@@ -4046,7 +4056,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.72] Issue 5 Fix: Reset notification state on new episode to prevent
         // stale position/title from previous episode showing in notification bar.
         lastNotifiedPosition = -1L
-        lastNotificationContentHash = 0
+        // v2.4.117: Don't reset lastNotificationContentHash — forceNotificationUpdate=true is sufficient.
+        // Resetting the hash destroys dedup state, causing duplicate notifications during episode switch.
         forceNotificationUpdate = true
         // [v2.4.6] Reset stuck-at-end detection for new episode
         stuckAtEndSince = 0L
@@ -4096,7 +4107,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Parse broadcastAt for date and time range
         notificationDate = ""
         notificationTimeRange = ""
-        lastNotificationContentHash = 0  // Force notification update on episode change
+        // v2.4.117: removed lastNotificationContentHash=0 — forceNotificationUpdate=true is sufficient
         forceNotificationUpdate = true  // Issue 3: bypass content hash check for next notification update
         precacheNotificationShown = false  // Reset for new episode
         // [v2.2.7] Don't reset lastPreCacheCheckTime to 0 on episode change.
@@ -4209,7 +4220,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             onCrossEpisodeSwitchComplete()
         } catch (e: Exception) { Log.e(TAG, "playEpisode failed", e) }
         // Force immediate notification update
-        lastNotificationContentHash = 0
+        // v2.4.117: removed lastNotificationContentHash=0 — forceNotificationUpdate=true is sufficient
         forceNotificationUpdate = true  // Issue 3: bypass content hash check
         notifyNotification()
     }
@@ -4277,7 +4288,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.76] Issue 6 Fix: Immediately update MediaSession to STATE_PLAYING
         writeServiceLog("notification", "[v2.0.87] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
         forceNotificationUpdate = true
-        lastNotificationContentHash = 0
+        // v2.4.117: removed lastNotificationContentHash=0 — force flag is sufficient
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_PLAYING, getCurrentPosition(), 1.0f)
             .setActions(PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
@@ -4339,7 +4350,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.78] Issue 5/6 Fix: Immediately update MediaSession PlaybackState to STATE_PAUSED
         writeServiceLog("notification", "[v2.0.78] pause(userInitiated=$userInitiated) called, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, updating MediaSession to STATE_PAUSED")
         forceNotificationUpdate = true
-        lastNotificationContentHash = 0
+        // v2.4.117: removed lastNotificationContentHash=0 — force flag is sufficient
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
             .setState(PlaybackStateCompat.STATE_PAUSED, getCurrentPosition(), 1.0f)
             .setActions(PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
@@ -4602,28 +4613,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // Normal playback: maintain monotonic position (never go backward)
         // Only update from rawPos if player is prepared and position moves forward
+        // v2.4.117: Use centralized safeUpdatePosition() which rejects stale positions >60s ahead.
+        // This replaces the inline check from v2.4.116 and ensures ALL update paths use the same logic.
         if (prepared && rawPos > authoritativePosition) {
-            // v2.4.116: CRITICAL FIX - Always validate rawPos against authoritativePosition.
-            // v2.4.115 only checked within a 10s window, but logs show stale old-episode
-            // positions leaking through 12+ seconds after setMediaItem. Example:
-            //   episode 08-08-9 started at 4016, but 12s later rawPos=1026717 (from 08-08-3).
-            //   The 10s window expired, so authoritativePosition was blindly set to 1026717,
-            //   corrupting the new episode's saved position.
-            //
-            // Fix: ALWAYS reject rawPos that is >60s ahead of authoritativePosition.
-            // In a single 500ms poll, position should never jump 60 seconds. If it does,
-            // it's definitely a stale position from the old episode leaking through ExoPlayer.
-            val delta = rawPos - authoritativePosition
-            if (delta > 60000) {
-                // v2.4.116: Log first 5 rejections per episode switch for diagnosis
-                if (stalePosRejectCount < 5) {
-                    stalePosRejectCount++
-                    writeServiceLog("playback", "[v2.4.116] getCurrentPosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, episodeStartPos=$episodeStartPos, delta=${delta}ms, rejectCount=$stalePosRejectCount)")
-                }
-                // Don't update authoritativePosition - keep the correct position
-            } else {
-                authoritativePosition = rawPos
-            }
+            safeUpdatePosition(rawPos)
         }
         // Also maintain maxKnownPosition for backward compatibility
         if (rawPos > maxKnownPosition && prepared) {
@@ -5222,7 +5215,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     playEpisode(crossDayEp, false)
                     updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
                     forceNotificationUpdate = true
-                    lastNotificationContentHash = 0
+                    // v2.4.117: removed — forceNotificationUpdate=true is sufficient
                     updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
                     callback?.onEpisodeChanged(crossDayEp)
                     // [v2.0.93] Fix: Send broadcast for cross-day episode change so main UI updates
@@ -5248,7 +5241,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             playEpisode(nextEpisode, false, startPos)
             updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
             forceNotificationUpdate = true
-            lastNotificationContentHash = 0
+            // v2.4.117: removed — forceNotificationUpdate=true is sufficient
             updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
             // 通过回调通知 Activity 更新界面
             callback?.onEpisodeChanged(nextEpisode)
