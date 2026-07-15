@@ -678,9 +678,17 @@ object AudioSegmentAnalyzer {
             Log.i(TAG, "loadSileroVad: inputNames=$inputNames, outputNames=$outputNames")
 
             // Detect model version
-            val isV4Style = inputNames.contains("state")
-            val stateInputName = if (isV4Style) "state" else (if (inputNames.contains("h")) "h" else "h")
-            val hasSr = inputNames.contains("sr")
+            // v2.4.113: If getInputNames() failed (returned empty set), default to v3/v4
+            // because the 2.3MB model is v3/v4. Using v1/v2 names with v3/v4 model causes
+            // session.run() to throw, caught by outer catch → 0.5f for all chunks → 1 segment.
+            val isV4Style = if (inputNames.isNotEmpty()) {
+                inputNames.contains("state")
+            } else {
+                Log.w(TAG, "loadSileroVad: getInputNames returned empty, defaulting to v3/v4 (2.3MB model is v3/v4)")
+                true
+            }
+            val stateInputName = if (isV4Style) "state" else "h"
+            val hasSr = inputNames.contains("sr") || isV4Style  // v3/v4 always has sr
 
             // Determine output names
             val outputProbName = when {
@@ -721,11 +729,19 @@ object AudioSegmentAnalyzer {
             // Calculate total state buffer size
             // For v1/v2: two buffers of stateShape, total = 2 * product(stateShape)
             // For v3/v4: one buffer of stateShape
-            val stateElementCount = stateShape.fold(1L) { acc, dim -> acc * dim }.toInt()
+            // v2.4.113: Handle dynamic dimensions (-1) in shape by replacing with 1.
+            // Root cause of NegativeArraySizeException: -256: Silero VAD v3/v4 model has
+            // state shape [-1, 1, 128] where -1 is the dynamic batch dimension.
+            // stateElementCount = (-1) * 1 * 128 = -128
+            // stateSize = -128 * 2 = -256 (if isV4Style=false due to getInputNames failure)
+            // FloatArray(-256) → NegativeArraySizeException: -256
+            val safeShape = stateShape.map { if (it <= 0) 1L else it }.toLongArray()
+            val stateElementCount = safeShape.fold(1L) { acc, dim -> acc * dim }.toInt()
             val stateSize = if (isV4Style) stateElementCount else stateElementCount * 2
 
             Log.i(TAG, "loadSileroVad: model version=${if (isV4Style) "v3/v4" else "v1/v2"}, " +
-                    "hasSr=$hasSr, stateShape=${stateShape.contentToString()}, stateSize=$stateSize, " +
+                    "hasSr=$hasSr, stateShape=${stateShape.contentToString()} (safe=${safeShape.contentToString()}), " +
+                    "stateSize=$stateSize, " +
                     "outputProbName='$outputProbName', outputStateName='$outputStateName'")
 
             return VadModelInfo(

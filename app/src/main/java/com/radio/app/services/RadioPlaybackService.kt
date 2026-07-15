@@ -3179,7 +3179,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v2.4.84: If pos > dur (position EXCEEDS duration), trigger immediately!
             // No need to wait 15s - the audio is clearly done.
             val isPastEnd = pos > dur
-            if (isPastEnd) {
+            // v2.4.113: Skip isPastEnd/isNearOrPastEnd if within 5 seconds of episode switch.
+            // Root cause: after setMediaItem(newItem, startPos), getCurrentPosition() may still
+            // return old episode's position which is > new episode's duration. This falsely
+            // triggers isPastEnd → clearSavedPosition → autoPlayNextEpisode with wrong startPos.
+            val withinEpisodeSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 5000
+            if (isPastEnd && !withinEpisodeSwitchWindow) {
                 writeServiceLog("notification", "[v2.4.86] PAST-END: pos=$pos > dur=$dur, clearing progress and triggering autoPlayNextEpisode")
                 // v2.4.86: Clear saved progress BEFORE switching to next episode
                 // so the completed episode can be replayed from the beginning
@@ -3198,7 +3203,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     updateNotification()
                 }
                 return
-            } else if (isNearOrPastEnd) {
+            } else if (isNearOrPastEnd && !withinEpisodeSwitchWindow) {
                 // Position is near the end (within 3s before dur)
                 if (stuckAtEndSince == 0L) {
                     stuckAtEndSince = System.currentTimeMillis()
@@ -4143,6 +4148,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     positionRestoreRequested = false
                     // v2.4.46: CRITICAL FIX - Also clear pendingStartPosition!
                     pendingStartPosition = -1L
+                    // v2.4.113: Set lastPositionRestoreTime to block saveCurrentPosition for 5 seconds
+                    // after episode switch. Root cause of progress interference: episodeSwitching
+                    // is cleared on STATE_READY, but getCurrentPosition() still returns old episode's
+                    // position for a brief window. Periodic saveCurrentPosition fires during this
+                    // window, saving old episode's position to new episode's SharedPreferences.
+                    // Additionally, isPastEnd check fires (old pos > new dur) → clearSavedPosition
+                    // → autoPlayNextEpisode with wrong startPos. The 5-second block prevents both.
+                    lastPositionRestoreTime = System.currentTimeMillis()
                     writeServiceLog("playback", "[v2.4.108] playEpisode: setMediaItem+startPos($startPositionMs), prepared")
                 } else {
                     it.playWhenReady = true
