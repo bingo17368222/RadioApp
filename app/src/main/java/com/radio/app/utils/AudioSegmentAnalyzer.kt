@@ -620,18 +620,31 @@ object AudioSegmentAnalyzer {
 
     private fun loadSileroVad(modelFile: File): AiSession {
         try {
+            // v2.4.105: Pre-touch OrtEnvironment to trigger static init AFTER
+            // NativeLibLoader has pre-loaded all .so files.
+            // The static initializer calls System.loadLibrary("onnxruntime4j_jni"),
+            // which should already be loaded (no-op).
+            Log.i(TAG, "loadSileroVad: triggering OrtEnvironment static init...")
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
+            Log.i(TAG, "loadSileroVad: OrtEnvironment class loaded OK")
             val env = envClass.getMethod("getEnvironment").invoke(null)
+            Log.i(TAG, "loadSileroVad: OrtEnvironment instance obtained")
             val sessionOptionsClass = Class.forName("ai.onnxruntime.SessionOptions")
+            Log.i(TAG, "loadSileroVad: SessionOptions class loaded OK")
             val sessionOptions = sessionOptionsClass.getConstructor().newInstance()
+            Log.i(TAG, "loadSileroVad: SessionOptions instance created")
             val ortSessionClass = Class.forName("ai.onnxruntime.OrtSession")
+            Log.i(TAG, "loadSileroVad: OrtSession class loaded OK")
             val session = ortSessionClass
                 .getConstructor(envClass, String::class.java, sessionOptionsClass)
                 .newInstance(env, modelFile.absolutePath, sessionOptions)
+            Log.i(TAG, "loadSileroVad: OrtSession created, model=${modelFile.name}")
             return AiSession(session)
-        } catch (e: Exception) {
-            Log.e(TAG, "ONNX Runtime not available: ${e.message}")
-            throw RuntimeException("Silero VAD模型加载失败(ONNX Runtime): ${e.message}", e)
+        } catch (e: Throwable) {
+            // v2.4.105: Catch Throwable (not just Exception) to capture
+            // UnsatisfiedLinkError, NoClassDefFoundError, ExceptionInInitializerError
+            Log.e(TAG, "loadSileroVad FAILED: ${e.javaClass.name}: ${e.message}", e)
+            throw RuntimeException("Silero VAD模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
         }
     }
 
@@ -719,8 +732,8 @@ object AudioSegmentAnalyzer {
             try { onnxTensorClass.getMethod("close").invoke(cTensor) } catch (_: Exception) {}
 
             return Triple(prob, newHBuffer, newCBuffer)
-        } catch (e: Exception) {
-            Log.e(TAG, "Silero VAD inference failed: ${e.message}")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Silero VAD inference failed: ${e.javaClass.name}: ${e.message}", e)
             return Triple(0.5f, stateH, stateC)
         }
     }
