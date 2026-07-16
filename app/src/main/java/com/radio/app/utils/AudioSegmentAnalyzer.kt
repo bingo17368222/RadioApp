@@ -793,7 +793,10 @@ object AudioSegmentAnalyzer {
                 outputNames = outputNames,
                 isV4Style = isV4Style,
                 stateSize = stateSize,
-                stateShape = stateShape,
+                // v2.4.119: Use safeShape (with -1 replaced by 2) instead of original stateShape.
+                // ONNX Runtime's OrtUtil.elementCount() throws IllegalArgumentException on negative
+                // shape values. The model reports [2, -1, 128] but actual batch size is 2.
+                stateShape = safeShape,
                 outputProbName = outputProbName,
                 outputStateName = outputStateName
             )

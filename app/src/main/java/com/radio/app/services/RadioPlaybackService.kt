@@ -677,8 +677,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     "Referer" to "https://www.hndt.com/"
                 ))
 
+            // v2.4.119: Custom LoadControl for faster episode switching.
+            // Default ExoPlayer: bufferForPlaybackMs=2500, bufferForPlaybackAfterRebufferMs=5000
+            // This means 2.5-5 seconds of silence after setMediaItem before audio starts.
+            // Reduce to 1000ms/1000ms for near-instant playback start.
+            // Trade-off: may rebuffer more on slow networks, but audio starts much faster.
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    15000,  // minBufferMs: 15s (default 50s) — enough for smooth playback
+                    30000,  // maxBufferMs: 30s (default 50s) — cap memory usage
+                    1000,   // bufferForPlaybackMs: 1s (default 2.5s) — fast start
+                    1000    // bufferForPlaybackAfterRebufferMs: 1s (default 5s) — fast resume after rebuffer
+                )
+                .build()
+
             player = ExoPlayer.Builder(this)
                 .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+                .setLoadControl(loadControl)
                 .build()
                 .apply {
                     addListener(object : Player.Listener {
