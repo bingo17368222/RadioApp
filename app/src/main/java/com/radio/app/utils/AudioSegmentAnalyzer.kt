@@ -840,95 +840,68 @@ object AudioSegmentAnalyzer {
                 }
             }
 
+            // v2.4.118: ONNX Runtime Android only has Buffer-based createTensor methods.
+            // FloatBuffer.wrap() creates a non-direct buffer which causes InvocationTargetException.
+            // Must use ByteBuffer.allocateDirect() + asFloatBuffer() for direct memory.
+            val floatBufferMethod = tensorMethods.find { it.parameterTypes[1] == java.nio.FloatBuffer::class.java }
+            val longBufferMethod = tensorMethods.find { it.parameterTypes[1] == java.nio.LongBuffer::class.java }
+
             fun createTensor(data: Any, shape: LongArray): Any? {
-                // v2.4.117: Try array-based methods first
-                for (method in tensorMethods) {
-                    val paramType = method.parameterTypes[1]
-                    if (!paramType.isAssignableFrom(data.javaClass) &&
-                        !(paramType == java.lang.Object::class.java || paramType == Any::class.java)) continue
-                    try {
-                        val result = method.invoke(null, env, data, shape)
-                        if (result != null) return result
-                        if (vadRunCount <= 3) vadLog("createTensor: method ${paramType.simpleName} returned null")
-                    } catch (e: Throwable) {
-                        // v2.4.117: Catch Throwable (not just Exception) to catch UnsatisfiedLinkError etc.
-                        if (vadRunCount <= 3) {
-                            vadLog("createTensor WARN: ${paramType.simpleName} threw ${e.javaClass.simpleName}: ${e.message}")
-                        }
-                    }
-                }
-
-                // v2.4.117: Fallback — try Buffer-based createTensor for float data
-                if (data is FloatArray) {
-                    try {
-                        val bufferClass = java.nio.Buffer::class.java
-                        val bufferMethod = onnxTensorClass.methods.find {
-                            it.name == "createTensor" &&
-                            it.parameterTypes.size == 3 &&
-                            it.parameterTypes[0] == envClass &&
-                            it.parameterTypes[2] == LongArray::class.java &&
-                            (it.parameterTypes[1] == bufferClass ||
-                             it.parameterTypes[1] == java.nio.FloatBuffer::class.java ||
-                             it.parameterTypes[1].isAssignableFrom(java.nio.FloatBuffer::class.java))
-                        }
-                        if (bufferMethod != null) {
-                            val fb = java.nio.FloatBuffer.wrap(data)
-                            val result = bufferMethod.invoke(null, env, fb, shape)
-                            if (result != null) {
-                                if (vadRunCount <= 3) vadLog("createTensor: Buffer fallback succeeded")
-                                return result
-                            }
-                        }
-                    } catch (e: Throwable) {
-                        if (vadRunCount <= 3) vadLog("createTensor Buffer fallback: ${e.javaClass.simpleName}: ${e.message}")
-                    }
-                }
-
-                // v2.4.117: Fallback — try LongBuffer for long data
-                if (data is LongArray) {
-                    try {
-                        val bufferMethod = onnxTensorClass.methods.find {
-                            it.name == "createTensor" &&
-                            it.parameterTypes.size == 3 &&
-                            it.parameterTypes[0] == envClass &&
-                            it.parameterTypes[2] == LongArray::class.java &&
-                            it.parameterTypes[1].isAssignableFrom(java.nio.LongBuffer::class.java)
-                        }
-                        if (bufferMethod != null) {
-                            val lb = java.nio.LongBuffer.wrap(data)
-                            val result = bufferMethod.invoke(null, env, lb, shape)
-                            if (result != null) {
-                                if (vadRunCount <= 3) vadLog("createTensor: LongBuffer fallback succeeded")
-                                return result
-                            }
-                        }
-                    } catch (e: Throwable) {
-                        if (vadRunCount <= 3) vadLog("createTensor LongBuffer fallback: ${e.javaClass.simpleName}: ${e.message}")
-                    }
-                }
-
-                // v2.4.117: Last resort — try 4-param createTensor with allocator
                 try {
-                    val allocatorClass = Class.forName("ai.onnxruntime.OrtAllocator")
-                    val allocMethod = onnxTensorClass.methods.find {
-                        it.name == "createTensor" &&
-                        it.parameterTypes.size == 4 &&
-                        it.parameterTypes[0] == envClass &&
-                        it.parameterTypes[1] == allocatorClass
-                    }
-                    if (allocMethod != null) {
-                        // Get default allocator
-                        val alloc = allocatorClass.getMethod("getDefaultAllocator").invoke(null)
-                        if (data is FloatArray) {
-                            val fb = java.nio.FloatBuffer.wrap(data)
-                            val result = allocMethod.invoke(null, env, alloc, fb, shape)
-                            if (result != null) return result
+                    when (data) {
+                        is FloatArray -> {
+                            // v2.4.118: Use direct ByteBuffer → FloatBuffer
+                            val bb = java.nio.ByteBuffer.allocateDirect(data.size * 4)
+                            bb.order(java.nio.ByteOrder.nativeOrder())
+                            val fb = bb.asFloatBuffer()
+                            fb.put(data)
+                            fb.rewind()
+                            if (floatBufferMethod != null) {
+                                val result = floatBufferMethod.invoke(null, env, fb, shape)
+                                if (result != null) return result
+                            }
+                            // Fallback: try generic Buffer method
+                            val bufMethod = tensorMethods.find { it.parameterTypes[1] == java.nio.Buffer::class.java }
+                            if (bufMethod != null) {
+                                val result = bufMethod.invoke(null, env, fb, shape)
+                                if (result != null) return result
+                            }
+                        }
+                        is LongArray -> {
+                            // v2.4.118: Use direct ByteBuffer → LongBuffer
+                            val bb = java.nio.ByteBuffer.allocateDirect(data.size * 8)
+                            bb.order(java.nio.ByteOrder.nativeOrder())
+                            val lb = bb.asLongBuffer()
+                            lb.put(data)
+                            lb.rewind()
+                            if (longBufferMethod != null) {
+                                val result = longBufferMethod.invoke(null, env, lb, shape)
+                                if (result != null) return result
+                            }
+                            val bufMethod = tensorMethods.find { it.parameterTypes[1] == java.nio.Buffer::class.java }
+                            if (bufMethod != null) {
+                                val result = bufMethod.invoke(null, env, lb, shape)
+                                if (result != null) return result
+                            }
+                        }
+                        is java.nio.FloatBuffer -> {
+                            if (floatBufferMethod != null) {
+                                val result = floatBufferMethod.invoke(null, env, data, shape)
+                                if (result != null) return result
+                            }
                         }
                     }
                 } catch (e: Throwable) {
-                    if (vadRunCount <= 3) vadLog("createTensor 4-param fallback: ${e.javaClass.simpleName}: ${e.message}")
+                    // v2.4.118: Unwrap InvocationTargetException to get real cause
+                    val cause = if (e is java.lang.reflect.InvocationTargetException) e.targetException else e
+                    if (vadRunCount <= 3) {
+                        vadLog("createTensor: ${data.javaClass.simpleName} shape=${shape.toList()} threw ${cause.javaClass.simpleName}: ${cause.message}")
+                        // Log stack trace for first failure
+                        val sw = java.io.StringWriter()
+                        cause.printStackTrace(java.io.PrintWriter(sw))
+                        vadLog("createTensor stack: ${sw.toString().take(500)}")
+                    }
                 }
-
                 return null
             }
 

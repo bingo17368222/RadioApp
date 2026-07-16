@@ -2813,6 +2813,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val ep = currentEpisode ?: return
         val pos = getCurrentPosition()
         if (pos < 0) return
+        // v2.4.118: Check for stale position before force-saving.
+        // forceSaveCurrentPosition is called during episode switch (playEpisode) to save
+        // the OLD episode's position. But if authoritativePosition was corrupted by stale
+        // rawPos from STATE_READY/onPositionDiscontinuity, this would save the wrong position.
+        if (episodeStartPos > 0 && pos > 0) {
+            val delta = pos - episodeStartPos
+            if (delta > 120000 || delta < -5000) {
+                writeServiceLog("playback", "[v2.4.118] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, likely stale)")
+                return
+            }
+        }
         val episodeKey = ep.id ?: ""
         if (episodeKey.isBlank()) return
         getSharedPreferences("playback_positions", MODE_PRIVATE)
@@ -3097,14 +3108,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // which missed audio focus changes (e.g., Pinduoduo video pausing playback).
         val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
         val effectivePlaying = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
+        // v2.4.118: Removed position from contentHash. Position changes every 5s poll (~5000ms),
+        // so including it (even at 2s granularity) means the hash is ALWAYS different, making
+        // dedup impossible. Position-based dedup is already handled by the posChanged check
+        // in the progress poll (v2.4.108 "pos unchanged SKIPPING").
+        // ContentHash now only tracks metadata changes (title/date/playing state/prepared).
         val contentHash = Objects.hash(
             notificationTitle,
             notificationDate,
             notificationTimeRange,
             buildNotificationSubText(),
             effectivePlaying,
-            prepared,
-            if (!isLive) getCurrentPosition().div(2000) else 0L  // [v2.0.75] always include position for dedup
+            prepared
         )
         // Issue 3: forceNotificationUpdate bypasses the hash check after episode switch
         val shouldForce = forceNotificationUpdate
@@ -3973,9 +3988,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val oldEp = currentEpisode!!
             val oldPos = getCurrentPosition()
             if (oldPos > 1000 && oldEp.id?.isNotBlank() == true) {
-                getSharedPreferences("playback_positions", MODE_PRIVATE)
-                    .edit().putLong(oldEp.id!!, oldPos).commit()
-                writeServiceLog("playback", "[v2.4.106] playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
+                // v2.4.118: Check for stale position before force-saving in playEpisode.
+                // This is the main path where stale positions get saved — getCurrentPosition()
+                // returns authoritativePosition which may have been corrupted by STATE_READY
+                // reporting the old episode's position after setMediaItem.
+                val staleDelta = if (episodeStartPos > 0) oldPos - episodeStartPos else 0
+                if (staleDelta > 120000 || staleDelta < -5000) {
+                    writeServiceLog("playback", "[v2.4.118] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms, likely stale) for oldEpId=${oldEp.id}")
+                } else {
+                    getSharedPreferences("playback_positions", MODE_PRIVATE)
+                        .edit().putLong(oldEp.id!!, oldPos).commit()
+                    writeServiceLog("playback", "[v2.4.106] playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
+                }
             }
             // v2.4.108: episodeSwitching flag (set above) now blocks saveCurrentPosition
             // until STATE_READY fires for the new episode. No need for lastPositionRestoreTime.
