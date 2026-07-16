@@ -768,17 +768,14 @@ object AudioSegmentAnalyzer {
             // Calculate total state buffer size
             // For v1/v2: two buffers of stateShape, total = 2 * product(stateShape)
             // For v3/v4: one buffer of stateShape
-            // v2.4.113: Handle dynamic dimensions (-1) in shape by replacing with known values.
-            // v2.4.114: Replace -1 with 2 (not 1) because Silero VAD state's first dimension
-            // is the number of LSTM layers (2), not batch size (1).
-            // Root cause of "1 segment" bug: state shape [-1, 1, 128] → replaced -1 with 1
-            // → [1, 1, 128] = 128 floats, but actual state needs [2, 1, 128] = 256 floats.
-            // Wrong state size → LSTM state is garbage → model outputs 0.5 for all chunks.
-            // Also: if isV4Style=false because getInputNames failed, stateSize = 128 * 2 = 256
-            // which happens to be correct for v3/v4, but the h/c split is wrong (v3/v4 uses
-            // combined state, not separate h and c). Now isV4Style defaults to true for empty
-            // inputNames, so this path should not be taken.
-            val safeShape = stateShape.map { if (it <= 0) 2L else it }.toLongArray()
+            // v2.4.121: Replace -1 with 1 (batch_size=1), NOT 2.
+            // ONNX model error: "Input initial_h must have shape {1,1,128}. Actual:{1,2,128}"
+            // The state shape [2, -1, 128] means:
+            //   dim 0 = 2: number of LSTM states (h and c)
+            //   dim 1 = -1: batch_size (dynamic, should be 1 for single stream)
+            //   dim 2 = 128: hidden_size
+            // So safeShape = [2, 1, 128], stateSize = 2 * 1 * 128 = 256
+            val safeShape = stateShape.map { if (it <= 0) 1L else it }.toLongArray()
             val stateElementCount = safeShape.fold(1L) { acc, dim -> acc * dim }.toInt()
             val stateSize = if (isV4Style) stateElementCount else stateElementCount * 2
 

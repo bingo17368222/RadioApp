@@ -2753,11 +2753,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val expectedStart = episodeStartPos
         if (expectedStart > 0 && pos > 0) {
             val delta = pos - expectedStart
-            // Allow up to 120s ahead of start position (accounts for elapsed playback time).
-            // Beyond that, the position is definitely stale from the old episode.
-            // Also check if pos is BEHIND episodeStartPos by more than 5s (shouldn't go backward).
-            if (delta > 120000 || delta < -5000) {
-                writeServiceLog("playback", "[v2.4.116] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms, likely stale)")
+            // v2.4.121: Removed forward delta check (was delta > 120000).
+            // The 120s threshold was rejecting NORMAL playback progress after 2 minutes!
+            // Log showed 1068 REJECTED entries with delta 21-31 minutes — all valid positions
+            // from normal playback. This caused progress to NEVER be saved.
+            // Now only check if position went backward by more than 5s (impossible in normal
+            // playback, indicates stale position from a different episode).
+            if (delta < -5000) {
+                writeServiceLog("playback", "[v2.4.121] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms, position went backward, likely stale)")
                 return
             }
         }
@@ -2828,14 +2831,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val ep = currentEpisode ?: return
         val pos = getCurrentPosition()
         if (pos < 0) return
-        // v2.4.118: Check for stale position before force-saving.
-        // forceSaveCurrentPosition is called during episode switch (playEpisode) to save
-        // the OLD episode's position. But if authoritativePosition was corrupted by stale
-        // rawPos from STATE_READY/onPositionDiscontinuity, this would save the wrong position.
+        // v2.4.121: Removed forward delta check (was delta > 120000).
+        // Same fix as saveCurrentPosition — 120s threshold was rejecting valid positions.
         if (episodeStartPos > 0 && pos > 0) {
             val delta = pos - episodeStartPos
-            if (delta > 120000 || delta < -5000) {
-                writeServiceLog("playback", "[v2.4.118] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, likely stale)")
+            if (delta < -5000) {
+                writeServiceLog("playback", "[v2.4.121] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, position went backward, likely stale)")
                 return
             }
         }
@@ -3357,16 +3358,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.91: Only force update when position changed or on reset, NOT every poll.
         // v2.4.108: Also SKIP notifyNotification() entirely when position is unchanged
         // to prevent progress bar animation restart (the "几秒循环" bug).
+        // v2.4.121: Don't set forceNotificationUpdate=true for posChanged. Previously, every
+        // 5s progress poll set force=true, which bypassed contentHash dedup and caused
+        // doNotifyNotification to rebuild the entire notification (2651 times!). This made
+        // the notification progress bar animation restart every 5s ("循环"), and blocked
+        // the main UI progress bar from updating.
+        // Now: only force on isReset (episode switch). For posChanged, just call
+        // updateMediaSessionState() which updates the MediaSession playback position.
+        // The MediaSession API updates the system's progress bar without rebuilding
+        // the notification's RemoteViews.
         if (notificationStyle != "minimal") {
-            if (isReset || posChanged) {
+            if (isReset) {
                 forceNotificationUpdate = true
-                // v2.4.116: DON'T reset lastNotificationContentHash to 0 here.
-                // forceNotificationUpdate=true already bypasses the hash check in
-                // doNotifyNotification(). Resetting the hash destroys the dedup
-                // state, causing the next non-forced poll to always rebuild even
-                // when content hasn't changed.
-                writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, calling notifyNotification() for progress refresh")
+                writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, RESET — calling notifyNotification() for full rebuild")
                 notifyNotification()
+            } else if (posChanged) {
+                // v2.4.121: Just update MediaSession position — NO full notification rebuild.
+                // This updates the system's progress bar (lock screen, media controls) without
+                // restarting the notification's progress bar animation.
+                updateMediaSessionState()
             } else {
                 writeServiceLog("notification", "[v2.4.108-PROGRESS-POLL] pos unchanged ($pos), SKIPPING notifyNotification() to prevent progress bar loop")
             }
@@ -4003,13 +4013,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val oldEp = currentEpisode!!
             val oldPos = getCurrentPosition()
             if (oldPos > 1000 && oldEp.id?.isNotBlank() == true) {
-                // v2.4.118: Check for stale position before force-saving in playEpisode.
-                // This is the main path where stale positions get saved — getCurrentPosition()
-                // returns authoritativePosition which may have been corrupted by STATE_READY
-                // reporting the old episode's position after setMediaItem.
+                // v2.4.121: Removed forward delta check (was staleDelta > 120000).
+                // The 120s threshold was rejecting valid positions after 2 min of playback.
                 val staleDelta = if (episodeStartPos > 0) oldPos - episodeStartPos else 0
-                if (staleDelta > 120000 || staleDelta < -5000) {
-                    writeServiceLog("playback", "[v2.4.118] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms, likely stale) for oldEpId=${oldEp.id}")
+                if (staleDelta < -5000) {
+                    writeServiceLog("playback", "[v2.4.121] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms, position went backward) for oldEpId=${oldEp.id}")
                 } else {
                     getSharedPreferences("playback_positions", MODE_PRIVATE)
                         .edit().putLong(oldEp.id!!, oldPos).commit()
