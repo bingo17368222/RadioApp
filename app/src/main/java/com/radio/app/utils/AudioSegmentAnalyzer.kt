@@ -990,7 +990,24 @@ object AudioSegmentAnalyzer {
             // Use getFloatBuffer() for output extraction (works for any tensor shape)
             val getFloatBufferMethod = onnxTensorClass.getMethod("getFloatBuffer")
 
-            fun tensorToFloatArray(tensor: Any): FloatArray {
+            // v2.4.122: session.run() returns Map<String, Optional<OnnxTensor>> on Android.
+            // The map values are java.util.Optional, not OnnxTensor directly.
+            // Need to unwrap Optional before accessing tensor methods.
+            val optionalClass = java.util.Optional::class.java
+            val optionalGetMethod = optionalClass.getMethod("get")
+            val optionalIsPresentMethod = optionalClass.getMethod("isPresent")
+
+            fun tensorToFloatArray(tensorObj: Any): FloatArray {
+                // v2.4.122: Unwrap Optional if needed
+                val tensor = if (optionalClass.isInstance(tensorObj)) {
+                    if (optionalIsPresentMethod.invoke(tensorObj) as Boolean) {
+                        optionalGetMethod.invoke(tensorObj)
+                    } else {
+                        return FloatArray(0)  // Optional is empty
+                    }
+                } else {
+                    tensorObj
+                }
                 val fb = getFloatBufferMethod.invoke(tensor) as FloatBuffer
                 val arr = FloatArray(fb.remaining())
                 fb.get(arr)
