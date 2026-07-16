@@ -682,7 +682,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // This means 2.5-5 seconds of silence after setMediaItem before audio starts.
             // Reduce to 1000ms/1000ms for near-instant playback start.
             // Trade-off: may rebuffer more on slow networks, but audio starts much faster.
-            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            val loadControl = com.google.android.exoplayer2.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
                     15000,  // minBufferMs: 15s (default 50s) — enough for smooth playback
                     30000,  // maxBufferMs: 30s (default 50s) — cap memory usage
