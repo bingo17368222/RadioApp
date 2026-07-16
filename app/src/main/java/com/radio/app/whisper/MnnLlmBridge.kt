@@ -175,7 +175,7 @@ class MnnLlmBridge {
                     mnnLog("init: nativeInit OK")
 
                     // Version check
-                    val expectedMarker = "MNN_JNI_v2.4.119"
+                    val expectedMarker = "MNN_JNI_v2.4.120"
                     try {
                         val actualMarker = nativeGetCompileMarker()
                         mnnLog("init: compile marker check: expected=$expectedMarker, actual=$actualMarker")

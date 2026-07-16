@@ -961,14 +961,31 @@ object AudioSegmentAnalyzer {
                 }
             }
 
-            // v2.4.115: Log input map before inference (first 3 calls only)
-            if (vadRunCount < 3) {
-                vadLog("runSileroVad: inputMap keys=${inputMap.keys}, isV4Style=${model.isV4Style}, stateSize=${model.stateSize}")
+            // v2.4.115: Log input map before inference (first 5 calls only)
+            if (vadRunCount <= 5) {
+                vadLog("runSileroVad: inputMap keys=${inputMap.keys}, isV4Style=${model.isV4Style}, stateSize=${model.stateSize}, stateShape=${model.stateShape.toList()}")
+                // v2.4.120: Log tensor details for debugging session.run failure
+                for ((key, value) in inputMap) {
+                    try {
+                        val tensorClass = value.javaClass
+                        val infoMethod = tensorClass.getMethod("getInfo")
+                        val info = infoMethod.invoke(value)
+                        vadLog("  tensor[$key]: ${info.toString()}")
+                    } catch (diag: Exception) {
+                        vadLog("  tensor[$key]: (can't get info: ${diag.message})")
+                    }
+                }
             }
 
             // Run inference
             val runMethod = sessionClass.getMethod("run", Map::class.java)
+            if (vadRunCount <= 5) {
+                vadLog("runSileroVad: calling session.run()...")
+            }
             val results = runMethod.invoke(sessionObj, inputMap)
+            if (vadRunCount <= 5) {
+                vadLog("runSileroVad: session.run() returned successfully!")
+            }
 
             val resultsClass = results.javaClass
             val getMethod = resultsClass.getMethod("get", String::class.java)
@@ -1029,7 +1046,15 @@ object AudioSegmentAnalyzer {
 
             return Pair(prob, newBuffer)
         } catch (e: Throwable) {
-            vadLog("Silero VAD inference FAILED: ${e.javaClass.name}: ${e.message}")
+            // v2.4.120: Unwrap InvocationTargetException to get real cause from session.run()
+            val cause = if (e is java.lang.reflect.InvocationTargetException) e.targetException else e
+            vadLog("Silero VAD inference FAILED: ${cause.javaClass.name}: ${cause.message}")
+            // v2.4.120: Log full stack trace for first 5 failures
+            if (vadRunCount <= 5) {
+                val sw = java.io.StringWriter()
+                cause.printStackTrace(java.io.PrintWriter(sw))
+                vadLog("FAILED stack trace: ${sw.toString().take(800)}")
+            }
             return Pair(0.5f, state)
         }
     }
