@@ -377,10 +377,50 @@ class PlayerActivity : AppCompatActivity() {
             playbackService?.setCallback(playbackCallback)
             // [v2.0.62] Issue 1 Fix: Service is now authoritative for position.
             // It never reports 0 during seeking/buffering, so we just sync UI to service position.
+            // v2.4.123: When switching episodes (isFreshStart or different episode), DON'T sync UI
+            // to the old service position. This was causing the UI to show the old episode's
+            // position (e.g., 40 minutes) when switching to a new episode. Instead, set UI to 0
+            // or the new episode's saved position immediately.
             val svcPos = playbackService?.getCurrentPosition() ?: 0L
             val svcDur = playbackService?.getDuration() ?: 0L
             val syncTime = System.currentTimeMillis()
-            if (svcPos > 0) {
+            val newUrl = currentEpisode?.audioUrl
+            val svcUrl = playbackService?.getCurrentPlayingUrl()
+            val sameEpisodeForSync = playbackService?.isSameEpisodePlaying(newUrl ?: "") ?: false
+
+            if (svcPos > 0 && sameEpisodeForSync && !isFreshStart) {
+                // Same episode and not fresh start: safe to sync UI to service position
+                lastDisplayedPositionMs = svcPos
+                jitterSyncTimeMs = syncTime
+                jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
+                jitterSyncBaseline = svcPos
+                consecutiveBackwardJumps = 0
+                if (svcDur > 0) {
+                    binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${formatTime(svcDur.toInt())}"
+                    binding.seekBar.max = svcDur.toInt()
+                    binding.seekBar.progress = svcPos.toInt()
+                } else {
+                    binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / --:--"
+                    binding.seekBar.progress = svcPos.toInt()
+                }
+                writeJitterLog("[v2.0.62] onServiceConnected: synced UI to service position=$svcPos, dur=$svcDur")
+            } else if (isFreshStart || !sameEpisodeForSync) {
+                // v2.4.123: Switching to a different episode — DON'T sync UI to old service position.
+                // Set UI to the new episode's saved position or 0, so the progress bar
+                // doesn't show the old episode's position (e.g., 40 min into new episode).
+                val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
+                if (savedPos > 0) {
+                    lastDisplayedPositionMs = savedPos
+                    binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                    binding.seekBar.progress = savedPos.toInt()
+                    writeJitterLog("[v2.4.123] onServiceConnected: episode switch, pre-set UI to savedPos=$savedPos (NOT syncing to old svcPos=$svcPos)")
+                } else {
+                    lastDisplayedPositionMs = 0
+                    binding.tvCurrentTime.text = "00:00 / --:--"
+                    binding.seekBar.progress = 0
+                    writeJitterLog("[v2.4.123] onServiceConnected: episode switch, reset UI to 0 (NOT syncing to old svcPos=$svcPos)")
+                }
+            } else if (svcPos > 0) {
                 lastDisplayedPositionMs = svcPos
                 jitterSyncTimeMs = syncTime
                 jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
@@ -887,7 +927,23 @@ class PlayerActivity : AppCompatActivity() {
                     }
                     // [v2.0.73] Issue 1 Fix: Don't accept position=0 on episode change (player not ready yet).
                     // Wait for a valid position (>2s) before setting baseline, otherwise UI flashes 0.
+                    // v2.4.123: When episode changes, check if reported position is close to the
+                    // new episode's expected startPos. If it's way off (e.g., old episode's position
+                    // still being reported by ExoPlayer before seek completes), reject it.
                     if (position > 2000) {
+                        // v2.4.123: Check if this position is reasonable for the new episode
+                        val expectedStart = getSavedPositionForEpisode(this@PlayerActivity, currentEpId)
+                        if (expectedStart > 0 && position > 0) {
+                            val delta = position - expectedStart
+                            if (delta > 300000) {
+                                // Position is more than 5 minutes ahead of expected start — likely
+                                // the old episode's position still being reported by ExoPlayer.
+                                writeJitterLog("[v2.4.123] onPositionChanged: episode changed to $currentEpId, REJECTING pos=$position (expected ~$expectedStart, delta=${delta}ms, likely old episode position)")
+                                lastJitterEpisodeId = currentEpId
+                                // Don't update lastDisplayedPositionMs — keep the savedPos set in onServiceConnected
+                                return@runOnUiThread
+                            }
+                        }
                         writeJitterLog("[v2.0.73] onPositionChanged: episode changed from $lastJitterEpisodeId to $currentEpId, resetting jitter guard (pos=$position)")
                         lastJitterEpisodeId = currentEpId
                         lastDisplayedPositionMs = position

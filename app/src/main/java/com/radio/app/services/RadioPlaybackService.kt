@@ -1913,6 +1913,49 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
+     * v2.4.123: Start PCM-only generation for an episode.
+     * This generates 5-min PCM and full PCM without generating subtitles.
+     * Used when pre-generate subtitles is OFF but preprocessing is ON.
+     */
+    private fun startPreCachePcmGeneration(episode: com.radio.app.data.Episode) {
+        val episodeId = episode.id ?: return
+        if (episodeId.isBlank()) return
+        val audioUrl = episode.audioUrl ?: return
+        if (audioUrl.isBlank()) return
+
+        writePreCacheLog("startPreCachePcmGeneration: [v2.4.123] starting PCM-only generation for $episodeId (url=$audioUrl)")
+
+        // Run pre-segmentation (creates placeholder segments)
+        try {
+            val epDuration = episode.duration?.let { if (it in 60..100000) it * 1000 else 0 } ?: 0
+            val durationMs = if (epDuration > 60000) epDuration.toLong() else 7200_000L
+            com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
+        } catch (e: Exception) {
+            writePreCacheLog("startPreCachePcmGeneration: pre-segment failed: ${e.message}")
+        }
+
+        // Start SubtitleGeneratorService with task_type="segment" (PCM + VAD, no subtitles)
+        val pcmIntent = android.content.Intent(this, com.radio.app.services.SubtitleGeneratorService::class.java).apply {
+            putExtra("episode_id", episodeId)
+            putExtra("audio_url", audioUrl)
+            putExtra("task_type", "segment")
+            putExtra("precache_subtitle", true)
+            putExtra("force_whisper_base", true)
+        }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                startForegroundService(pcmIntent)
+            } else {
+                startService(pcmIntent)
+            }
+            writePreCacheLog("startPreCachePcmGeneration: segment service started for $episodeId")
+        } catch (e: Exception) {
+            writePreCacheLog("startPreCachePcmGeneration: failed to start service: ${e.message}")
+            Log.e(TAG, "Pre-cache PCM generation failed to start: ${e.message}")
+        }
+    }
+
+    /**
      * v2.4.13: Subtitle Patrol - scan cached episodes after current one and auto-generate
      * subtitles for episodes that are cached but don't have subtitles yet.
      * Only runs when subtitle generation service is idle (not busy with other tasks).
@@ -1920,9 +1963,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun patrolSubtitleGeneration() {
         val appSettings = AppSettings.getInstance(this)
         // v2.4.96: Check independent pre-generate subtitles toggle
-        if (!appSettings.enablePreGenerateSubtitles) {
-            writePreCacheLog("patrolSubtitle: [v2.4.96] pre-generate subtitles disabled, skipping patrol")
+        // v2.4.123: When subtitles are OFF but preprocessing is ON, still patrol to generate PCM.
+        val subtitlesEnabled = appSettings.enablePreGenerateSubtitles
+        val preprocessingEnabled = appSettings.enablePreprocessing
+        if (!subtitlesEnabled && !preprocessingEnabled) {
+            writePreCacheLog("patrolSubtitle: [v2.4.96] both subtitles and preprocessing disabled, skipping patrol")
             return
+        }
+        if (!subtitlesEnabled && preprocessingEnabled) {
+            writePreCacheLog("patrolSubtitle: [v2.4.123] subtitles OFF but preprocessing ON, running PCM-only patrol")
         }
         // [v2.4.13] Check if subtitle service is busy (cross-process via flag file)
         val busyFlag = java.io.File(
@@ -2027,6 +2076,42 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // [v2.4.18] Check if subtitles are COMPLETE (not just existing)
                     // [v2.4.19] Wrap in try-catch to prevent patrol abort on DB errors
+                    // v2.4.123: When subtitles are disabled but preprocessing is on,
+                    // check for PCM files instead of subtitles.
+                    if (!subtitlesEnabled && preprocessingEnabled) {
+                        // PCM-only mode: check if both 5-min PCM and full PCM exist
+                        val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
+                        val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
+                        val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
+                        val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
+
+                        if (hasPcm5min && hasPcmFull) {
+                            withSubtitles++ // count as "already processed"
+                            continue
+                        }
+
+                        // Found a cached episode without PCM — trigger PCM generation
+                        writePreCacheLog("patrolSubtitle: [v2.4.123] found cached episode without PCM: ${ep.title} (${ep.id}), triggering PCM generation (5min=${hasPcm5min}, full=${hasPcmFull})")
+                        startPreCachePcmGeneration(ep)
+                        try {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                                if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
+                                    nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
+                                }
+                            }
+                            val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
+                                .setSmallIcon(android.R.drawable.ic_media_ff)
+                                .setContentTitle("预处理PCM")
+                                .setContentText("正在为 ${ep.title ?: ep.id} 生成PCM文件...")
+                                .setAutoCancel(true)
+                                .build()
+                            val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                            notifManager.notify(2001, notif)
+                        } catch (_: Exception) {}
+                        return@launch
+                    }
+
                     var isComplete = false
                     try {
                         isComplete = dbHelper.hasCompleteSubtitles(ep.id)
