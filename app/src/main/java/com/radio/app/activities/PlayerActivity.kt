@@ -386,9 +386,9 @@ class PlayerActivity : AppCompatActivity() {
             val syncTime = System.currentTimeMillis()
             val newUrl = currentEpisode?.audioUrl
             val svcUrl = playbackService?.getCurrentPlayingUrl()
-            val sameEpisodeForSync = playbackService?.isSameEpisodePlaying(newUrl ?: "") ?: false
+            val sameEpisode = playbackService?.isSameEpisodePlaying(newUrl ?: "") ?: false
 
-            if (svcPos > 0 && sameEpisodeForSync && !isFreshStart) {
+            if (svcPos > 0 && sameEpisode && !isFreshStart) {
                 // Same episode and not fresh start: safe to sync UI to service position
                 lastDisplayedPositionMs = svcPos
                 jitterSyncTimeMs = syncTime
@@ -404,7 +404,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBar.progress = svcPos.toInt()
                 }
                 writeJitterLog("[v2.0.62] onServiceConnected: synced UI to service position=$svcPos, dur=$svcDur")
-            } else if (isFreshStart || !sameEpisodeForSync) {
+            } else if (isFreshStart || !sameEpisode) {
                 // v2.4.123: Switching to a different episode — DON'T sync UI to old service position.
                 // Set UI to the new episode's saved position or 0, so the progress bar
                 // doesn't show the old episode's position (e.g., 40 min into new episode).
