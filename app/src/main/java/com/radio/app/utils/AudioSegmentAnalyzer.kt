@@ -144,6 +144,70 @@ object AudioSegmentAnalyzer {
     }
 
     /**
+     * v2.4.125: Pre-generate PCM files (5-min and full) for an episode.
+     * This decodes the cached audio file to 16kHz mono PCM without running AI segmentation.
+     * Used when subtitle pre-generation is OFF but preprocessing is ON.
+     *
+     * @param context Application context
+     * @param episodeId Episode ID
+     * @param audioUrl Audio URL (for finding cached audio file)
+     * @return true if PCM files were generated or already exist
+     */
+    fun preGeneratePcmFiles(context: Context, episodeId: String, audioUrl: String?): Boolean {
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+        val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+        val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+
+        // Check if both already exist
+        if (fullPcmFile.exists() && fullPcmFile.length() > 16000 &&
+            min5PcmFile.exists() && min5PcmFile.length() > 16000) {
+            Log.i(TAG, "preGeneratePcmFiles: both PCM files already exist for $episodeId (full=${fullPcmFile.length()}, 5min=${min5PcmFile.length()})")
+            return true
+        }
+
+        // Decode full PCM if missing
+        if (!fullPcmFile.exists() || fullPcmFile.length() <= 16000) {
+            Log.i(TAG, "preGeneratePcmFiles: decoding full PCM for $episodeId (audioUrl=$audioUrl)")
+            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+            if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
+                Log.e(TAG, "preGeneratePcmFiles: failed to decode full PCM for $episodeId")
+                return false
+            }
+            Log.i(TAG, "preGeneratePcmFiles: full PCM generated: ${decoded.name} (${decoded.length()} bytes)")
+        }
+
+        // Generate 5-min PCM from full PCM if missing
+        if (!min5PcmFile.exists() || min5PcmFile.length() <= 16000) {
+            try {
+                val fiveMinBytes = 5 * 60 * 16000 * 2  // 5 min * 16kHz * 2 bytes/sample
+                val fullBytes = fullPcmFile.length().toInt()
+                val copyBytes = minOf(fiveMinBytes, fullBytes)
+                val fis = java.io.FileInputStream(fullPcmFile)
+                val fos = java.io.FileOutputStream(min5PcmFile)
+                try {
+                    val buffer = ByteArray(8192)
+                    var remaining = copyBytes
+                    while (remaining > 0) {
+                        val toRead = minOf(remaining, buffer.size)
+                        val read = fis.read(buffer, 0, toRead)
+                        if (read < 0) break
+                        fos.write(buffer, 0, read)
+                        remaining -= read
+                    }
+                } finally {
+                    fis.close()
+                    fos.close()
+                }
+                Log.i(TAG, "preGeneratePcmFiles: 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)")
+            } catch (e: Exception) {
+                Log.e(TAG, "preGeneratePcmFiles: failed to create 5-min PCM: ${e.message}")
+            }
+        }
+
+        return fullPcmFile.exists() && fullPcmFile.length() > 16000
+    }
+
+    /**
      * v2.4.96: Analyze an episode by finding its PCM file and running dual-model segmentation.
      * v2.4.99: Added audioUrl parameter for finding cached audio file.
      *

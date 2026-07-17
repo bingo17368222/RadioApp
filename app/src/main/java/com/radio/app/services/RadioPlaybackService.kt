@@ -1923,9 +1923,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val audioUrl = episode.audioUrl ?: return
         if (audioUrl.isBlank()) return
 
-        writePreCacheLog("startPreCachePcmGeneration: [v2.4.123] starting PCM-only generation for $episodeId (url=$audioUrl)")
+        writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl)")
 
-        // Run pre-segmentation (creates placeholder segments — fixed 15-min segments)
+        // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {
             val epDuration = episode.duration ?: 0
             val durationMs = if (epDuration in 60000..100000000) epDuration.toLong() else 7200_000L
@@ -1936,25 +1936,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("startPreCachePcmGeneration: pre-segment failed: ${e.message}")
         }
 
-        // Start SubtitleGeneratorService with task_type="segment" (PCM + VAD, no subtitles)
-        val pcmIntent = android.content.Intent(this, com.radio.app.services.SubtitleGeneratorService::class.java).apply {
-            putExtra("episode_id", episodeId)
-            putExtra("audio_url", audioUrl)
-            putExtra("task_type", "segment")
-            putExtra("precache_subtitle", true)
-            putExtra("force_whisper_base", true)
-        }
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                startForegroundService(pcmIntent)
-            } else {
-                startService(pcmIntent)
+        // Step 2: Pre-generate PCM files (5-min + full) in background thread.
+        // v2.4.125: Previously this started SubtitleGeneratorService with task_type="segment",
+        // which triggered AI ASR segmentation (Whisper/Vosk) that could fail with
+        // "分段失败" errors. Now we directly decode PCM without AI segmentation.
+        Thread {
+            try {
+                writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] starting PCM decode for $episodeId")
+                val success = com.radio.app.utils.AudioSegmentAnalyzer.preGeneratePcmFiles(
+                    this, episodeId, audioUrl
+                )
+                if (success) {
+                    writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation SUCCESS for $episodeId")
+                } else {
+                    writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation FAILED for $episodeId (audio file may not be cached)")
+                }
+            } catch (e: Exception) {
+                writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation exception: ${e.message}")
             }
-            writePreCacheLog("startPreCachePcmGeneration: segment service started for $episodeId")
-        } catch (e: Exception) {
-            writePreCacheLog("startPreCachePcmGeneration: failed to start service: ${e.message}")
-            Log.e(TAG, "Pre-cache PCM generation failed to start: ${e.message}")
-        }
+        }.start()
     }
 
     /**
@@ -4114,6 +4114,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v2.4.108: episodeSwitching flag (set above) now blocks saveCurrentPosition
             // until STATE_READY fires for the new episode. No need for lastPositionRestoreTime.
         }
+
+        // v2.4.125: Shadow the parameter with a mutable local var so we can verify and adjust it.
+        var startPositionMs = startPositionMs
+
+        // v2.4.125: CRITICAL FIX — Verify startPositionMs is for THIS episode, not the old one.
+        // Log showed: startPos=3576632 (old episode 08-12-9's position) being passed for
+        // new episode 08-13-1 (whose savedPos=18182). This caused "40 min showing on new episode".
+        // Root cause: onServiceConnected or other callers sometimes pass oldPos instead of
+        // newEpSavedPos. Fix: verify startPos against this episode's saved position in prefs.
+        val epIdForCheck = episode.id ?: ""
+        if (startPositionMs > 30000 && epIdForCheck.isNotBlank()) {
+            val newEpSavedPos = getSharedPreferences("playback_positions", MODE_PRIVATE)
+                .getLong(epIdForCheck, -1L)
+            if (newEpSavedPos > 0) {
+                val delta = startPositionMs - newEpSavedPos
+                if (delta > 300000) {
+                    writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min, likely old episode position), using savedPos=$newEpSavedPos instead")
+                    startPositionMs = newEpSavedPos
+                }
+            } else if (newEpSavedPos <= 0) {
+                writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (no savedPos, startPos > 30s, likely old episode position), starting from 0")
+                startPositionMs = -1L
+            }
+        }
         val epTitle = try { episode.title ?: "unknown" } catch (_: Exception) { "unknown" }
         val epAudioUrl = try { episode.audioUrl ?: "" } catch (_: Exception) { "" }
         Log.d(TAG, "playEpisode called: $epTitle, playbackStarted before: $playbackStarted, prepared=$prepared, url=$epAudioUrl, startPositionMs=$startPositionMs")
@@ -4123,6 +4147,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             try { callback?.onError("节目音频URL为空") } catch (_: Exception) {}
             return
         }
+
+        // v2.4.125: CRITICAL FIX — Verify startPositionMs is for THIS episode, not the old one.
+        // Log showed: startPos=3576632 (old episode 08-12-9's position) being passed for
+        // new episode 08-13-1 (whose savedPos=18182). This caused "40 min showing on new episode".
+        // Root cause: onServiceConnected or other callers sometimes pass oldPos instead of
+        // newEpSavedPos. Fix: verify startPos against this episode's saved position in prefs.
+        var verifiedStartPos = startPositionMs
+        val epIdForCheck = episode.id ?: ""
+        if (verifiedStartPos > 30000 && epIdForCheck.isNotBlank()) {
+            val newEpSavedPos = getSharedPreferences("playback_positions", MODE_PRIVATE)
+                .getLong(epIdForCheck, -1L)
+            if (newEpSavedPos > 0) {
+                // This episode has a saved position — verify startPos matches
+                val delta = verifiedStartPos - newEpSavedPos
+                if (delta > 300000) {
+                    // startPos is more than 5 min ahead of this episode's saved position
+                    // — likely the old episode's position being passed by mistake
+                    writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$verifiedStartPos for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min, likely old episode position), using savedPos=$newEpSavedPos instead")
+                    verifiedStartPos = newEpSavedPos
+                }
+            } else if (newEpSavedPos <= 0) {
+                // No saved position for this episode — startPos > 30s is suspicious
+                // (likely old episode's position). Start from beginning.
+                writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$verifiedStartPos for $epIdForCheck (no savedPos, startPos > 30s, likely old episode position), starting from 0")
+                verifiedStartPos = -1L
+            }
+        }
+        startPositionMs = verifiedStartPos
 
         // [v2.0.73] Issue 1 Fix: Debounce rapid playEpisode calls for the SAME episode within 500ms.
         // When PlayerActivity reconnects or user taps quickly, duplicate calls cause player reset/prepare
