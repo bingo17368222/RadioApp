@@ -4148,34 +4148,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.125: CRITICAL FIX — Verify startPositionMs is for THIS episode, not the old one.
-        // Log showed: startPos=3576632 (old episode 08-12-9's position) being passed for
-        // new episode 08-13-1 (whose savedPos=18182). This caused "40 min showing on new episode".
-        // Root cause: onServiceConnected or other callers sometimes pass oldPos instead of
-        // newEpSavedPos. Fix: verify startPos against this episode's saved position in prefs.
-        var verifiedStartPos = startPositionMs
-        val epIdForCheck = episode.id ?: ""
-        if (verifiedStartPos > 30000 && epIdForCheck.isNotBlank()) {
-            val newEpSavedPos = getSharedPreferences("playback_positions", MODE_PRIVATE)
-                .getLong(epIdForCheck, -1L)
-            if (newEpSavedPos > 0) {
-                // This episode has a saved position — verify startPos matches
-                val delta = verifiedStartPos - newEpSavedPos
-                if (delta > 300000) {
-                    // startPos is more than 5 min ahead of this episode's saved position
-                    // — likely the old episode's position being passed by mistake
-                    writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$verifiedStartPos for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min, likely old episode position), using savedPos=$newEpSavedPos instead")
-                    verifiedStartPos = newEpSavedPos
-                }
-            } else if (newEpSavedPos <= 0) {
-                // No saved position for this episode — startPos > 30s is suspicious
-                // (likely old episode's position). Start from beginning.
-                writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$verifiedStartPos for $epIdForCheck (no savedPos, startPos > 30s, likely old episode position), starting from 0")
-                verifiedStartPos = -1L
-            }
-        }
-        startPositionMs = verifiedStartPos
-
         // [v2.0.73] Issue 1 Fix: Debounce rapid playEpisode calls for the SAME episode within 500ms.
         // When PlayerActivity reconnects or user taps quickly, duplicate calls cause player reset/prepare
         // cycles that produce position=0 and seekTo oscillation.
