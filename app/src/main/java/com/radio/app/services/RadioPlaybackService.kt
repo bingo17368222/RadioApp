@@ -1917,7 +1917,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * This generates 5-min PCM and full PCM without generating subtitles.
      * Used when pre-generate subtitles is OFF but preprocessing is ON.
      */
-    private fun startPreCachePcmGeneration(episode: com.radio.app.data.Episode) {
+    private fun startPreCachePcmGeneration(episode: Episode) {
         val episodeId = episode.id ?: return
         if (episodeId.isBlank()) return
         val audioUrl = episode.audioUrl ?: return
@@ -1927,8 +1927,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // Run pre-segmentation (creates placeholder segments)
         try {
-            val epDuration = episode.duration?.let { if (it in 60..100000) it * 1000 else 0 } ?: 0
-            val durationMs = if (epDuration > 60000) epDuration.toLong() else 7200_000L
+            val epDuration = episode.duration ?: 0
+            val durationMs = if (epDuration in 60000..100000000) epDuration.toLong() else 7200_000L
             com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
         } catch (e: Exception) {
             writePreCacheLog("startPreCachePcmGeneration: pre-segment failed: ${e.message}")

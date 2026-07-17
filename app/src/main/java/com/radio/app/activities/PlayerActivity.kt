@@ -467,12 +467,10 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
-            val newUrl = currentEpisode?.audioUrl
+            // v2.4.123: newUrl, svcUrl, sameEpisode already declared above for the UI sync logic.
             val svcStarted = playbackService?.isPlaybackStarted() ?: false
             val svcPlaying = playbackService?.isPlaying() ?: false
             val svcPrepared = playbackService?.isPrepared() ?: false
-            val svcUrl = playbackService?.getCurrentPlayingUrl()
-            val sameEpisode = playbackService?.isSameEpisodePlaying(newUrl ?: "") ?: false
 
             val logMsg = "=== onServiceConnected DEBUG ===\n" +
                 "  isFreshStart=$isFreshStart, svcStarted=$svcStarted, svcPlaying=$svcPlaying, svcPrepared=$svcPrepared\n" +
