@@ -1925,11 +1925,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         writePreCacheLog("startPreCachePcmGeneration: [v2.4.123] starting PCM-only generation for $episodeId (url=$audioUrl)")
 
-        // Run pre-segmentation (creates placeholder segments)
+        // Run pre-segmentation (creates placeholder segments — fixed 15-min segments)
         try {
             val epDuration = episode.duration ?: 0
             val durationMs = if (epDuration in 60000..100000000) epDuration.toLong() else 7200_000L
+            writePreCacheLog("startPreCachePcmGeneration: [v2.4.124] calling preSegmentFixed for $episodeId, durationMs=$durationMs (fixed 15-min segments)")
             com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
+            writePreCacheLog("startPreCachePcmGeneration: [v2.4.124] preSegmentFixed completed for $episodeId")
         } catch (e: Exception) {
             writePreCacheLog("startPreCachePcmGeneration: pre-segment failed: ${e.message}")
         }

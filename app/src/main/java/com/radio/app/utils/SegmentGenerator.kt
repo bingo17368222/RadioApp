@@ -187,6 +187,10 @@ object SegmentGenerator {
             val existing = dbHelper.getVoiceSegments(episodeId)
             if (existing.isNotEmpty()) {
                 Log.i(TAG, "preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping")
+                // v2.4.124: Write to precache log for visibility
+                val logFile = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+                logFile.parentFile?.mkdirs()
+                logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping (durationMs=$durationMs)\n")
                 return
             }
             val segments = generateFixedSegments(durationMs)
@@ -194,6 +198,11 @@ object SegmentGenerator {
                 dbHelper.saveVoiceSegments(episodeId, segments)
                 dbHelper.updateEpisodeSegmentCount(episodeId, segments.size)
                 Log.i(TAG, "preSegmentFixed: saved ${segments.size} fixed segments for episode=$episodeId")
+                // v2.4.124: Write to precache log for visibility
+                val logFile = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+                logFile.parentFile?.mkdirs()
+                val segInfo = segments.mapIndexed { i, s -> "seg[$i]: ${s.start}-${s.end}ms (${(s.end - s.start) / 1000}s) ${s.label}" }.joinToString(", ")
+                logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: SAVED ${segments.size} fixed 15-min segments for episode=$episodeId (durationMs=$durationMs): $segInfo\n")
             }
         } catch (e: Exception) {
             Log.e(TAG, "preSegmentFixed failed: ${e.message}")
