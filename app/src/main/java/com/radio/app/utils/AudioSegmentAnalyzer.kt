@@ -703,9 +703,27 @@ object AudioSegmentAnalyzer {
                 }
 
                 // v2.4.126: Detect VAD malfunction (prob always < 0.01)
+                // v2.4.128: CHANGED — When VAD or YAMNet malfunction is detected,
+                // preserve error info and STOP segmentation. Do NOT fall back to
+                // other classification methods (energy+ZCR, YAMNet-only, etc.).
                 if (frameResults.size == 4 && vadProb < 0.01f) {
-                    vadLog("[v2.4.126] WARNING: VAD prob abnormally low (<0.01) for first 5 frames. VAD model may be malfunctioning. Will use YAMNet as primary classifier.")
-                    Log.w(TAG, "[v2.4.126] VAD malfunction detected: prob=$vadProb < 0.01. Using YAMNet as primary classifier.")
+                    val errMsg = "[v2.4.128] VAD malfunction: prob=$vadProb < 0.01 for first 5 frames. VAD model not detecting speech. Segmentation ABORTED — no fallback classification."
+                    vadLog(errMsg)
+                    Log.e(TAG, errMsg)
+                    throw RuntimeException("VAD模型故障: 前5帧prob值全部<0.01 ($vadProb)。分段已中止，不使用其他分类方法。")
+                }
+
+                // v2.4.128: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0))
+                if (frameResults.size == 4) {
+                    val yamnetAllHalf = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
+                                        kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
+                                        kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f
+                    if (yamnetAllHalf) {
+                        val errMsg = "[v2.4.128] YAMNet malfunction: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence all ~0.5 (sigmoid(0), no discriminative power). Segmentation ABORTED — no fallback classification."
+                        vadLog(errMsg)
+                        Log.e(TAG, errMsg)
+                        throw RuntimeException("YAMNet模型故障: speech/music/silence值全部≈0.5（无区分度）。分段已中止，不使用其他分类方法。")
+                    }
                 }
 
                 // Energy features (supplementary)
@@ -1255,41 +1273,10 @@ object AudioSegmentAnalyzer {
     ): FrameType {
         val energyRatio = rmsEnergy / maxEnergy
 
-        // v2.4.126: VAD malfunction fallback — when VAD prob is abnormally low (<0.01),
-        // the VAD model is not detecting speech. Use YAMNet as primary classifier.
-        // This prevents "全部是水货" when VAD returns near-zero prob for all frames.
-        if (vadProb < 0.01f) {
-            // v2.4.127: Check if YAMNet is ALSO malfunctioning (all values ~0.5 = sigmoid(0))
-            // If YAMNet has no discriminative power, use energy-based classification.
-            val yamnetAllHalf = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
-                                kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
-                                kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f
-
-            if (yamnetAllHalf) {
-                // v2.4.127: Both VAD and YAMNet malfunctioning — use energy + ZCR heuristics
-                // Low energy → silence
-                if (energyRatio < ENERGY_SILENCE_RATIO) return FrameType.SILENCE
-                // High energy + low ZCR → speech (dry) — low ZCR means voiced sounds
-                // High energy + high ZCR → music (water) — high ZCR means unvoiced/noise
-                if (energyRatio > ENERGY_MUSIC_RATIO) {
-                    return if (zcr < 0.3f) FrameType.DRY else FrameType.WATER
-                }
-                // Medium energy — use ZCR as tiebreaker
-                return if (zcr < 0.2f) FrameType.DRY else FrameType.WATER
-            }
-
-            // YAMNet has discriminative power — trust YAMNet only
-            // 1. Silence: YAMNet says silence
-            if (yamnetSilence > 0.5f) return FrameType.SILENCE
-            // 2. Speech: YAMNet says speech (must be clearly above 0.5, not just 0.3)
-            if (yamnetSpeech > 0.55f) return FrameType.DRY
-            // 3. Music: YAMNet says music
-            if (yamnetMusic > 0.55f) return FrameType.WATER
-            // 4. High energy but no speech/music → water
-            if (energyRatio > ENERGY_MUSIC_RATIO) return FrameType.WATER
-            // 5. Default: water (don't assume speech without clear signal)
-            return FrameType.WATER
-        }
+        // v2.4.128: Removed all fallback classification logic.
+        // When VAD or YAMNet malfunction, analyzePcmFile() throws an exception
+        // and aborts segmentation. This function is only reached when both
+        // models are working correctly.
 
         // 1. Silence: both models agree on low energy
         if (energyRatio < ENERGY_SILENCE_RATIO && vadProb < VAD_WATER_THRESHOLD) {
