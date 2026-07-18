@@ -157,23 +157,76 @@ object AudioSegmentAnalyzer {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+        val precacheLog = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+        precacheLog.parentFile?.mkdirs()
+        val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
 
-        // Check if both already exist
-        if (fullPcmFile.exists() && fullPcmFile.length() > 16000 &&
+        // v2.4.127: Get MP4 duration for comparison
+        var mp4DurationMs = 0L
+        try {
+            val episodesDir = java.io.File(context.getExternalFilesDir(null), "RadioApp/episodes")
+            if (episodesDir.exists()) {
+                val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac")) } ?: emptyList()
+                val audioFile = if (audioUrl != null) {
+                    val urlFileName = audioUrl.substringAfterLast("/")
+                    cachedFiles.find { it.name == urlFileName || it.name.startsWith(urlFileName.substringBeforeLast(".")) }
+                        ?: cachedFiles.find { it.name.contains(episodeId) }
+                        ?: cachedFiles.maxByOrNull { it.lastModified() }
+                } else {
+                    cachedFiles.find { it.name.contains(episodeId) } ?: cachedFiles.maxByOrNull { it.lastModified() }
+                }
+                if (audioFile != null && audioFile.exists()) {
+                    val ex = android.media.MediaExtractor()
+                    ex.setDataSource(audioFile.absolutePath)
+                    for (i in 0 until ex.trackCount) {
+                        val fmt = ex.getTrackFormat(i)
+                        val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                        if (mime.startsWith("audio/")) {
+                            if (fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                                mp4DurationMs = (fmt.getLong(android.media.MediaFormat.KEY_DURATION) * 1000)
+                            }
+                            break
+                        }
+                    }
+                    ex.release()
+                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] MP4 duration for $episodeId: ${mp4DurationMs}ms (${mp4DurationMs / 60000} min), audioFile=${audioFile.name}\n")
+                }
+            }
+        } catch (e: Exception) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] failed to get MP4 duration: ${e.message}\n")
+        }
+
+        // Check if both already exist AND are valid size
+        val expectedPcmBytes = (mp4DurationMs / 1000.0 * 16000 * 2).toLong() // 16kHz mono 16-bit
+        val minValidBytes = (expectedPcmBytes * 0.9).toLong() // Allow 10% tolerance
+        if (fullPcmFile.exists() && fullPcmFile.length() > minValidBytes &&
             min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-            Log.i(TAG, "preGeneratePcmFiles: both PCM files already exist for $episodeId (full=${fullPcmFile.length()}, 5min=${min5PcmFile.length()})")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] both PCM files already exist and valid for $episodeId (full=${fullPcmFile.length()} bytes, expected~$expectedPcmBytes)\n")
             return true
         }
 
-        // Decode full PCM if missing
+        // v2.4.127: If full PCM exists but is too small, delete it and regenerate
+        if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes && mp4DurationMs > 0) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] EXISTING full PCM too small for $episodeId (${fullPcmFile.length()} bytes < expected $minValidBytes), deleting and regenerating\n")
+            fullPcmFile.delete()
+            if (min5PcmFile.exists()) min5PcmFile.delete()
+        }
+
+        // Decode full PCM if missing or was deleted
         if (!fullPcmFile.exists() || fullPcmFile.length() <= 16000) {
-            Log.i(TAG, "preGeneratePcmFiles: decoding full PCM for $episodeId (audioUrl=$audioUrl)")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] decoding full PCM for $episodeId (audioUrl=$audioUrl, expectedPcmBytes=$expectedPcmBytes)\n")
             val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
             if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
-                Log.e(TAG, "preGeneratePcmFiles: failed to decode full PCM for $episodeId")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] FAILED to decode full PCM for $episodeId\n")
                 return false
             }
-            Log.i(TAG, "preGeneratePcmFiles: full PCM generated: ${decoded.name} (${decoded.length()} bytes)")
+            val pcmDurationMs = decoded.length() / (16000 * 2) * 1000
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] full PCM generated: ${decoded.name} (${decoded.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
+
+            // v2.4.127: Verify PCM duration matches MP4 duration
+            if (mp4DurationMs > 0 && pcmDurationMs < mp4DurationMs * 0.9) {
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] WARNING: PCM duration (${pcmDurationMs}ms) < MP4 duration (${mp4DurationMs}ms * 0.9), PCM may be truncated\n")
+            }
         }
 
         // Generate 5-min PCM from full PCM if missing
@@ -198,9 +251,9 @@ object AudioSegmentAnalyzer {
                     fis.close()
                     fos.close()
                 }
-                Log.i(TAG, "preGeneratePcmFiles: 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
             } catch (e: Exception) {
-                Log.e(TAG, "preGeneratePcmFiles: failed to create 5-min PCM: ${e.message}")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] failed to create 5-min PCM: ${e.message}\n")
             }
         }
 
@@ -356,7 +409,10 @@ object AudioSegmentAnalyzer {
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             val outputDirFile = outputFile
             var totalPcmBytes = 0
-            val maxPcmBytes = 50 * 1024 * 1024  // 50MB max (~26 min at 16kHz mono)
+            // v2.4.127: FIX — Remove the 50MB cap. A 2-hour audio at 16kHz mono 16-bit
+            // produces ~230MB of PCM. The old 50MB cap truncated PCM to ~26 minutes,
+            // causing "PCM文件大小不正常，很多只有几十兆".
+            val maxPcmBytes = 500 * 1024 * 1024  // 500MB max (~2.7 hours at 16kHz mono)
 
             // Resample to 16kHz mono if needed
             val needResample = sampleRate != 16000 || channelCount != 1
@@ -1203,17 +1259,36 @@ object AudioSegmentAnalyzer {
         // the VAD model is not detecting speech. Use YAMNet as primary classifier.
         // This prevents "全部是水货" when VAD returns near-zero prob for all frames.
         if (vadProb < 0.01f) {
-            // VAD malfunction mode: trust YAMNet only
+            // v2.4.127: Check if YAMNet is ALSO malfunctioning (all values ~0.5 = sigmoid(0))
+            // If YAMNet has no discriminative power, use energy-based classification.
+            val yamnetAllHalf = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
+                                kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
+                                kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f
+
+            if (yamnetAllHalf) {
+                // v2.4.127: Both VAD and YAMNet malfunctioning — use energy + ZCR heuristics
+                // Low energy → silence
+                if (energyRatio < ENERGY_SILENCE_RATIO) return FrameType.SILENCE
+                // High energy + low ZCR → speech (dry) — low ZCR means voiced sounds
+                // High energy + high ZCR → music (water) — high ZCR means unvoiced/noise
+                if (energyRatio > ENERGY_MUSIC_RATIO) {
+                    return if (zcr < 0.3f) FrameType.DRY else FrameType.WATER
+                }
+                // Medium energy — use ZCR as tiebreaker
+                return if (zcr < 0.2f) FrameType.DRY else FrameType.WATER
+            }
+
+            // YAMNet has discriminative power — trust YAMNet only
             // 1. Silence: YAMNet says silence
             if (yamnetSilence > 0.5f) return FrameType.SILENCE
-            // 2. Speech: YAMNet says speech
-            if (yamnetSpeech > 0.3f) return FrameType.DRY
+            // 2. Speech: YAMNet says speech (must be clearly above 0.5, not just 0.3)
+            if (yamnetSpeech > 0.55f) return FrameType.DRY
             // 3. Music: YAMNet says music
-            if (yamnetMusic > 0.4f) return FrameType.WATER
+            if (yamnetMusic > 0.55f) return FrameType.WATER
             // 4. High energy but no speech/music → water
             if (energyRatio > ENERGY_MUSIC_RATIO) return FrameType.WATER
-            // 5. Default: if YAMNet speech > music, classify as dry
-            return if (yamnetSpeech > yamnetMusic) FrameType.DRY else FrameType.WATER
+            // 5. Default: water (don't assume speech without clear signal)
+            return FrameType.WATER
         }
 
         // 1. Silence: both models agree on low energy

@@ -3784,9 +3784,16 @@ class PlayerActivity : AppCompatActivity() {
                 }
             } else {
                 // [v2.1.8] Different episode - MUST call playEpisode to switch
-                // Pass seekMs as startPositionMs so player seeks immediately after prepare
-                val startPos = if (seekMs > 0) seekMs else getSavedPositionForEpisode(this, newEpisode.id)
-                writeJitterLog("onNewIntent: DIFFERENT episode, calling playEpisode with startPos=$startPos")
+                // v2.4.127: CRITICAL FIX — When switching to a DIFFERENT episode,
+                // NEVER use seekMs from the intent as startPos. The seekMs is the
+                // OLD episode's position (passed from notification/widget), not the
+                // new episode's position. Using it causes "90 min showing on new episode".
+                // Always use the new episode's saved position.
+                val startPos = getSavedPositionForEpisode(this, newEpisode.id)
+                writeJitterLog("onNewIntent: DIFFERENT episode, calling playEpisode with startPos=$startPos (seekMs=$seekMs IGNORED — it was old episode's position)")
+                if (seekMs > 0) {
+                    pendingSeekMs = -1L  // Clear pendingSeekMs — it was for the old episode
+                }
                 playbackService?.playEpisode(newEpisode, false, startPos)
             }
         } else {
