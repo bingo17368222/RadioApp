@@ -1008,10 +1008,22 @@ class PlayerActivity : AppCompatActivity() {
                     // [v2.4.41] STABILIZATION: During app switch-back, only accept positions
                     // close to the baseline (±30s). This prevents both forward and backward jitter.
                     val deltaFromBaseline = kotlin.math.abs(position - jitterSyncBaseline)
+                    // v2.4.126: After episode change, if the delta is very large (>60s),
+                    // the baseline was likely set to a transitional position (old savedPos).
+                    // Accept the actual position immediately instead of HOLDING for 3 seconds.
                     if (deltaFromBaseline <= 30000L) {
                         // Position is close to baseline - accept it
                         lastDisplayedPositionMs = position
                         displayPosition = position
+                        consecutiveBackwardJumps = 0
+                    } else if (deltaFromBaseline > 60000L && (now - jitterSyncTimeMs) < jitterStabilizeMs) {
+                        // v2.4.126: Large delta during stabilization after episode change —
+                        // the baseline was transitional. Accept the actual position.
+                        writeJitterLog("[v2.4.126] STAB-ACCEPT: accept pos=$position (baseline=$jitterSyncBaseline was transitional, delta=${deltaFromBaseline}ms > 60s, updating baseline)")
+                        lastDisplayedPositionMs = position
+                        displayPosition = position
+                        jitterSyncBaseline = position
+                        jitterSyncTimeMs = now
                         consecutiveBackwardJumps = 0
                     } else {
                         // Position is far from baseline - HOLD

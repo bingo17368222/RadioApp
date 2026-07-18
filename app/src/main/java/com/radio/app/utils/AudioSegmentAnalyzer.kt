@@ -619,6 +619,12 @@ object AudioSegmentAnalyzer {
                 // YAMNet classification
                 val (yamnetSpeech, yamnetMusic, yamnetSilence) = classifyWithYamnet(yamnetInterpreter, window)
 
+                // v2.4.126: Log YAMNet results for first 5 frames to diagnose "全部是水货"
+                if (frameResults.size < 5) {
+                    Log.i(TAG, "YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence")
+                    vadLog("YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, rmsEnergy=${computeRmsEnergy(window, 0, window.size)}")
+                }
+
                 // Silero VAD
                 var vadProb = 0f
                 var vadChunks = 0
@@ -638,6 +644,12 @@ object AudioSegmentAnalyzer {
                 // v2.4.109: Log averaged VAD prob for first 5 frames
                 if (frameResults.size < 5) {
                     Log.i(TAG, "VAD frame #${frameResults.size}: avgProb=$vadProb, vadChunks=$vadChunks, energy=${computeRmsEnergy(window, 0, window.size)}")
+                }
+
+                // v2.4.126: Detect VAD malfunction (prob always < 0.01)
+                if (frameResults.size == 4 && vadProb < 0.01f) {
+                    vadLog("[v2.4.126] WARNING: VAD prob abnormally low (<0.01) for first 5 frames. VAD model may be malfunctioning. Will use YAMNet as primary classifier.")
+                    Log.w(TAG, "[v2.4.126] VAD malfunction detected: prob=$vadProb < 0.01. Using YAMNet as primary classifier.")
                 }
 
                 // Energy features (supplementary)
@@ -1186,6 +1198,23 @@ object AudioSegmentAnalyzer {
         maxEnergy: Float
     ): FrameType {
         val energyRatio = rmsEnergy / maxEnergy
+
+        // v2.4.126: VAD malfunction fallback — when VAD prob is abnormally low (<0.01),
+        // the VAD model is not detecting speech. Use YAMNet as primary classifier.
+        // This prevents "全部是水货" when VAD returns near-zero prob for all frames.
+        if (vadProb < 0.01f) {
+            // VAD malfunction mode: trust YAMNet only
+            // 1. Silence: YAMNet says silence
+            if (yamnetSilence > 0.5f) return FrameType.SILENCE
+            // 2. Speech: YAMNet says speech
+            if (yamnetSpeech > 0.3f) return FrameType.DRY
+            // 3. Music: YAMNet says music
+            if (yamnetMusic > 0.4f) return FrameType.WATER
+            // 4. High energy but no speech/music → water
+            if (energyRatio > ENERGY_MUSIC_RATIO) return FrameType.WATER
+            // 5. Default: if YAMNet speech > music, classify as dry
+            return if (yamnetSpeech > yamnetMusic) FrameType.DRY else FrameType.WATER
+        }
 
         // 1. Silence: both models agree on low energy
         if (energyRatio < ENERGY_SILENCE_RATIO && vadProb < VAD_WATER_THRESHOLD) {
