@@ -379,6 +379,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // ExoPlayer can report stale old-episode positions even 12+ seconds after setMediaItem.
     @Volatile
     private var episodeStartPos = 0L
+    // v2.4.129: Track when the current episode started playing. Used to detect leaked
+    // positions from the previous episode during force-save in playEpisode.
+    // If oldPos is way ahead of episodeStartPos but the episode just started (e.g., < 30s),
+    // the position is likely leaked from the previous episode.
+    @Volatile
+    private var episodeStartTimeMs = 0L
     // v2.4.116: Counter for stale position rejections (reset on episode switch)
     @Volatile
     private var stalePosRejectCount = 0
@@ -4103,8 +4109,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v2.4.121: Removed forward delta check (was staleDelta > 120000).
                 // The 120s threshold was rejecting valid positions after 2 min of playback.
                 val staleDelta = if (episodeStartPos > 0) oldPos - episodeStartPos else 0
+                // v2.4.129: Re-introduce forward delta check with time-based filtering.
+                // The old 120s fixed threshold rejected valid positions after 2 min of playback.
+                // New approach: only reject if the delta is impossibly large for the elapsed time.
+                // E.g., if episode started 5 seconds ago at pos=591736, but oldPos=2186681
+                // (delta=1594945ms = 26 min), it's impossible to play 26 min in 5 seconds.
+                // Formula: max reasonable delta = elapsed_time + 10s buffer (for seek + processing)
+                val elapsedMs = System.currentTimeMillis() - episodeStartTimeMs
+                val maxReasonableDelta = elapsedMs + 10000  // 10s buffer
                 if (staleDelta < -5000) {
                     writeServiceLog("playback", "[v2.4.121] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms, position went backward) for oldEpId=${oldEp.id}")
+                } else if (staleDelta > maxReasonableDelta && episodeStartTimeMs > 0) {
+                    // v2.4.129: Position is impossibly far ahead of start position.
+                    // This is leaked from the previous episode — don't save it.
+                    writeServiceLog("playback", "[v2.4.129] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked position) for oldEpId=${oldEp.id}")
+                    // Keep existing saved position — don't overwrite with leaked value
                 } else {
                     getSharedPreferences("playback_positions", MODE_PRIVATE)
                         .edit().putLong(oldEp.id!!, oldPos).commit()
@@ -4203,6 +4222,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // getCurrentPosition() to reject rawPos values that are far behind the start position
             // (indicating they come from the old episode leaking through ExoPlayer).
             episodeStartPos = if (startPositionMs >= 0) startPositionMs else 0L
+            // v2.4.129: Record when this episode started
+            episodeStartTimeMs = System.currentTimeMillis()
             // v2.4.116: Reset stale position rejection counter for new episode
             stalePosRejectCount = 0
             // [v2.0.92] Reset lastValidDurationMs to prevent getSafeDuration() from returning
@@ -4590,6 +4611,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.116: Update episodeStartPos on user seek so the REJECTED check in
         // saveCurrentPosition uses the seeked position as the new reference point.
         episodeStartPos = pos
+        // v2.4.129: Also update episodeStartTimeMs so the time-based forward delta
+        // check in playEpisode force-save doesn't reject positions after a seek.
+        episodeStartTimeMs = now
         stalePosRejectCount = 0
         // [v2.0.91] Only update maxKnownPosition when seeking FORWARD — never lower it.
         // maxKnownPosition is used for anti-storm detection (zeroStorm, largeBackward) and must

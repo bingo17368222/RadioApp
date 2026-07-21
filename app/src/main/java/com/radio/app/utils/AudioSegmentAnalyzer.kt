@@ -303,10 +303,37 @@ object AudioSegmentAnalyzer {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         Log.i(TAG, "analyzeEpisode: searching for PCM in ${pcmCacheDir.absolutePath}")
 
+        // v2.4.129: Validate PCM file size against expected duration.
+        // A truncated PCM (e.g., 50MB from old limit) will cause both VAD and YAMNet
+        // to process only partial audio, potentially leading to model malfunction.
+        val audioDurationMs = durationMs
+        val expectedPcmBytes = if (audioDurationMs > 0) {
+            (audioDurationMs / 1000.0 * 16000 * 2).toLong() // 16kHz mono 16-bit
+        } else {
+            (30 * 60 * 16000 * 2).toLong() // Default: 30 min minimum
+        }
+        val minValidBytes = (expectedPcmBytes * 0.85).toLong() // Allow 15% tolerance
+
         // 1. Full PCM (from subtitle preprocessing)
         var pcmFile: File? = File(pcmCacheDir, "${episodeId}_full.pcm")
         if (pcmFile!!.exists() && pcmFile.length() > 16000) {
-            Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
+            // v2.4.129: Check if PCM is truncated
+            if (pcmFile.length() < minValidBytes) {
+                vadLog("[v2.4.129] analyzeEpisode: full PCM TRUNCATED for $episodeId: ${pcmFile.length()} bytes < expected $minValidBytes (duration=${audioDurationMs}ms). Deleting and regenerating.")
+                Log.w(TAG, "[v2.4.129] PCM truncated: ${pcmFile.length()} bytes < expected $minValidBytes. Regenerating.")
+                pcmFile.delete()
+                // Also delete 5min PCM since it was derived from the same truncated source
+                val min5File = File(pcmCacheDir, "${episodeId}_5min.pcm")
+                if (min5File.exists()) min5File.delete()
+                // Decode fresh PCM
+                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+                if (pcmFile == null) {
+                    throw RuntimeException("PCM重新生成失败: 原文件被截断(${pcmFile?.length() ?: 0} bytes < $minValidBytes)")
+                }
+                vadLog("[v2.4.129] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
+            } else {
+                Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
+            }
         } else {
             // 2. 5-min PCM (from PCM pre-decode)
             pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
@@ -800,13 +827,27 @@ object AudioSegmentAnalyzer {
 
     private fun loadYamnetModel(modelFile: File): Interpreter {
         try {
+            // v2.4.129: Log model file info to file log for diagnostics
+            vadLog("[v2.4.129] loadYamnetModel: file=${modelFile.name}, size=${modelFile.length()} bytes, exists=${modelFile.exists()}")
             val mappedBuffer = FileInputStream(modelFile).channel.map(
                 FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
             )
             val options = Interpreter.Options()
             options.setNumThreads(2)
             val interp = Interpreter(mappedBuffer, options)
-            Log.i(TAG, "YAMNet loaded: input=${interp.getInputTensor(0).shape().contentToString()}, output=${interp.getOutputTensor(0).shape().contentToString()}")
+            val inputShape = interp.getInputTensor(0).shape().contentToString()
+            val inputType = interp.getInputTensor(0).dataType()
+            val outputShape = interp.getOutputTensor(0).shape().contentToString()
+            val outputType = interp.getOutputTensor(0).dataType()
+            Log.i(TAG, "YAMNet loaded: input=$inputShape ($inputType), output=$outputShape ($outputType)")
+            // v2.4.129: Log to file log for diagnostics
+            vadLog("[v2.4.129] loadYamnetModel: loaded successfully. input=$inputShape ($inputType), output=$outputShape ($outputType)")
+            // v2.4.129: If input is not [1, 15600] float32, the model expects a different format
+            // (e.g., log-mel spectrograms), which would explain near-baseline outputs.
+            if (inputShape != "[1, 15600]" || inputType != org.tensorflow.lite.DataType.FLOAT32) {
+                vadLog("[v2.4.129] loadYamnetModel: WARNING - unexpected input shape/type! Expected [1, 15600] FLOAT32, got $inputShape $inputType. Model may expect spectrograms, not raw waveform.")
+                Log.w(TAG, "[v2.4.129] YAMNet unexpected input: $inputShape $inputType")
+            }
             return interp
         } catch (e: Throwable) {
             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
@@ -816,6 +857,8 @@ object AudioSegmentAnalyzer {
             throw RuntimeException("YAMNet模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
         }
     }
+
+    private var yamnetCallCount = 0
 
     private fun classifyWithYamnet(
         interpreter: Interpreter,
@@ -829,6 +872,16 @@ object AudioSegmentAnalyzer {
             )
             inputBuffer.loadArray(samples)
 
+            // v2.4.129: Log input diagnostics for first 3 calls
+            yamnetCallCount++
+            if (yamnetCallCount <= 3) {
+                var nonZero = 0
+                var sum = 0.0
+                for (s in samples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s) }
+                val avgAbs = (sum / samples.size).toFloat()
+                vadLog("[v2.4.129] classifyWithYamnet #$yamnetCallCount: input samples=${samples.size}, nonZero=$nonZero, avgAbs=$avgAbs, first10=${samples.take(10).joinToString(",")}")
+            }
+
             // Output: [1, 521] float
             val outputBuffer = TensorBuffer.createFixedSize(
                 intArrayOf(1, YAMNET_NUM_CLASSES),
@@ -837,6 +890,22 @@ object AudioSegmentAnalyzer {
 
             interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
             val scores = outputBuffer.floatArray
+
+            // v2.4.129: Log raw output scores for first 3 calls
+            if (yamnetCallCount <= 3) {
+                val rawSpeech = scores.getOrElse(YAMNET_IDX_SPEECH) { 0f }
+                val rawSilence = scores.getOrElse(YAMNET_IDX_SILENCE) { 0f }
+                val rawMusic = scores.getOrElse(YAMNET_IDX_MUSIC) { 0f }
+                val rawSong = scores.getOrElse(YAMNET_IDX_SONG) { 0f }
+                // Find max score and its index
+                var maxIdx = 0
+                var maxScore = -Float.MAX_VALUE
+                for (i in scores.indices) {
+                    if (scores[i] > maxScore) { maxScore = scores[i]; maxIdx = i }
+                }
+                vadLog("[v2.4.129] classifyWithYamnet #$yamnetCallCount: raw scores: speech[$YAMNET_IDX_SPEECH]=$rawSpeech, silence[$YAMNET_IDX_SILENCE]=$rawSilence, music[$YAMNET_IDX_MUSIC]=$rawMusic, song[$YAMNET_IDX_SONG]=$rawSong")
+                vadLog("[v2.4.129] classifyWithYamnet #$yamnetCallCount: max score=$maxScore at idx=$maxIdx, all zeros=${scores.all { it == 0f }}, output size=${scores.size}")
+            }
 
             // Extract key categories (apply sigmoid to raw scores)
             val speechProb = sigmoid(scores.getOrElse(YAMNET_IDX_SPEECH) { 0f })
@@ -848,6 +917,7 @@ object AudioSegmentAnalyzer {
             return Triple(speechProb, musicProb, silenceProb)
         } catch (e: Exception) {
             Log.e(TAG, "YAMNet classification failed: ${e.message}")
+            vadLog("[v2.4.129] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
             return Triple(0f, 0f, 0f)
         }
     }
@@ -1108,6 +1178,15 @@ object AudioSegmentAnalyzer {
             val inputTensor = createTensor(chunk, longArrayOf(1, chunk.size.toLong()))
                 ?: throw RuntimeException("createTensor failed for input")
             inputMap[model.inputNames.firstOrNull() ?: "input"] = inputTensor
+
+            // v2.4.129: Log VAD input diagnostics for first 5 calls
+            if (vadRunCount <= 5) {
+                var chunkNonZero = 0
+                var chunkSum = 0.0
+                for (s in chunk) { if (s != 0f) chunkNonZero++; chunkSum += kotlin.math.abs(s) }
+                val chunkAvgAbs = (chunkSum / chunk.size).toFloat()
+                vadLog("[v2.4.129] runSileroVad #$vadRunCount: input chunk size=${chunk.size}, nonZero=$chunkNonZero, avgAbs=$chunkAvgAbs, first10=${chunk.take(10).joinToString(",")}")
+            }
 
             if (model.isV4Style) {
                 // v3/v4: single "state" input
