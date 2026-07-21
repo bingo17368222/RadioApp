@@ -205,7 +205,35 @@ object AudioSegmentAnalyzer {
             (30 * 60 * 16000 * 2).toLong() // Default: 30 min minimum
         }
         val minValidBytes = (expectedPcmBytes * 0.9).toLong() // Allow 10% tolerance
-        if (fullPcmFile.exists() && fullPcmFile.length() > minValidBytes &&
+
+        // v2.4.131: Invalidate old PCM cache files that were generated with the
+        // buggy integer-division resampling (pre-v2.4.130). These files have
+        // wrong sample rate (22050Hz instead of 16000Hz) causing slow/low playback.
+        // Check the .info file for the resampler version.
+        val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
+        val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
+        val REQUIRED_PCM_VERSION = 5  // v2.4.131: version 5 = correct linear interpolation resampling
+        var needsRegeneration = false
+
+        if (fullPcmFile.exists() && fullInfoFile.exists()) {
+            try {
+                val infoContent = fullInfoFile.readText()
+                val versionMatch = Regex("version=(\\d+)").find(infoContent)
+                val pcmVersion = versionMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                if (pcmVersion < REQUIRED_PCM_VERSION) {
+                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.131] INVALIDATING old PCM cache for $episodeId (version=$pcmVersion < required=$REQUIRED_PCM_VERSION, old resampling bug). Deleting.\n")
+                    fullPcmFile.delete()
+                    if (min5PcmFile.exists()) min5PcmFile.delete()
+                    if (fullInfoFile.exists()) fullInfoFile.delete()
+                    if (min5InfoFile.exists()) min5InfoFile.delete()
+                    needsRegeneration = true
+                }
+            } catch (e: Exception) {
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.131] failed to read .info file: ${e.message}\n")
+            }
+        }
+
+        if (!needsRegeneration && fullPcmFile.exists() && fullPcmFile.length() > minValidBytes &&
             min5PcmFile.exists() && min5PcmFile.length() > 16000) {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] both PCM files already exist and valid for $episodeId (full=${fullPcmFile.length()} bytes, expected~$expectedPcmBytes)\n")
             return true
@@ -327,8 +355,45 @@ object AudioSegmentAnalyzer {
         // 1. Full PCM (from subtitle preprocessing)
         var pcmFile: File? = File(pcmCacheDir, "${episodeId}_full.pcm")
         if (pcmFile!!.exists() && pcmFile.length() > 16000) {
-            // v2.4.129: Check if PCM is truncated
-            if (pcmFile.length() < minValidBytes) {
+            // v2.4.131: Check .info file version. Old PCM (pre-v2.4.130) used
+            // integer-division resampling which produced wrong sample rate.
+            val infoFile = File(pcmCacheDir, "${episodeId}_full.info")
+            var needsRegen = false
+            if (infoFile.exists()) {
+                try {
+                    val infoContent = infoFile.readText()
+                    val versionMatch = Regex("version=(\\d+)").find(infoContent)
+                    val pcmVersion = versionMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                    if (pcmVersion < 5) {
+                        vadLog("[v2.4.131] analyzeEpisode: PCM cache version=$pcmVersion < 5 (old resampling bug), regenerating for $episodeId")
+                        Log.w(TAG, "[v2.4.131] Invalidating old PCM cache (version=$pcmVersion)")
+                        pcmFile.delete()
+                        if (infoFile.exists()) infoFile.delete()
+                        val min5File = File(pcmCacheDir, "${episodeId}_5min.pcm")
+                        if (min5File.exists()) min5File.delete()
+                        val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
+                        if (min5InfoFile.exists()) min5InfoFile.delete()
+                        needsRegen = true
+                    }
+                } catch (e: Exception) {
+                    vadLog("[v2.4.131] analyzeEpisode: failed to read .info: ${e.message}")
+                }
+            } else {
+                // No .info file — old cache, force regeneration
+                vadLog("[v2.4.131] analyzeEpisode: no .info file found, regenerating PCM for $episodeId")
+                pcmFile.delete()
+                needsRegen = true
+            }
+            if (needsRegen) {
+                // v2.4.131: PCM was invalidated, decode fresh
+                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+                if (pcmFile == null) {
+                    Log.e(TAG, "analyzeEpisode: failed to decode fresh PCM for $episodeId")
+                    throw RuntimeException("PCM重新生成失败: 旧缓存已被废弃(采样率错误)，重新解码失败")
+                }
+                vadLog("[v2.4.131] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
+            } else if (pcmFile.length() < minValidBytes) {
+                // v2.4.129: Check if PCM is truncated
                 // v2.4.130: Instead of deleting and regenerating from scratch,
                 // APPEND to the existing truncated PCM file. This preserves the
                 // already-decoded portion and only decodes the missing part.
@@ -562,6 +627,9 @@ object AudioSegmentAnalyzer {
             }
 
             Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
+            // v2.4.131: Write .info file with version for cache invalidation
+            val infoFile = File(outputFile.parentFile, outputFile.nameWithoutExtension + ".info")
+            infoFile.writeText("sampleRate=16000\nchannels=1\nversion=5\n")
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
@@ -683,6 +751,9 @@ object AudioSegmentAnalyzer {
             }
 
             Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
+            // v2.4.131: Write .info file with version for cache invalidation
+            val infoFile = File(outputFile.parentFile, outputFile.nameWithoutExtension + ".info")
+            infoFile.writeText("sampleRate=16000\nchannels=1\nversion=5\n")
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeUrlToPcm failed: ${e.message}")
@@ -1403,11 +1474,22 @@ object AudioSegmentAnalyzer {
     // ===== Feature computation =====
 
     private fun readPcmAsFloats(pcmFile: File): FloatArray {
-        val bytes = pcmFile.readBytes()
-        val samples = FloatArray(bytes.size / 2)
-        val byteBuffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in samples.indices) {
-            samples[i] = byteBuffer.short.toFloat() / 32768.0f
+        // v2.4.131: Use streaming read to avoid OOM on large PCM files (>400MB).
+        // Previously used pcmFile.readBytes() which loaded entire file into memory.
+        val numSamples = (pcmFile.length() / 2).toInt()
+        val samples = FloatArray(numSamples)
+        val byteBuffer = ByteBuffer.allocate(8192 * 2).order(ByteOrder.LITTLE_ENDIAN)
+        var sampleIdx = 0
+        java.io.FileInputStream(pcmFile).use { fis ->
+            while (true) {
+                val read = fis.read(byteBuffer.array())
+                if (read <= 0) break
+                byteBuffer.clear()
+                byteBuffer.limit(read)
+                while (byteBuffer.remaining() >= 2 && sampleIdx < numSamples) {
+                    samples[sampleIdx++] = byteBuffer.short.toFloat() / 32768.0f
+                }
+            }
         }
         return samples
     }

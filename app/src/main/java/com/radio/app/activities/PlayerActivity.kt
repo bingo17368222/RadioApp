@@ -1144,6 +1144,20 @@ class PlayerActivity : AppCompatActivity() {
                 jitterSyncTimeMs = System.currentTimeMillis()
                 consecutiveBackwardJumps = 0
                 writeJitterLog("[v2.4.128] onEpisodeChanged: set jitterSyncBaseline=$savedPos for ${episode.id}, starting stabilization")
+                // v2.4.131: Immediately update UI to show saved position for the new episode.
+                // Without this, the UI keeps showing the old episode's position until the next
+                // onPositionChanged callback, which may take several seconds. This caused the
+                // "切换节目，显示位置也在90分钟" bug.
+                if (savedPos > 0) {
+                    lastDisplayedPositionMs = savedPos
+                    binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                    binding.seekBar.progress = savedPos.toInt()
+                    writeJitterLog("[v2.4.131] onEpisodeChanged: pre-set UI to savedPos=$savedPos for new episode")
+                } else {
+                    binding.tvCurrentTime.text = "00:00 / --:--"
+                    binding.seekBar.progress = 0
+                    writeJitterLog("[v2.4.131] onEpisodeChanged: reset UI to 00:00 (no saved position)")
+                }
                 // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
                 clearSubtitles()
                 val newIdx = episodeList.indexOfFirst { it.id == episode.id }

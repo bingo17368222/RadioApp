@@ -2108,8 +2108,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
                                 }
                             }
-                            // v2.4.130: Add date to notification text
-                            val dateFormat = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                            // v2.4.131: Fix notification date — use yyyy-MM-dd HH:mm format with
+                            // explicit timezone to avoid wrong date/time display. Add year per user request.
+                            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA)
+                            dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
                             val dateStr = dateFormat.format(java.util.Date())
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
