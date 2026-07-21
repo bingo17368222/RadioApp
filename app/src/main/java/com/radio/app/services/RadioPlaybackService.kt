@@ -2108,9 +2108,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
                                 }
                             }
+                            // v2.4.130: Add date to notification text
+                            val dateFormat = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                            val dateStr = dateFormat.format(java.util.Date())
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
-                                .setContentTitle("预处理PCM")
+                                .setContentTitle("预处理PCM [$dateStr]")
                                 .setContentText("正在为 ${ep.title ?: ep.id} 生成PCM文件...")
                                 .setAutoCancel(true)
                                 .build()
@@ -2854,6 +2857,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // playback, indicates stale position from a different episode).
             if (delta < -5000) {
                 writeServiceLog("playback", "[v2.4.121] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms, position went backward, likely stale)")
+                return
+            }
+            // v2.4.130: Re-introduce forward delta check with TIME-BASED filtering.
+            // The old 120s fixed threshold rejected valid positions after 2 min of playback.
+            // New approach: only reject if delta is impossibly large for the elapsed time.
+            // E.g., if episode started 12 seconds ago at pos=441691, but pos=4196935
+            // (delta=3755244ms = 62 min), it's impossible to play 62 min in 12 seconds.
+            // Formula: max reasonable delta = elapsed_time + 10s buffer
+            val elapsedMs = System.currentTimeMillis() - episodeStartTimeMs
+            val maxReasonableDelta = elapsedMs + 10000
+            if (delta > maxReasonableDelta && episodeStartTimeMs > 0) {
+                writeServiceLog("playback", "[v2.4.130] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked position)")
                 return
             }
         }

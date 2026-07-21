@@ -214,12 +214,11 @@ object AudioSegmentAnalyzer {
         // v2.4.127: If full PCM exists but is too small, delete it and regenerate
         // v2.4.128: Also check when mp4DurationMs is 0 (uses default 30-min minimum)
         if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] EXISTING full PCM too small for $episodeId (${fullPcmFile.length()} bytes < expected $minValidBytes, mp4DurationMs=$mp4DurationMs), deleting and regenerating\n")
-            fullPcmFile.delete()
-            if (min5PcmFile.exists()) min5PcmFile.delete()
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] EXISTING full PCM too small for $episodeId (${fullPcmFile.length()} bytes < expected $minValidBytes, mp4DurationMs=$mp4DurationMs). Will append.\n")
+            // v2.4.130: Don't delete — we'll append to the existing file
         }
 
-        // Decode full PCM if missing or was deleted
+        // Decode full PCM if missing or needs appending
         if (!fullPcmFile.exists() || fullPcmFile.length() <= 16000) {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] decoding full PCM for $episodeId (audioUrl=$audioUrl, expectedPcmBytes=$expectedPcmBytes)\n")
             val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
@@ -234,6 +233,17 @@ object AudioSegmentAnalyzer {
             if (mp4DurationMs > 0 && pcmDurationMs < mp4DurationMs * 0.9) {
                 precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] WARNING: PCM duration (${pcmDurationMs}ms) < MP4 duration (${mp4DurationMs}ms * 0.9), PCM may be truncated\n")
             }
+        } else if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes) {
+            // v2.4.130: Append to truncated PCM instead of deleting
+            val existingBytes = fullPcmFile.length()
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.130] appending to truncated PCM for $episodeId (existing=${existingBytes} bytes, expected=$minValidBytes)\n")
+            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, startOffsetBytes = existingBytes)
+            if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.130] FAILED to append PCM for $episodeId\n")
+                return false
+            }
+            val pcmDurationMs = decoded.length() / (16000 * 2) * 1000
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.130] full PCM appended: ${decoded.name} (${decoded.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
         }
 
         // Generate 5-min PCM from full PCM if missing
@@ -319,18 +329,21 @@ object AudioSegmentAnalyzer {
         if (pcmFile!!.exists() && pcmFile.length() > 16000) {
             // v2.4.129: Check if PCM is truncated
             if (pcmFile.length() < minValidBytes) {
-                vadLog("[v2.4.129] analyzeEpisode: full PCM TRUNCATED for $episodeId: ${pcmFile.length()} bytes < expected $minValidBytes (duration=${audioDurationMs}ms). Deleting and regenerating.")
-                Log.w(TAG, "[v2.4.129] PCM truncated: ${pcmFile.length()} bytes < expected $minValidBytes. Regenerating.")
-                pcmFile.delete()
+                // v2.4.130: Instead of deleting and regenerating from scratch,
+                // APPEND to the existing truncated PCM file. This preserves the
+                // already-decoded portion and only decodes the missing part.
+                val existingBytes = pcmFile.length()
+                vadLog("[v2.4.130] analyzeEpisode: full PCM TRUNCATED for $episodeId: ${existingBytes} bytes < expected $minValidBytes (duration=${audioDurationMs}ms). Appending missing portion.")
+                Log.w(TAG, "[v2.4.130] PCM truncated: ${existingBytes} bytes < expected $minValidBytes. Appending.")
                 // Also delete 5min PCM since it was derived from the same truncated source
                 val min5File = File(pcmCacheDir, "${episodeId}_5min.pcm")
                 if (min5File.exists()) min5File.delete()
-                // Decode fresh PCM
-                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+                // Append missing PCM data (continue from where we left off)
+                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, startOffsetBytes = existingBytes)
                 if (pcmFile == null) {
-                    throw RuntimeException("PCM重新生成失败: 原文件被截断(${pcmFile?.length() ?: 0} bytes < $minValidBytes)")
+                    throw RuntimeException("PCM补全失败: 原文件被截断(${existingBytes} bytes < $minValidBytes)，补全生成失败")
                 }
-                vadLog("[v2.4.129] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
+                vadLog("[v2.4.130] analyzeEpisode: appended PCM, total now: ${pcmFile.length()} bytes")
             } else {
                 Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
             }
@@ -363,7 +376,7 @@ object AudioSegmentAnalyzer {
      * v2.4.99: Find audio file by URL-based filename (not episode ID).
      * This is a fallback when no pre-decoded PCM file exists.
      */
-    private fun decodeAudioToPcm(context: Context, episodeId: String, outputDir: File, audioUrl: String? = null): File? {
+    private fun decodeAudioToPcm(context: Context, episodeId: String, outputDir: File, audioUrl: String? = null, startOffsetBytes: Long = 0): File? {
         try {
             val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
             val cachedFiles = episodesDir.listFiles()?.filter {
@@ -435,6 +448,17 @@ object AudioSegmentAnalyzer {
             val channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
             val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
 
+            // v2.4.130: If resuming from truncated PCM, seek the extractor to the
+            // corresponding position in the source audio. This skips already-decoded content.
+            if (startOffsetBytes > 0) {
+                // Calculate how many seconds of 16kHz mono 16-bit PCM we already have
+                val decodedSeconds = startOffsetBytes.toDouble() / (16000 * 2)
+                // Convert to microseconds for MediaExtractor.seekTo
+                val seekToUs = (decodedSeconds * 1_000_000).toLong()
+                vadLog("[v2.4.130] decodeAudioToPcm: APPEND MODE — seeking to ${seekToUs}us (${decodedSeconds}s), existing PCM=$startOffsetBytes bytes")
+                extractor.seekTo(seekToUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            }
+
             // Create decoder
             val decoder = android.media.MediaCodec.createDecoderByType(mime)
             decoder.configure(inputFormat, null, null, 0)
@@ -442,7 +466,16 @@ object AudioSegmentAnalyzer {
 
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             val outputDirFile = outputFile
-            var totalPcmBytes = 0
+            // v2.4.130: Support append mode for continuing truncated PCM.
+            // If startOffsetBytes > 0, we're resuming from a truncated PCM file.
+            // Open in append mode and skip already-decoded bytes.
+            val appendMode = startOffsetBytes > 0
+            val fos = if (appendMode) {
+                FileOutputStream(outputDirFile, true)  // append
+            } else {
+                FileOutputStream(outputDirFile)  // overwrite
+            }
+            var totalPcmBytes = if (appendMode) startOffsetBytes else 0
             // v2.4.127: FIX — Remove the 50MB cap. A 2-hour audio at 16kHz mono 16-bit
             // produces ~230MB of PCM. The old 50MB cap truncated PCM to ~26 minutes,
             // causing "PCM文件大小不正常，很多只有几十兆".
@@ -474,21 +507,31 @@ object AudioSegmentAnalyzer {
                             outputBuffer.get(chunk)
 
                             if (needResample) {
-                                // Simple downsample: take every Nth sample + mix channels
+                                // v2.4.130: FIXED resampling — was using integer division
+                                // (sampleRate / 16000), which produced wrong output rate for
+                                // 44100Hz audio (ratio=2 → output 22050Hz instead of 16000Hz).
+                                // Now uses linear interpolation for proper resampling.
                                 val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                                val ratio = sampleRate / 16000
-                                val outSamples = pcmShort.remaining() / channelCount / ratio
-                                val outBuf = java.nio.ByteBuffer.allocate(outSamples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                var i = 0
-                                while (i + channelCount <= pcmShort.remaining()) {
-                                    if (i % (ratio * channelCount) == 0) {
-                                        var sum = 0
-                                        for (c in 0 until channelCount) {
-                                            sum += pcmShort.get(i + c)
-                                        }
-                                        outBuf.putShort((sum / channelCount).toShort())
+                                val inFrames = pcmShort.remaining() / channelCount
+                                val outFrames = (inFrames.toLong() * 16000 / sampleRate).toInt()
+                                val outBuf = java.nio.ByteBuffer.allocate(outFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                val ratioFloat = sampleRate.toFloat() / 16000f
+                                for (outIdx in 0 until outFrames) {
+                                    val srcPos = outIdx * ratioFloat
+                                    val srcIdx = srcPos.toInt()
+                                    val frac = srcPos - srcIdx
+                                    // Mix channels to mono
+                                    var sample0 = 0
+                                    var sample1 = 0
+                                    for (c in 0 until channelCount) {
+                                        sample0 += if (srcIdx * channelCount + c < pcmShort.remaining()) pcmShort.get(srcIdx * channelCount + c) else 0
+                                        sample1 += if ((srcIdx + 1) * channelCount + c < pcmShort.remaining()) pcmShort.get((srcIdx + 1) * channelCount + c) else 0
                                     }
-                                    i += channelCount
+                                    sample0 /= channelCount
+                                    sample1 /= channelCount
+                                    // Linear interpolation
+                                    val interpolated = sample0 + ((sample1 - sample0) * frac).toInt()
+                                    outBuf.putShort(interpolated.toShort())
                                 }
                                 val outBytes = ByteArray(outBuf.position())
                                 outBuf.rewind()
@@ -590,20 +633,26 @@ object AudioSegmentAnalyzer {
                             outputBuffer.get(chunk)
 
                             if (needResample) {
+                                // v2.4.130: FIXED resampling — linear interpolation instead of integer division
                                 val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                                val ratio = sampleRate / 16000
-                                val outSamples = pcmShort.remaining() / channelCount / ratio
-                                val outBuf = java.nio.ByteBuffer.allocate(outSamples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                var i = 0
-                                while (i + channelCount <= pcmShort.remaining()) {
-                                    if (i % (ratio * channelCount) == 0) {
-                                        var sum = 0
-                                        for (c in 0 until channelCount) {
-                                            sum += pcmShort.get(i + c)
-                                        }
-                                        outBuf.putShort((sum / channelCount).toShort())
+                                val inFrames = pcmShort.remaining() / channelCount
+                                val outFrames = (inFrames.toLong() * 16000 / sampleRate).toInt()
+                                val outBuf = java.nio.ByteBuffer.allocate(outFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                val ratioFloat = sampleRate.toFloat() / 16000f
+                                for (outIdx in 0 until outFrames) {
+                                    val srcPos = outIdx * ratioFloat
+                                    val srcIdx = srcPos.toInt()
+                                    val frac = srcPos - srcIdx
+                                    var sample0 = 0
+                                    var sample1 = 0
+                                    for (c in 0 until channelCount) {
+                                        sample0 += if (srcIdx * channelCount + c < pcmShort.remaining()) pcmShort.get(srcIdx * channelCount + c) else 0
+                                        sample1 += if ((srcIdx + 1) * channelCount + c < pcmShort.remaining()) pcmShort.get((srcIdx + 1) * channelCount + c) else 0
                                     }
-                                    i += channelCount
+                                    sample0 /= channelCount
+                                    sample1 /= channelCount
+                                    val interpolated = sample0 + ((sample1 - sample0) * frac).toInt()
+                                    outBuf.putShort(interpolated.toShort())
                                 }
                                 val outBytes = ByteArray(outBuf.position())
                                 outBuf.rewind()
@@ -835,19 +884,17 @@ object AudioSegmentAnalyzer {
             val options = Interpreter.Options()
             options.setNumThreads(2)
             val interp = Interpreter(mappedBuffer, options)
-            val inputShape = interp.getInputTensor(0).shape().contentToString()
+            val inputShape = interp.getInputTensor(0).shape()
             val inputType = interp.getInputTensor(0).dataType()
-            val outputShape = interp.getOutputTensor(0).shape().contentToString()
+            val outputShape = interp.getOutputTensor(0).shape()
             val outputType = interp.getOutputTensor(0).dataType()
-            Log.i(TAG, "YAMNet loaded: input=$inputShape ($inputType), output=$outputShape ($outputType)")
+            // v2.4.130: Store actual input shape for use in classifyWithYamnet
+            yamnetInputShape = inputShape
+            Log.i(TAG, "YAMNet loaded: input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
             // v2.4.129: Log to file log for diagnostics
-            vadLog("[v2.4.129] loadYamnetModel: loaded successfully. input=$inputShape ($inputType), output=$outputShape ($outputType)")
-            // v2.4.129: If input is not [1, 15600] float32, the model expects a different format
-            // (e.g., log-mel spectrograms), which would explain near-baseline outputs.
-            if (inputShape != "[1, 15600]" || inputType != org.tensorflow.lite.DataType.FLOAT32) {
-                vadLog("[v2.4.129] loadYamnetModel: WARNING - unexpected input shape/type! Expected [1, 15600] FLOAT32, got $inputShape $inputType. Model may expect spectrograms, not raw waveform.")
-                Log.w(TAG, "[v2.4.129] YAMNet unexpected input: $inputShape $inputType")
-            }
+            vadLog("[v2.4.129] loadYamnetModel: loaded successfully. input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
+            // v2.4.130: Removed the warning about unexpected input shape.
+            // The model's input shape [15600] is valid — YAMNet expects 1D raw waveform input.
             return interp
         } catch (e: Throwable) {
             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
@@ -859,15 +906,20 @@ object AudioSegmentAnalyzer {
     }
 
     private var yamnetCallCount = 0
+    // v2.4.130: Store YAMNet input shape from model for correct tensor creation
+    private var yamnetInputShape: IntArray = intArrayOf(1, 15600)
 
     private fun classifyWithYamnet(
         interpreter: Interpreter,
         samples: FloatArray
     ): Triple<Float, Float, Float> {
         try {
-            // YAMNet input: [1, 15600] float
+            // v2.4.130: Use model's actual input shape instead of hardcoded [1, 15600].
+            // The loaded model reports input=[15600] (1D), not [1, 15600] (2D).
+            // Creating a buffer with wrong shape causes TFLite to process data incorrectly,
+            // producing all-zero outputs (sigmoid(0) = 0.5 for all classes).
             val inputBuffer = TensorBuffer.createFixedSize(
-                intArrayOf(1, YAMNET_WINDOW_SAMPLES),
+                yamnetInputShape,
                 org.tensorflow.lite.DataType.FLOAT32
             )
             inputBuffer.loadArray(samples)
