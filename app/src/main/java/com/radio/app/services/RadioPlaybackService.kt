@@ -2108,14 +2108,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
                                 }
                             }
-                            // v2.4.131: Fix notification date — use yyyy-MM-dd HH:mm format with
-                            // explicit timezone to avoid wrong date/time display. Add year per user request.
-                            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA)
-                            dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-                            val dateStr = dateFormat.format(java.util.Date())
+                            // v2.4.132: Show EPISODE's broadcast date/time (not current date).
+                            // broadcastAt format: "2024-08-30T19:00:00" → display "2024-08-30 19:00"
+                            val epDateStr = if (ep.broadcastAt.length >= 16) {
+                                ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
+                            } else if (ep.broadcastAt.length >= 10) {
+                                ep.broadcastAt.substring(0, 10)
+                            } else {
+                                // Fallback: extract date from episode ID (format: xxx-2024-08-30-N)
+                                val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
+                                dateMatch?.value ?: "未知日期"
+                            }
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
-                                .setContentTitle("预处理PCM [$dateStr]")
+                                .setContentTitle("预处理PCM [$epDateStr]")
                                 .setContentText("正在为 ${ep.title ?: ep.id} 生成PCM文件...")
                                 .setAutoCancel(true)
                                 .build()

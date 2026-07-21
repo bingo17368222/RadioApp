@@ -212,7 +212,7 @@ object AudioSegmentAnalyzer {
         // Check the .info file for the resampler version.
         val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
         val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
-        val REQUIRED_PCM_VERSION = 5  // v2.4.131: version 5 = correct linear interpolation resampling
+        val REQUIRED_PCM_VERSION = 6  // v2.4.132: version 6 = FORMAT_CHANGED handling + continuous phase resampling
         var needsRegeneration = false
 
         if (fullPcmFile.exists() && fullInfoFile.exists()) {
@@ -364,8 +364,8 @@ object AudioSegmentAnalyzer {
                     val infoContent = infoFile.readText()
                     val versionMatch = Regex("version=(\\d+)").find(infoContent)
                     val pcmVersion = versionMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    if (pcmVersion < 5) {
-                        vadLog("[v2.4.131] analyzeEpisode: PCM cache version=$pcmVersion < 5 (old resampling bug), regenerating for $episodeId")
+                    if (pcmVersion < 6) {
+                        vadLog("[v2.4.132] analyzeEpisode: PCM cache version=$pcmVersion < 6 (old resampling bug, no FORMAT_CHANGED handling), regenerating for $episodeId")
                         Log.w(TAG, "[v2.4.131] Invalidating old PCM cache (version=$pcmVersion)")
                         pcmFile.delete()
                         if (infoFile.exists()) infoFile.delete()
@@ -509,9 +509,13 @@ object AudioSegmentAnalyzer {
             }
             extractor.selectTrack(audioTrackIndex)
             val inputFormat = extractor.getTrackFormat(audioTrackIndex)
-            val sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
-            val channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+            // v2.4.132: Use var for sample rate/channels — they may change after INFO_OUTPUT_FORMAT_CHANGED
+            // (e.g. HE-AAC v2: container says 22050Hz/1ch, but codec outputs 44100Hz/2ch after SBR+PS)
+            // This is the SAME approach used by SubtitleGeneratorService.decodeFullAudioToPcm (proven correct).
+            var sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+            var channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
             val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+            Log.i(TAG, "decodeAudioToPcm: container format: ${sampleRate}Hz ${channelCount}ch mime=$mime")
 
             // v2.4.130: If resuming from truncated PCM, seek the extractor to the
             // corresponding position in the source audio. This skips already-decoded content.
@@ -541,13 +545,15 @@ object AudioSegmentAnalyzer {
                 java.io.FileOutputStream(outputDirFile)  // overwrite
             }
             var totalPcmBytes = if (appendMode) startOffsetBytes else 0
-            // v2.4.127: FIX — Remove the 50MB cap. A 2-hour audio at 16kHz mono 16-bit
-            // produces ~230MB of PCM. The old 50MB cap truncated PCM to ~26 minutes,
-            // causing "PCM文件大小不正常，很多只有几十兆".
-            val maxPcmBytes = 500 * 1024 * 1024  // 500MB max (~2.7 hours at 16kHz mono)
+            // v2.4.132: Fixed max PCM size — 300MB = ~2.6 hours at 16kHz mono 16-bit.
+            // Old value was 500MB which was way too high (indicated wrong sample rate).
+            val maxPcmBytes = 300 * 1024 * 1024  // 300MB max
 
-            // Resample to 16kHz mono if needed
-            val needResample = sampleRate != 16000 || channelCount != 1
+            // v2.4.132: Resampling state — continuous phase tracking (same as SubtitleGeneratorService)
+            var resamplePhase = 0.0
+            var lastSample: Short = 0
+            // needResample is re-evaluated after FORMAT_CHANGED
+            var needResample = sampleRate != 16000 || channelCount != 1
             // fos already created above (append or overwrite mode)
 
             try {
@@ -565,6 +571,21 @@ object AudioSegmentAnalyzer {
                     }
 
                     val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000)
+                    // v2.4.132: Handle INFO_OUTPUT_FORMAT_CHANGED — codec actual output may differ from container
+                    // This is the SAME approach as SubtitleGeneratorService.decodeFullAudioToPcm (proven correct).
+                    // For HE-AAC v2: container says 22050Hz/1ch, but codec outputs 44100Hz/2ch after SBR+PS.
+                    if (outputBufferIndex == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val newFormat = decoder.outputFormat
+                        try {
+                            sampleRate = newFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                            channelCount = newFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+                            needResample = sampleRate != 16000 || channelCount != 1
+                            Log.i(TAG, "decodeAudioToPcm: FORMAT_CHANGED: actual sampleRate=$sampleRate, channels=$channelCount, needResample=$needResample")
+                            vadLog("[v2.4.132] decodeAudioToPcm: FORMAT_CHANGED: ${sampleRate}Hz ${channelCount}ch (was container format)")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "decodeAudioToPcm: FORMAT_CHANGED but failed to read format: ${e.message}")
+                        }
+                    }
                     if (outputBufferIndex >= 0) {
                         val outputBuffer = decoder.getOutputBuffer(outputBufferIndex)
                         if (outputBuffer != null && bufferInfo.size > 0) {
@@ -572,32 +593,48 @@ object AudioSegmentAnalyzer {
                             outputBuffer.get(chunk)
 
                             if (needResample) {
-                                // v2.4.130: FIXED resampling — was using integer division
-                                // (sampleRate / 16000), which produced wrong output rate for
-                                // 44100Hz audio (ratio=2 → output 22050Hz instead of 16000Hz).
-                                // Now uses linear interpolation for proper resampling.
+                                // v2.4.132: Use continuous-phase linear interpolation resampling
+                                // (same algorithm as SubtitleGeneratorService.resampleChunkContinuousSG).
+                                // This properly handles non-integer ratios (e.g., 44100/16000=2.75625).
                                 val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
                                 val inFrames = pcmShort.remaining() / channelCount
-                                val outFrames = (inFrames.toLong() * 16000 / sampleRate).toInt()
-                                val outBuf = java.nio.ByteBuffer.allocate(outFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                val ratioFloat = sampleRate.toFloat() / 16000f
-                                for (outIdx in 0 until outFrames) {
-                                    val srcPos = outIdx * ratioFloat
-                                    val srcIdx = srcPos.toInt()
-                                    val frac = srcPos - srcIdx
-                                    // Mix channels to mono
-                                    var sample0 = 0
-                                    var sample1 = 0
+
+                                // Mix to mono first
+                                val monoInput = ShortArray(inFrames)
+                                for (i in 0 until inFrames) {
+                                    var sum = 0
                                     for (c in 0 until channelCount) {
-                                        sample0 += if (srcIdx * channelCount + c < pcmShort.remaining()) pcmShort.get(srcIdx * channelCount + c) else 0
-                                        sample1 += if ((srcIdx + 1) * channelCount + c < pcmShort.remaining()) pcmShort.get((srcIdx + 1) * channelCount + c) else 0
+                                        sum += pcmShort.get(i * channelCount + c).toInt()
                                     }
-                                    sample0 /= channelCount
-                                    sample1 /= channelCount
-                                    // Linear interpolation
-                                    val interpolated = sample0 + ((sample1 - sample0) * frac).toInt()
-                                    outBuf.putShort(interpolated.toShort())
+                                    monoInput[i] = (sum / channelCount).toShort()
                                 }
+
+                                // Continuous-phase linear interpolation
+                                val ratio = sampleRate.toDouble() / 16000.0
+                                val extendedInput = ShortArray(monoInput.size + 1)
+                                extendedInput[0] = lastSample
+                                System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
+                                val availableInputRange = extendedInput.size - 1
+                                var currentPhase = resamplePhase
+                                val outputSamples = ArrayList<Short>(512)
+
+                                while (currentPhase < availableInputRange) {
+                                    val srcIdx = currentPhase.toInt()
+                                    val frac = currentPhase - srcIdx
+                                    val s0 = extendedInput[srcIdx].toInt()
+                                    val s1 = extendedInput[srcIdx + 1].toInt()
+                                    val interpolated = s0 + ((s1 - s0) * frac).toInt()
+                                    outputSamples.add(interpolated.toShort())
+                                    currentPhase += ratio
+                                }
+
+                                // Update state for next chunk
+                                resamplePhase = currentPhase - availableInputRange
+                                lastSample = if (monoInput.isNotEmpty()) monoInput[monoInput.size - 1] else lastSample
+
+                                // Write output
+                                val outBuf = java.nio.ByteBuffer.allocate(outputSamples.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                for (s in outputSamples) outBuf.putShort(s)
                                 val outBytes = ByteArray(outBuf.position())
                                 outBuf.rewind()
                                 outBuf.get(outBytes)
@@ -626,10 +663,10 @@ object AudioSegmentAnalyzer {
                 extractor.release()
             }
 
-            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
+            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes to ${outputFile.name} (final rate: ${sampleRate}Hz ${channelCount}ch -> 16kHz mono)")
             // v2.4.131: Write .info file with version for cache invalidation
             val infoFile = File(outputFile.parentFile, outputFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=16000\nchannels=1\nversion=5\n")
+            infoFile.writeText("sampleRate=16000\nchannels=1\nversion=6\n")
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
