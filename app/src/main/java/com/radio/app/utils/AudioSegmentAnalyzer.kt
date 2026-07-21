@@ -471,9 +471,9 @@ object AudioSegmentAnalyzer {
             // Open in append mode and skip already-decoded bytes.
             val appendMode = startOffsetBytes > 0
             val fos = if (appendMode) {
-                FileOutputStream(outputDirFile, true)  // append
+                java.io.FileOutputStream(outputDirFile, true)  // append
             } else {
-                FileOutputStream(outputDirFile)  // overwrite
+                java.io.FileOutputStream(outputDirFile)  // overwrite
             }
             var totalPcmBytes = if (appendMode) startOffsetBytes else 0
             // v2.4.127: FIX — Remove the 50MB cap. A 2-hour audio at 16kHz mono 16-bit
