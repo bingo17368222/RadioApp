@@ -927,12 +927,9 @@ class PlayerActivity : AppCompatActivity() {
                         writeJitterLog("[v2.4.132] POS-LOCK: accept pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms), clearing lock")
                         episodeSwitchLockPos = -1L
                         lastDisplayedPositionMs = position
-                        displayPosition = position
                         jitterSyncBaseline = position
                         jitterSyncTimeMs = now
                         consecutiveBackwardJumps = 0
-                        // v2.4.132: Clear position lock on seek completion
-                        episodeSwitchLockPos = -1L
                         // Update UI
                         if (duration > 0) {
                             binding.tvCurrentTime.text = "${formatTime(position.toInt())} / ${formatTime(duration.toInt())}"
@@ -942,7 +939,7 @@ class PlayerActivity : AppCompatActivity() {
                             binding.tvCurrentTime.text = "${formatTime(position.toInt())} / --:--"
                             binding.seekBar.progress = position.toInt()
                         }
-                        lastJitterEpisodeId = currentEpId
+                        lastJitterEpisodeId = currentEpisode?.id
                         return@runOnUiThread
                     }
                 }
