@@ -904,28 +904,37 @@ object AudioSegmentAnalyzer {
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
                 if (frameResults.size == 4 && vadProb < 0.01f) {
-                    val diag = buildString {
-                        append("VAD模型故障: 前5帧prob值全部<0.01 (avg=$vadProb)。\n")
-                        append("VAD模型未检测到语音。分段已中止，不使用其他分类方法。\n")
-                        append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
-                        var sMin = Float.MAX_VALUE
-                        var sMax = -Float.MAX_VALUE
-                        var sSum = 0.0
-                        for (s in samples) {
-                            if (s < sMin) sMin = s
-                            if (s > sMax) sMax = s
-                            sSum += s
-                        }
-                        val sMean = (sSum / samples.size).toFloat()
-                        append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
-                        append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
-                        append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
-                        append("VAD model: stateSize=${vadModel.stateSize}\n")
-                        append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
+                    // v2.4.133: Check if YAMNet is working. If YAMNet speech > 0.3 for any frame,
+                    // fall back to YAMNet-only mode instead of aborting.
+                    val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.3f }
+                    if (yamnetWorking) {
+                        vadLog("[v2.4.133] VAD malfunction (prob<0.01) but YAMNet is working (speech>0.3). Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[v2.4.133] VAD malfunction — falling back to YAMNet-only mode")
+                        vadMalfunction = true  // Flag to use YAMNet-only classification
+                    } else {
+                        val diag = buildString {
+                            append("VAD模型故障: 前5帧prob值全部<0.01 (avg=$vadProb)。\n")
+                            append("VAD模型未检测到语音，YAMNet也未检测到语音(speech<0.3)。分段已中止。\n")
+                            append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
+                            var sMin = Float.MAX_VALUE
+                            var sMax = -Float.MAX_VALUE
+                            var sSum = 0.0
+                            for (s in samples) {
+                                if (s < sMin) sMin = s
+                                if (s > sMax) sMax = s
+                                sSum += s
+                            }
+                            val sMean = (sSum / samples.size).toFloat()
+                            append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
+                            append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
+                            append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
+                            append("VAD model: stateSize=${vadModel.stateSize}\n")
+                            append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
                     }
                     vadLog("[v2.4.128] ERROR: VAD malfunction.\n$diag")
                     Log.e(TAG, "[v2.4.128] VAD malfunction:\n$diag")
                     throw RuntimeException(diag)
+                    }  // end of else block
                 }
 
                 // v2.4.128: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0))
@@ -961,9 +970,14 @@ object AudioSegmentAnalyzer {
                 // Energy features (supplementary) — computed above for v2.4.128 diagnostics
 
                 // Fuse: dual-model classification
-                val type = classifyFrameDualModel(
-                    yamnetSpeech, yamnetMusic, yamnetSilence, vadProb, rmsEnergy, zcr, maxEnergy
-                )
+                // v2.4.133: When VAD malfunctions, use YAMNet-only classification
+                val type = if (vadMalfunction) {
+                    classifyFrameYamnetOnly(yamnetSpeech, yamnetMusic, yamnetSilence, rmsEnergy, zcr, maxEnergy)
+                } else {
+                    classifyFrameDualModel(
+                        yamnetSpeech, yamnetMusic, yamnetSilence, vadProb, rmsEnergy, zcr, maxEnergy
+                    )
+                }
                 frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, rmsEnergy))
 
                 pos += FRAME_STEP_SAMPLES
@@ -1014,6 +1028,8 @@ object AudioSegmentAnalyzer {
     }
 
     private var yamnetCallCount = 0
+    // v2.4.133: Flag for YAMNet-only mode when VAD malfunctions
+    private var vadMalfunction = false
     // v2.4.130: Store YAMNet input shape from model for correct tensor creation
     private var yamnetInputShape: IntArray = intArrayOf(1, 15600)
 
@@ -1609,6 +1625,45 @@ object AudioSegmentAnalyzer {
 
         // 7. Default: use VAD as tiebreaker
         return if (vadProb > 0.4f) FrameType.DRY else FrameType.WATER
+    }
+
+    // v2.4.133: YAMNet-only classification when VAD malfunctions.
+    // Uses YAMNet speech/music/silence scores + energy features.
+    private fun classifyFrameYamnetOnly(
+        yamnetSpeech: Float,
+        yamnetMusic: Float,
+        yamnetSilence: Float,
+        rmsEnergy: Float,
+        zcr: Float,
+        maxEnergy: Float
+    ): FrameType {
+        val energyRatio = rmsEnergy / maxEnergy
+
+        // 1. Silence: YAMNet says silence + low energy
+        if (yamnetSilence > 0.6f && energyRatio < ENERGY_SILENCE_RATIO) {
+            return FrameType.SILENCE
+        }
+        if (energyRatio < ENERGY_SILENCE_RATIO * 0.5f) {
+            return FrameType.SILENCE
+        }
+
+        // 2. Music: YAMNet says music
+        if (yamnetMusic > 0.5f) {
+            return FrameType.WATER
+        }
+
+        // 3. Speech: YAMNet says speech
+        if (yamnetSpeech > 0.3f) {
+            return FrameType.DRY
+        }
+
+        // 4. High energy but no speech → water (non-speech content)
+        if (energyRatio > ENERGY_MUSIC_RATIO) {
+            return FrameType.WATER
+        }
+
+        // 5. Default: use YAMNet speech as tiebreaker
+        return if (yamnetSpeech > 0.2f) FrameType.DRY else FrameType.WATER
     }
 
     // ===== Segment merging =====

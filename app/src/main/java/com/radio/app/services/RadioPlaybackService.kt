@@ -2947,12 +2947,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val ep = currentEpisode ?: return
         val pos = getCurrentPosition()
         if (pos < 0) return
-        // v2.4.121: Removed forward delta check (was delta > 120000).
-        // Same fix as saveCurrentPosition — 120s threshold was rejecting valid positions.
+        // v2.4.133: Add forward delta check (same as saveCurrentPosition).
+        // Prevents leaked positions from old episode from being saved.
         if (episodeStartPos > 0 && pos > 0) {
             val delta = pos - episodeStartPos
             if (delta < -5000) {
-                writeServiceLog("playback", "[v2.4.121] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, position went backward, likely stale)")
+                writeServiceLog("playback", "[v2.4.133] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, backward, likely stale)")
+                return
+            }
+            val elapsedMs = System.currentTimeMillis() - episodeStartTimeMs
+            val maxReasonableDelta = elapsedMs + 10000
+            if (delta > maxReasonableDelta && episodeStartTimeMs > 0) {
+                writeServiceLog("playback", "[v2.4.133] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked)")
                 return
             }
         }
@@ -3369,7 +3375,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
              // return old episode's position which is > new episode's duration. This falsely
              // triggers isPastEnd → clearSavedPosition → autoPlayNextEpisode with wrong startPos.
              val withinEpisodeSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 10000
-            if (isPastEnd && !withinEpisodeSwitchWindow) {
+            if (isPastEnd && !withinEpisodeSwitchWindow && !episodeSwitching) {
                 writeServiceLog("notification", "[v2.4.86] PAST-END: pos=$pos > dur=$dur, clearing progress and triggering autoPlayNextEpisode")
                 // v2.4.86: Clear saved progress BEFORE switching to next episode
                 // so the completed episode can be replayed from the beginning
@@ -4160,24 +4166,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.125: Shadow the parameter with a mutable local var so we can verify and adjust it.
         var startPositionMs = startPositionMs
 
-        // v2.4.125: CRITICAL FIX — Verify startPositionMs is for THIS episode, not the old one.
-        // Log showed: startPos=3576632 (old episode 08-12-9's position) being passed for
-        // new episode 08-13-1 (whose savedPos=18182). This caused "40 min showing on new episode".
-        // Root cause: onServiceConnected or other callers sometimes pass oldPos instead of
-        // newEpSavedPos. Fix: verify startPos against this episode's saved position in prefs.
+        // v2.4.133: Implement user's exact logic:
+        // 1. If startPositionMs < 0 (not specified), ALWAYS read saved position from SharedPreferences
+        // 2. If saved position found, use it
+        // 3. If no saved position, start from 0
+        // This replaces the v2.4.125 verification check which was rejecting legitimate saved positions.
         val epIdForCheck = episode.id ?: ""
-        if (startPositionMs > 30000 && epIdForCheck.isNotBlank()) {
+        if (epIdForCheck.isNotBlank()) {
             val newEpSavedPos = getSharedPreferences("playback_positions", MODE_PRIVATE)
                 .getLong(epIdForCheck, -1L)
-            if (newEpSavedPos > 0) {
+            if (startPositionMs < 0) {
+                // No start position specified by caller — load from saved
+                if (newEpSavedPos > 0) {
+                    startPositionMs = newEpSavedPos
+                    writeServiceLog("playback", "[v2.4.133] playEpisode: loaded savedPos=$newEpSavedPos for $epIdForCheck from SharedPreferences")
+                } else {
+                    writeServiceLog("playback", "[v2.4.133] playEpisode: no savedPos for $epIdForCheck, starting from 0")
+                }
+            } else if (startPositionMs > 30000 && newEpSavedPos > 0) {
+                // Caller specified a start position > 30s. Verify it matches saved position.
+                // If difference > 5min, it's likely an old episode position leaking through.
                 val delta = startPositionMs - newEpSavedPos
                 if (delta > 300000) {
-                    writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min, likely old episode position), using savedPos=$newEpSavedPos instead")
+                    writeServiceLog("playback", "[v2.4.133] playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min), using savedPos=$newEpSavedPos instead")
                     startPositionMs = newEpSavedPos
                 }
-            } else if (newEpSavedPos <= 0) {
-                writeServiceLog("playback", "[v2.4.125] playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (no savedPos, startPos > 30s, likely old episode position), starting from 0")
-                startPositionMs = -1L
             }
         }
         val epTitle = try { episode.title ?: "unknown" } catch (_: Exception) { "unknown" }
