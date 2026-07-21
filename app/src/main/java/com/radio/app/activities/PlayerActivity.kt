@@ -928,6 +928,8 @@ class PlayerActivity : AppCompatActivity() {
                     // v2.4.123: When episode changes, check if reported position is close to the
                     // new episode's expected startPos. If it's way off (e.g., old episode's position
                     // still being reported by ExoPlayer before seek completes), reject it.
+                    // v2.4.128: When expectedStart is 0 (no saved position), reject positions > 30s
+                    // as they are likely the old episode's position leaking through.
                     if (position > 2000) {
                         // v2.4.123: Check if this position is reasonable for the new episode
                         val expectedStart = getSavedPositionForEpisode(this@PlayerActivity, currentEpId)
@@ -941,13 +943,22 @@ class PlayerActivity : AppCompatActivity() {
                                 // Don't update lastDisplayedPositionMs — keep the savedPos set in onServiceConnected
                                 return@runOnUiThread
                             }
+                        } else if (expectedStart <= 0 && position > 30000) {
+                            // v2.4.128: No saved position for new episode, but position > 30s.
+                            // This is likely the old episode's position — reject it.
+                            writeJitterLog("[v2.4.128] onPositionChanged: episode changed to $currentEpId, REJECTING pos=$position (no savedPos, pos > 30s, likely old episode position)")
+                            lastJitterEpisodeId = currentEpId
+                            return@runOnUiThread
                         }
                         writeJitterLog("[v2.0.73] onPositionChanged: episode changed from $lastJitterEpisodeId to $currentEpId, resetting jitter guard (pos=$position)")
                         lastJitterEpisodeId = currentEpId
                         lastDisplayedPositionMs = position
                         consecutiveBackwardJumps = 0
                         jitterSyncTimeMs = now
-                        jitterSyncBaseline = position
+                        // v2.4.128: Don't set jitterSyncBaseline to the reported position.
+                        // Keep the baseline set in onEpisodeChanged (saved position or 0).
+                        // This prevents old episode positions from becoming the stabilization baseline.
+                        jitterSyncBaseline = if (expectedStart > 0) expectedStart else 0
                     } else {
                         // [v2.4.19] Episode changed with pos=0: reset to 0 instead of HOLDING old position
                         // Old code held lastDisplayedPositionMs which caused flicker between old/new episode positions
@@ -1008,22 +1019,14 @@ class PlayerActivity : AppCompatActivity() {
                     // [v2.4.41] STABILIZATION: During app switch-back, only accept positions
                     // close to the baseline (±30s). This prevents both forward and backward jitter.
                     val deltaFromBaseline = kotlin.math.abs(position - jitterSyncBaseline)
-                    // v2.4.126: After episode change, if the delta is very large (>60s),
-                    // the baseline was likely set to a transitional position (old savedPos).
-                    // Accept the actual position immediately instead of HOLDING for 3 seconds.
+                    // v2.4.128: Removed STAB-ACCEPT for large deltas (>60s). The old logic
+                    // accepted any large position jump during stabilization, which caused the
+                    // old episode's position to leak through after episode changes.
+                    // Now, positions far from baseline are always HELD during stabilization.
                     if (deltaFromBaseline <= 30000L) {
                         // Position is close to baseline - accept it
                         lastDisplayedPositionMs = position
                         displayPosition = position
-                        consecutiveBackwardJumps = 0
-                    } else if (deltaFromBaseline > 60000L && (now - jitterSyncTimeMs) < jitterStabilizeMs) {
-                        // v2.4.126: Large delta during stabilization after episode change —
-                        // the baseline was transitional. Accept the actual position.
-                        writeJitterLog("[v2.4.126] STAB-ACCEPT: accept pos=$position (baseline=$jitterSyncBaseline was transitional, delta=${deltaFromBaseline}ms > 60s, updating baseline)")
-                        lastDisplayedPositionMs = position
-                        displayPosition = position
-                        jitterSyncBaseline = position
-                        jitterSyncTimeMs = now
                         consecutiveBackwardJumps = 0
                     } else {
                         // Position is far from baseline - HOLD
@@ -1134,6 +1137,13 @@ class PlayerActivity : AppCompatActivity() {
                 // [v2.0.62] Reset UI position tracking for new episode
                 lastDisplayedPositionMs = 0
                 writeJitterLog("[v2.0.62] onEpisodeChanged: reset lastDisplayedPositionMs=0 for new episode")
+                // v2.4.128: Set jitterSyncBaseline to new episode's saved position.
+                // This prevents old episode's position from being accepted during stabilization.
+                val savedPos = getSavedPositionForEpisode(this@PlayerActivity, episode.id)
+                jitterSyncBaseline = savedPos
+                jitterSyncTimeMs = System.currentTimeMillis()
+                consecutiveBackwardJumps = 0
+                writeJitterLog("[v2.4.128] onEpisodeChanged: set jitterSyncBaseline=$savedPos for ${episode.id}, starting stabilization")
                 // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
                 clearSubtitles()
                 val newIdx = episodeList.indexOfFirst { it.id == episode.id }

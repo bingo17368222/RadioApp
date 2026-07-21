@@ -197,7 +197,13 @@ object AudioSegmentAnalyzer {
         }
 
         // Check if both already exist AND are valid size
-        val expectedPcmBytes = (mp4DurationMs / 1000.0 * 16000 * 2).toLong() // 16kHz mono 16-bit
+        // v2.4.128: When mp4DurationMs is 0 (failed to get duration), use a default
+        // minimum of 30 minutes (57.6MB) to detect truncated PCM files.
+        val expectedPcmBytes = if (mp4DurationMs > 0) {
+            (mp4DurationMs / 1000.0 * 16000 * 2).toLong() // 16kHz mono 16-bit
+        } else {
+            (30 * 60 * 16000 * 2).toLong() // Default: 30 min minimum
+        }
         val minValidBytes = (expectedPcmBytes * 0.9).toLong() // Allow 10% tolerance
         if (fullPcmFile.exists() && fullPcmFile.length() > minValidBytes &&
             min5PcmFile.exists() && min5PcmFile.length() > 16000) {
@@ -206,8 +212,9 @@ object AudioSegmentAnalyzer {
         }
 
         // v2.4.127: If full PCM exists but is too small, delete it and regenerate
-        if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes && mp4DurationMs > 0) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] EXISTING full PCM too small for $episodeId (${fullPcmFile.length()} bytes < expected $minValidBytes), deleting and regenerating\n")
+        // v2.4.128: Also check when mp4DurationMs is 0 (uses default 30-min minimum)
+        if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] EXISTING full PCM too small for $episodeId (${fullPcmFile.length()} bytes < expected $minValidBytes, mp4DurationMs=$mp4DurationMs), deleting and regenerating\n")
             fullPcmFile.delete()
             if (min5PcmFile.exists()) min5PcmFile.delete()
         }
@@ -528,7 +535,9 @@ object AudioSegmentAnalyzer {
 
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             var totalPcmBytes = 0
-            val maxPcmBytes = 50 * 1024 * 1024  // 50MB max (~26 min at 16kHz mono)
+            // v2.4.128: FIX — was 50MB, which truncated PCM to ~26 minutes.
+            // A 2-hour audio at 16kHz mono 16-bit produces ~230MB of PCM.
+            val maxPcmBytes = 500 * 1024 * 1024  // 500MB max (~2.7 hours at 16kHz mono)
             val needResample = sampleRate != 16000 || channelCount != 1
             val fos = java.io.FileOutputStream(outputFile)
 
@@ -703,14 +712,36 @@ object AudioSegmentAnalyzer {
                 }
 
                 // v2.4.126: Detect VAD malfunction (prob always < 0.01)
-                // v2.4.128: CHANGED — When VAD or YAMNet malfunction is detected,
-                // preserve error info and STOP segmentation. Do NOT fall back to
-                // other classification methods (energy+ZCR, YAMNet-only, etc.).
+                // v2.4.128: When VAD OR YAMNet malfunction is detected, preserve error info
+                // and STOP segmentation. Do NOT fall back to other classification methods
+                // (energy+ZCR, YAMNet-only, etc.). Per user request:
+                // "音频分段出错时，保留错误信息，不使用其他分类方法跳转"
+                // v2.4.128: Moved rmsEnergy/zcr computation here for diagnostics
+                val rmsEnergy = computeRmsEnergy(window, 0, window.size)
+                val zcr = computeZeroCrossingRate(window)
                 if (frameResults.size == 4 && vadProb < 0.01f) {
-                    val errMsg = "[v2.4.128] VAD malfunction: prob=$vadProb < 0.01 for first 5 frames. VAD model not detecting speech. Segmentation ABORTED — no fallback classification."
-                    vadLog(errMsg)
-                    Log.e(TAG, errMsg)
-                    throw RuntimeException("VAD模型故障: 前5帧prob值全部<0.01 ($vadProb)。分段已中止，不使用其他分类方法。")
+                    val diag = buildString {
+                        append("VAD模型故障: 前5帧prob值全部<0.01 (avg=$vadProb)。\n")
+                        append("VAD模型未检测到语音。分段已中止，不使用其他分类方法。\n")
+                        append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
+                        var sMin = Float.MAX_VALUE
+                        var sMax = -Float.MAX_VALUE
+                        var sSum = 0.0
+                        for (s in samples) {
+                            if (s < sMin) sMin = s
+                            if (s > sMax) sMax = s
+                            sSum += s
+                        }
+                        val sMean = (sSum / samples.size).toFloat()
+                        append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
+                        append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
+                        append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
+                        append("VAD model: stateSize=${vadModel.stateSize}\n")
+                        append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
+                    }
+                    vadLog("[v2.4.128] ERROR: VAD malfunction.\n$diag")
+                    Log.e(TAG, "[v2.4.128] VAD malfunction:\n$diag")
+                    throw RuntimeException(diag)
                 }
 
                 // v2.4.128: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0))
@@ -719,16 +750,31 @@ object AudioSegmentAnalyzer {
                                         kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
                                         kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f
                     if (yamnetAllHalf) {
-                        val errMsg = "[v2.4.128] YAMNet malfunction: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence all ~0.5 (sigmoid(0), no discriminative power). Segmentation ABORTED — no fallback classification."
-                        vadLog(errMsg)
-                        Log.e(TAG, errMsg)
-                        throw RuntimeException("YAMNet模型故障: speech/music/silence值全部≈0.5（无区分度）。分段已中止，不使用其他分类方法。")
+                        val diag = buildString {
+                            append("YAMNet模型故障: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence\n")
+                            append("全部≈0.5（sigmoid(0)，模型未处理输入）。分段已中止，不使用其他分类方法。\n")
+                            append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
+                            var sMin = Float.MAX_VALUE
+                            var sMax = -Float.MAX_VALUE
+                            var sSum = 0.0
+                            for (s in samples) {
+                                if (s < sMin) sMin = s
+                                if (s > sMax) sMax = s
+                                sSum += s
+                            }
+                            val sMean = (sSum / samples.size).toFloat()
+                            append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
+                            append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
+                            append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
+                            append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
+                        }
+                        vadLog("[v2.4.128] ERROR: YAMNet malfunction.\n$diag")
+                        Log.e(TAG, "[v2.4.128] YAMNet malfunction:\n$diag")
+                        throw RuntimeException(diag)
                     }
                 }
 
-                // Energy features (supplementary)
-                val rmsEnergy = computeRmsEnergy(window, 0, window.size)
-                val zcr = computeZeroCrossingRate(window)
+                // Energy features (supplementary) — computed above for v2.4.128 diagnostics
 
                 // Fuse: dual-model classification
                 val type = classifyFrameDualModel(
