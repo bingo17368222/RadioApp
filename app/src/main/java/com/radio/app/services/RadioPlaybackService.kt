@@ -1488,7 +1488,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         for (i in list.indices.reversed()) {
             val ep = list[i]
             if (ep.id == curId || ep.audioUrl == currentPlayingUrl) { foundCurrent = true; continue }
-            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+            // v2.4.134: 与 findNextInList 行为一致——跳过无需预处理的节目。
+            // 用户反馈"无需预处理的节目连续播放或手动切换节目时自动跳过"。
+            // findPrevInList 同时被 notifyPrevEpisode（通知栏上一集）和 PlayerActivity
+            // 间接路径使用，所以这里加检查后两条路径都获得跳过能力。
+            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                && !settings.isNoPreprocess(ep.id ?: "")) {
                 return ep
             }
         }
@@ -4594,6 +4599,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     startForeground(NOTIFICATION_ID, notification)
                 }
             }
+        }
+        // v2.4.134: 暂停时强制保存进度。用户反馈"切换节目时，暂停时，用户手动拖动进度时，
+        // 都强制保存进度"。forceSaveCurrentPosition 内置脏位置检测（向后 >5s 或向前
+        // >elapsed+10s 都会被拒绝），所以即使在 episodeSwitching 期间误调用也是安全的。
+        // 注意：seekTo 已在 line ~4669 同步保存，playEpisode 已在切换前 force-save 旧位置，
+        // 这里补全第三种场景（暂停）。
+        if (userInitiated && savePlaybackPosition && !isLive) {
+            forceSaveCurrentPosition()
         }
     }
     fun stop() {
