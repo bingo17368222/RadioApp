@@ -483,7 +483,7 @@ object AudioSegmentAnalyzer {
 
             // Resample to 16kHz mono if needed
             val needResample = sampleRate != 16000 || channelCount != 1
-            val fos = java.io.FileOutputStream(outputDirFile)
+            // fos already created above (append or overwrite mode)
 
             try {
                 while (true) {
