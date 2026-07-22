@@ -1888,7 +1888,7 @@ object AudioSegmentAnalyzer {
         val vadProb: Float,
         val yamnetSpeech: Float,
         val yamnetMusic: Float,
-        val yamnetSilence: Float,
+        val yamnetSilence: Float, // v2.4.140: stored for robust YAMNet malfunction detection
         val rmsEnergy: Float
     )
 
