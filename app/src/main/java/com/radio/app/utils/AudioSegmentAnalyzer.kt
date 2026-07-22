@@ -1066,33 +1066,53 @@ object AudioSegmentAnalyzer {
                     }  // end of else block
                 }
 
-                // v2.4.128: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0))
+                // v2.4.128/v2.4.140: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0)).
+                // Originally this aborted segmentation to catch wrong input-shape bugs. Now that
+                // the input shape is correct, a single transitional frame near 0.5 is not a model
+                // failure. We only abort if YAMNet consistently outputs ~0.5 for many frames and
+                // the audio clearly has energy (which would mean the model is truly broken).
+                // Otherwise we let classifyFrameYamnetOnly fall back to energy-based classification.
                 if (frameResults.size == 4) {
                     val yamnetAllHalf = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
                                         kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
                                         kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f
                     if (yamnetAllHalf) {
-                        val diag = buildString {
-                            append("YAMNet模型故障: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence\n")
-                            append("全部≈0.5（sigmoid(0)，模型未处理输入）。分段已中止，不使用其他分类方法。\n")
-                            append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
-                            var sMin = Float.MAX_VALUE
-                            var sMax = -Float.MAX_VALUE
-                            var sSum = 0.0
-                            for (s in samples) {
-                                if (s < sMin) sMin = s
-                                if (s > sMax) sMax = s
-                                sSum += s
+                        // Check how many of the first 5 frames are all ~0.5
+                        val halfFrames = frameResults.take(4).count { fr ->
+                            kotlin.math.abs(fr.yamnetSpeech - 0.5f) < 0.05f &&
+                            kotlin.math.abs(fr.yamnetMusic - 0.5f) < 0.05f &&
+                            kotlin.math.abs(fr.yamnetSilence - 0.5f) < 0.05f
+                        } + 1
+                        vadLog("[v2.4.140] YAMNet all-half at frame 4: halfFrames=$halfFrames/5, rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy")
+                        // Only abort if at least 4 of the first 5 frames are all ~0.5 AND there is
+                        // meaningful audio energy. If VAD already malfunctioned and we switched to
+                        // YAMNet-only, YAMNet worked for the earlier frames, so a single half frame
+                        // is just an uncertain classification — keep going.
+                        if (halfFrames >= 4 && rmsEnergy > maxEnergy * 0.01f && !vadMalfunction) {
+                            val diag = buildString {
+                                append("YAMNet模型故障: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence\n")
+                                append("前5帧中$halfFrames 帧全部≈0.5（sigmoid(0)，模型未处理输入）。分段已中止，不使用其他分类方法。\n")
+                                append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
+                                var sMin = Float.MAX_VALUE
+                                var sMax = -Float.MAX_VALUE
+                                var sSum = 0.0
+                                for (s in samples) {
+                                    if (s < sMin) sMin = s
+                                    if (s > sMax) sMax = s
+                                    sSum += s
+                                }
+                                val sMean = (sSum / samples.size).toFloat()
+                                append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
+                                append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
+                                append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
+                                append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
                             }
-                            val sMean = (sSum / samples.size).toFloat()
-                            append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
-                            append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
-                            append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
-                            append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
+                            vadLog("[v2.4.140] ERROR: YAMNet malfunction.\n$diag")
+                            Log.e(TAG, "[v2.4.140] YAMNet malfunction:\n$diag")
+                            throw RuntimeException(diag)
+                        } else {
+                            vadLog("[v2.4.140] YAMNet single/all-half frame treated as uncertain; continuing with energy fallback (vadMalfunction=$vadMalfunction)")
                         }
-                        vadLog("[v2.4.128] ERROR: YAMNet malfunction.\n$diag")
-                        Log.e(TAG, "[v2.4.128] YAMNet malfunction:\n$diag")
-                        throw RuntimeException(diag)
                     }
                 }
 
@@ -1107,7 +1127,7 @@ object AudioSegmentAnalyzer {
                         yamnetSpeech, yamnetMusic, yamnetSilence, vadProb, rmsEnergy, zcr, maxEnergy
                     )
                 }
-                frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, rmsEnergy))
+                frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, yamnetSilence, rmsEnergy))
 
                 pos += FRAME_STEP_SAMPLES
             }
@@ -1868,6 +1888,7 @@ object AudioSegmentAnalyzer {
         val vadProb: Float,
         val yamnetSpeech: Float,
         val yamnetMusic: Float,
+        val yamnetSilence: Float,
         val rmsEnergy: Float
     )
 

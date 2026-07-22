@@ -5034,6 +5034,62 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
+    /**
+     * v2.4.140: Check whether a yyyy-MM-dd date falls on Saturday or Sunday.
+     */
+    private fun isWeekendDate(dateStr: String): Boolean {
+        return try {
+            val cal = java.util.Calendar.getInstance()
+            val parts = dateStr.split("-")
+            if (parts.size == 3) {
+                cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
+                val dayOfWeek = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                dayOfWeek == java.util.Calendar.SATURDAY || dayOfWeek == java.util.Calendar.SUNDAY
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * v2.4.140: Wrapper around fetchCrossDayEpisode that keeps skipping dates until it finds a
+     * cross-day episode that is NOT marked as "no preprocessing needed" and is NOT on a weekend.
+     * This prevents "上一集/下一集" from jumping to weekend/no-preprocess episodes.
+     */
+    private fun fetchCrossDayEpisodeSkippingNoPreprocess(nextDate: Boolean, maxDays: Int = 7): Episode? {
+        val originalEpisode = currentEpisode
+        val originalUrl = currentPlayingUrl
+        var days = 0
+        while (days < maxDays) {
+            val ep = fetchCrossDayEpisode(nextDate)
+            if (ep == null) {
+                currentEpisode = originalEpisode
+                currentPlayingUrl = originalUrl
+                return null
+            }
+            val dateStr = ep.broadcastAt?.take(10) ?: ""
+            val settings = AppSettings.getInstance(this)
+            val noPreprocess = settings.isNoPreprocess(ep.id ?: "") || isWeekendDate(dateStr)
+            if (!noPreprocess) {
+                // Restore original current state; the caller will set the new episode itself.
+                currentEpisode = originalEpisode
+                currentPlayingUrl = originalUrl
+                return ep
+            }
+            writeServiceLog("notification", "fetchCrossDayEpisodeSkippingNoPreprocess: skipping no-preprocess cross-day episode ${ep.id} (date=$dateStr), will try next date")
+            // Advance one more day from this skipped episode.
+            currentEpisode = ep
+            currentPlayingUrl = ep.audioUrl
+            days++
+        }
+        currentEpisode = originalEpisode
+        currentPlayingUrl = originalUrl
+        writeServiceLog("notification", "fetchCrossDayEpisodeSkippingNoPreprocess: gave up after $maxDays days, all skipped")
+        return null
+    }
+
     private fun fetchCrossDayEpisode(nextDate: Boolean): Episode? {
         writeServiceLog("notification", "fetchCrossDayEpisode: START, nextDate=$nextDate, currentPlayingUrl=$currentPlayingUrl, currentEpisode=${currentEpisode?.title}")
         val curEp = currentEpisode
@@ -5140,9 +5196,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (targetEpisodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
                 val result = if (nextDate) {
-                    targetEpisodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                    targetEpisodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) && !settings.isNoPreprocess(it.id ?: "") }
                 } else {
-                    targetEpisodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                    targetEpisodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) && !settings.isNoPreprocess(it.id ?: "") }
                 }
                 if (result != null) {
                     writeServiceLog("notification", "fetchCrossDayEpisode: RETURN result from saved list - title=${result.title}, id=${result.id}, broadcastAt=${result.broadcastAt}")
@@ -5348,7 +5404,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } else {
             // Try cross-day fetch before giving up
             writeServiceLog("notification", "notifyPrevEpisode: no more episodes in current list, trying cross-day fetch (previous day)")
-            val crossDayEp = fetchCrossDayEpisode(nextDate = false)
+            val crossDayEp = fetchCrossDayEpisodeSkippingNoPreprocess(nextDate = false)
             if (crossDayEp != null) {
                 writeServiceLog("notification", "notifyPrevEpisode: cross-day episode found: ${crossDayEp.title}")
                 // Issue 2 Fix: 将跨天节目加入 preCacheList，以便后续搜索能找到它，
@@ -5421,7 +5477,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } else {
             // Try cross-day fetch before giving up
             writeServiceLog("notification", "notifyNextEpisode: no more episodes in current list, trying cross-day fetch")
-            val crossDayEp = fetchCrossDayEpisode(nextDate = true)
+            val crossDayEp = fetchCrossDayEpisodeSkippingNoPreprocess(nextDate = true)
             if (crossDayEp != null) {
                 writeServiceLog("notification", "notifyNextEpisode: cross-day episode found: ${crossDayEp.title}")
                 // Issue 2 Fix: 将跨天节目加入 preCacheList，以便后续搜索能找到它，
@@ -5494,7 +5550,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list or saved list, trying cross-day")
                 writeNotifDetailLog("autoPlayNextEpisode: nextEpisode is null after all list scans, trying cross-day (curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size})")
                 writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
-                val crossDayEp = fetchCrossDayEpisode(nextDate = true)
+                val crossDayEp = fetchCrossDayEpisodeSkippingNoPreprocess(nextDate = true)
                 if (crossDayEp != null) {
                     writeNotifDetailLog("autoPlayNextEpisode: cross-day episode found, switching - title=${crossDayEp.title}, id=${crossDayEp.id}")
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")

@@ -3993,8 +3993,15 @@ class PlayerActivity : AppCompatActivity() {
         } catch (_: Exception) {}
         // v2.4.45: Unregister segment cancel receiver
         try { unregisterReceiver(segmentCancelReceiver) } catch (_: Exception) {}
-        // v2.4.45: Cancel any lingering segment notification
-        cancelSegmentNotification()
+        // v2.4.140: If AI segmentation is still running, keep the notification alive so the user
+        // can see background progress after exiting the player. Only cancel it when the task is
+        // truly finished (handled by finishAiProcessing) or was not running at all.
+        if (!segmentProcessing) {
+            cancelSegmentNotification()
+        } else {
+            android.util.Log.d("PlayerActivity", "onDestroy: segmentProcessing=true, keeping segment notification alive")
+            writeJitterLog("onDestroy: segmentProcessing=true, keeping segment notification alive")
+        }
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeChangedReceiver)
         } catch (_: Exception) {}
