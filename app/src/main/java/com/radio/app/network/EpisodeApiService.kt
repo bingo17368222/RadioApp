@@ -188,6 +188,28 @@ class EpisodeApiService private constructor() {
                 val timestamp = targetCal.timeInMillis / 1000
                 fetchVodPrograms(cid, stationId, dateStr, timestamp)
             }
+
+            // v2.4.138: Automatically mark weekend episodes as "no preprocessing needed".
+            val dayOfWeek = targetCal.get(Calendar.DAY_OF_WEEK)
+            val isWeekend = dayOfWeek == Calendar.SATURDAY || dayOfWeek == Calendar.SUNDAY
+            if (isWeekend && !episodes.isNullOrEmpty()) {
+                try {
+                    val settings = com.radio.app.models.AppSettings.getInstance(com.radio.app.RadioApplication.instance)
+                    var markedCount = 0
+                    for (ep in episodes) {
+                        ep.id?.let {
+                            if (!settings.isNoPreprocess(it)) {
+                                settings.markNoPreprocess(com.radio.app.RadioApplication.instance, it)
+                                markedCount++
+                            }
+                        }
+                    }
+                    Log.d(TAG, "fetchEpisodesByDateSync: auto-marked $markedCount weekend episodes as no-preprocess for $dateStr")
+                } catch (e: Exception) {
+                    Log.w(TAG, "fetchEpisodesByDateSync: failed to auto-mark weekend episodes", e)
+                }
+            }
+
             return episodes
         } catch (e: Exception) {
             Log.e(TAG, "fetchEpisodesByDateSync failed for $stationId $dateStr", e)

@@ -393,26 +393,19 @@ class PlayerActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("player_processing_state", MODE_PRIVATE)
         val savedEpisodeId = prefs.getString("processing_episode_id", "")
         val currentId = currentEpisode?.id ?: ""
-        // 只有同一个节目才恢复状态
-        if (savedEpisodeId != null && savedEpisodeId.isNotBlank() && savedEpisodeId == currentId) {
-            subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
-            segmentProcessing = prefs.getBoolean("segment_processing", false)
-            android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing for $currentId")
-        } else {
+        // v2.4.138: AI segmentation runs in a background Thread that survives Activity destruction.
+        // Do NOT clear segmentProcessing automatically when the user exits/re-enters the player;
+        // otherwise the UI appears cancelled even though the task is still running.
+        subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
+        segmentProcessing = prefs.getBoolean("segment_processing", false)
+        android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing savedEpisode=$savedEpisodeId current=$currentId")
+
+        // Safety: only on a genuine fresh start (no saved state) do we clear.
+        // If a segment task was saved, keep it alive so it can finish in background.
+        if (isFreshStart && savedEpisodeId.isNullOrBlank()) {
             subtitleProcessing = false
             segmentProcessing = false
-            // 清除残留状态，防止错误恢复
-            if (savedEpisodeId != null && savedEpisodeId.isNotBlank()) {
-                prefs.edit().clear().apply()
-                android.util.Log.d("PlayerActivity", "restoreProcessingState: cleared stale state (saved=$savedEpisodeId != current=$currentId)")
-            }
-        }
-        // 安全兜底：如果Activity是新鲜启动（不是从后台恢复），清除所有处理状态
-        if (isFreshStart) {
-            subtitleProcessing = false
-            segmentProcessing = false
-            prefs.edit().clear().apply()
-            android.util.Log.d("PlayerActivity", "restoreProcessingState: fresh start, cleared all processing state")
+            android.util.Log.d("PlayerActivity", "restoreProcessingState: genuine fresh start with no saved state, cleared processing flags")
         }
     }
 
@@ -3272,10 +3265,11 @@ class PlayerActivity : AppCompatActivity() {
                     return@Thread
                 }
 
-                // 过滤掉已不喜欢的节目
+                // 过滤掉已不喜欢和无需预处理的节目
                 val settings = AppSettings.getInstance(this)
                 val nonDisliked = validEpisodes.filter {
                     !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title)
+                        && !settings.isNoPreprocess(it.id ?: "")
                 }
                 if (nonDisliked.isEmpty()) {
                     runOnUiThread {
@@ -3594,12 +3588,18 @@ class PlayerActivity : AppCompatActivity() {
         // notification "取消" action) or the Activity was recreated without the running task.
         // Re-binding would either restart a cancelled task (spurious progress bar that races
         // to 100%) or attach to a running task whose callbacks point to the old, destroyed
-        // Activity (stuck progress bar). Clear the stale state BEFORE showing any progress UI
-        // so the cancelled progress bar never appears. Partial DB results are loaded below.
-        if (!subtitleServiceBound && (subtitleProcessing || segmentProcessing)) {
-            android.util.Log.d("PlayerActivity", "onResume: subtitle service not bound but processing flag set (subtitle=$subtitleProcessing, segment=$segmentProcessing) — treating as cancelled, hiding progress UI")
-            writeJitterLog("onResume: stale processing state (subtitle=$subtitleProcessing, segment=$segmentProcessing), hiding progress UI on cancel")
-            cancelAiProcessing()
+        // Activity (stuck progress bar). Clear the stale subtitle state BEFORE showing any progress UI.
+        // v2.4.138: AI segmentation runs in a background Thread independent of the subtitle service,
+        // so do NOT cancel it just because the subtitle service is not bound.
+        if (!subtitleServiceBound && subtitleProcessing) {
+            android.util.Log.d("PlayerActivity", "onResume: subtitle service not bound but subtitleProcessing=true — treating subtitle as cancelled")
+            writeJitterLog("onResume: stale subtitle processing state, hiding progress UI on cancel")
+            subtitleProcessing = false
+            if (_binding != null) {
+                binding.progressSubtitle.visibility = View.GONE
+                binding.tvSubtitleStatus.visibility = View.GONE
+                binding.btnGenerateSubtitle.isEnabled = true
+            }
         }
 
         // 根据处理状态恢复按钮和进度条

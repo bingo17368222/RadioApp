@@ -1380,7 +1380,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     ep.audioUrl.isNotBlank() &&
                     ep.audioUrl !in existingUrls &&
                     ep.audioUrl.startsWith("http") &&
-                    !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                    !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title) &&
+                    !settings.isNoPreprocess(ep.id ?: "")
                 }
                 writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
                 resultList.addAll(validNewEpisodes)
@@ -5093,9 +5094,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (episodes != null && episodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
                 val result = if (nextDate) {
-                    episodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                    episodes.firstOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) && !settings.isNoPreprocess(it.id ?: "") }
                 } else {
-                    episodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) }
+                    episodes.lastOrNull { !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title) && !settings.isNoPreprocess(it.id ?: "") }
                 }
                 if (result != null) {
                     writeServiceLog("notification", "fetchCrossDayEpisode: RETURN result from network - title=${result.title}, id=${result.id}, broadcastAt=${result.broadcastAt}")

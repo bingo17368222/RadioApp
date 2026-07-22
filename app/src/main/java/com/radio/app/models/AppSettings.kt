@@ -348,6 +348,19 @@ class AppSettings private constructor() {
 
     fun isNoPreprocess(episodeId: String): Boolean = noPreprocessEpisodes.contains(episodeId)
 
+    /**
+     * v2.4.138: Mark an episode as "no preprocessing needed" without toggling.
+     * Used for automatic weekday/weekend rules.
+     */
+    fun markNoPreprocess(context: Context, episodeId: String) {
+        if (noPreprocessEpisodes.contains(episodeId)) return
+        noPreprocessEpisodes.add(episodeId)
+        val npArr = org.json.JSONArray()
+        for (ep in noPreprocessEpisodes) npArr.put(ep)
+        val prefs = context.getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
+        prefs.edit().putString("no_preprocess_episodes", npArr.toString()).apply()
+    }
+
     fun addDislikedEpisode(context: Context, episodeId: String, stationId: String? = null, title: String? = null) {
         var changed = false
         if (!dislikedEpisodes.contains(episodeId)) {

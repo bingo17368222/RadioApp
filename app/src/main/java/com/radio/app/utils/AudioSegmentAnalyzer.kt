@@ -126,6 +126,88 @@ object AudioSegmentAnalyzer {
         return isYamnetInstalled(modelDir) && isSileroVadInstalled(modelDir) && areNativeLibsDownloaded(modelDir)
     }
 
+    // v2.4.138: Required PCM cache version. Bump when info file format or resampling changes.
+    private const val REQUIRED_PCM_VERSION = 7
+
+    /**
+     * v2.4.138: PCM info file metadata.
+     */
+    private data class PcmInfo(
+        val version: Int,
+        val mp4DurationMs: Long,
+        val pcmDurationMs: Long,
+        val sampleRate: Int,
+        val channels: Int
+    ) {
+        fun isValid(): Boolean = version >= REQUIRED_PCM_VERSION && mp4DurationMs > 0 && pcmDurationMs > 0
+    }
+
+    /**
+     * v2.4.138: Read .info file for a PCM file.
+     */
+    private fun readPcmInfo(infoFile: File): PcmInfo? {
+        if (!infoFile.exists()) return null
+        return try {
+            val text = infoFile.readText()
+            fun longOf(name: String): Long = Regex("$name=(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            fun intOf(name: String): Int = Regex("$name=(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            PcmInfo(
+                version = intOf("version"),
+                mp4DurationMs = longOf("mp4DurationMs"),
+                pcmDurationMs = longOf("pcmDurationMs"),
+                sampleRate = intOf("sampleRate"),
+                channels = intOf("channels")
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * v2.4.138: Write .info file for a PCM file with duration metadata.
+     */
+    private fun writePcmInfo(infoFile: File, mp4DurationMs: Long, pcmDurationMs: Long, sampleRate: Int = 16000, channels: Int = 1) {
+        try {
+            infoFile.writeText(
+                "version=$REQUIRED_PCM_VERSION\n" +
+                "mp4DurationMs=$mp4DurationMs\n" +
+                "pcmDurationMs=$pcmDurationMs\n" +
+                "sampleRate=$sampleRate\n" +
+                "channels=$channels\n"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "[v2.4.138] writePcmInfo failed: ${e.message}")
+        }
+    }
+
+    /**
+     * v2.4.138: Determine whether cached PCM is valid by comparing its info-file durations
+     * with the source MP4 duration. Returns the matching PcmInfo if valid, null otherwise.
+     */
+    private fun validatePcmWithInfo(
+        pcmFile: File,
+        infoFile: File,
+        currentMp4DurationMs: Long,
+        toleranceRatio: Double = 0.1
+    ): PcmInfo? {
+        if (!pcmFile.exists() || pcmFile.length() <= 16000) return null
+        val info = readPcmInfo(infoFile) ?: return null
+        if (!info.isValid()) return null
+        // If the source MP4 duration is known and differs from the recorded MP4 duration,
+        // the source file may have been replaced (e.g. re-downloaded). Re-generate PCM.
+        if (currentMp4DurationMs > 0 && kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs) > (currentMp4DurationMs * 0.05)) {
+            return null
+        }
+        // PCM duration must be within tolerance of MP4 duration.
+        val expectedDurationMs = if (currentMp4DurationMs > 0) currentMp4DurationMs else info.mp4DurationMs
+        if (expectedDurationMs <= 0) return null
+        val delta = kotlin.math.abs(info.pcmDurationMs - expectedDurationMs)
+        if (delta > expectedDurationMs * toleranceRatio) {
+            return null
+        }
+        return info
+    }
+
     /**
      * Get the model directory.
      * v2.4.95: Uses same path as OfflineEngineActivity (models/audio-models).
@@ -144,145 +226,129 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.125: Pre-generate PCM files (5-min and full) for an episode.
-     * This decodes the cached audio file to 16kHz mono PCM without running AI segmentation.
-     * Used when subtitle pre-generation is OFF but preprocessing is ON.
+     * v2.4.138: Locate the cached audio file for an episode by URL or episode ID.
+     */
+    private fun getCachedAudioFile(context: Context, episodeId: String, audioUrl: String?): java.io.File? {
+        val episodesDir = java.io.File(context.getExternalFilesDir(null), "RadioApp/episodes")
+        if (!episodesDir.exists()) return null
+        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac")) } ?: emptyList()
+        return if (audioUrl != null) {
+            val urlFileName = audioUrl.substringAfterLast("/")
+            cachedFiles.find { it.name == urlFileName || it.name.startsWith(urlFileName.substringBeforeLast(".")) }
+                ?: cachedFiles.find { it.name.contains(episodeId) }
+                ?: cachedFiles.maxByOrNull { it.lastModified() }
+        } else {
+            cachedFiles.find { it.name.contains(episodeId) } ?: cachedFiles.maxByOrNull { it.lastModified() }
+        }
+    }
+
+    /**
+     * v2.4.138: Get the audio track duration of a cached media file in milliseconds.
+     * KEY_DURATION is in microseconds.
+     */
+    private fun getMp4DurationMs(audioFile: java.io.File): Long {
+        var durationMs = 0L
+        var ex: android.media.MediaExtractor? = null
+        try {
+            ex = android.media.MediaExtractor()
+            ex.setDataSource(audioFile.absolutePath)
+            for (i in 0 until ex.trackCount) {
+                val fmt = ex.getTrackFormat(i)
+                val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    if (fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                        durationMs = fmt.getLong(android.media.MediaFormat.KEY_DURATION) / 1000
+                    }
+                    break
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "[v2.4.138] getMp4DurationMs failed: ${e.message}")
+        } finally {
+            ex?.release()
+        }
+        return durationMs
+    }
+
+    /**
+     * v2.4.138: Pre-generate PCM files (5-min and full) for an episode with strict duration validation.
+     *
+     * Rules:
+     * - Read the source MP4 duration and the existing .info file.
+     * - If .info is missing, version is old, or durations differ by more than 10%, delete PCM and regenerate.
+     * - If PCM duration < MP4 duration, regenerate the full PCM (no append, to avoid seek/sync bugs).
+     * - If PCM duration > MP4 duration, trim or regenerate.
+     * - After successful generation, write mp4DurationMs and pcmDurationMs into .info.
+     * - If info duration already matches and PCM exists, skip decoding entirely.
      *
      * @param context Application context
      * @param episodeId Episode ID
      * @param audioUrl Audio URL (for finding cached audio file)
-     * @return true if PCM files were generated or already exist
-     */
+     * @return true if PCM files were generated or already valid
+      */
     fun preGeneratePcmFiles(context: Context, episodeId: String, audioUrl: String?): Boolean {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+        val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
+        val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
         val precacheLog = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
         precacheLog.parentFile?.mkdirs()
         val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
 
-        // v2.4.127: Get MP4 duration for comparison
-        var mp4DurationMs = 0L
-        try {
-            val episodesDir = java.io.File(context.getExternalFilesDir(null), "RadioApp/episodes")
-            if (episodesDir.exists()) {
-                val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac")) } ?: emptyList()
-                val audioFile = if (audioUrl != null) {
-                    val urlFileName = audioUrl.substringAfterLast("/")
-                    cachedFiles.find { it.name == urlFileName || it.name.startsWith(urlFileName.substringBeforeLast(".")) }
-                        ?: cachedFiles.find { it.name.contains(episodeId) }
-                        ?: cachedFiles.maxByOrNull { it.lastModified() }
-                } else {
-                    cachedFiles.find { it.name.contains(episodeId) } ?: cachedFiles.maxByOrNull { it.lastModified() }
-                }
-                if (audioFile != null && audioFile.exists()) {
-                    val ex = android.media.MediaExtractor()
-                    ex.setDataSource(audioFile.absolutePath)
-                    for (i in 0 until ex.trackCount) {
-                        val fmt = ex.getTrackFormat(i)
-                        val mime = fmt.getString(android.media.MediaFormat.KEY_MIME) ?: ""
-                        if (mime.startsWith("audio/")) {
-                            if (fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) {
-                                mp4DurationMs = (fmt.getLong(android.media.MediaFormat.KEY_DURATION) * 1000)
-                            }
-                            break
-                        }
-                    }
-                    ex.release()
-                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] MP4 duration for $episodeId: ${mp4DurationMs}ms (${mp4DurationMs / 60000} min), audioFile=${audioFile.name}\n")
-                }
-            }
-        } catch (e: Exception) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] failed to get MP4 duration: ${e.message}\n")
-        }
-
-        // Check if both already exist AND are valid size
-        // v2.4.128: When mp4DurationMs is 0 (failed to get duration), use a default
-        // minimum of 30 minutes (57.6MB) to detect truncated PCM files.
-        val expectedPcmBytes = if (mp4DurationMs > 0) {
-            (mp4DurationMs / 1000.0 * 16000 * 2).toLong() // 16kHz mono 16-bit
+        // v2.4.138: Get MP4 duration. KEY_DURATION is microseconds, convert to milliseconds.
+        val audioFile = getCachedAudioFile(context, episodeId, audioUrl)
+        val mp4DurationMs = if (audioFile != null && audioFile.exists()) {
+            val d = getMp4DurationMs(audioFile)
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] MP4 duration for $episodeId: ${d}ms (${d / 60000} min), audioFile=${audioFile.name}\n")
+            d
         } else {
-            (30 * 60 * 16000 * 2).toLong() // Default: 30 min minimum
-        }
-        val minValidBytes = (expectedPcmBytes * 0.9).toLong() // Allow 10% tolerance
-
-        // v2.4.131: Invalidate old PCM cache files that were generated with the
-        // buggy integer-division resampling (pre-v2.4.130). These files have
-        // wrong sample rate (22050Hz instead of 16000Hz) causing slow/low playback.
-        // Check the .info file for the resampler version.
-        val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
-        val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
-        val REQUIRED_PCM_VERSION = 6  // v2.4.132: version 6 = FORMAT_CHANGED handling + continuous phase resampling
-        var needsRegeneration = false
-
-        if (fullPcmFile.exists() && fullInfoFile.exists()) {
-            try {
-                val infoContent = fullInfoFile.readText()
-                val versionMatch = Regex("version=(\\d+)").find(infoContent)
-                val pcmVersion = versionMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                if (pcmVersion < REQUIRED_PCM_VERSION) {
-                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.131] INVALIDATING old PCM cache for $episodeId (version=$pcmVersion < required=$REQUIRED_PCM_VERSION, old resampling bug). Deleting.\n")
-                    fullPcmFile.delete()
-                    if (min5PcmFile.exists()) min5PcmFile.delete()
-                    if (fullInfoFile.exists()) fullInfoFile.delete()
-                    if (min5InfoFile.exists()) min5InfoFile.delete()
-                    needsRegeneration = true
-                }
-            } catch (e: Exception) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.131] failed to read .info file: ${e.message}\n")
-            }
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] no cached audio file found for $episodeId\n")
+            0L
         }
 
-        if (!needsRegeneration && fullPcmFile.exists() && fullPcmFile.length() > minValidBytes &&
-            min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] both PCM files already exist and valid for $episodeId (full=${fullPcmFile.length()} bytes, expected~$expectedPcmBytes)\n")
+        // v2.4.138: Validate using .info file. If valid and durations match, skip all decoding.
+        val validInfo = validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs)
+        if (validInfo != null && min5PcmFile.exists() && min5PcmFile.length() > 16000) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms). Skipping decode.\n")
             return true
         }
 
-        // v2.4.127: If full PCM exists but is too small, delete it and regenerate
-        // v2.4.128: Also check when mp4DurationMs is 0 (uses default 30-min minimum)
-        if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] EXISTING full PCM too small for $episodeId (${fullPcmFile.length()} bytes < expected $minValidBytes, mp4DurationMs=$mp4DurationMs). Will append.\n")
-            // v2.4.130: Don't delete — we'll append to the existing file
+        // Not valid — delete old PCM and .info files to force regeneration.
+        if (fullPcmFile.exists()) fullPcmFile.delete()
+        if (min5PcmFile.exists()) min5PcmFile.delete()
+        if (fullInfoFile.exists()) fullInfoFile.delete()
+        if (min5InfoFile.exists()) min5InfoFile.delete()
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] PCM invalid or .info mismatch for $episodeId. Deleting and regenerating.\n")
+
+        // Decode full PCM from scratch.
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
+        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+        if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] FAILED to decode full PCM for $episodeId\n")
+            return false
         }
 
-        // Decode full PCM if missing or needs appending
-        if (!fullPcmFile.exists() || fullPcmFile.length() <= 16000) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] decoding full PCM for $episodeId (audioUrl=$audioUrl, expectedPcmBytes=$expectedPcmBytes)\n")
-            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
-            if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] FAILED to decode full PCM for $episodeId\n")
-                return false
-            }
-            val pcmDurationMs = decoded.length() / (16000 * 2) * 1000
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] full PCM generated: ${decoded.name} (${decoded.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
+        // v2.4.138: Clamp PCM to expected length and compute duration.
+        val clampedFile = clampPcmToExpectedLength(decoded, mp4DurationMs, episodeId)
+        val pcmDurationMs = clampedFile.length() / (16000 * 2) * 1000
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] full PCM generated: ${clampedFile.name} (${clampedFile.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
 
-            // v2.4.127: Verify PCM duration matches MP4 duration
-            if (mp4DurationMs > 0 && pcmDurationMs < mp4DurationMs * 0.9) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] WARNING: PCM duration (${pcmDurationMs}ms) < MP4 duration (${mp4DurationMs}ms * 0.9), PCM may be truncated\n")
-            }
-        } else if (fullPcmFile.exists() && fullPcmFile.length() < minValidBytes) {
-            // v2.4.130: Append to truncated PCM instead of deleting
-            val existingBytes = fullPcmFile.length()
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.130] appending to truncated PCM for $episodeId (existing=${existingBytes} bytes, expected=$minValidBytes)\n")
-            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, startOffsetBytes = existingBytes)
-            if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.130] FAILED to append PCM for $episodeId\n")
-                return false
-            }
-            val pcmDurationMs = decoded.length() / (16000 * 2) * 1000
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.130] full PCM appended: ${decoded.name} (${decoded.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
+        // v2.4.138: If PCM is still significantly shorter than MP4, we cannot trust it. Fail loudly.
+        if (mp4DurationMs > 0 && pcmDurationMs < mp4DurationMs * 0.85) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] ERROR: PCM duration (${pcmDurationMs}ms) still < 85% of MP4 duration (${mp4DurationMs}ms). Keeping file but marking unreliable.\n")
         }
 
-        // Generate 5-min PCM from full PCM if missing
-        if (!min5PcmFile.exists() || min5PcmFile.length() <= 16000) {
-            try {
-                val fiveMinBytes = 5 * 60 * 16000 * 2  // 5 min * 16kHz * 2 bytes/sample
-                val fullBytes = fullPcmFile.length().toInt()
-                val copyBytes = minOf(fiveMinBytes, fullBytes)
-                val fis = java.io.FileInputStream(fullPcmFile)
-                val fos = java.io.FileOutputStream(min5PcmFile)
-                try {
+        // Write .info file with duration metadata.
+        writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
+
+        // Generate 5-min PCM from full PCM.
+        try {
+            val fiveMinBytes = 5 * 60 * 16000 * 2
+            val fullBytes = clampedFile.length().toInt()
+            val copyBytes = minOf(fiveMinBytes, fullBytes)
+            java.io.FileInputStream(clampedFile).use { fis ->
+                java.io.FileOutputStream(min5PcmFile).use { fos ->
                     val buffer = ByteArray(8192)
                     var remaining = copyBytes
                     while (remaining > 0) {
@@ -292,14 +358,12 @@ object AudioSegmentAnalyzer {
                         fos.write(buffer, 0, read)
                         remaining -= read
                     }
-                } finally {
-                    fis.close()
-                    fos.close()
                 }
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
-            } catch (e: Exception) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.127] failed to create 5-min PCM: ${e.message}\n")
             }
+            writePcmInfo(min5InfoFile, mp4DurationMs, min5PcmFile.length() / (16000 * 2) * 1000, 16000, 1)
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
+        } catch (e: Exception) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.138] failed to create 5-min PCM: ${e.message}\n")
         }
 
         return fullPcmFile.exists() && fullPcmFile.length() > 16000
@@ -341,105 +405,69 @@ object AudioSegmentAnalyzer {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         Log.i(TAG, "analyzeEpisode: searching for PCM in ${pcmCacheDir.absolutePath}")
 
-        // v2.4.129: Validate PCM file size against expected duration.
-        // A truncated PCM (e.g., 50MB from old limit) will cause both VAD and YAMNet
-        // to process only partial audio, potentially leading to model malfunction.
-        val audioDurationMs = durationMs
-        val expectedPcmBytes = if (audioDurationMs > 0) {
-            (audioDurationMs / 1000.0 * 16000 * 2).toLong() // 16kHz mono 16-bit
-        } else {
-            (30 * 60 * 16000 * 2).toLong() // Default: 30 min minimum
+        // v2.4.138: Determine the source MP4 duration for validation.
+        // durationMs passed from caller is usually the MP4 duration. Fall back to reading the file.
+        val audioFile = getCachedAudioFile(context, episodeId, audioUrl)
+        val mp4DurationMs = when {
+            durationMs > 0 -> durationMs
+            audioFile != null && audioFile.exists() -> getMp4DurationMs(audioFile)
+            else -> 0L
         }
-        val minValidBytes = (expectedPcmBytes * 0.85).toLong() // Allow 15% tolerance
+        if (mp4DurationMs <= 0) {
+            vadLog("[v2.4.138] analyzeEpisode: WARNING could not determine MP4 duration for $episodeId")
+        }
 
-        // 1. Full PCM (from subtitle preprocessing)
-        var pcmFile: File? = File(pcmCacheDir, "${episodeId}_full.pcm")
-        if (pcmFile!!.exists() && pcmFile.length() > 16000) {
-            // v2.4.131: Check .info file version. Old PCM (pre-v2.4.130) used
-            // integer-division resampling which produced wrong sample rate.
-            val infoFile = File(pcmCacheDir, "${episodeId}_full.info")
-            var needsRegen = false
-            if (infoFile.exists()) {
-                try {
-                    val infoContent = infoFile.readText()
-                    val versionMatch = Regex("version=(\\d+)").find(infoContent)
-                    val pcmVersion = versionMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                    if (pcmVersion < 6) {
-                        vadLog("[v2.4.132] analyzeEpisode: PCM cache version=$pcmVersion < 6 (old resampling bug, no FORMAT_CHANGED handling), regenerating for $episodeId")
-                        Log.w(TAG, "[v2.4.131] Invalidating old PCM cache (version=$pcmVersion)")
-                        pcmFile.delete()
-                        if (infoFile.exists()) infoFile.delete()
-                        val min5File = File(pcmCacheDir, "${episodeId}_5min.pcm")
-                        if (min5File.exists()) min5File.delete()
-                        val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
-                        if (min5InfoFile.exists()) min5InfoFile.delete()
-                        needsRegen = true
-                    }
-                } catch (e: Exception) {
-                    vadLog("[v2.4.131] analyzeEpisode: failed to read .info: ${e.message}")
-                }
+        // v2.4.138: Validate full PCM using .info file duration metadata.
+        val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+        val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
+        var pcmFile: File? = null
+
+        if (fullPcmFile.exists() && fullPcmFile.length() > 16000) {
+            val validInfo = validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs)
+            if (validInfo != null) {
+                vadLog("[v2.4.138] analyzeEpisode: full PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms)")
+                pcmFile = fullPcmFile
             } else {
-                // No .info file — old cache, force regeneration
-                vadLog("[v2.4.131] analyzeEpisode: no .info file found, regenerating PCM for $episodeId")
-                pcmFile.delete()
-                needsRegen = true
+                vadLog("[v2.4.138] analyzeEpisode: full PCM .info mismatch for $episodeId. Deleting and regenerating.")
+                fullPcmFile.delete()
+                File(pcmCacheDir, "${episodeId}_5min.pcm").takeIf { it.exists() }?.delete()
+                fullInfoFile.delete()
+                File(pcmCacheDir, "${episodeId}_5min.info").takeIf { it.exists() }?.delete()
             }
-            if (needsRegen) {
-                // v2.4.131: PCM was invalidated, decode fresh
-                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
-                if (pcmFile == null) {
-                    Log.e(TAG, "analyzeEpisode: failed to decode fresh PCM for $episodeId")
-                    throw RuntimeException("PCM重新生成失败: 旧缓存已被废弃(采样率错误)，重新解码失败")
-                }
-                // v2.4.137: Guard against decoder producing excessive PCM (e.g. looped/repeated samples)
-                pcmFile = clampPcmToExpectedLength(pcmFile, audioDurationMs, episodeId)
-                vadLog("[v2.4.131] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
-            } else if (pcmFile.length() < minValidBytes) {
-                // v2.4.129: Check if PCM is truncated
-                // v2.4.136: 直接删除截断的 PCM 重新完整生成，避免 append 模式因 seek/sync 帧
-                // 位置不对导致 PCM 过长/重复，进而使 VAD 处理到静音/0 数据而输出极低概率。
-                val existingBytes = pcmFile.length()
-                vadLog("[v2.4.136] analyzeEpisode: full PCM TRUNCATED for $episodeId: ${existingBytes} bytes < expected $minValidBytes (duration=${audioDurationMs}ms). Deleting and regenerating fresh.")
-                Log.w(TAG, "[v2.4.136] PCM truncated: ${existingBytes} bytes < expected $minValidBytes. Regenerating fresh.")
-                pcmFile.delete()
-                // Also delete 5min PCM since it was derived from the same truncated source
-                val min5File = File(pcmCacheDir, "${episodeId}_5min.pcm")
-                if (min5File.exists()) min5File.delete()
-                // Regenerate complete PCM from scratch
-                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
-                if (pcmFile == null) {
-                    throw RuntimeException("PCM重新生成失败: 原文件被截断(${existingBytes} bytes < $minValidBytes)，重新解码失败")
-                }
-                // v2.4.137: Guard against decoder producing excessive PCM
-                pcmFile = clampPcmToExpectedLength(pcmFile, audioDurationMs, episodeId)
-                vadLog("[v2.4.136] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
-            } else {
-                Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
-            }
-        } else {
-            // 2. 5-min PCM (from PCM pre-decode)
-            pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcmFile!!.exists() && pcmFile.length() > 16000) {
-                Log.i(TAG, "analyzeEpisode: found 5min PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
-            } else {
-                // 3. Plain PCM (without suffix)
-                pcmFile = File(pcmCacheDir, "${episodeId}.pcm")
-                if (pcmFile!!.exists() && pcmFile.length() > 16000) {
-                    Log.i(TAG, "analyzeEpisode: found plain PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
+        }
+
+        // v2.4.138: If no valid full PCM, try 5-min PCM (also validated by .info).
+        if (pcmFile == null) {
+            val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+            val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
+            if (min5PcmFile.exists() && min5PcmFile.length() > 16000) {
+                val validInfo = validatePcmWithInfo(min5PcmFile, min5InfoFile, mp4DurationMs)
+                if (validInfo != null) {
+                    vadLog("[v2.4.138] analyzeEpisode: 5-min PCM valid per .info for $episodeId")
+                    pcmFile = min5PcmFile
                 } else {
-                    // 4. Decode from cached audio file
-                    pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
-                    if (pcmFile == null) {
-                        Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId (audioUrl=$audioUrl)")
-                        throw RuntimeException("无法获取音频数据: 未找到PCM缓存文件，本地无缓存音频，URL解码失败(可能需要联网)")
-                    }
-                    // v2.4.137: Guard against decoder producing excessive PCM
-                    pcmFile = clampPcmToExpectedLength(pcmFile, audioDurationMs, episodeId)
+                    vadLog("[v2.4.138] analyzeEpisode: 5-min PCM .info mismatch for $episodeId. Deleting.")
+                    min5PcmFile.delete()
+                    min5InfoFile.delete()
                 }
             }
         }
 
-        return analyzePcmFile(context, pcmFile!!, durationMs)
+        // v2.4.138: If still no valid PCM, decode from scratch.
+        if (pcmFile == null) {
+            pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+            if (pcmFile == null) {
+                Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId (audioUrl=$audioUrl)")
+                throw RuntimeException("无法获取音频数据: 未找到PCM缓存文件，本地无缓存音频，URL解码失败(可能需要联网)")
+            }
+            // Guard against excessive length, then record duration in .info.
+            pcmFile = clampPcmToExpectedLength(pcmFile, mp4DurationMs, episodeId)
+            val pcmDurationMs = pcmFile.length() / (16000 * 2) * 1000
+            writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
+            vadLog("[v2.4.138] analyzeEpisode: decoded fresh PCM for $episodeId (${pcmFile.length()} bytes, pcmDuration=${pcmDurationMs}ms)")
+        }
+
+        return analyzePcmFile(context, pcmFile, durationMs)
     }
 
     /**
@@ -695,9 +723,9 @@ object AudioSegmentAnalyzer {
             }
 
             Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes to ${outputFile.name} (final rate: ${sampleRate}Hz ${channelCount}ch -> 16kHz mono)")
-            // v2.4.131: Write .info file with version for cache invalidation
-            val infoFile = File(outputFile.parentFile, outputFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=16000\nchannels=1\nversion=6\n")
+            // v2.4.138: .info file with duration metadata is now written by the caller
+            // (preGeneratePcmFiles / analyzeEpisode) so that mp4DurationMs and pcmDurationMs
+            // can be validated together.
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
@@ -819,9 +847,7 @@ object AudioSegmentAnalyzer {
             }
 
             Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
-            // v2.4.131: Write .info file with version for cache invalidation
-            val infoFile = File(outputFile.parentFile, outputFile.nameWithoutExtension + ".info")
-            infoFile.writeText("sampleRate=16000\nchannels=1\nversion=5\n")
+            // v2.4.138: .info file with duration metadata is now written by the caller.
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeUrlToPcm failed: ${e.message}")

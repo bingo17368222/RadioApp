@@ -14,6 +14,11 @@ class RadioApplication : Application() {
     companion object {
         const val CHANNEL_ID = "radio_playback_channel"
         const val NOTIFICATION_ID = 1
+
+        // v2.4.138: Global application instance for services/singletons that need a Context.
+        lateinit var instance: RadioApplication
+            private set
+
         @Volatile private var logDirCache: File? = null
         @Volatile private var crashLogDirCache: File? = null
         @Volatile private var cacheRootDirCache: File? = null
@@ -103,6 +108,7 @@ class RadioApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         // Init crash handler first
         com.radio.app.utils.CrashHandler.getInstance().init(this)
         createNotificationChannel()
