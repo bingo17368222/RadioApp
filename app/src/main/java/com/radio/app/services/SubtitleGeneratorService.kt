@@ -636,11 +636,11 @@ class SubtitleGeneratorService : Service() {
                         "audioDurationMs" to currentAudioDurationMs
                     )
                 )
-                // v2.4.61: Let cleanupTask() handle busy flag clearing when ALL tasks finish.
-                // Early deletion here could incorrectly clear flag if another task is still active.
-                if (!ctx.cancelled.get() && !globalCancelled.get()) {
-                    updateProgressNotification(100, "字幕生成完成")
-                }
+                // v2.4.136: Remove this task from activeTasks and run cleanup so the foreground
+                // notification is dismissed once all tasks finish. Previously the notification
+                // stayed stuck at "正在为某某生成字幕, 100%" because the task was never removed.
+                activeTasks.remove(episodeId)
+                cleanupTask()
             }
         }
 

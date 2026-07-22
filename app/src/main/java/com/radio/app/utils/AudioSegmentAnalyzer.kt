@@ -394,21 +394,21 @@ object AudioSegmentAnalyzer {
                 vadLog("[v2.4.131] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
             } else if (pcmFile.length() < minValidBytes) {
                 // v2.4.129: Check if PCM is truncated
-                // v2.4.130: Instead of deleting and regenerating from scratch,
-                // APPEND to the existing truncated PCM file. This preserves the
-                // already-decoded portion and only decodes the missing part.
+                // v2.4.136: 直接删除截断的 PCM 重新完整生成，避免 append 模式因 seek/sync 帧
+                // 位置不对导致 PCM 过长/重复，进而使 VAD 处理到静音/0 数据而输出极低概率。
                 val existingBytes = pcmFile.length()
-                vadLog("[v2.4.130] analyzeEpisode: full PCM TRUNCATED for $episodeId: ${existingBytes} bytes < expected $minValidBytes (duration=${audioDurationMs}ms). Appending missing portion.")
-                Log.w(TAG, "[v2.4.130] PCM truncated: ${existingBytes} bytes < expected $minValidBytes. Appending.")
+                vadLog("[v2.4.136] analyzeEpisode: full PCM TRUNCATED for $episodeId: ${existingBytes} bytes < expected $minValidBytes (duration=${audioDurationMs}ms). Deleting and regenerating fresh.")
+                Log.w(TAG, "[v2.4.136] PCM truncated: ${existingBytes} bytes < expected $minValidBytes. Regenerating fresh.")
+                pcmFile.delete()
                 // Also delete 5min PCM since it was derived from the same truncated source
                 val min5File = File(pcmCacheDir, "${episodeId}_5min.pcm")
                 if (min5File.exists()) min5File.delete()
-                // Append missing PCM data (continue from where we left off)
-                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, startOffsetBytes = existingBytes)
+                // Regenerate complete PCM from scratch
+                pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
                 if (pcmFile == null) {
-                    throw RuntimeException("PCM补全失败: 原文件被截断(${existingBytes} bytes < $minValidBytes)，补全生成失败")
+                    throw RuntimeException("PCM重新生成失败: 原文件被截断(${existingBytes} bytes < $minValidBytes)，重新解码失败")
                 }
-                vadLog("[v2.4.130] analyzeEpisode: appended PCM, total now: ${pcmFile.length()} bytes")
+                vadLog("[v2.4.136] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
             } else {
                 Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
             }

@@ -731,8 +731,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 Player.STATE_READY -> {
                                     prepared = true
                                     // [v2.0.94] Clear episode switching flag — player is now ready with new media
-                                    episodeSwitching = false
+                                    // v2.4.136: Only clear if the reported position is reasonable for the
+                                    // current episode. If curPos is far from episodeStartPos/seekTarget,
+                                    // this STATE_READY likely belongs to the previous media item during
+                                    // rapid episode switching, so keep episodeSwitching=true.
                                     val curPos = player?.currentPosition ?: 0L
+                                    val expectedPos = if (seekTargetPosition > 0) seekTargetPosition else episodeStartPos
+                                    val posDelta = kotlin.math.abs(curPos - expectedPos)
+                                    if (episodeSwitching && expectedPos > 0 && posDelta > 120000 && stalePosRejectCount < 5) {
+                                        stalePosRejectCount++
+                                        writeServiceLog("playback", "[v2.4.136] STATE_READY: ignoring premature READY (curPos=$curPos, expected=$expectedPos, delta=$posDelta), keeping episodeSwitching=true")
+                                    } else {
+                                        episodeSwitching = false
+                                    }
                                     if (isSeekingToPosition && seekTargetPosition > 0) {
                                         // [v2.0.65] Issue 1 Fix: Only clear seeking state if position is NEAR target.
                                         // Previously, curPos <= 0 cleared seeking state, causing position to drop to 0.
@@ -4850,8 +4861,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Only update from rawPos if player is prepared and position moves forward
         // v2.4.117: Use centralized safeUpdatePosition() which rejects stale positions >60s ahead.
         // This replaces the inline check from v2.4.116 and ensures ALL update paths use the same logic.
-        if (prepared && rawPos > authoritativePosition) {
+        // v2.4.136: During the episode-switch window, ignore rawPos even if prepared. ExoPlayer may
+        // still report the previous episode's position for a brief time after setMediaItem(), which
+        // causes the notification/UI to jump to the old position and then loop back.
+        val switchWindowMs = 8000L
+        val isWithinSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < switchWindowMs
+        if (prepared && rawPos > authoritativePosition && !isWithinSwitchWindow) {
             safeUpdatePosition(rawPos)
+        } else if (prepared && rawPos > authoritativePosition && isWithinSwitchWindow) {
+            writeServiceLog("playback", "[v2.4.136] getCurrentPosition: ignoring rawPos=$rawPos during switch window (authPos=$authoritativePosition, elapsed=${System.currentTimeMillis() - lastPositionRestoreTime}ms)")
         }
         // Also maintain maxKnownPosition for backward compatibility
         if (rawPos > maxKnownPosition && prepared) {
