@@ -242,6 +242,15 @@ class SettingsFragment : Fragment() {
             if (suppressListeners) return@setOnCheckedChangeListener
             settings.enablePreGenerateSubtitles = isChecked
             save()
+            // v2.4.134: 关闭预生成字幕后，立即停止正在运行的字幕生成服务，避免通知栏继续报告进度
+            if (!isChecked) {
+                try {
+                    val intent = Intent(requireContext(), com.radio.app.services.SubtitleGeneratorService::class.java).apply {
+                        action = "cancel_all"
+                    }
+                    requireContext().startService(intent)
+                } catch (_: Exception) {}
+            }
         }
         binding.spinnerNotificationStyle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {

@@ -4068,6 +4068,19 @@ class SubtitleGeneratorService : Service() {
             val taskType = intent.getStringExtra("task_type") ?: "subtitle"
             val isPreCacheSubtitle = intent.getBooleanExtra("precache_subtitle", false)
             val forceWhisperBase = intent.getBooleanExtra("force_whisper_base", false)
+
+            // v2.4.134: 如果用户已关闭预生成字幕，则拒绝启动新的预生成字幕任务，避免通知栏继续报告进度
+            if (isPreCacheSubtitle && taskType == "subtitle") {
+                val settings = AppSettings.getInstance(this)
+                settings.reloadAsrSettings(this)
+                if (!settings.enablePreGenerateSubtitles) {
+                    logToFile("onStartCommand: pre-cache subtitle disabled, ignoring start request for $episodeId")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+            }
+
             val taskLabel = if (taskType == "segment") "AI分段" else "字幕生成"
 
             logToFile("onStartCommand: starting foreground for $taskLabel, episode=$episodeId")
