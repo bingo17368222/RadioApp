@@ -2167,6 +2167,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Found a cached episode without subtitles — trigger subtitle generation
                     writePreCacheLog("patrolSubtitle: [v2.4.13] found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
                     startPreCacheSubtitleGeneration(ep)
+                    // v2.4.135: 如果预生成字幕已关闭，不显示字幕生成通知
+                    if (!subtitlesEnabled) return@launch
                     // v2.4.80: Show notification when patrol finds episode to process
                     try {
                         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -2266,6 +2268,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         serviceScope.launch { triggerPreCache() }
                     } catch (_: Exception) {}
                 }
+                // v2.4.135: 如果预生成字幕已关闭，不显示"预生成字幕"总结通知
+                if (!subtitlesEnabled) return@launch
                 // v2.4.92: Clear notification text — explain what was done and what will happen next
                 try {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {

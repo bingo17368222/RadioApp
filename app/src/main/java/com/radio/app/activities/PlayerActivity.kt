@@ -333,6 +333,22 @@ class PlayerActivity : AppCompatActivity() {
                     clearSubtitles()
                     voiceSegments = generateSimulatedSegments()
                     if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                    // v2.4.135: Reset UI position state to the new episode's saved position immediately
+                    // so that the previous episode's progress is not shown after switching.
+                    val savedPos = getSavedPositionForEpisode(requireContext(), ep.id ?: "")
+                    lastDisplayedPositionMs = savedPos
+                    jitterSyncBaseline = savedPos
+                    // Reset jitter stabilization so onPositionChanged will re-sync from the new baseline
+                    jitterSyncTimeMs = System.currentTimeMillis()
+                    jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
+                    consecutiveBackwardJumps = 0
+                    episodeSwitchLockPos = savedPos
+                    // Apply to UI immediately in case service is not yet prepared
+                    val svcDur = playbackService?.getDuration() ?: ep.duration
+                    binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
+                    binding.seekBar.progress = savedPos.toInt()
+                    binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
+                    writeNotificationLog("[v2.4.135] episodeChanged reset UI position to savedPos=$savedPos, dur=$svcDur for ep=${ep.id}")
                 }
                 updateUI()
             }
@@ -468,10 +484,19 @@ class PlayerActivity : AppCompatActivity() {
                         episodeList = svcList
                         currentEpisodeIndex = episodeList.indexOfFirst { it.id == svcEpisode.id }.coerceAtLeast(0)
                     }
+                    // v2.4.135: Reset UI position to the service episode's saved position so we don't
+                    // carry over the cached position from a different episode.
+                    val savedPos = getSavedPositionForEpisode(this@PlayerActivity, svcEpisode.id ?: "")
+                    lastDisplayedPositionMs = savedPos
+                    jitterSyncBaseline = savedPos
+                    jitterSyncTimeMs = System.currentTimeMillis()
+                    jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
+                    consecutiveBackwardJumps = 0
+                    episodeSwitchLockPos = savedPos
                     clearSubtitles()
                     updateUI()
                     restoreBackgroundResults()
-                    writeJitterLog("onServiceConnected: restored episode from service: ${svcEpisode.title}")
+                    writeJitterLog("onServiceConnected: restored episode from service: ${svcEpisode.title}, savedPos=$savedPos")
                     return
                 }
             }
@@ -1282,21 +1307,10 @@ class PlayerActivity : AppCompatActivity() {
                 // Don't return - continue with initialization, service will provide episode
                 initViews()
                 // Issue 1 Fix 3: 系统重建时不立即恢复缓存位置，等服务连接后获取实际位置。
-                // 只在 freshLaunchTs > 0（用户主动操作）时才恢复缓存位置。
-                if (freshLaunchTs > 0) {
-                    val cachedPos = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_position", 0L)
-                    val cachedDur = getSharedPreferences("player_position_cache", MODE_PRIVATE).getLong("cached_duration", 0L)
-                    if (cachedPos > 0 && cachedDur > 0 && cachedPos <= cachedDur) {
-                        try {
-                            binding.seekBar.max = cachedDur.toInt()
-                            binding.seekBar.progress = cachedPos.toInt()
-                            binding.tvCurrentTime.text = "${formatTime(cachedPos.toInt())} / ${formatTime(cachedDur.toInt())}"
-                            writeJitterLog("onCreate: immediately restored cached position=$cachedPos, duration=$cachedDur")
-                        } catch (_: Exception) {}
-                    }
-                } else {
-                    writeJitterLog("onCreate: freshLaunchTs=0, skipping cached position restore, waiting for service")
-                }
+                // v2.4.135: 即使 freshLaunchTs > 0 也不立即恢复全局缓存位置，避免 Activity 重建后
+                // 显示旧 episode 的位置。每个 episode 的进度会由 onServiceConnected /
+                // episodeChangedReceiver 根据 episode id 独立恢复。
+                writeJitterLog("onCreate: skipping immediate cached position restore; will sync per-episode from service")
                 setupListeners()
                 restoreProcessingState()
                 bindPlaybackService()

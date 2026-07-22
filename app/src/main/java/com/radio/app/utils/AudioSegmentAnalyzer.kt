@@ -903,13 +903,24 @@ object AudioSegmentAnalyzer {
                 // v2.4.128: Moved rmsEnergy/zcr computation here for diagnostics
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
-                if (frameResults.size == 4 && vadProb < 0.01f) {
+                // v2.4.135: Early VAD malfunction detection. If Silero VAD reports extremely low
+                // probability but YAMNet clearly detects speech in the current frame, switch to
+                // YAMNet-only classification immediately. This avoids aborting segmentation on
+                // audio where VAD fails to produce meaningful probabilities.
+                if (!vadMalfunction && vadProb < 0.01f && yamnetSpeech > 0.3f) {
+                    vadLog("[v2.4.135] VAD malfunction detected early (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.3). Switching to YAMNet-only mode.")
+                    Log.w(TAG, "[v2.4.135] VAD malfunction — falling back to YAMNet-only mode")
+                    vadMalfunction = true  // Flag to use YAMNet-only classification
+                }
+
+                if (frameResults.size == 4 && vadProb < 0.01f && !vadMalfunction) {
                     // v2.4.133: Check if YAMNet is working. If YAMNet speech > 0.3 for any frame,
                     // fall back to YAMNet-only mode instead of aborting.
-                    val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.3f }
+                    // v2.4.135: Also consider the current frame's YAMNet speech.
+                    val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.3f } || yamnetSpeech > 0.3f
                     if (yamnetWorking) {
-                        vadLog("[v2.4.133] VAD malfunction (prob<0.01) but YAMNet is working (speech>0.3). Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[v2.4.133] VAD malfunction — falling back to YAMNet-only mode")
+                        vadLog("[v2.4.135] VAD malfunction at frame 5 but YAMNet is working. Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[v2.4.135] VAD malfunction at frame 5 — falling back to YAMNet-only mode")
                         vadMalfunction = true  // Flag to use YAMNet-only classification
                     } else {
                         val diag = buildString {
