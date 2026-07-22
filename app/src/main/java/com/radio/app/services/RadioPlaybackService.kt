@@ -221,6 +221,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var notificationHandler: Handler? = null
     private var notificationRunnable: Runnable? = null
     private var lastNotifiedPosition = -1L
+    // v2.4.139: Track last notified playing state so that play/pause state changes
+    // (e.g. pauseConfirmedUntil expiring) are reflected even when position is unchanged.
+    private var lastNotifiedPlayingState = false
     // v2.4.112: Track last RESET-triggered full rebuild to prevent notification burst.
     // When episode switch sets lastNotifiedPosition=-1, the progress poll detects RESET
     // and forces a full rebuild. Without this guard, multiple polls within a few seconds
@@ -1966,8 +1969,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         Thread {
             try {
                 writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] starting PCM decode for $episodeId")
+                // v2.4.139: Pass episode metadata duration so the analyzer can fall back when
+                // MediaExtractor fails to read the MP4 duration (a common cause of mp4DurationMs=0
+                // in .info files).
+                val expectedDurationMs = episode.duration?.let { if (it > 0) it * 1000L else 0L } ?: 0L
                 val success = com.radio.app.utils.AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    this, episodeId, audioUrl
+                    this, episodeId, audioUrl, expectedDurationMs
                 )
                 if (success) {
                     writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation SUCCESS for $episodeId")
@@ -3291,6 +3298,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return  // Skip identical notification update
         }
         lastNotificationContentHash = contentHash
+        // v2.4.139: Remember the playing state that was actually notified, so the progress poll
+        // can detect when the state changes and force a rebuild even if position is unchanged.
+        lastNotifiedPlayingState = effectivePlaying
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         try {
@@ -3512,10 +3522,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // updateMediaSessionState() which updates the MediaSession playback position.
         // The MediaSession API updates the system's progress bar without rebuilding
         // the notification's RemoteViews.
+        // v2.4.139: Also rebuild when the computed playing state changes, otherwise the
+        // notification can get stuck showing "已暂停" after playback has actually resumed
+        // (e.g. pauseConfirmedUntil expired, or a transient pause during state transitions).
+        val playingStateChanged = playing != lastNotifiedPlayingState
         if (notificationStyle != "minimal") {
             if (isReset) {
                 forceNotificationUpdate = true
                 writeServiceLog("notification", "[v2.0.75-PROGRESS-POLL] style=$notificationStyle, RESET — calling notifyNotification() for full rebuild")
+                notifyNotification()
+            } else if (playingStateChanged) {
+                forceNotificationUpdate = true
+                writeServiceLog("notification", "[v2.4.139-PROGRESS-POLL] playing state changed ($lastNotifiedPlayingState -> $playing), pos=$pos — calling notifyNotification() for full rebuild")
                 notifyNotification()
             } else if (posChanged) {
                 // v2.4.121: Just update MediaSession position — NO full notification rebuild.
@@ -4326,6 +4344,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             isSeekingToPosition = false
         }
         userPaused = false // Starting new playback, not user-paused
+        // v2.4.139: A newly started episode must show the playing state. If a previous
+        // pause() set pauseConfirmedUntil, the notification would incorrectly show "已暂停"
+        // for up to 2 seconds even though playback has moved on to a new episode.
+        pauseConfirmedUntil = 0L
         stopAutoSkipCheck()
         if (startPositionMs >= 0) {
             // 位置恢复通过 prepare 前 seek 完成
