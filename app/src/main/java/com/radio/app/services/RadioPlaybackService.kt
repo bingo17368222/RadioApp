@@ -2860,8 +2860,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.114: Increased from 5000ms to 10000ms. Logs show stale positions being
         // saved 8.9 seconds after episode switch (5s window expired at 5s, stale save
         // happened at 8.9s). 10s window covers the full stale position period.
-        if (System.currentTimeMillis() - lastPositionRestoreTime < 10000) {
-            writeServiceLog("playback", "[v2.4.114] saveCurrentPosition: BLOCKED (within 10s of restore)")
+        // v2.4.137: Extend to 15000ms to match getCurrentPosition switch window and block
+        // the stale positions seen at 10-12s after rapid episode switches.
+        if (System.currentTimeMillis() - lastPositionRestoreTime < 15000) {
+            writeServiceLog("playback", "[v2.4.137] saveCurrentPosition: BLOCKED (within 15s of restore)")
             return
         }
         val ep = currentEpisode ?: return
@@ -4830,12 +4832,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 return maxOf(authoritativePosition, seekTargetPosition)
             } else {
                 // Close enough to target - clear seeking state and use player position
-                isSeekingToPosition = false
-                if (rawPos > authoritativePosition) {
-                    authoritativePosition = rawPos
-                }
-                if (rawPos > maxKnownPosition) {
-                    maxKnownPosition = rawPos
+                // v2.4.137: Guard against accepting a leaked old-episode position. During rapid
+                // episode switching, rawPos may still be from the previous episode. Only clear
+                // seeking state when rawPos is actually close to the target we asked for.
+                if (kotlin.math.abs(rawPos - seekTargetPosition) <= 3000) {
+                    isSeekingToPosition = false
+                    if (rawPos > authoritativePosition) {
+                        authoritativePosition = rawPos
+                    }
+                    if (rawPos > maxKnownPosition) {
+                        maxKnownPosition = rawPos
+                    }
+                } else {
+                    writeServiceLog("playback", "[v2.4.137] getCurrentPosition: rawPos=$rawPos far from seekTarget=$seekTargetPosition, keeping seeking state")
+                    return maxOf(authoritativePosition, seekTargetPosition)
                 }
             }
         }
@@ -4864,7 +4874,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.136: During the episode-switch window, ignore rawPos even if prepared. ExoPlayer may
         // still report the previous episode's position for a brief time after setMediaItem(), which
         // causes the notification/UI to jump to the old position and then loop back.
-        val switchWindowMs = 8000L
+        val switchWindowMs = 15000L
         val isWithinSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < switchWindowMs
         if (prepared && rawPos > authoritativePosition && !isWithinSwitchWindow) {
             safeUpdatePosition(rawPos)

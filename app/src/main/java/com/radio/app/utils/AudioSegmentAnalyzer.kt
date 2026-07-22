@@ -391,6 +391,8 @@ object AudioSegmentAnalyzer {
                     Log.e(TAG, "analyzeEpisode: failed to decode fresh PCM for $episodeId")
                     throw RuntimeException("PCM重新生成失败: 旧缓存已被废弃(采样率错误)，重新解码失败")
                 }
+                // v2.4.137: Guard against decoder producing excessive PCM (e.g. looped/repeated samples)
+                pcmFile = clampPcmToExpectedLength(pcmFile, audioDurationMs, episodeId)
                 vadLog("[v2.4.131] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
             } else if (pcmFile.length() < minValidBytes) {
                 // v2.4.129: Check if PCM is truncated
@@ -408,6 +410,8 @@ object AudioSegmentAnalyzer {
                 if (pcmFile == null) {
                     throw RuntimeException("PCM重新生成失败: 原文件被截断(${existingBytes} bytes < $minValidBytes)，重新解码失败")
                 }
+                // v2.4.137: Guard against decoder producing excessive PCM
+                pcmFile = clampPcmToExpectedLength(pcmFile, audioDurationMs, episodeId)
                 vadLog("[v2.4.136] analyzeEpisode: regenerated PCM: ${pcmFile.length()} bytes")
             } else {
                 Log.i(TAG, "analyzeEpisode: found full PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
@@ -429,11 +433,38 @@ object AudioSegmentAnalyzer {
                         Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId (audioUrl=$audioUrl)")
                         throw RuntimeException("无法获取音频数据: 未找到PCM缓存文件，本地无缓存音频，URL解码失败(可能需要联网)")
                     }
+                    // v2.4.137: Guard against decoder producing excessive PCM
+                    pcmFile = clampPcmToExpectedLength(pcmFile, audioDurationMs, episodeId)
                 }
             }
         }
 
         return analyzePcmFile(context, pcmFile!!, durationMs)
+    }
+
+    /**
+     * v2.4.137: Some decoders (or damaged source files) can produce PCM that is significantly longer
+     * than the episode duration. Trim the file to the expected byte length plus a small margin so VAD
+     * does not process trailing silence/zeros or duplicated audio.
+     */
+    private fun clampPcmToExpectedLength(pcmFile: File, durationMs: Long, episodeId: String): File {
+        if (durationMs <= 0) return pcmFile
+        val expectedBytes = (durationMs * 16000L * 2L / 1000L)
+        val maxAllowedBytes = (expectedBytes * 1.15).toLong() // 15% margin for container/duration inaccuracy
+        if (pcmFile.length() > maxAllowedBytes) {
+            val trimBytes = maxAllowedBytes
+            vadLog("[v2.4.137] clampPcmToExpectedLength: trimming ${pcmFile.length()} bytes -> $trimBytes bytes (duration=${durationMs}ms, expected=$expectedBytes)")
+            Log.w(TAG, "[v2.4.137] PCM too long for $episodeId: ${pcmFile.length()} > $maxAllowedBytes, trimming to $trimBytes")
+            try {
+                java.io.RandomAccessFile(pcmFile, "rw").use { raf ->
+                    raf.setLength(trimBytes)
+                }
+            } catch (e: Exception) {
+                vadLog("[v2.4.137] clampPcmToExpectedLength: failed to trim: ${e.message}")
+                Log.e(TAG, "[v2.4.137] failed to trim PCM", e)
+            }
+        }
+        return pcmFile
     }
 
     /**
@@ -927,18 +958,20 @@ object AudioSegmentAnalyzer {
                     vadMalfunction = true  // Flag to use YAMNet-only classification
                 }
 
-                if (frameResults.size == 4 && vadProb < 0.01f && !vadMalfunction) {
+                // v2.4.137: Wait until 30 frames (~30s) before declaring VAD malfunction. Some episodes
+                // start with a long intro/silence, and aborting after only 5 frames falsely rejects them.
+                if (frameResults.size == 29 && vadProb < 0.01f && !vadMalfunction) {
                     // v2.4.133: Check if YAMNet is working. If YAMNet speech > 0.3 for any frame,
                     // fall back to YAMNet-only mode instead of aborting.
                     // v2.4.135: Also consider the current frame's YAMNet speech.
                     val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.3f } || yamnetSpeech > 0.3f
                     if (yamnetWorking) {
-                        vadLog("[v2.4.135] VAD malfunction at frame 5 but YAMNet is working. Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[v2.4.135] VAD malfunction at frame 5 — falling back to YAMNet-only mode")
+                        vadLog("[v2.4.137] VAD malfunction at frame 30 but YAMNet is working. Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[v2.4.137] VAD malfunction at frame 30 — falling back to YAMNet-only mode")
                         vadMalfunction = true  // Flag to use YAMNet-only classification
                     } else {
                         val diag = buildString {
-                            append("VAD模型故障: 前5帧prob值全部<0.01 (avg=$vadProb)。\n")
+                            append("VAD模型故障: 前30帧prob值全部<0.01 (avg=$vadProb)。\n")
                             append("VAD模型未检测到语音，YAMNet也未检测到语音(speech<0.3)。分段已中止。\n")
                             append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
                             var sMin = Float.MAX_VALUE
