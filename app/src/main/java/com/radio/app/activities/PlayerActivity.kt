@@ -335,7 +335,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (voiceSegments.isNotEmpty()) updateSegmentsUI()
                     // v2.4.135: Reset UI position state to the new episode's saved position immediately
                     // so that the previous episode's progress is not shown after switching.
-                    val savedPos = getSavedPositionForEpisode(requireContext(), ep.id ?: "")
+                    val savedPos = getSavedPositionForEpisode(context ?: return@onReceive, ep.id ?: "")
                     lastDisplayedPositionMs = savedPos
                     jitterSyncBaseline = savedPos
                     // Reset jitter stabilization so onPositionChanged will re-sync from the new baseline
@@ -351,6 +351,32 @@ class PlayerActivity : AppCompatActivity() {
                     writeNotificationLog("[v2.4.135] episodeChanged reset UI position to savedPos=$savedPos, dur=$svcDur for ep=${ep.id}")
                 }
                 updateUI()
+                // v2.4.134: 与 onEpisodeChanged 回调路径保持一致——切换节目后必须强制刷新
+                // 显示位置，避免旧节目位置（如 90 分钟）残留到新节目 UI 上。
+                // 故障现象：用户反馈"当前播放节目在90分钟，切换节目，新的显示播放位置
+                // 也在90分钟"——根因是广播路径没有重置 jitter/position lock，导致
+                // onPositionChanged 在 stabilize 期间接受了旧位置。
+                runOnUiThread {
+                    if (_binding == null) return@runOnUiThread
+                    writeJitterLog("[v2.4.134] episodeChanged broadcast: force-refresh position for ${ep?.id}")
+                    lastDisplayedPositionMs = 0
+                    val savedPos = if (ep != null) getSavedPositionForEpisode(this@PlayerActivity, ep.id) else 0L
+                    jitterSyncBaseline = savedPos
+                    jitterSyncTimeMs = System.currentTimeMillis()
+                    consecutiveBackwardJumps = 0
+                    if (savedPos > 0) {
+                        lastDisplayedPositionMs = savedPos
+                        binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
+                        binding.seekBar.progress = savedPos.toInt()
+                        episodeSwitchLockPos = savedPos
+                        writeJitterLog("[v2.4.134] episodeChanged broadcast: set position lock to savedPos=$savedPos")
+                    } else {
+                        binding.tvCurrentTime.text = "00:00 / --:--"
+                        binding.seekBar.progress = 0
+                        episodeSwitchLockPos = 0L
+                        writeJitterLog("[v2.4.134] episodeChanged broadcast: set position lock to 0 (no saved position)")
+                    }
+                }
             }
         }
     }
@@ -3160,7 +3186,10 @@ class PlayerActivity : AppCompatActivity() {
         var skipCount = 0
         while (targetIdx >= 0 && skipCount < 20) {
             val ep = episodes[targetIdx]
-            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+            // v2.4.134: 与 playNextEpisode 行为一致——跳过无需预处理的节目。
+            // 用户反馈"无需预处理的节目连续播放或手动切换节目时自动跳过"。
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                && !settings.isNoPreprocess(ep.id ?: "")) {
                 currentEpisode = ep
                 // Issue 10 Fix 2: clear old subtitles when switching to prev episode
                 clearSubtitles()
@@ -3174,7 +3203,7 @@ class PlayerActivity : AppCompatActivity() {
                 if (voiceSegments.isNotEmpty()) updateSegmentsUI()
                 updateUI()
                 setupPreCacheList()
-                android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${ep.title}, index=$targetIdx (skipped $skipCount disliked)")
+                android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${ep.title}, index=$targetIdx (skipped $skipCount disliked/no-preprocess)")
                 return
             }
             skipCount++

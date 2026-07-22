@@ -816,6 +816,20 @@ object AudioSegmentAnalyzer {
             throw RuntimeException("PCM文件太小或不存在: ${pcmFile.name} (${pcmFile.length()} bytes)")
         }
 
+        // v2.4.134: 重置 object 级状态，防止跨集泄漏。
+        // 故障原因：vadMalfunction / yamnetCallCount / vadRunCount 是 object 单例字段，
+        // 一旦某一集触发 VAD 故障并把 vadMalfunction 置为 true，后续所有集都会进入
+        // YAMNet-only 模式（见 line ~974 classifyFrameYamnetOnly），即使该集 VAD
+        // 完全正常也无法使用双模型融合，导致分段异常。
+        // yamnetCallCount / vadRunCount 用于日志采样窗口，跨集累积会让首帧日志失效。
+        // 注意：yamnetInputShape 不在此处重置——它由 loadYamnetModel() 在每次调用
+        // 时根据当前模型重新设置，没有跨集污染问题。
+        synchronized(this) {
+            vadMalfunction = false
+            yamnetCallCount = 0
+            vadRunCount = 0
+        }
+
         // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded.")
@@ -941,10 +955,10 @@ object AudioSegmentAnalyzer {
                             append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
                             append("VAD model: stateSize=${vadModel.stateSize}\n")
                             append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
-                    }
-                    vadLog("[v2.4.128] ERROR: VAD malfunction.\n$diag")
-                    Log.e(TAG, "[v2.4.128] VAD malfunction:\n$diag")
-                    throw RuntimeException(diag)
+                        }
+                        vadLog("[v2.4.128] ERROR: VAD malfunction.\n$diag")
+                        Log.e(TAG, "[v2.4.128] VAD malfunction:\n$diag")
+                        throw RuntimeException(diag)
                     }  // end of else block
                 }
 
