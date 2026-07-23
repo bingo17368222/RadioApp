@@ -75,10 +75,11 @@ object AudioSegmentAnalyzer {
     private const val YAMNET_NUM_CLASSES = 521
 
     // YAMNet class indices (from AudioSet ontology)
+    // v2.4.145: Corrected indices based on official yamnet_class_map.csv
     private const val YAMNET_IDX_SPEECH = 0       // Speech
-    private const val YAMNET_IDX_SILENCE = 78     // Silence
-    private const val YAMNET_IDX_MUSIC = 137      // Music
-    private const val YAMNET_IDX_SONG = 138       // Singing
+    private const val YAMNET_IDX_SILENCE = 494    // Silence (was 78 = Meow)
+    private const val YAMNET_IDX_MUSIC = 132      // Music (was 137 = Bass guitar)
+    private const val YAMNET_IDX_SONG = 261       // Song (was 138 = Acoustic guitar)
 
     // Frame step: 0.5s (8000 samples at 16kHz)
     private const val FRAME_STEP_SAMPLES = 8000

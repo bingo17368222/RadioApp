@@ -75,6 +75,9 @@ class PlayerActivity : AppCompatActivity() {
     private var cacheProgressRunnable: Runnable? = null
     private var subtitleProcessing = false
     private var segmentProcessing = false
+    // v2.4.145: Remember the last reported AI segment progress so we can restore the UI
+    // and notification when the user returns to the Activity.
+    private var lastSegmentProgress = 0
     private var segmentListDisplayText: String = ""  // v2.4.50: Store "片段列表" text to prevent overwrite
     private var lastSkipBackwardTime: Long = 0  // v2.4.54: Debounce backward skip
     private var onResumeTimestamp: Long = 0  // v2.4.55: Post-resume seek blackout
@@ -2026,11 +2029,13 @@ class PlayerActivity : AppCompatActivity() {
                             val segments_result = com.radio.app.utils.AudioSegmentAnalyzer.analyzeEpisode(
                                 this@PlayerActivity, episode.id, maxEnd.toLong(), episode.audioUrl,
                                 progressCallback = { pct ->
+                                    lastSegmentProgress = pct
                                     runOnUiThread {
                                         if (_binding != null && segmentProcessing) {
-                                            // v2.4.144: Keep the progress bar moving instead of stuck at 0%
+                                            // v2.4.145: Keep the progress bar and notification moving instead of stuck at 0%
                                             binding.tvAiStatus.text = "音频分段分析中($segEngineName) ${pct}%"
                                             binding.progressAi.progress = pct
+                                            updateSegmentNotification(pct)
                                         }
                                     }
                                 }
@@ -3036,7 +3041,10 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun startAiProcessing(taskType: String) {
         if (taskType == "subtitle") subtitleProcessing = true
-        else if (taskType == "segment") segmentProcessing = true
+        else if (taskType == "segment") {
+            segmentProcessing = true
+            lastSegmentProgress = 0  // v2.4.145: Reset progress for new segment task
+        }
         saveProcessingState()
         // v2.4.44: Show notification for AI segmentation (like subtitle generation)
         if (taskType == "segment") {
@@ -3676,7 +3684,17 @@ class PlayerActivity : AppCompatActivity() {
             if (segmentProcessing) {
                 binding.btnAiSegment.isEnabled = false
                 binding.progressAi.visibility = View.VISIBLE
+                binding.progressAi.progress = lastSegmentProgress
                 binding.tvAiStatus.visibility = View.VISIBLE
+                // v2.4.145: Restore the progress text and notification when the user comes back.
+                val segEngineNameRestore = when (aiModel) {
+                    AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                    AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
+                    AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                    else -> "关键词"
+                }
+                binding.tvAiStatus.text = "音频分段分析中($segEngineNameRestore) ${lastSegmentProgress}%"
+                updateSegmentNotification(lastSegmentProgress)
             } else {
                 binding.btnAiSegment.isEnabled = true
             }

@@ -48,6 +48,7 @@ import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
+import com.google.android.exoplayer2.upstream.DefaultDataSource
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -704,8 +705,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 )
                 .build()
 
+            // v2.4.145: Wrap the HTTP factory in DefaultDataSource so ExoPlayer can also read
+            // local file:// URIs when we have a cached copy. Without this, file URIs fail offline.
+            val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
             player = ExoPlayer.Builder(this)
-                .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
+                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
                 .setLoadControl(loadControl)
                 .build()
                 .apply {
