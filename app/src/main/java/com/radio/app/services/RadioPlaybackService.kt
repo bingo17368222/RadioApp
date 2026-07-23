@@ -966,7 +966,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.d(TAG, "Downloading audio to: ${targetFile.absolutePath}")
                 val connection = URL(url).openConnection() as HttpURLConnection
                 connection.connectTimeout = 30000
-                connection.readTimeout = 60000
+                // v2.4.142: Increase read timeout for large/slow downloads to reduce spurious truncation.
+                connection.readTimeout = 180000
                 connection.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
                 connection.setRequestProperty("Referer", "https://www.hndt.com/")
@@ -978,7 +979,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch
                 }
 
-                downloadTotalBytes = connection.contentLength.toLong()
+                downloadTotalBytes = connection.contentLengthLong
                 val input = connection.inputStream
                 val output = FileOutputStream(targetFile)
                 val buffer = ByteArray(8192)
@@ -1002,6 +1003,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 output.close()
                 input.close()
                 connection.disconnect()
+
+                // v2.4.142: Treat short reads as failures. Some servers/connections close the
+                // stream early, leaving a truncated file that then decodes to a truncated PCM.
+                if (downloadTotalBytes > 0 && totalRead < downloadTotalBytes * 0.99) {
+                    throw java.io.IOException("Download incomplete: $totalRead / $downloadTotalBytes bytes")
+                }
+
                 downloadProgressPct = 100
                 downloadDoneBytes = downloadTotalBytes.coerceAtLeast(totalRead)
                 sendCacheUpdateBroadcast(totalRead, targetFile.absolutePath)
@@ -1607,7 +1615,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             try {
                 val connection = URL(url).openConnection() as HttpURLConnection
                 connection.connectTimeout = 30000
-                connection.readTimeout = 120000
+                connection.readTimeout = 180000
                 connection.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
                 connection.setRequestProperty("Referer", "https://www.hndt.com/")
@@ -1619,15 +1627,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     Handler(Looper.getMainLooper()).post { triggerPreCache() }
                     return@launch
                 }
+                val expectedSize = connection.contentLengthLong
                 val input = connection.inputStream
                 val output = FileOutputStream(targetFile)
                 val buffer = ByteArray(8192)
                 var bytesRead: Int
+                var totalRead = 0L
                 while (input.read(buffer).also { bytesRead = it } != -1) {
                     output.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
                 }
                 output.close()
                 input.close()
+                connection.disconnect()
+
+                // v2.4.142: Reject truncated downloads before they poison the PCM decoder.
+                if (expectedSize > 0 && totalRead < expectedSize * 0.99) {
+                    throw java.io.IOException("Pre-cache download incomplete: $totalRead / $expectedSize bytes")
+                }
+
                 Log.d(TAG, "Pre-cache: downloaded ${targetFile.length()} bytes to ${targetFile.name}")
                 // 预缓存下载成功，递增计数，记录文件名
                 precacheCompletedCount++

@@ -85,6 +85,8 @@ object AudioSegmentAnalyzer {
 
     // Silero VAD: 512 samples per chunk
     private const val VAD_FRAME_SIZE = 512
+    // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
+    private const val VAD_CONTEXT_SIZE = 64
     private const val VAD_DRY_THRESHOLD = 0.45f
     private const val VAD_WATER_THRESHOLD = 0.15f
 
@@ -661,13 +663,15 @@ object AudioSegmentAnalyzer {
             // fos already created above (append or overwrite mode)
 
             try {
+                var inputEos = false
                 while (true) {
                     val inputBufferIndex = decoder.dequeueInputBuffer(10000)
-                    if (inputBufferIndex >= 0) {
+                    if (inputBufferIndex >= 0 && !inputEos) {
                         val inputBuffer = decoder.getInputBuffer(inputBufferIndex) ?: continue
                         val sampleSize = extractor.readSampleData(inputBuffer, 0)
                         if (sampleSize < 0) {
                             decoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputEos = true
                         } else {
                             decoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, extractor.sampleTime, 0)
                             extractor.advance()
@@ -821,13 +825,15 @@ object AudioSegmentAnalyzer {
             val fos = java.io.FileOutputStream(outputFile)
 
             try {
+                var inputEos = false
                 while (true) {
                     val inputBufferIndex = decoder.dequeueInputBuffer(10000)
-                    if (inputBufferIndex >= 0) {
+                    if (inputBufferIndex >= 0 && !inputEos) {
                         val inputBuffer = decoder.getInputBuffer(inputBufferIndex) ?: continue
                         val sampleSize = extractor.readSampleData(inputBuffer, 0)
                         if (sampleSize < 0) {
                             decoder.queueInputBuffer(inputBufferIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputEos = true
                         } else {
                             decoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, extractor.sampleTime, 0)
                             extractor.advance()
@@ -976,6 +982,8 @@ object AudioSegmentAnalyzer {
             // v1/v2: separate h [2,1,32] and c [2,1,32] → 64 floats each
             // v3/v4: combined state [2,1,N] → N*2 floats
             var vadState = FloatBuffer.wrap(FloatArray(vadModel.stateSize))
+            // v2.4.142: Context buffer for Silero VAD (last 64 samples of previous chunk).
+            var vadContext = FloatArray(VAD_CONTEXT_SIZE) { 0f }
 
             // v2.4.141: Count consecutive low-confidence VAD windows before declaring malfunction.
             var vadLowConfidenceFrames = 0
@@ -999,13 +1007,14 @@ object AudioSegmentAnalyzer {
                 var vadPos = 0
                 while (vadPos + VAD_FRAME_SIZE <= window.size) {
                     val chunk = window.copyOfRange(vadPos, vadPos + VAD_FRAME_SIZE)
-                    val (prob, newState) = runSileroVad(vadModel, chunk, vadState)
+                    val (prob, newState, newContext) = runSileroVad(vadModel, chunk, vadContext, vadState)
+                    vadState = newState
+                    vadContext = newContext
                     if (frameResults.size < 3 && vadChunks < 10) {
                         vadLog("VAD chunk #$vadChunks: prob=$prob, energy=${computeRmsEnergy(chunk, 0, chunk.size)}")
                     }
                     vadProb += prob
                     vadChunks++
-                    vadState = newState
                     vadPos += VAD_FRAME_SIZE
                 }
                 if (vadChunks > 0) vadProb /= vadChunks
@@ -1407,11 +1416,20 @@ object AudioSegmentAnalyzer {
     private fun runSileroVad(
         model: VadModelInfo,
         chunk: FloatArray,
+        context: FloatArray,
         state: FloatBuffer
-    ): Pair<Float, FloatBuffer> {
+    ): Triple<Float, FloatBuffer, FloatArray> {
 
         try {
             vadRunCount++
+
+            // v2.4.142: Silero VAD expects the previous 64 samples as context prepended to the
+            // current 512-sample chunk. Without this context the model outputs near-zero
+            // probabilities and appears to malfunction on normal speech.
+            val vadInput = FloatArray(VAD_CONTEXT_SIZE + chunk.size)
+            System.arraycopy(context, 0, vadInput, 0, VAD_CONTEXT_SIZE)
+            System.arraycopy(chunk, 0, vadInput, VAD_CONTEXT_SIZE, chunk.size)
+
             val sessionObj = model.session.session
             val sessionClass = sessionObj.javaClass
             val envClass = Class.forName("ai.onnxruntime.OrtEnvironment")
@@ -1509,18 +1527,18 @@ object AudioSegmentAnalyzer {
             // Build input map with correct names based on model version
             val inputMap = HashMap<String, Any>()
 
-            // "input" tensor: shape [1, chunk.size] — same for all versions
-            val inputTensor = createTensor(chunk, longArrayOf(1, chunk.size.toLong()))
+            // "input" tensor: shape [1, vadInput.size] — same for all versions
+            val inputTensor = createTensor(vadInput, longArrayOf(1, vadInput.size.toLong()))
                 ?: throw RuntimeException("createTensor failed for input")
             inputMap[model.inputNames.firstOrNull() ?: "input"] = inputTensor
 
-            // v2.4.129: Log VAD input diagnostics for first 5 calls
+            // v2.4.129/v2.4.142: Log VAD input diagnostics for first 5 calls
             if (vadRunCount <= 5) {
                 var chunkNonZero = 0
                 var chunkSum = 0.0
-                for (s in chunk) { if (s != 0f) chunkNonZero++; chunkSum += kotlin.math.abs(s) }
-                val chunkAvgAbs = (chunkSum / chunk.size).toFloat()
-                vadLog("[v2.4.129] runSileroVad #$vadRunCount: input chunk size=${chunk.size}, nonZero=$chunkNonZero, avgAbs=$chunkAvgAbs, first10=${chunk.take(10).joinToString(",")}")
+                for (s in vadInput) { if (s != 0f) chunkNonZero++; chunkSum += kotlin.math.abs(s) }
+                val chunkAvgAbs = (chunkSum / vadInput.size).toFloat()
+                vadLog("[v2.4.142] runSileroVad #$vadRunCount: input size=${vadInput.size} (context=$VAD_CONTEXT_SIZE + chunk=${chunk.size}), nonZero=$chunkNonZero, avgAbs=$chunkAvgAbs, first10=${vadInput.take(10).joinToString(",")}")
             }
 
             if (model.isV4Style) {
@@ -1668,7 +1686,9 @@ object AudioSegmentAnalyzer {
                 }
             }
 
-            return Pair(prob, newBuffer)
+            // v2.4.142: Update context to the last 64 samples of the current chunk for the next call.
+            val newContext = chunk.copyOfRange(chunk.size - VAD_CONTEXT_SIZE, chunk.size)
+            return Triple(prob, newBuffer, newContext)
         } catch (e: Throwable) {
             // v2.4.120: Unwrap InvocationTargetException to get real cause from session.run()
             val cause = if (e is java.lang.reflect.InvocationTargetException) e.targetException else e
