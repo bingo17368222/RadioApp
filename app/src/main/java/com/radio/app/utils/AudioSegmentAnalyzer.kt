@@ -617,7 +617,7 @@ object AudioSegmentAnalyzer {
                     }
                 }
             }
-            pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, decodeCallback)
+            pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, progressCallback = decodeCallback)
             if (pcmFile == null) {
                 Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId (audioUrl=$audioUrl)")
                 throw RuntimeException("无法获取音频数据: 未找到PCM缓存文件，本地无缓存音频，URL解码失败(可能需要联网)")
