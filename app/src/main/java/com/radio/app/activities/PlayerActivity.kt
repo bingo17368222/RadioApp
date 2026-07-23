@@ -3687,7 +3687,8 @@ class PlayerActivity : AppCompatActivity() {
                 binding.progressAi.progress = lastSegmentProgress
                 binding.tvAiStatus.visibility = View.VISIBLE
                 // v2.4.145: Restore the progress text and notification when the user comes back.
-                val segEngineNameRestore = when (aiModel) {
+                val restoreAiModel = AppSettings.getInstance(this).safeAiModel()
+                val segEngineNameRestore = when (restoreAiModel) {
                     AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
                     AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
                     AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
