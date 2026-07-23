@@ -104,6 +104,37 @@ class RadioApplication : Application() {
                 return fallback
             }
         }
+
+        // v2.4.147: Delete all existing log files so each new APK version starts with clean logs.
+        fun clearAllLogs(context: android.content.Context) {
+            try {
+                val logDir = getLogDir(context)
+                logDir.walkBottomUp().forEach { file ->
+                    if (file != logDir) file.delete()
+                }
+                android.util.Log.w("RadioApplication", "v2.4.147: Cleared all logs under ${logDir.absolutePath}")
+            } catch (e: Exception) {
+                android.util.Log.e("RadioApplication", "v2.4.147: clearAllLogs failed: ${e.message}")
+            }
+        }
+
+        // v2.4.147: Write a version marker to every .log file so we can always tell which APK
+        // produced the log, even if the file was not cleared.
+        fun writeVersionMarkers(context: android.content.Context, versionName: String) {
+            try {
+                val logDir = getLogDir(context)
+                val marker = "=== RadioApp v$versionName ===\n"
+                if (logDir.exists()) {
+                    logDir.walk().maxDepth(2).filter { it.isFile && it.extension == "log" }.forEach { file ->
+                        try {
+                            file.appendText(marker)
+                        } catch (_: Exception) { }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("RadioApplication", "v2.4.147: writeVersionMarkers failed: ${e.message}")
+            }
+        }
     }
 
     override fun onCreate() {
@@ -112,6 +143,16 @@ class RadioApplication : Application() {
         // Init crash handler first
         com.radio.app.utils.CrashHandler.getInstance().init(this)
         createNotificationChannel()
+        // v2.4.147: Ensure each APK version writes logs that clearly identify its version.
+        // If the version changed, wipe old logs to avoid confusing mixed-version output.
+        val currentVersionName = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" } ?: ""
+        val logVersionPrefs = getSharedPreferences("log_version_prefs", MODE_PRIVATE)
+        val storedLogVersion = logVersionPrefs.getString("last_log_version", "") ?: ""
+        if (storedLogVersion != currentVersionName && currentVersionName.isNotEmpty()) {
+            clearAllLogs(this)
+            logVersionPrefs.edit().putString("last_log_version", currentVersionName).apply()
+        }
+        writeVersionMarkers(this, currentVersionName)
         // Warm up log dir
         getLogDir(this)
         // [v2.1.0] Warm up cache dir + migrate legacy PCM cache

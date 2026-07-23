@@ -274,6 +274,9 @@ class EpisodeApiService private constructor() {
                     this.title = title
                     broadcastAt = "${dateStr}T${timeStr}:00"
                     this.duration = duration
+                    // v2.4.147: Persist start/end timestamps for offline display.
+                    this.startTime = beginTime
+                    this.endTime = endTime
                     description = "${timeStr} - ${getStationName(stationId)}"
                     this.stationId = stationId
                     this.stationName = stationName
@@ -360,6 +363,8 @@ class EpisodeApiService private constructor() {
                     this.title = title
                     broadcastAt = "${dateStr}T${timeStr}:00"
                     this.duration = duration
+                    this.startTime = beginTime
+                    this.endTime = endTime
                     description = "${timeStr} - ${getStationName(stationId)}"
                     this.stationId = stationId
                     this.stationName = stationName

@@ -1053,18 +1053,21 @@ object AudioSegmentAnalyzer {
                 // v2.4.128: Moved rmsEnergy/zcr computation here for diagnostics
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
-                // v2.4.141: Early VAD malfunction detection. Require several consecutive low-prob
+                // v2.4.147: Early VAD malfunction detection. Require several consecutive low-prob
                 // frames before switching to YAMNet-only mode. A single window can be low simply
                 // because the audio is quiet/intro; only a persistent stream of near-zero probabilities
                 // while YAMNet still detects speech indicates that VAD is not useful for this episode.
-                if (!vadMalfunction && vadProb < 0.01f && yamnetSpeech > 0.3f) {
+                // NOTE: yamnetSpeech is a sigmoid probability. 0.5 means "no speech detected" (raw logit 0),
+                // so we must require yamnetSpeech > 0.6 to mean YAMNet actually hears speech. Previously
+                // using >0.3 caused a false switch during VAD warmup/quiet intros.
+                if (!vadMalfunction && vadProb < 0.01f && yamnetSpeech > 0.6f) {
                     vadLowConfidenceFrames++
-                    if (vadLowConfidenceFrames >= 3) {
-                        vadLog("[v2.4.141] VAD malfunction detected after $vadLowConfidenceFrames low-prob frames (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.3). Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[v2.4.141] VAD malfunction — falling back to YAMNet-only mode")
+                    if (vadLowConfidenceFrames >= 5) {
+                        vadLog("[v2.4.147] VAD malfunction detected after $vadLowConfidenceFrames low-prob frames (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.6). Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[v2.4.147] VAD malfunction — falling back to YAMNet-only mode")
                         vadMalfunction = true  // Flag to use YAMNet-only classification
                     } else {
-                        vadLog("[v2.4.141] VAD low confidence frame $vadLowConfidenceFrames/3 (vadProb=$vadProb, yamnetSpeech=$yamnetSpeech), not switching yet")
+                        vadLog("[v2.4.147] VAD low confidence frame $vadLowConfidenceFrames/5 (vadProb=$vadProb, yamnetSpeech=$yamnetSpeech), not switching yet")
                     }
                 } else if (!vadMalfunction) {
                     vadLowConfidenceFrames = 0
@@ -1073,13 +1076,11 @@ object AudioSegmentAnalyzer {
                 // v2.4.137: Wait until 30 frames (~30s) before declaring VAD malfunction. Some episodes
                 // start with a long intro/silence, and aborting after only 5 frames falsely rejects them.
                 if (frameResults.size == 29 && vadProb < 0.01f && !vadMalfunction) {
-                    // v2.4.133: Check if YAMNet is working. If YAMNet speech > 0.3 for any frame,
-                    // fall back to YAMNet-only mode instead of aborting.
-                    // v2.4.135: Also consider the current frame's YAMNet speech.
-                    val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.3f } || yamnetSpeech > 0.3f
+                    // v2.4.147: YAMNet speech > 0.6 means actual speech detection (>0.5 = no speech).
+                    val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.6f } || yamnetSpeech > 0.6f
                     if (yamnetWorking) {
-                        vadLog("[v2.4.137] VAD malfunction at frame 30 but YAMNet is working. Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[v2.4.137] VAD malfunction at frame 30 — falling back to YAMNet-only mode")
+                        vadLog("[v2.4.147] VAD malfunction at frame 30 but YAMNet is working. Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[v2.4.147] VAD malfunction at frame 30 — falling back to YAMNet-only mode")
                         vadMalfunction = true  // Flag to use YAMNet-only classification
                     } else {
                         val diag = buildString {
@@ -1820,8 +1821,8 @@ object AudioSegmentAnalyzer {
             return FrameType.SILENCE
         }
 
-        // 2. Music: YAMNet says music, VAD says no speech
-        if (yamnetMusic > 0.5f && vadProb < VAD_DRY_THRESHOLD) {
+        // 2. Music: YAMNet says music clearly louder than speech, VAD says no speech
+        if (yamnetMusic > 0.5f && yamnetMusic > yamnetSpeech + 0.1f && vadProb < VAD_DRY_THRESHOLD) {
             return FrameType.WATER
         }
 
@@ -1835,8 +1836,8 @@ object AudioSegmentAnalyzer {
             return FrameType.DRY
         }
 
-        // 5. YAMNet says music but VAD is moderate → trust YAMNet for music
-        if (yamnetMusic > 0.4f) {
+        // 5. YAMNet says music clearly louder than speech → trust YAMNet for music
+        if (yamnetMusic > 0.4f && yamnetMusic > yamnetSpeech + 0.1f) {
             return FrameType.WATER
         }
 
@@ -1869,8 +1870,9 @@ object AudioSegmentAnalyzer {
             return FrameType.SILENCE
         }
 
-        // 2. Music: YAMNet says music
-        if (yamnetMusic > 0.5f) {
+        // v2.4.147: Music detection must be confident and clearly louder than speech.
+        // Otherwise speech with background music gets misclassified as water.
+        if (yamnetMusic > 0.5f && yamnetMusic > yamnetSpeech + 0.1f) {
             return FrameType.WATER
         }
 

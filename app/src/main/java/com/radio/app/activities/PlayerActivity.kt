@@ -81,6 +81,9 @@ class PlayerActivity : AppCompatActivity() {
     // v2.4.146: Persist progress across Activity recreation.
     private val SEGMENT_PROGRESS_PREFS = "segment_progress_prefs"
     private val KEY_LAST_SEGMENT_PROGRESS = "last_segment_progress"
+    // v2.4.147: Poll persisted progress so a recreated Activity can keep up with a running segment task.
+    private var segmentProgressPoller: Handler? = null
+    private var segmentProgressRunnable: Runnable? = null
     private var segmentListDisplayText: String = ""  // v2.4.50: Store "片段列表" text to prevent overwrite
     private var lastSkipBackwardTime: Long = 0  // v2.4.54: Debounce backward skip
     private var onResumeTimestamp: Long = 0  // v2.4.55: Post-resume seek blackout
@@ -3059,6 +3062,8 @@ class PlayerActivity : AppCompatActivity() {
             // v2.4.146: Reset persisted progress too.
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
                 .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
+            // v2.4.147: Start polling persisted progress for this task.
+            startSegmentProgressPoller()
         }
         saveProcessingState()
         // v2.4.44: Show notification for AI segmentation (like subtitle generation)
@@ -3097,6 +3102,8 @@ class PlayerActivity : AppCompatActivity() {
             lastSegmentProgress = 0
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
                 .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
+            // v2.4.147: Stop the progress poller.
+            stopSegmentProgressPoller()
             if (_binding != null) {
                 binding.progressAi.visibility = View.GONE
                 binding.tvAiStatus.visibility = if (voiceSegments.isNotEmpty()) View.VISIBLE else View.GONE
@@ -3106,6 +3113,48 @@ class PlayerActivity : AppCompatActivity() {
             cancelSegmentNotification()
         }
         saveProcessingState()
+    }
+
+    // v2.4.147: Start a poller that reads the persisted progress and updates the UI/notification.
+    // This is needed because the progress callback is tied to the original Activity instance;
+    // if Android destroys/recreates the Activity, the new instance won't receive callbacks.
+    private fun startSegmentProgressPoller() {
+        stopSegmentProgressPoller()
+        val handler = Handler(Looper.getMainLooper())
+        segmentProgressPoller = handler
+        val runnable = object : Runnable {
+            override fun run() {
+                if (!segmentProcessing) return
+                val progress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+                    .getInt(KEY_LAST_SEGMENT_PROGRESS, lastSegmentProgress)
+                if (progress != lastSegmentProgress) {
+                    lastSegmentProgress = progress
+                    if (_binding != null) {
+                        binding.progressAi.progress = progress
+                        val restoreAiModel = AppSettings.getInstance(this@PlayerActivity).safeAiModel()
+                        val engineName = when (restoreAiModel) {
+                            AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                            AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
+                            AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                            else -> "关键词"
+                        }
+                        binding.tvAiStatus.text = "音频分段分析中($engineName) ${progress}%"
+                        updateSegmentNotification(progress)
+                    }
+                }
+                if (segmentProcessing) {
+                    handler.postDelayed(this, 500)
+                }
+            }
+        }
+        segmentProgressRunnable = runnable
+        handler.post(runnable)
+    }
+
+    private fun stopSegmentProgressPoller() {
+        segmentProgressRunnable?.let { segmentProgressPoller?.removeCallbacks(it) }
+        segmentProgressRunnable = null
+        segmentProgressPoller = null
     }
 
     // v2.4.44: AI segmentation notification (foreground-like, like subtitle generation)
@@ -3715,6 +3764,8 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 binding.tvAiStatus.text = "音频分段分析中($segEngineNameRestore) ${lastSegmentProgress}%"
                 updateSegmentNotification(lastSegmentProgress)
+                // v2.4.147: Start polling persisted progress in case the original callback was lost.
+                startSegmentProgressPoller()
             } else {
                 binding.btnAiSegment.isEnabled = true
             }

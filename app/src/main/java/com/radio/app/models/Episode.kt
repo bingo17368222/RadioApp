@@ -7,6 +7,9 @@ data class Episode(
     var title: String = "",
     var broadcastAt: String = "",
     var duration: Long = 0,
+    // v2.4.147: Store the program start/end timestamps so we can display them offline.
+    var startTime: Long = 0,
+    var endTime: Long = 0,
     var description: String = "",
     var stationId: String = "",
     var stationName: String = "",
