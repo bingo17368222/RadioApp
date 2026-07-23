@@ -154,13 +154,12 @@ class RadioApplication : Application() {
         // Init crash handler first
         com.radio.app.utils.CrashHandler.getInstance().init(this)
         createNotificationChannel()
-        // v2.4.147: Ensure each APK version writes logs that clearly identify its version.
-        // If the version changed, wipe old logs to avoid confusing mixed-version output.
+        // v2.4.150: 不再自动清空旧版本日志，保留历史记录便于跨版本排查问题。
+        // 改为在每个日志文件头部写入版本标记，保证混合日志也能识别出处。
         val currentVersionName = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" } ?: ""
         val logVersionPrefs = getSharedPreferences("log_version_prefs", MODE_PRIVATE)
         val storedLogVersion = logVersionPrefs.getString("last_log_version", "") ?: ""
         if (storedLogVersion != currentVersionName && currentVersionName.isNotEmpty()) {
-            clearAllLogs(this)
             logVersionPrefs.edit().putString("last_log_version", currentVersionName).apply()
         }
         writeVersionMarkers(this, currentVersionName)

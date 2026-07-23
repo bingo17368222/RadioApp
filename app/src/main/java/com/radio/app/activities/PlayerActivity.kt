@@ -84,8 +84,10 @@ class PlayerActivity : AppCompatActivity() {
     private val SEGMENT_PROGRESS_PREFS = "segment_progress_prefs"
     private val KEY_EPISODE_PROGRESS_PREFIX = "progress_"
     private val KEY_EPISODE_COMPLETE_PREFIX = "complete_"
+    private val KEY_EPISODE_START_PREFIX = "start_"
     private fun segmentProgressKey(episodeId: String?) = "${KEY_EPISODE_PROGRESS_PREFIX}${episodeId ?: "unknown"}"
     private fun segmentCompleteKey(episodeId: String?) = "${KEY_EPISODE_COMPLETE_PREFIX}${episodeId ?: "unknown"}"
+    private fun segmentStartKey(episodeId: String?) = "${KEY_EPISODE_START_PREFIX}${episodeId ?: "unknown"}"
     // v2.4.147: Poll persisted progress so a recreated Activity can keep up with a running segment task.
     private var segmentProgressPoller: Handler? = null
     private var segmentProgressRunnable: Runnable? = null
@@ -2063,10 +2065,14 @@ class PlayerActivity : AppCompatActivity() {
                                         .apply()
                                     runOnUiThread {
                                         if (_binding != null && segmentProcessing) {
-                                            // v2.4.145: Keep the progress bar and notification moving instead of stuck at 0%
-                                            binding.tvAiStatus.text = "音频分段分析中($segEngineName) ${pct}%"
+                                            // v2.4.150: Include elapsed time so the UI doesn't look frozen at one percent.
+                                            val startMs = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+                                                .getLong(segmentStartKey(episodeIdForProgress), System.currentTimeMillis())
+                                            val elapsedSec = (System.currentTimeMillis() - startMs) / 1000
+                                            val elapsedText = if (elapsedSec >= 60) "${elapsedSec / 60}分${elapsedSec % 60}秒" else "${elapsedSec}秒"
+                                            binding.tvAiStatus.text = "音频分段分析中($segEngineName) ${pct}% (已用 $elapsedText)"
                                             binding.progressAi.progress = pct
-                                            updateSegmentNotification(pct)
+                                            updateSegmentNotification(pct, elapsedText)
                                         }
                                     }
                                 }
@@ -3090,6 +3096,11 @@ class PlayerActivity : AppCompatActivity() {
             } else {
                 lastSegmentProgress = progressPrefs.getInt(progressKey, 0)
             }
+            // v2.4.150: Record start time so the poller can show elapsed time even when the
+            // integer percent stays the same (e.g. stuck at 34% for a while on long audio).
+            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                .putLong(segmentStartKey(currentEpisodeId), System.currentTimeMillis())
+                .apply()
             // v2.4.147: Start polling persisted progress for this task.
             startSegmentProgressPoller()
         }
@@ -3159,23 +3170,28 @@ class PlayerActivity : AppCompatActivity() {
                 if (!segmentProcessing) return
                 // v2.4.148: Read episode-specific progress; never go backwards.
                 val currentEpisodeId = currentEpisode?.id
-                val rawProgress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
-                    .getInt(segmentProgressKey(currentEpisodeId), lastSegmentProgress)
+                val progressPrefs = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+                val rawProgress = progressPrefs.getInt(segmentProgressKey(currentEpisodeId), lastSegmentProgress)
                 val progress = maxOf(rawProgress, lastSegmentProgress)
                 if (progress != lastSegmentProgress) {
                     lastSegmentProgress = progress
-                    if (_binding != null) {
-                        binding.progressAi.progress = progress
-                        val restoreAiModel = AppSettings.getInstance(this@PlayerActivity).safeAiModel()
-                        val engineName = when (restoreAiModel) {
-                            AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
-                            AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
-                            AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
-                            else -> "关键词"
-                        }
-                        binding.tvAiStatus.text = "音频分段分析中($engineName) ${progress}%"
-                        updateSegmentNotification(progress)
+                }
+                if (_binding != null) {
+                    binding.progressAi.progress = progress
+                    val restoreAiModel = AppSettings.getInstance(this@PlayerActivity).safeAiModel()
+                    val engineName = when (restoreAiModel) {
+                        AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                        AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
+                        AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                        else -> "关键词"
                     }
+                    // v2.4.150: Always refresh the text with elapsed time so the UI doesn't look
+                    // frozen when integer percent stays the same for a long time.
+                    val startMs = progressPrefs.getLong(segmentStartKey(currentEpisodeId), System.currentTimeMillis())
+                    val elapsedSec = (System.currentTimeMillis() - startMs) / 1000
+                    val elapsedText = if (elapsedSec >= 60) "${elapsedSec / 60}分${elapsedSec % 60}秒" else "${elapsedSec}秒"
+                    binding.tvAiStatus.text = "音频分段分析中($engineName) ${progress}% (已用 $elapsedText)"
+                    updateSegmentNotification(progress, elapsedText)
                 }
                 if (segmentProcessing) {
                     handler.postDelayed(this, 500)
@@ -3207,7 +3223,7 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun showSegmentNotification(progress: Int) {
+    private fun showSegmentNotification(progress: Int, elapsedText: String = "") {
         try {
             // v2.4.149: Use applicationContext so the notification survives Activity destruction
             // and can keep updating while the segment thread runs in background.
@@ -3223,7 +3239,8 @@ class PlayerActivity : AppCompatActivity() {
             val dateStr = dateMatch?.value ?: ""
             val title = episode?.title ?: episode?.id ?: "未知节目"
             val notifTitle = if (dateStr.isNotEmpty()) "$dateStr $title" else title
-            val notifContent = "AI分段: ${progress}%"
+            // v2.4.150: Include elapsed time in notification content so it doesn't look frozen.
+            val notifContent = if (elapsedText.isNotEmpty()) "AI分段: ${progress}% (已用 $elapsedText)" else "AI分段: ${progress}%"
 
             // v2.4.45: Add cancel action button
             val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(ctx.packageName)
@@ -3246,8 +3263,8 @@ class PlayerActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
-    private fun updateSegmentNotification(progress: Int) {
-        showSegmentNotification(progress)
+    private fun updateSegmentNotification(progress: Int, elapsedText: String = "") {
+        showSegmentNotification(progress, elapsedText)
     }
 
     private fun cancelSegmentNotification() {

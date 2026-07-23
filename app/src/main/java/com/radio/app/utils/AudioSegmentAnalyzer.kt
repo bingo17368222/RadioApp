@@ -69,6 +69,19 @@ object AudioSegmentAnalyzer {
         } catch (_: Exception) {}
     }
 
+    // v2.4.150: Format milliseconds as mm:ss or hh:mm:ss for user-friendly logs.
+    private fun formatDurationMs(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) {
+            String.format("%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format("%02d:%02d", minutes, seconds)
+        }
+    }
+
     // YAMNet: 16kHz, 0.975s window = 15600 samples
     private const val YAMNET_SAMPLE_RATE = 16000
     private const val YAMNET_WINDOW_SAMPLES = 15600
@@ -83,10 +96,10 @@ object AudioSegmentAnalyzer {
 
     // Frame step: 0.5s (8000 samples at 16kHz)
     private const val FRAME_STEP_SAMPLES = 8000
-    // v2.4.149: When VAD malfunctions we fall back to YAMNet-only classification. Running YAMNet
-    // every 0.5s is too slow for long audio (e.g. 90 min takes ~8 min). Use a 1s hop in this mode
-    // to roughly halve the inference count while keeping 1s segment resolution.
-    private const val YAMNET_ONLY_STEP_SAMPLES = 16000
+    // v2.4.150: When VAD malfunctions we fall back to YAMNet-only classification. Running YAMNet
+    // every 0.5s/1s is too slow for long audio and makes the progress bar appear stuck. Use a 2s
+    // hop in this mode to speed up analysis while still keeping reasonable segment resolution.
+    private const val YAMNET_ONLY_STEP_SAMPLES = 32000
 
     // Silero VAD: 512 samples per chunk
     private const val VAD_FRAME_SIZE = 512
@@ -94,6 +107,16 @@ object AudioSegmentAnalyzer {
     private const val VAD_CONTEXT_SIZE = 64
     private const val VAD_DRY_THRESHOLD = 0.45f
     private const val VAD_WATER_THRESHOLD = 0.15f
+
+    // v2.4.150: VAD malfunction detection now uses a sliding window instead of strict consecutive
+    // frames. This avoids the "frequent jump" problem where vadProb hovers around 0.01 and keeps
+    // resetting the counter, delaying the switch to YAMNet-only mode and causing unstable
+    // dual-model classification.
+    private const val VAD_LOW_CONFIDENCE_WINDOW = 8
+    private const val VAD_LOW_CONFIDENCE_REQUIRED = 5
+    private const val VAD_SUSPICIOUS_THRESHOLD = 0.05f
+    private const val VAD_STRONG_THRESHOLD = 0.01f
+    private const val VAD_YAMNET_SPEECH_THRESHOLD = 0.6f
 
     // Energy thresholds (relative to max energy)
     private const val ENERGY_SILENCE_RATIO = 0.05f
@@ -1184,18 +1207,38 @@ object AudioSegmentAnalyzer {
             // v2.4.142: Context buffer for Silero VAD (last 64 samples of previous chunk).
             var vadContext = FloatArray(VAD_CONTEXT_SIZE) { 0f }
 
-            // v2.4.141: Count consecutive low-confidence VAD windows before declaring malfunction.
-            var vadLowConfidenceFrames = 0
+            // v2.4.150: Sliding-window VAD malfunction detector. Replaces the strict consecutive
+            // counter which caused "frequent jump" when vadProb hovered around 0.01.
+            // Each recent frame scores: strong=2 (prob<0.01 & yamnetSpeech>0.6), suspicious=1
+            // (prob<0.05 & yamnetSpeech>0.6), normal=0. Malfunction is declared when the sum
+            // over the last VAD_LOW_CONFIDENCE_WINDOW frames reaches VAD_LOW_CONFIDENCE_REQUIRED.
+            val vadConfidenceWindow = ArrayDeque<Int>(VAD_LOW_CONFIDENCE_WINDOW)
 
-            // v2.4.144: Report analysis progress so the UI progress bar does not sit at 0%.
+            // v2.4.144/v2.4.150: Report analysis progress so the UI progress bar does not sit at 0%.
+            // Use finer granularity (0.5%) and log ETA to avoid the "stuck at 34%" feeling.
             val totalSamples = samples.size
+            val totalDurationMs = (totalSamples * 1000L / YAMNET_SAMPLE_RATE)
             var lastReportedProgress = -1
+            val analysisStartTimeMs = System.currentTimeMillis()
+            var lastFriendlyLogTimeMs = 0L
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 开始音频分段分析：总时长 ${formatDurationMs(totalDurationMs)}，共 $totalSamples 样本")
 
             while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
                 val progress = (pos * 100 / totalSamples).coerceIn(0, 99)
                 if (progress != lastReportedProgress) {
                     lastReportedProgress = progress
                     try { progressCallback?.invoke(progress) } catch (_: Exception) { }
+                }
+
+                // v2.4.150: Log user-friendly progress every ~5% or 30s to show it is alive.
+                val nowMs = System.currentTimeMillis()
+                val processedMs = (pos * 1000L / YAMNET_SAMPLE_RATE)
+                if ((progress > 0 && progress % 5 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
+                    || (nowMs - lastFriendlyLogTimeMs > 30_000)) {
+                    lastFriendlyLogTimeMs = nowMs
+                    val elapsedMs = nowMs - analysisStartTimeMs
+                    val etaMs = if (processedMs > 0) (elapsedMs * (totalDurationMs - processedMs) / processedMs) else 0L
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progress}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
                 }
 
                 val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
@@ -1244,24 +1287,26 @@ object AudioSegmentAnalyzer {
                 // v2.4.128: Moved rmsEnergy/zcr computation here for diagnostics
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
-                // v2.4.147: Early VAD malfunction detection. Require several consecutive low-prob
-                // frames before switching to YAMNet-only mode. A single window can be low simply
-                // because the audio is quiet/intro; only a persistent stream of near-zero probabilities
-                // while YAMNet still detects speech indicates that VAD is not useful for this episode.
-                // NOTE: yamnetSpeech is a sigmoid probability. 0.5 means "no speech detected" (raw logit 0),
-                // so we must require yamnetSpeech > 0.6 to mean YAMNet actually hears speech. Previously
-                // using >0.3 caused a false switch during VAD warmup/quiet intros.
-                if (!vadMalfunction && vadProb < 0.01f && yamnetSpeech > 0.6f) {
-                    vadLowConfidenceFrames++
-                    if (vadLowConfidenceFrames >= 5) {
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction detected after $vadLowConfidenceFrames low-prob frames (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.6). Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction — falling back to YAMNet-only mode")
-                        vadMalfunction = true  // Flag to use YAMNet-only classification
-                    } else {
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD low confidence frame $vadLowConfidenceFrames/5 (vadProb=$vadProb, yamnetSpeech=$yamnetSpeech), not switching yet")
+
+                // v2.4.150: Sliding-window VAD malfunction detection with hysteresis.
+                if (!vadMalfunction) {
+                    val score = when {
+                        vadProb < VAD_STRONG_THRESHOLD && yamnetSpeech > VAD_YAMNET_SPEECH_THRESHOLD -> 2
+                        vadProb < VAD_SUSPICIOUS_THRESHOLD && yamnetSpeech > VAD_YAMNET_SPEECH_THRESHOLD -> 1
+                        else -> 0
                     }
-                } else if (!vadMalfunction) {
-                    vadLowConfidenceFrames = 0
+                    if (vadConfidenceWindow.size >= VAD_LOW_CONFIDENCE_WINDOW) vadConfidenceWindow.removeFirst()
+                    vadConfidenceWindow.addLast(score)
+                    val windowScore = vadConfidenceWindow.sum()
+                    if (windowScore >= VAD_LOW_CONFIDENCE_REQUIRED) {
+                        val strongCount = vadConfidenceWindow.count { it == 2 }
+                        val suspiciousCount = vadConfidenceWindow.count { it == 1 }
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD 模型对该音频响应不稳定（最近 ${vadConfidenceWindow.size} 帧中，strong=$strongCount 帧 prob<${VAD_STRONG_THRESHOLD}，suspicious=$suspiciousCount 帧 prob<${VAD_SUSPICIOUS_THRESHOLD}，YAMNet speech>${VAD_YAMNET_SPEECH_THRESHOLD}）。已自动切换到 YAMNet 单独分析模式，避免双模型反复跳转。")
+                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction — falling back to YAMNet-only mode")
+                        vadMalfunction = true
+                    } else if (score > 0 && frameResults.size < 30) {
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD 低置信度累计 ${windowScore}/${VAD_LOW_CONFIDENCE_REQUIRED}（vadProb=$vadProb，yamnetSpeech=$yamnetSpeech），暂不切换")
+                    }
                 }
 
                 // v2.4.137: Wait until 30 frames (~30s) before declaring VAD malfunction. Some episodes
@@ -1374,6 +1419,9 @@ object AudioSegmentAnalyzer {
             Log.i(TAG, "Analyzed ${frameResults.size} frames")
             val segments = mergeFramesIntoSegments(frameResults, durationMs)
             Log.i(TAG, "Generated ${segments.size} segments (dry=${segments.count { it.label == "干货" }}, water=${segments.count { it.label == "水货" }})")
+            val totalElapsedMs = System.currentTimeMillis() - analysisStartTimeMs
+            val modeName = if (vadMalfunction) "YAMNet 单独模式" else "VAD+YAMNet 双模型模式"
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段），分析模式=$modeName，总耗时 ${formatDurationMs(totalElapsedMs)}")
             return segments
 
         } finally {
