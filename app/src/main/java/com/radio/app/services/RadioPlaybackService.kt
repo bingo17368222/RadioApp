@@ -52,6 +52,7 @@ import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.net.Uri
 import java.io.File
 import java.io.FileOutputStream
 import java.io.FileWriter
@@ -216,6 +217,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // Set to true in playEpisode() when switching to a different episode, cleared in STATE_READY.
     private var episodeSwitching = false
     private var currentStreamUrl = ""
+    // v2.4.144: Actual URI passed to ExoPlayer. May point to a local cache file even when
+    // currentStreamUrl/currentPlayingUrl still hold the original network URL.
+    private var currentPlaybackUri = ""
     private var progressHandler: Handler? = null
     private var progressRunnable: Runnable? = null
     private var notificationHandler: Handler? = null
@@ -848,6 +852,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                                 if (errorRetryCount <= MAX_ERROR_RETRY && currentStreamUrl.isNotEmpty()) {
                                     isRetrying = true
+                                    // v2.4.144: If the first retry fails while playing from a local cache,
+                                    // fall back to the network URL for subsequent retries.
+                                    if (errorRetryCount == 1 && currentPlaybackUri != currentStreamUrl) {
+                                        writeServiceLog("playback", "[v2.4.144] onPlayerError: local cache playback failed, falling back to network URL")
+                                        currentPlaybackUri = currentStreamUrl
+                                    }
                                     val retryDelay = errorRetryCount * 2000L  // [v2.3.6] Reduced from 3s to 2s
                                     writeServiceLog("playback", "onPlayerError: scheduling retry #$errorRetryCount in ${retryDelay}ms")
                                     try {
@@ -860,7 +870,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                                 player?.let {
                                                     it.stop()
                                                     it.clearMediaItems()
-                                                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                                                    it.setMediaItem(MediaItem.fromUri(currentPlaybackUri))
                                                     it.playWhenReady = true
                                                     it.prepare()
                                                     it.play()
@@ -1051,6 +1061,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             val name = url.substringAfterLast("/")
             if (name.isBlank()) "unknown.mp4" else name
+        }
+    }
+
+    // v2.4.144: If we have a locally cached audio file for this URL, prefer it over streaming.
+    private fun getLocalCacheFile(url: String?): File? {
+        if (url.isNullOrBlank()) return null
+        return try {
+            val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+            val fileName = extractCacheFileName(url)
+            val f = File(episodesDir, fileName)
+            if (f.exists() && f.length() > 1024) f else null
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -4149,6 +4172,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         Log.d(TAG, "playStation called: ${station.name}, playbackStarted before: $playbackStarted, url=${station.streamUrl}")
         currentStation = station; currentEpisode = null; isLive = true
         prepared = false; currentStreamUrl = station.streamUrl ?: ""
+        currentPlaybackUri = currentStreamUrl
         currentPlayingUrl = currentStreamUrl
         playbackStarted = true
         userPaused = false // Starting new playback, not user-paused
@@ -4168,7 +4192,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // preventing cascading playback failures.
                 try { it.stop() } catch (_: Exception) {}
                 it.clearMediaItems()
-                it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                it.setMediaItem(MediaItem.fromUri(currentPlaybackUri))
                 it.prepare(); it.playWhenReady = true
             }
             notificationTitle = station.name; notificationSubText = "[直播]"
@@ -4378,6 +4402,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         downloadProgressPct = 0; downloadDoneBytes = 0; downloadTotalBytes = 0
         currentStreamUrl = episode.audioUrl ?: ""
         currentPlayingUrl = currentStreamUrl
+        // v2.4.144: Prefer locally cached audio file for playback if available.
+        val localCacheFile = getLocalCacheFile(currentStreamUrl)
+        currentPlaybackUri = if (localCacheFile != null) {
+            writeServiceLog("playback", "[v2.4.144] playEpisode: using local cache ${localCacheFile.absolutePath} (${localCacheFile.length()} bytes)")
+            Uri.fromFile(localCacheFile).toString()
+        } else {
+            currentStreamUrl
+        }
         playbackStarted = true
         playbackInitializing = true
         notificationTitle = episode.title; notificationSubText = "[回放]"
@@ -4470,7 +4502,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     it.playWhenReady = true
                     // v2.4.108: Use setMediaItem(item, startPos) instead of setMediaItem(item) + seekTo()
                     // This sets the start position before the media is loaded, which is more reliable.
-                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl), startPositionMs)
+                    it.setMediaItem(MediaItem.fromUri(currentPlaybackUri), startPositionMs)
                     it.prepare()
                     // [v2.0.54] Clear positionRestoreRequested so STATE_READY doesn't seek again
                     positionRestoreRequested = false
@@ -4487,7 +4519,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     writeServiceLog("playback", "[v2.4.108] playEpisode: setMediaItem+startPos($startPositionMs), prepared")
                 } else {
                     it.playWhenReady = true
-                    it.setMediaItem(MediaItem.fromUri(currentStreamUrl))
+                    it.setMediaItem(MediaItem.fromUri(currentPlaybackUri))
                     it.prepare()
                 }
             }

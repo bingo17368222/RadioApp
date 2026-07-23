@@ -2010,6 +2010,13 @@ class PlayerActivity : AppCompatActivity() {
                     // [v2.4.28] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
                     // If MNN fails, show error directly - NO fallback to keyword-based segmentation
                     var segments: List<VoiceSegment> = emptyList()
+                    val segEngineName = when (aiModel) {
+                        AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
+                        AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
+                        AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                        else -> "关键词"
+                    }
+
                     if (aiModel == AppSettings.AI_MODEL_AUDIO_VAD) {
                         // v2.4.96: Audio-based segmentation using Silero VAD + YAMNet dual model
                         writeJitterLog("[v2.4.96] btnAiSegment: using audio-vad segmentation")
@@ -2017,7 +2024,16 @@ class PlayerActivity : AppCompatActivity() {
 
                         try {
                             val segments_result = com.radio.app.utils.AudioSegmentAnalyzer.analyzeEpisode(
-                                this@PlayerActivity, episode.id, maxEnd.toLong(), episode.audioUrl
+                                this@PlayerActivity, episode.id, maxEnd.toLong(), episode.audioUrl,
+                                progressCallback = { pct ->
+                                    runOnUiThread {
+                                        if (_binding != null && segmentProcessing) {
+                                            // v2.4.144: Keep the progress bar moving instead of stuck at 0%
+                                            binding.tvAiStatus.text = "音频分段分析中($segEngineName) ${pct}%"
+                                            binding.progressAi.progress = pct
+                                        }
+                                    }
+                                }
                             )
                             writeJitterLog("[v2.4.96] btnAiSegment: audio-vad returned ${segments_result.size} segments")
                             segments = segments_result
@@ -2025,7 +2041,15 @@ class PlayerActivity : AppCompatActivity() {
                             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
                             // and NoClassDefFoundError which extend Error, not Exception.
                             writeJitterLog("[v2.4.96] btnAiSegment: audio-vad error: ${e.javaClass.simpleName}: ${e.message}")
-                            runOnUiThread { Toast.makeText(this, "音频分段失败: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show() }
+                            val elapsed = System.currentTimeMillis() - segStartTime
+                            runOnUiThread {
+                                if (_binding != null) {
+                                    // v2.4.144: Show engine + elapsed time even on failure so the user sees it finished
+                                    binding.tvAiStatus.text = "AI分段失败：$segEngineName (耗时: ${elapsed / 1000}s) — ${e.javaClass.simpleName}"
+                                    binding.tvAiStatus.visibility = View.VISIBLE
+                                }
+                                Toast.makeText(this, "音频分段失败: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
                     } else if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
                         // v2.4.89: Support Qwen2.5-Coder-1.5B-Instruct-MNN (new), plus older model directories
@@ -2154,12 +2178,6 @@ class PlayerActivity : AppCompatActivity() {
                     }
 
                     val segElapsed = System.currentTimeMillis() - segStartTime
-                    val segEngineName = when (aiModel) {
-                        AppSettings.AI_MODEL_MNN_LLM -> "MNN-LLM"
-                        AppSettings.AI_MODEL_AUDIO_VAD -> "VAD+YAMNet"
-                        AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
-                        else -> "关键词"
-                    }
 
                     runOnUiThread {
                         // v2.4.45: Always call finishAiProcessing even if _binding==null
@@ -2187,6 +2205,9 @@ class PlayerActivity : AppCompatActivity() {
                                 "AI分段完成: ${segments.size}段 (干货${dryCount} 水货${waterCount})",
                                 Toast.LENGTH_LONG).show()
                         } else {
+                            // v2.4.144: Show engine + elapsed time even when no segments were generated
+                            binding.tvAiStatus.text = "AI分段无结果：$segEngineName (耗时: ${segElapsed / 1000}s)"
+                            binding.tvAiStatus.visibility = View.VISIBLE
                             Toast.makeText(this, "AI分段失败：无法生成分段", Toast.LENGTH_SHORT).show()
                         }
                         finishAiProcessing("segment")

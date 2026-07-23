@@ -432,7 +432,13 @@ object AudioSegmentAnalyzer {
      * @param audioUrl Audio URL (for finding cached audio file)
      * @return List of VoiceSegments
      */
-    fun analyzeEpisode(context: Context, episodeId: String, durationMs: Long, audioUrl: String? = null): List<VoiceSegment> {
+    fun analyzeEpisode(
+        context: Context,
+        episodeId: String,
+        durationMs: Long,
+        audioUrl: String? = null,
+        progressCallback: ((Int) -> Unit)? = null
+    ): List<VoiceSegment> {
         // v2.4.115: Initialize file-based logger for VAD diagnostics
         setLogContext(context)
 
@@ -514,7 +520,7 @@ object AudioSegmentAnalyzer {
             vadLog("[v2.4.138] analyzeEpisode: decoded fresh PCM for $episodeId (${pcmFile.length()} bytes, pcmDuration=${pcmDurationMs}ms)")
         }
 
-        return analyzePcmFile(context, pcmFile, durationMs)
+        return analyzePcmFile(context, pcmFile, durationMs, progressCallback)
     }
 
     /**
@@ -917,7 +923,8 @@ object AudioSegmentAnalyzer {
     fun analyzePcmFile(
         context: Context,
         pcmFile: File,
-        durationMs: Long
+        durationMs: Long,
+        progressCallback: ((Int) -> Unit)? = null
     ): List<VoiceSegment> {
         if (!pcmFile.exists() || pcmFile.length() < 16000) {
             Log.w(TAG, "PCM file too small or missing: ${pcmFile.absolutePath}")
@@ -988,7 +995,17 @@ object AudioSegmentAnalyzer {
             // v2.4.141: Count consecutive low-confidence VAD windows before declaring malfunction.
             var vadLowConfidenceFrames = 0
 
+            // v2.4.144: Report analysis progress so the UI progress bar does not sit at 0%.
+            val totalSamples = samples.size
+            var lastReportedProgress = -1
+
             while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+                val progress = (pos * 100 / totalSamples).coerceIn(0, 99)
+                if (progress != lastReportedProgress) {
+                    lastReportedProgress = progress
+                    try { progressCallback?.invoke(progress) } catch (_: Exception) { }
+                }
+
                 val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
                 val timestampMs = (pos.toLong() * 1000 / YAMNET_SAMPLE_RATE)
 
