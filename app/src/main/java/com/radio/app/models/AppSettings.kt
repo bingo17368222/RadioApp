@@ -88,6 +88,10 @@ class AppSettings private constructor() {
     var preloadCacheCount: Int = 10
     var enablePreprocessing: Boolean = false  // v2.4.95: Default off, controls PCM pre-decode
     var enablePreGenerateSubtitles: Boolean = false  // v2.4.96: Independent toggle for pre-generating subtitles (default off)
+    // v2.4.149: Whether patrol should generate full PCM files (default true to preserve existing behavior).
+    var patrolGenerateFullPcm: Boolean = true
+    // v2.4.149: Max total PCM cache size in GB before automatic cleanup (default 5GB).
+    var pcmCacheMaxSizeGb: Float = 5.0f
     var preprocessingCount: Int = 1
     var audioFocus: Boolean = true
     var continuousPlay: Boolean = true
@@ -151,6 +155,8 @@ class AppSettings private constructor() {
         autoCache = prefs.getBoolean("auto_cache", false)
         enablePreprocessing = prefs.getBoolean("enable_preprocessing", false)  // v2.4.96: Default off
         enablePreGenerateSubtitles = prefs.getBoolean("enable_pre_generate_subtitles", false)  // v2.4.96: Default off
+        patrolGenerateFullPcm = prefs.getBoolean("patrol_generate_full_pcm", true)  // v2.4.149
+        pcmCacheMaxSizeGb = prefs.getFloat("pcm_cache_max_size_gb", 5.0f)  // v2.4.149
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
         audioFocus = prefs.getBoolean("audio_focus", true)
         continuousPlay = prefs.getBoolean("continuous_play", true)
@@ -303,6 +309,8 @@ class AppSettings private constructor() {
             putBoolean("auto_cache", autoCache)
             putBoolean("enable_preprocessing", enablePreprocessing)
             putBoolean("enable_pre_generate_subtitles", enablePreGenerateSubtitles)  // v2.4.96
+            putBoolean("patrol_generate_full_pcm", patrolGenerateFullPcm)  // v2.4.149
+            putFloat("pcm_cache_max_size_gb", pcmCacheMaxSizeGb)  // v2.4.149
             putInt("preprocessing_count", preprocessingCount)
             putBoolean("audio_focus", audioFocus)
             putBoolean("continuous_play", continuousPlay)

@@ -252,6 +252,26 @@ class SettingsFragment : Fragment() {
                 } catch (_: Exception) {}
             }
         }
+        // v2.4.149: Patrol full-PCM toggle
+        binding.switchPatrolFullPcm.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.patrolGenerateFullPcm = isChecked
+            save()
+        }
+        // v2.4.149: PCM cache max size input
+        binding.etPcmCacheMaxGb.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                val value = binding.etPcmCacheMaxGb.text.toString().toFloatOrNull()
+                settings.pcmCacheMaxSizeGb = when {
+                    value == null -> 5.0f
+                    value < 1f -> 1f
+                    value > 10f -> 10f
+                    else -> value
+                }
+                updateUI()
+                save()
+            }
+        }
         binding.spinnerNotificationStyle.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
@@ -499,6 +519,8 @@ class SettingsFragment : Fragment() {
         binding.switchWifiPrecache.isChecked = settings.wifiOnlyPreCache
         binding.switchPreprocessing.isChecked = settings.enablePreprocessing
         binding.switchPreGenerateSubtitles.isChecked = settings.enablePreGenerateSubtitles  // v2.4.96
+        binding.switchPatrolFullPcm.isChecked = settings.patrolGenerateFullPcm  // v2.4.149
+        binding.etPcmCacheMaxGb.setText(String.format("%.1f", settings.pcmCacheMaxSizeGb))  // v2.4.149
         val notificationStyle = settings.notificationStyle
         val notificationIndex = when (notificationStyle) {
             "compact" -> 1
@@ -1146,7 +1168,7 @@ class SettingsFragment : Fragment() {
                     val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
                     val elapsed = System.currentTimeMillis() - startTime
                     val sb = StringBuilder()
-                    sb.append("[$ts] === DISLIKE FILTER REPORT [v2.0.95] ===\n")
+                    sb.append("[$ts] === DISLIKE FILTER REPORT ${com.radio.app.RadioApplication.appVersionTag()} ===\n")
                     sb.append("  Total files: ${files.size}, Selected: ${dislikedFileNames.size}, elapsedMs=$elapsed\n")
                     sb.append("  Disliked episodes: ${settings.dislikedEpisodes}\n")
                     sb.append("--- PER-FILE ANALYSIS ---\n")

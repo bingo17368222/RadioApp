@@ -83,6 +83,10 @@ object AudioSegmentAnalyzer {
 
     // Frame step: 0.5s (8000 samples at 16kHz)
     private const val FRAME_STEP_SAMPLES = 8000
+    // v2.4.149: When VAD malfunctions we fall back to YAMNet-only classification. Running YAMNet
+    // every 0.5s is too slow for long audio (e.g. 90 min takes ~8 min). Use a 1s hop in this mode
+    // to roughly halve the inference count while keeping 1s segment resolution.
+    private const val YAMNET_ONLY_STEP_SAMPLES = 16000
 
     // Silero VAD: 512 samples per chunk
     private const val VAD_FRAME_SIZE = 512
@@ -179,7 +183,7 @@ object AudioSegmentAnalyzer {
                 "channels=$channels\n"
             )
         } catch (e: Exception) {
-            Log.w(TAG, "[v2.4.138] writePcmInfo failed: ${e.message}")
+            Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] writePcmInfo failed: ${e.message}")
         }
     }
 
@@ -266,7 +270,7 @@ object AudioSegmentAnalyzer {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "[v2.4.138] getMp4DurationMs failed: ${e.message}")
+            Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] getMp4DurationMs failed: ${e.message}")
         } finally {
             ex?.release()
         }
@@ -309,17 +313,17 @@ object AudioSegmentAnalyzer {
         val audioFile = getCachedAudioFile(context, episodeId, audioUrl)
         var mp4DurationMs = if (audioFile != null && audioFile.exists()) {
             val d = getMp4DurationMs(audioFile)
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] MediaExtractor duration for $episodeId: ${d}ms (${d / 60000} min), audioFile=${audioFile.name}\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] MediaExtractor duration for $episodeId: ${d}ms (${d / 60000} min), audioFile=${audioFile.name}\n")
             d
         } else {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] no cached audio file found for $episodeId\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] no cached audio file found for $episodeId\n")
             0L
         }
 
         // v2.4.139: Fallback 1 — episode metadata duration (seconds -> ms).
         if (mp4DurationMs <= 0 && expectedDurationMs > 0) {
             mp4DurationMs = expectedDurationMs
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] using expectedDurationMs fallback for $episodeId: ${mp4DurationMs}ms\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] using expectedDurationMs fallback for $episodeId: ${mp4DurationMs}ms\n")
         }
 
         // v2.4.139: Fallback 2 — parse start/end time from the audio URL path.
@@ -327,7 +331,7 @@ object AudioSegmentAnalyzer {
             val urlDurationMs = parseDurationFromAudioUrl(audioUrl)
             if (urlDurationMs > 0) {
                 mp4DurationMs = urlDurationMs
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] using URL time-range fallback for $episodeId: ${mp4DurationMs}ms\n")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] using URL time-range fallback for $episodeId: ${mp4DurationMs}ms\n")
             }
         }
 
@@ -338,17 +342,17 @@ object AudioSegmentAnalyzer {
                     min5PcmFile.length() >= 4 * 60 * 16000 * 2 && // at least 4 minutes
                     min5PcmFile.length() <= 6 * 60 * 16000 * 2     // at most 6 minutes
             if (min5Valid) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] 5-min PCM already valid for $episodeId (${min5PcmFile.length()} bytes). Skipping decode.\n")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM already valid for $episodeId (${min5PcmFile.length()} bytes). Skipping decode.\n")
                 return true
             }
             // v2.4.148: Delete only the stale 5-min preview, never the full PCM, when in lightweight mode.
             if (min5PcmFile.exists()) min5PcmFile.delete()
             if (min5InfoFile.exists()) min5InfoFile.delete()
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] generating 5-min PCM only for $episodeId\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] generating 5-min PCM only for $episodeId\n")
             val fiveMinMs = 5 * 60 * 1000L
             val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, maxDecodeDurationMs = fiveMinMs)
             if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] FAILED to decode 5-min PCM for $episodeId\n")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode 5-min PCM for $episodeId\n")
                 return false
             }
             // Rename decoded file to the 5-min target name.
@@ -357,14 +361,14 @@ object AudioSegmentAnalyzer {
             }
             val min5DurationMs = min5PcmFile.length() / (16000 * 2) * 1000
             writePcmInfo(min5InfoFile, mp4DurationMs.coerceAtLeast(min5DurationMs), min5DurationMs, 16000, 1)
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] 5-min PCM generated for $episodeId (${min5PcmFile.length()} bytes, ${min5DurationMs}ms)\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated for $episodeId (${min5PcmFile.length()} bytes, ${min5DurationMs}ms)\n")
             return min5PcmFile.exists() && min5PcmFile.length() > 16000
         }
 
         // v2.4.139: Validate using .info file. If valid and durations match, skip all decoding.
         val validInfo = if (mp4DurationMs > 0) validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs) else null
         if (validInfo != null && min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms). Skipping decode.\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms). Skipping decode.\n")
             return true
         }
 
@@ -373,7 +377,7 @@ object AudioSegmentAnalyzer {
         // cause of repeated full-PCM regeneration and 100MB+ file accumulation.
         if (mp4DurationMs <= 0 && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100 &&
             min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] keeping existing PCM for $episodeId because MediaExtractor duration is 0 but files exist (full=${fullPcmFile.length()}, min5=${min5PcmFile.length()}).\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] keeping existing PCM for $episodeId because MediaExtractor duration is 0 but files exist (full=${fullPcmFile.length()}, min5=${min5PcmFile.length()}).\n")
             return true
         }
 
@@ -382,24 +386,24 @@ object AudioSegmentAnalyzer {
         if (min5PcmFile.exists()) min5PcmFile.delete()
         if (fullInfoFile.exists()) fullInfoFile.delete()
         if (min5InfoFile.exists()) min5InfoFile.delete()
-        precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] PCM invalid, .info mismatch, or unknown MP4 duration for $episodeId (mp4DurationMs=$mp4DurationMs). Deleting and regenerating.\n")
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] PCM invalid, .info mismatch, or unknown MP4 duration for $episodeId (mp4DurationMs=$mp4DurationMs). Deleting and regenerating.\n")
 
         // Decode full PCM from scratch.
-        precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
         val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs)
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] FAILED to decode full PCM for $episodeId\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode full PCM for $episodeId\n")
             return false
         }
 
         // v2.4.139: Clamp PCM to expected length and compute duration.
         val clampedFile = clampPcmToExpectedLength(decoded, mp4DurationMs, episodeId)
         val pcmDurationMs = clampedFile.length() / (16000 * 2) * 1000
-        precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] full PCM generated: ${clampedFile.name} (${clampedFile.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM generated: ${clampedFile.name} (${clampedFile.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
 
         // v2.4.139: If PCM is still significantly shorter than MP4, we cannot trust it. Fail loudly.
         if (mp4DurationMs > 0 && pcmDurationMs < mp4DurationMs * 0.85) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] ERROR: PCM duration (${pcmDurationMs}ms) still < 85% of MP4 duration (${mp4DurationMs}ms). Keeping file but marking unreliable.\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] ERROR: PCM duration (${pcmDurationMs}ms) still < 85% of MP4 duration (${mp4DurationMs}ms). Keeping file but marking unreliable.\n")
         }
 
         // v2.4.139: Only write .info when we have a non-zero MP4 duration. A 0 duration makes
@@ -426,16 +430,18 @@ object AudioSegmentAnalyzer {
                     }
                 }
                 writePcmInfo(min5InfoFile, mp4DurationMs, min5PcmFile.length() / (16000 * 2) * 1000, 16000, 1)
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
             } catch (e: Exception) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] failed to create 5-min PCM: ${e.message}\n")
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] failed to create 5-min PCM: ${e.message}\n")
             }
         } else {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] WARNING: mp4DurationMs is 0, skipping .info write for $episodeId to avoid invalid info files.\n")
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: mp4DurationMs is 0, skipping .info write for $episodeId to avoid invalid info files.\n")
         }
 
-        // v2.4.148: Enforce a global size limit on the PCM cache after generating a full PCM.
-        cleanupPcmCache(context)
+        // v2.4.149: Enforce the user-configurable PCM cache size limit after generating a full PCM.
+        val settings = com.radio.app.models.AppSettings.getInstance(context)
+        val maxBytes = (settings.pcmCacheMaxSizeGb * 1024L * 1024L * 1024L).toLong()
+        cleanupPcmCache(context, maxSizeBytes = maxBytes)
 
         return fullPcmFile.exists() && fullPcmFile.length() > 16000
     }
@@ -553,7 +559,7 @@ object AudioSegmentAnalyzer {
             else -> 0L
         }
         if (mp4DurationMs <= 0) {
-            vadLog("[v2.4.138] analyzeEpisode: WARNING could not determine MP4 duration for $episodeId")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: WARNING could not determine MP4 duration for $episodeId")
         }
 
         // v2.4.138: Validate full PCM using .info file duration metadata.
@@ -564,10 +570,10 @@ object AudioSegmentAnalyzer {
         if (fullPcmFile.exists() && fullPcmFile.length() > 16000) {
             val validInfo = validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs)
             if (validInfo != null) {
-                vadLog("[v2.4.138] analyzeEpisode: full PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms)")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: full PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms)")
                 pcmFile = fullPcmFile
             } else {
-                vadLog("[v2.4.138] analyzeEpisode: full PCM .info mismatch for $episodeId. Deleting and regenerating.")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: full PCM .info mismatch for $episodeId. Deleting and regenerating.")
                 fullPcmFile.delete()
                 File(pcmCacheDir, "${episodeId}_5min.pcm").takeIf { it.exists() }?.delete()
                 fullInfoFile.delete()
@@ -582,10 +588,10 @@ object AudioSegmentAnalyzer {
             if (min5PcmFile.exists() && min5PcmFile.length() > 16000) {
                 val validInfo = validatePcmWithInfo(min5PcmFile, min5InfoFile, mp4DurationMs)
                 if (validInfo != null) {
-                    vadLog("[v2.4.138] analyzeEpisode: 5-min PCM valid per .info for $episodeId")
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: 5-min PCM valid per .info for $episodeId")
                     pcmFile = min5PcmFile
                 } else {
-                    vadLog("[v2.4.138] analyzeEpisode: 5-min PCM .info mismatch for $episodeId. Deleting.")
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: 5-min PCM .info mismatch for $episodeId. Deleting.")
                     min5PcmFile.delete()
                     min5InfoFile.delete()
                 }
@@ -626,7 +632,7 @@ object AudioSegmentAnalyzer {
             pcmFile = clampPcmToExpectedLength(pcmFile, mp4DurationMs, episodeId)
             val pcmDurationMs = pcmFile.length() / (16000 * 2) * 1000
             writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
-            vadLog("[v2.4.138] analyzeEpisode: decoded fresh PCM for $episodeId (${pcmFile.length()} bytes, pcmDuration=${pcmDurationMs}ms)")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: decoded fresh PCM for $episodeId (${pcmFile.length()} bytes, pcmDuration=${pcmDurationMs}ms)")
         }
 
         return analyzePcmFile(context, pcmFile, durationMs, wrappedProgressCallback)
@@ -643,15 +649,15 @@ object AudioSegmentAnalyzer {
         val maxAllowedBytes = (expectedBytes * 1.15).toLong() // 15% margin for container/duration inaccuracy
         if (pcmFile.length() > maxAllowedBytes) {
             val trimBytes = maxAllowedBytes
-            vadLog("[v2.4.137] clampPcmToExpectedLength: trimming ${pcmFile.length()} bytes -> $trimBytes bytes (duration=${durationMs}ms, expected=$expectedBytes)")
-            Log.w(TAG, "[v2.4.137] PCM too long for $episodeId: ${pcmFile.length()} > $maxAllowedBytes, trimming to $trimBytes")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] clampPcmToExpectedLength: trimming ${pcmFile.length()} bytes -> $trimBytes bytes (duration=${durationMs}ms, expected=$expectedBytes)")
+            Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] PCM too long for $episodeId: ${pcmFile.length()} > $maxAllowedBytes, trimming to $trimBytes")
             try {
                 java.io.RandomAccessFile(pcmFile, "rw").use { raf ->
                     raf.setLength(trimBytes)
                 }
             } catch (e: Exception) {
-                vadLog("[v2.4.137] clampPcmToExpectedLength: failed to trim: ${e.message}")
-                Log.e(TAG, "[v2.4.137] failed to trim PCM", e)
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] clampPcmToExpectedLength: failed to trim: ${e.message}")
+                Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] failed to trim PCM", e)
             }
         }
         return pcmFile
@@ -754,7 +760,7 @@ object AudioSegmentAnalyzer {
                 val decodedSeconds = startOffsetBytes.toDouble() / (16000 * 2)
                 // Convert to microseconds for MediaExtractor.seekTo
                 val seekToUs = (decodedSeconds * 1_000_000).toLong()
-                vadLog("[v2.4.130] decodeAudioToPcm: APPEND MODE — seeking to ${seekToUs}us (${decodedSeconds}s), existing PCM=$startOffsetBytes bytes")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: APPEND MODE — seeking to ${seekToUs}us (${decodedSeconds}s), existing PCM=$startOffsetBytes bytes")
                 extractor.seekTo(seekToUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             }
 
@@ -775,9 +781,9 @@ object AudioSegmentAnalyzer {
                 java.io.FileOutputStream(outputDirFile)  // overwrite
             }
             var totalPcmBytes = if (appendMode) startOffsetBytes else 0
-            // v2.4.132: Fixed max PCM size — 300MB = ~2.6 hours at 16kHz mono 16-bit.
-            // Old value was 500MB which was way too high (indicated wrong sample rate).
-            val maxPcmBytes = 300 * 1024 * 1024  // 300MB max
+            // v2.4.149: Raise max PCM size to 600MB (~5.2 hours at 16kHz mono 16-bit) so 3-4 hour
+            // episodes are not silently truncated to "only tens of MB".
+            val maxPcmBytes = 600 * 1024 * 1024  // 600MB max
 
             // v2.4.148: Estimate expected PCM size for progress reporting.
             // 16kHz mono 16-bit = 32000 bytes/sec. Use duration if known, else rough file-size estimate.
@@ -786,6 +792,7 @@ object AudioSegmentAnalyzer {
                 audioFile.length() > 1024 -> (audioFile.length() * 10).coerceAtLeast(1L)
                 else -> 1L
             }
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: START episode=$episodeId, audioFile=${audioFile.name} (${audioFile.length()} bytes), durationMs=$durationMs, expectedPcmBytes=$expectedPcmBytes, maxPcmBytes=$maxPcmBytes, maxDecodeDurationMs=$maxDecodeDurationMs")
             var lastReportedDecodeProgress = -1
             fun reportDecodeProgressIfNeeded() {
                 if (progressCallback == null) return
@@ -830,7 +837,7 @@ object AudioSegmentAnalyzer {
                             channelCount = newFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
                             needResample = sampleRate != 16000 || channelCount != 1
                             Log.i(TAG, "decodeAudioToPcm: FORMAT_CHANGED: actual sampleRate=$sampleRate, channels=$channelCount, needResample=$needResample")
-                            vadLog("[v2.4.132] decodeAudioToPcm: FORMAT_CHANGED: ${sampleRate}Hz ${channelCount}ch (was container format)")
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: FORMAT_CHANGED: ${sampleRate}Hz ${channelCount}ch (was container format)")
                         } catch (e: Exception) {
                             Log.w(TAG, "decodeAudioToPcm: FORMAT_CHANGED but failed to read format: ${e.message}")
                         }
@@ -897,6 +904,7 @@ object AudioSegmentAnalyzer {
                             }
 
                             if (totalPcmBytes >= maxPcmBytes) {
+                                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: STOPPED by maxPcmBytes limit ($maxPcmBytes bytes) for $episodeId")
                                 Log.i(TAG, "decodeAudioToPcm: reached max size limit ($maxPcmBytes bytes)")
                                 break
                             }
@@ -904,6 +912,7 @@ object AudioSegmentAnalyzer {
                             if (maxDecodeDurationMs > 0) {
                                 val decodedMs = totalPcmBytes * 1000L / (16000L * 2L)
                                 if (decodedMs >= maxDecodeDurationMs) {
+                                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: STOPPED by maxDecodeDurationMs ($maxDecodeDurationMs ms) for $episodeId")
                                     Log.i(TAG, "decodeAudioToPcm: reached maxDecodeDurationMs ($maxDecodeDurationMs ms)")
                                     break
                                 }
@@ -911,6 +920,7 @@ object AudioSegmentAnalyzer {
                         }
                         decoder.releaseOutputBuffer(outputBufferIndex, false)
                         if (bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: END_OF_STREAM reached for $episodeId")
                             break
                         }
                     }
@@ -922,7 +932,10 @@ object AudioSegmentAnalyzer {
                 extractor.release()
             }
 
-            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes to ${outputFile.name} (final rate: ${sampleRate}Hz ${channelCount}ch -> 16kHz mono)")
+            val finalDurationMs = totalPcmBytes * 1000L / (16000L * 2L)
+            val completenessRatio = if (expectedPcmBytes > 1) totalPcmBytes.toDouble() / expectedPcmBytes.toDouble() else 1.0
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: DONE episode=$episodeId, totalPcmBytes=$totalPcmBytes, finalDurationMs=$finalDurationMs, expectedPcmBytes=$expectedPcmBytes, completeness=${String.format("%.2f", completenessRatio)}")
+            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes ($finalDurationMs ms) to ${outputFile.name} (final rate: ${sampleRate}Hz ${channelCount}ch -> 16kHz mono)")
             // v2.4.138: .info file with duration metadata is now written by the caller
             // (preGeneratePcmFiles / analyzeEpisode) so that mp4DurationMs and pcmDurationMs
             // can be validated together.
@@ -975,14 +988,14 @@ object AudioSegmentAnalyzer {
 
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             var totalPcmBytes = 0
-            // v2.4.128: FIX — was 50MB, which truncated PCM to ~26 minutes.
-            // A 2-hour audio at 16kHz mono 16-bit produces ~230MB of PCM.
-            val maxPcmBytes = 300 * 1024 * 1024  // v2.4.148: Unified to 300MB max (~2.6 hours)
+            // v2.4.149: Raise max PCM size to 600MB (~5.2 hours) for long episodes.
+            val maxPcmBytes = 600 * 1024 * 1024
             val needResample = sampleRate != 16000 || channelCount != 1
             val fos = java.io.FileOutputStream(outputFile)
 
             // v2.4.148: Progress reporting for URL decode (streaming fallback).
             val expectedPcmBytes = if (durationMs > 0) (durationMs * 16000L * 2L / 1000L).coerceAtLeast(1L) else 1L
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: START url=$audioUrl, durationMs=$durationMs, expectedPcmBytes=$expectedPcmBytes, maxPcmBytes=$maxPcmBytes, maxDecodeDurationMs=$maxDecodeDurationMs")
             var lastReportedDecodeProgress = -1
             fun reportDecodeProgressIfNeeded() {
                 if (progressCallback == null) return
@@ -1051,6 +1064,7 @@ object AudioSegmentAnalyzer {
                             }
 
                             if (totalPcmBytes >= maxPcmBytes) {
+                                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: STOPPED by maxPcmBytes limit ($maxPcmBytes bytes)")
                                 Log.i(TAG, "decodeUrlToPcm: reached max size limit ($maxPcmBytes bytes)")
                                 break
                             }
@@ -1058,6 +1072,7 @@ object AudioSegmentAnalyzer {
                             if (maxDecodeDurationMs > 0) {
                                 val decodedMs = totalPcmBytes * 1000L / (16000L * 2L)
                                 if (decodedMs >= maxDecodeDurationMs) {
+                                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: STOPPED by maxDecodeDurationMs ($maxDecodeDurationMs ms)")
                                     Log.i(TAG, "decodeUrlToPcm: reached maxDecodeDurationMs ($maxDecodeDurationMs ms)")
                                     break
                                 }
@@ -1065,6 +1080,7 @@ object AudioSegmentAnalyzer {
                         }
                         decoder.releaseOutputBuffer(outputBufferIndex, false)
                         if (bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: END_OF_STREAM reached")
                             break
                         }
                     }
@@ -1076,8 +1092,11 @@ object AudioSegmentAnalyzer {
                 extractor.release()
             }
 
-            Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
-            // v2.4.148: .info file with duration metadata is now written by the caller.
+            val finalDurationMs = totalPcmBytes * 1000L / (16000L * 2L)
+            val completenessRatio = if (expectedPcmBytes > 1) totalPcmBytes.toDouble() / expectedPcmBytes.toDouble() else 1.0
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: DONE totalPcmBytes=$totalPcmBytes, finalDurationMs=$finalDurationMs, expectedPcmBytes=$expectedPcmBytes, completeness=${String.format("%.2f", completenessRatio)}")
+            Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes ($finalDurationMs ms) to ${outputFile.name}")
+            // v2.4.138: .info file with duration metadata is now written by the caller.
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeUrlToPcm failed: ${e.message}")
@@ -1235,11 +1254,11 @@ object AudioSegmentAnalyzer {
                 if (!vadMalfunction && vadProb < 0.01f && yamnetSpeech > 0.6f) {
                     vadLowConfidenceFrames++
                     if (vadLowConfidenceFrames >= 5) {
-                        vadLog("[v2.4.147] VAD malfunction detected after $vadLowConfidenceFrames low-prob frames (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.6). Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[v2.4.147] VAD malfunction — falling back to YAMNet-only mode")
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction detected after $vadLowConfidenceFrames low-prob frames (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.6). Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction — falling back to YAMNet-only mode")
                         vadMalfunction = true  // Flag to use YAMNet-only classification
                     } else {
-                        vadLog("[v2.4.147] VAD low confidence frame $vadLowConfidenceFrames/5 (vadProb=$vadProb, yamnetSpeech=$yamnetSpeech), not switching yet")
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD low confidence frame $vadLowConfidenceFrames/5 (vadProb=$vadProb, yamnetSpeech=$yamnetSpeech), not switching yet")
                     }
                 } else if (!vadMalfunction) {
                     vadLowConfidenceFrames = 0
@@ -1251,8 +1270,8 @@ object AudioSegmentAnalyzer {
                     // v2.4.147: YAMNet speech > 0.6 means actual speech detection (>0.5 = no speech).
                     val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.6f } || yamnetSpeech > 0.6f
                     if (yamnetWorking) {
-                        vadLog("[v2.4.147] VAD malfunction at frame 30 but YAMNet is working. Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[v2.4.147] VAD malfunction at frame 30 — falling back to YAMNet-only mode")
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction at frame 30 but YAMNet is working. Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction at frame 30 — falling back to YAMNet-only mode")
                         vadMalfunction = true  // Flag to use YAMNet-only classification
                     } else {
                         val diag = buildString {
@@ -1274,8 +1293,8 @@ object AudioSegmentAnalyzer {
                             append("VAD model: stateSize=${vadModel.stateSize}\n")
                             append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
                         }
-                        vadLog("[v2.4.128] ERROR: VAD malfunction.\n$diag")
-                        Log.e(TAG, "[v2.4.128] VAD malfunction:\n$diag")
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] ERROR: VAD malfunction.\n$diag")
+                        Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction:\n$diag")
                         throw RuntimeException(diag)
                     }  // end of else block
                 }
@@ -1302,7 +1321,7 @@ object AudioSegmentAnalyzer {
                             kotlin.math.abs(fr.yamnetSilence - 0.5f) < 0.05f &&
                             kotlin.math.abs(fr.yamnetMaxRawScore) < 0.1f
                         } + 1
-                        vadLog("[v2.4.143] YAMNet all-half at frame 4: halfFrames=$halfFrames/5, maxRawScore=$yamnetMaxRawScore, rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy")
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] YAMNet all-half at frame 4: halfFrames=$halfFrames/5, maxRawScore=$yamnetMaxRawScore, rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy")
                         // Only abort if at least 4 of the first 5 frames are all ~0.5 AND there is
                         // meaningful audio energy. If VAD already malfunctioned and we switched to
                         // YAMNet-only, YAMNet worked for the earlier frames, so a single half frame
@@ -1326,11 +1345,11 @@ object AudioSegmentAnalyzer {
                                 append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
                                 append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
                             }
-                            vadLog("[v2.4.140] ERROR: YAMNet malfunction.\n$diag")
-                            Log.e(TAG, "[v2.4.140] YAMNet malfunction:\n$diag")
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] ERROR: YAMNet malfunction.\n$diag")
+                            Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] YAMNet malfunction:\n$diag")
                             throw RuntimeException(diag)
                         } else {
-                            vadLog("[v2.4.143] YAMNet all-half but model alive (maxRawScore=$yamnetMaxRawScore) or insufficient frames; continuing with energy fallback (vadMalfunction=$vadMalfunction)")
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] YAMNet all-half but model alive (maxRawScore=$yamnetMaxRawScore) or insufficient frames; continuing with energy fallback (vadMalfunction=$vadMalfunction)")
                         }
                     }
                 }
@@ -1348,7 +1367,8 @@ object AudioSegmentAnalyzer {
                 }
                 frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, yamnetSilence, yamnetMaxRawScore, rmsEnergy))
 
-                pos += FRAME_STEP_SAMPLES
+                // v2.4.149: Use a larger hop in YAMNet-only mode to avoid 8-minute stalls.
+                pos += if (vadMalfunction) YAMNET_ONLY_STEP_SAMPLES else FRAME_STEP_SAMPLES
             }
 
             Log.i(TAG, "Analyzed ${frameResults.size} frames")
@@ -1367,7 +1387,7 @@ object AudioSegmentAnalyzer {
     private fun loadYamnetModel(modelFile: File): Interpreter {
         try {
             // v2.4.129: Log model file info to file log for diagnostics
-            vadLog("[v2.4.129] loadYamnetModel: file=${modelFile.name}, size=${modelFile.length()} bytes, exists=${modelFile.exists()}")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] loadYamnetModel: file=${modelFile.name}, size=${modelFile.length()} bytes, exists=${modelFile.exists()}")
             val mappedBuffer = FileInputStream(modelFile).channel.map(
                 FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
             )
@@ -1382,7 +1402,7 @@ object AudioSegmentAnalyzer {
             yamnetInputShape = inputShape
             Log.i(TAG, "YAMNet loaded: input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
             // v2.4.129: Log to file log for diagnostics
-            vadLog("[v2.4.129] loadYamnetModel: loaded successfully. input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] loadYamnetModel: loaded successfully. input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
             // v2.4.130: Removed the warning about unexpected input shape.
             // The model's input shape [15600] is valid — YAMNet expects 1D raw waveform input.
             return interp
@@ -1433,7 +1453,7 @@ object AudioSegmentAnalyzer {
                 var sum = 0.0
                 for (s in samples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s) }
                 val avgAbs = (sum / samples.size).toFloat()
-                vadLog("[v2.4.129] classifyWithYamnet #$yamnetCallCount: input samples=${samples.size}, nonZero=$nonZero, avgAbs=$avgAbs, first10=${samples.take(10).joinToString(",")}")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: input samples=${samples.size}, nonZero=$nonZero, avgAbs=$avgAbs, first10=${samples.take(10).joinToString(",")}")
             }
 
             // Output: [1, 521] float
@@ -1463,8 +1483,8 @@ object AudioSegmentAnalyzer {
                 for (i in scores.indices) {
                     if (scores[i] > maxScore) { maxScore = scores[i]; maxIdx = i }
                 }
-                vadLog("[v2.4.129] classifyWithYamnet #$yamnetCallCount: raw scores: speech[$YAMNET_IDX_SPEECH]=$rawSpeech, silence[$YAMNET_IDX_SILENCE]=$rawSilence, music[$YAMNET_IDX_MUSIC]=$rawMusic, song[$YAMNET_IDX_SONG]=$rawSong")
-                vadLog("[v2.4.129] classifyWithYamnet #$yamnetCallCount: max score=$maxScore at idx=$maxIdx, all zeros=${scores.all { it == 0f }}, output size=${scores.size}")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: raw scores: speech[$YAMNET_IDX_SPEECH]=$rawSpeech, silence[$YAMNET_IDX_SILENCE]=$rawSilence, music[$YAMNET_IDX_MUSIC]=$rawMusic, song[$YAMNET_IDX_SONG]=$rawSong")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: max score=$maxScore at idx=$maxIdx, all zeros=${scores.all { it == 0f }}, output size=${scores.size}")
             }
 
             // Extract key categories (apply sigmoid to raw scores)
@@ -1477,7 +1497,7 @@ object AudioSegmentAnalyzer {
             return YamnetResult(speechProb, musicProb, silenceProb, maxRawScore)
         } catch (e: Exception) {
             Log.e(TAG, "YAMNet classification failed: ${e.message}")
-            vadLog("[v2.4.129] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
             return YamnetResult(0f, 0f, 0f, 0f)
         }
     }
@@ -1754,7 +1774,7 @@ object AudioSegmentAnalyzer {
                 var chunkSum = 0.0
                 for (s in vadInput) { if (s != 0f) chunkNonZero++; chunkSum += kotlin.math.abs(s) }
                 val chunkAvgAbs = (chunkSum / vadInput.size).toFloat()
-                vadLog("[v2.4.142] runSileroVad #$vadRunCount: input size=${vadInput.size} (context=$VAD_CONTEXT_SIZE + chunk=${chunk.size}), nonZero=$chunkNonZero, avgAbs=$chunkAvgAbs, first10=${vadInput.take(10).joinToString(",")}")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] runSileroVad #$vadRunCount: input size=${vadInput.size} (context=$VAD_CONTEXT_SIZE + chunk=${chunk.size}), nonZero=$chunkNonZero, avgAbs=$chunkAvgAbs, first10=${vadInput.take(10).joinToString(",")}")
             }
 
             if (model.isV4Style) {

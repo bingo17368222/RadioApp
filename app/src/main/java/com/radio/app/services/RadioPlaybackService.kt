@@ -149,7 +149,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.91] Reset consecutive backward skip counter
         consecutiveBackwardSkips = 0
         firstBackwardSkipWindowStart = now
-        writeServiceLog("playback", "[v2.0.91] notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
+        writeServiceLog("playback", " notifyActivityResumed: set blackout for ${POST_RESUME_BLACKOUT_MS}ms")
         // After blackout+breaker window, exit protection mode
         audioFocusHandler.postDelayed({
             inPostResumeProtection = false
@@ -288,7 +288,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val focusProbeRunnable = object : Runnable {
         override fun run() {
             // [v2.0.83] Disabled - do not actively request audio focus
-            writeServiceLog("audiofocus", "[v2.0.83] focusProbe: DISABLED, not actively requesting focus")
+            writeServiceLog("audiofocus", " focusProbe: DISABLED, not actively requesting focus")
             return
         }
     }
@@ -296,7 +296,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private val permanentLossRecoveryRunnable = Runnable {
         // [v2.0.83] Disabled - do not start focus probing after PERMANENT loss
         // Only passive AUDIOFOCUS_GAIN callback will resume playback
-        writeServiceLog("audiofocus", "[v2.0.83] permanentLossRecovery: DISABLED, waiting for passive GAIN only")
+        writeServiceLog("audiofocus", " permanentLossRecovery: DISABLED, waiting for passive GAIN only")
         return@Runnable
     }
     // [v2.0.88] Issue 3 Fix: Smart resume after PERMANENT audio focus loss.
@@ -314,7 +314,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun smartResumePoll() {
         if (!smartResumeRunning) return
         if (!playbackStarted || userPaused) {
-            writeServiceLog("audiofocus", "[v2.0.89] smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
+            writeServiceLog("audiofocus", " smartResume: stopping (playbackStarted=$playbackStarted, userPaused=$userPaused)")
             smartResumeRunning = false
             return
         }
@@ -325,12 +325,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val am = audioManager ?: getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             val musicActive = am?.isMusicActive ?: false
             if (musicActive) {
-                writeServiceLog("audiofocus", "[v2.0.89] smartResume: other app still playing music (isMusicActive=true), waiting...")
+                writeServiceLog("audiofocus", " smartResume: other app still playing music (isMusicActive=true), waiting...")
             } else {
-                writeServiceLog("audiofocus", "[v2.0.89] smartResume: no other app playing (isMusicActive=false), attempting to re-request focus")
+                writeServiceLog("audiofocus", " smartResume: no other app playing (isMusicActive=false), attempting to re-request focus")
                 val granted = requestAudioFocus()
                 if (granted) {
-                    writeServiceLog("audiofocus", "[v2.0.89] smartResume: FOCUS GRANTED! Resuming playback")
+                    writeServiceLog("audiofocus", " smartResume: FOCUS GRANTED! Resuming playback")
                     audioFocusLossType = FOCUS_LOSS_NONE
                     pausedByAudioFocus = false
                     smartResumeRunning = false
@@ -339,7 +339,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         player?.play()
                         prepared = true
                     } else {
-                        writeServiceLog("audiofocus", "[v2.3.5] smartResume: player is null, calling play() for recovery")
+                        writeServiceLog("audiofocus", " smartResume: player is null, calling play() for recovery")
                         audioFocusHandler.post { play() }
                     }
                     forceNotificationUpdate = true
@@ -347,11 +347,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     updateNotification()
                     return
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.89] smartResume: focus request FAILED, will retry in ${smartResumePollMs/1000}s")
+                    writeServiceLog("audiofocus", " smartResume: focus request FAILED, will retry in ${smartResumePollMs/1000}s")
                 }
             }
         } catch (e: Exception) {
-            writeServiceLog("audiofocus", "[v2.0.89] smartResume: exception: ${e.message}")
+            writeServiceLog("audiofocus", " smartResume: exception: ${e.message}")
         }
         // Schedule next poll
         audioFocusHandler.postDelayed(smartResumeRunnable, smartResumePollMs)
@@ -407,7 +407,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // Position jumped >60s in a single update — definitely stale from old episode.
             if (stalePosRejectCount < 5) {
                 stalePosRejectCount++
-                writeServiceLog("playback", "[v2.4.117] safeUpdatePosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, episodeStartPos=$episodeStartPos, delta=${delta}ms, count=$stalePosRejectCount)")
+                writeServiceLog("playback", " safeUpdatePosition: REJECTING stale rawPos=$rawPos (authPos=$authoritativePosition, episodeStartPos=$episodeStartPos, delta=${delta}ms, count=$stalePosRejectCount)")
             }
             return false
         }
@@ -649,7 +649,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 PlaybackStateCompat.ACTION_STOP
             )
         mediaSession?.setPlaybackState(builder.build())
-        writeServiceLog("notification", "[v2.0.76] updateMediaSessionState: state=${if (effectivePlaying) "PLAYING" else "PAUSED"}, playerIsPlaying=$playerIsPlaying, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, pos=$pos")
+        writeServiceLog("notification", " updateMediaSessionState: state=${if (effectivePlaying) "PLAYING" else "PAUSED"}, playerIsPlaying=$playerIsPlaying, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, pos=$pos")
 
         // [v2.0.44] Issue 5 Fix: 同步 MediaSession 元数据
         updateMediaSessionMetadata()
@@ -717,7 +717,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
                             super.onPositionDiscontinuity(oldPosition, newPosition, reason)
                             val actualPos = player?.currentPosition ?: -1L
-                            Log.d(TAG, "[v2.0.91] onPositionDiscontinuity: reason=$reason, actualPos=$actualPos, authPos=$authoritativePosition, isSeeking=$isSeekingToPosition, target=$seekTargetPosition")
+                            Log.d(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] onPositionDiscontinuity: reason=$reason, actualPos=$actualPos, authPos=$authoritativePosition, isSeeking=$isSeekingToPosition, target=$seekTargetPosition")
                             if (isSeekingToPosition) {
                                 // [v2.0.91] Only clear seeking state when position is near target.
                                 // ExoPlayer may fire discontinuity multiple times during a seek, reporting
@@ -728,7 +728,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     isSeekingToPosition = false
                                     safeUpdatePosition(actualPos)
                                 } else {
-                                    Log.d(TAG, "[v2.0.91] onPositionDiscontinuity: still seeking, actualPos=$actualPos < target-2000=${seekTargetPosition-2000}, keeping isSeekingToPosition=true")
+                                    Log.d(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] onPositionDiscontinuity: still seeking, actualPos=$actualPos < target-2000=${seekTargetPosition-2000}, keeping isSeekingToPosition=true")
                                 }
                                 player?.playWhenReady = true
                                 notifyNotification()
@@ -751,7 +751,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     val posDelta = kotlin.math.abs(curPos - expectedPos)
                                     if (episodeSwitching && expectedPos > 0 && posDelta > 120000 && stalePosRejectCount < 5) {
                                         stalePosRejectCount++
-                                        writeServiceLog("playback", "[v2.4.136] STATE_READY: ignoring premature READY (curPos=$curPos, expected=$expectedPos, delta=$posDelta), keeping episodeSwitching=true")
+                                        writeServiceLog("playback", " STATE_READY: ignoring premature READY (curPos=$curPos, expected=$expectedPos, delta=$posDelta), keeping episodeSwitching=true")
                                     } else {
                                         episodeSwitching = false
                                     }
@@ -759,11 +759,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         // [v2.0.65] Issue 1 Fix: Only clear seeking state if position is NEAR target.
                                         // Previously, curPos <= 0 cleared seeking state, causing position to drop to 0.
                                         if (curPos >= seekTargetPosition - 2000) {
-                                            Log.d(TAG, "[v2.0.65] STATE_READY: pos=$curPos near target=$seekTargetPosition, clearing seeking state")
+                                            Log.d(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] STATE_READY: pos=$curPos near target=$seekTargetPosition, clearing seeking state")
                                             isSeekingToPosition = false
                                             safeUpdatePosition(curPos)
                                         } else {
-                                            Log.d(TAG, "[v2.0.65] STATE_READY: pos=$curPos NOT near target=$seekTargetPosition, keeping seeking state, authPos=$authoritativePosition")
+                                            Log.d(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] STATE_READY: pos=$curPos NOT near target=$seekTargetPosition, keeping seeking state, authPos=$authoritativePosition")
                                         }
                                     }
                                     // [v2.0.53] Issue 1 Fix: Seek BEFORE first STATE_READY using ExoPlayer's setSeekParameters
@@ -772,7 +772,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     // Fix: seek immediately after prepare() using player.setMediaItem+seekTo
                                     // The position restore is handled in playEpisode() directly
                                     if (positionRestoreRequested && pendingStartPosition > 0) {
-                                        writeServiceLog("playback", "[v2.0.62] STATE_READY: positionRestoreRequested still true (seek before prepare failed), seeking now")
+                                        writeServiceLog("playback", " STATE_READY: positionRestoreRequested still true (seek before prepare failed), seeking now")
                                         isSeekingToPosition = true
                                         seekTargetPosition = pendingStartPosition
                                         authoritativePosition = pendingStartPosition
@@ -783,14 +783,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         // Without this, saveCurrentPosition() was BLOCKED forever
                                         // because it checks `pendingStartPosition >= 0`.
                                         // This was the root cause of issue 5: position never saved.
-                                        writeServiceLog("playback", "[v2.4.43] STATE_READY: clearing pendingStartPosition (was $pendingStartPosition)")
+                                        writeServiceLog("playback", " STATE_READY: clearing pendingStartPosition (was $pendingStartPosition)")
                                         pendingStartPosition = -1L
                                     }
                                     player?.playWhenReady = true
                                     playbackInitializing = false
                                     isRetrying = false
                                     errorRetryCount = 0
-                                    Log.d(TAG, "[v2.0.62] STATE_READY: isSeekingToPosition=$isSeekingToPosition, pos=$curPos, seekTarget=$seekTargetPosition, authPos=$authoritativePosition")
+                                    Log.d(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] STATE_READY: isSeekingToPosition=$isSeekingToPosition, pos=$curPos, seekTarget=$seekTargetPosition, authPos=$authoritativePosition")
                                     callback?.onStateChanged(true)
                                     // 后台下载音频文件
                                     startBackgroundDownload()
@@ -813,7 +813,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     authoritativePosition = 0L
                                     maxKnownPosition = 0L
                                     lastNotifiedPosition = -1L
-                                    writeServiceLog("notification", "[v2.0.87] STATE_ENDED: prepared=false, reset authoritativePosition=0 (userPaused NOT set)")
+                                    writeServiceLog("notification", " STATE_ENDED: prepared=false, reset authoritativePosition=0 (userPaused NOT set)")
                                     // [v2.0.92] Fix: For continuous play, skip updateNotification() here.
                                     // Calling updateNotification() before autoPlayNextEpisode() causes
                                     // the notification to show progress=100% (old pos=dur / old dur).
@@ -842,7 +842,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 // Source error retries, blocking 54 consecutive position saves.
                                 if (episodeSwitching) {
                                     episodeSwitching = false
-                                    writeServiceLog("playback", "[v2.4.111] onPlayerError: cleared episodeSwitching (was true, blocking saves)")
+                                    writeServiceLog("playback", " onPlayerError: cleared episodeSwitching (was true, blocking saves)")
                                 }
                                 errorRetryCount++
 
@@ -859,7 +859,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     // v2.4.144: If the first retry fails while playing from a local cache,
                                     // fall back to the network URL for subsequent retries.
                                     if (errorRetryCount == 1 && currentPlaybackUri != currentStreamUrl) {
-                                        writeServiceLog("playback", "[v2.4.144] onPlayerError: local cache playback failed, falling back to network URL")
+                                        writeServiceLog("playback", " onPlayerError: local cache playback failed, falling back to network URL")
                                         currentPlaybackUri = currentStreamUrl
                                     }
                                     val retryDelay = errorRetryCount * 2000L  // [v2.3.6] Reduced from 3s to 2s
@@ -1101,7 +1101,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = File(logDir, "precache.log")
             val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            FileWriter(logFile, true).use { it.append("[$ts][v2.4.80] $msg\n") }
+            FileWriter(logFile, true).use { it.append("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] $msg\n") }
             Log.d(TAG, "[PreCache] $msg")
         } catch (_: Exception) {}
     }
@@ -1890,16 +1890,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         // [v2.4.14] Skip episodes marked as "no preprocessing needed"
         if (appSettings.isNoPreprocess(episodeId)) {
-            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.14] episode $episodeId marked as no-preprocess, skipping")
+            writePreCacheLog("startPreCacheSubtitleGeneration:  episode $episodeId marked as no-preprocess, skipping")
             return
         }
         // v2.4.83: Skip episodes that are disliked
         if (appSettings.isDisliked(episodeId)) {
-            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.83] episode $episodeId is disliked, skipping")
+            writePreCacheLog("startPreCacheSubtitleGeneration:  episode $episodeId is disliked, skipping")
             return
         }
         if (!episode.title.isNullOrBlank() && appSettings.isDislikedByTitle(episode.stationId, episode.title)) {
-            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.83] episode $episodeId title='${episode.title}' is disliked, skipping")
+            writePreCacheLog("startPreCacheSubtitleGeneration:  episode $episodeId title='${episode.title}' is disliked, skipping")
             return
         }
         val audioUrl = episode.audioUrl
@@ -1915,7 +1915,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v2.4.83: Log detailed info about why it's being skipped
                 val segmentCount = try { dbHelper.getSubtitleSegmentCount(episodeId) } catch (_: Exception) { -1 }
                 val audioFile = File(getExternalFilesDir("episodes"), extractCacheFileName(audioUrl))
-                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.83] SKIP $episodeId: complete subtitles exist (segments=$segmentCount, audioCached=${audioFile.exists()}, audioSize=${if (audioFile.exists()) audioFile.length() else 0})")
+                writePreCacheLog("startPreCacheSubtitleGeneration:  SKIP $episodeId: complete subtitles exist (segments=$segmentCount, audioCached=${audioFile.exists()}, audioSize=${if (audioFile.exists()) audioFile.length() else 0})")
                 return
             }
         } catch (e: Exception) {
@@ -1940,15 +1940,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     this.audioUrl = audioUrl
                 }
                 dbHelper.saveEpisodeInfo(ep)
-                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] saved episode_info (title=${episode.title})")
+                writePreCacheLog("startPreCacheSubtitleGeneration:  saved episode_info (title=${episode.title})")
             } else if (existing.title.isNullOrBlank()) {
                 // Row exists but title is empty — fill it in
                 existing.title = episode.title.ifBlank { episodeId }
                 dbHelper.saveEpisodeInfo(existing)
-                writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] filled missing title=${episode.title}")
+                writePreCacheLog("startPreCacheSubtitleGeneration:  filled missing title=${episode.title}")
             }
         } catch (e: Exception) {
-            writePreCacheLog("startPreCacheSubtitleGeneration: [v2.4.73] error saving episode_info: ${e.message}")
+            writePreCacheLog("startPreCacheSubtitleGeneration:  error saving episode_info: ${e.message}")
         }
 
         // v2.4.91: Pre-segment with fixed 15-minute segments before subtitle generation
@@ -1994,15 +1994,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val audioUrl = episode.audioUrl ?: return
         if (audioUrl.isBlank()) return
 
-        writePreCacheLog("startPreCachePcmGeneration: [v2.4.148] starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm)")
+        writePreCacheLog("startPreCachePcmGeneration:  starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm)")
 
         // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {
             val epDuration = episode.duration ?: 0
             val durationMs = if (epDuration in 60000..100000000) epDuration.toLong() else 7200_000L
-            writePreCacheLog("startPreCachePcmGeneration: [v2.4.124] calling preSegmentFixed for $episodeId, durationMs=$durationMs (fixed 15-min segments)")
+            writePreCacheLog("startPreCachePcmGeneration:  calling preSegmentFixed for $episodeId, durationMs=$durationMs (fixed 15-min segments)")
             com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
-            writePreCacheLog("startPreCachePcmGeneration: [v2.4.124] preSegmentFixed completed for $episodeId")
+            writePreCacheLog("startPreCachePcmGeneration:  preSegmentFixed completed for $episodeId")
         } catch (e: Exception) {
             writePreCacheLog("startPreCachePcmGeneration: pre-segment failed: ${e.message}")
         }
@@ -2013,7 +2013,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // "分段失败" errors. Now we directly decode PCM without AI segmentation.
         Thread {
             try {
-                writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] starting PCM decode for $episodeId")
+                writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
                 // v2.4.139: Pass episode metadata duration so the analyzer can fall back when
                 // MediaExtractor fails to read the MP4 duration (a common cause of mp4DurationMs=0
                 // in .info files).
@@ -2022,12 +2022,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     this, episodeId, audioUrl, expectedDurationMs, generateFullPcm
                 )
                 if (success) {
-                    writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation SUCCESS for $episodeId")
+                    writePreCacheLog("startPreCachePcmGeneration:  PCM generation SUCCESS for $episodeId")
                 } else {
-                    writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation FAILED for $episodeId (audio file may not be cached)")
+                    writePreCacheLog("startPreCachePcmGeneration:  PCM generation FAILED for $episodeId (audio file may not be cached)")
                 }
             } catch (e: Exception) {
-                writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation exception: ${e.message}")
+                writePreCacheLog("startPreCachePcmGeneration:  PCM generation exception: ${e.message}")
             }
         }.start()
     }
@@ -2044,11 +2044,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val subtitlesEnabled = appSettings.enablePreGenerateSubtitles
         val preprocessingEnabled = appSettings.enablePreprocessing
         if (!subtitlesEnabled && !preprocessingEnabled) {
-            writePreCacheLog("patrolSubtitle: [v2.4.96] both subtitles and preprocessing disabled, skipping patrol")
+            writePreCacheLog("patrolSubtitle:  both subtitles and preprocessing disabled, skipping patrol")
             return
         }
         if (!subtitlesEnabled && preprocessingEnabled) {
-            writePreCacheLog("patrolSubtitle: [v2.4.123] subtitles OFF but preprocessing ON, running PCM-only patrol")
+            writePreCacheLog("patrolSubtitle:  subtitles OFF but preprocessing ON, running PCM-only patrol")
         }
         // [v2.4.13] Check if subtitle service is busy (cross-process via flag file)
         val busyFlag = java.io.File(
@@ -2061,10 +2061,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // every ~15-30 seconds. If no update for 2 minutes, the service is definitely dead.
             val flagAge = System.currentTimeMillis() - busyFlag.lastModified()
             if (flagAge > 2 * 60 * 1000L) {
-                writePreCacheLog("patrolSubtitle: [v2.4.65] stale busy flag detected (age=${flagAge/1000}s > 2min), deleting and continuing patrol")
+                writePreCacheLog("patrolSubtitle:  stale busy flag detected (age=${flagAge/1000}s > 2min), deleting and continuing patrol")
                 busyFlag.delete()
             } else {
-                writePreCacheLog("patrolSubtitle: [v2.4.59] subtitle service is busy (flag age=${flagAge/1000}s), skipping patrol")
+                writePreCacheLog("patrolSubtitle:  subtitle service is busy (flag age=${flagAge/1000}s), skipping patrol")
                 return
             }
         }
@@ -2075,7 +2075,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             mgr.getRunningServices(100)?.any { it.service.className == "com.radio.app.services.SubtitleGeneratorService" } ?: false
         } catch (_: Exception) { false }
         if (subtitleRunning) {
-            writePreCacheLog("patrolSubtitle: [v2.4.59] SubtitleGeneratorService is running, skipping patrol")
+            writePreCacheLog("patrolSubtitle:  SubtitleGeneratorService is running, skipping patrol")
             return
         }
 
@@ -2084,7 +2084,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val currentEp = currentEpisode ?: return@launch
                 if (currentEp.id.isNullOrBlank()) return@launch
 
-                writePreCacheLog("patrolSubtitle: [v2.4.59] patrol started, currentEp=${currentEp.title}")
+                writePreCacheLog("patrolSubtitle:  patrol started, currentEp=${currentEp.title}")
 
                 // Load pre-cache list and find episodes after current one
                 val preCacheList = loadPreCacheList()
@@ -2093,7 +2093,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
                 }
                 if (currentIdx < 0) {
-                    writePreCacheLog("patrolSubtitle: [v2.4.19] current episode not in preCacheList, scanning all episodes")
+                    writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, scanning all episodes")
                     currentIdx = -1  // [v2.4.19] Scan all episodes if current not found
                 }
 
@@ -2111,7 +2111,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val scanOrder = if (currentIdx >= 0) {
                     ((currentIdx + 1) until preCacheList.size).toList()
                 } else {
-                    writePreCacheLog("patrolSubtitle: [v2.4.93] current episode not in preCacheList, cannot determine position — skipping patrol")
+                    writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
                 }
 
@@ -2134,23 +2134,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) {
                         withoutAudio++
-                        writePreCacheLog("patrolSubtitle: [v2.4.82] SKIP ep=${ep.id}, audio NOT cached (expected: $fileName)")
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (expected: $fileName)")
                         continue
                     }
                     withAudio++
-                    writePreCacheLog("patrolSubtitle: [v2.4.82] ep=${ep.id}, audio cached ($fileName), checking subtitles...")
+                    writePreCacheLog("patrolSubtitle:  ep=${ep.id}, audio cached ($fileName), checking subtitles...")
 
                     // [v2.4.14] Skip episodes marked as "no preprocessing needed"
                     if (settings.isNoPreprocess(ep.id)) continue
 
                     // v2.4.83: Skip episodes that are disliked
                     if (settings.isDisliked(ep.id)) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.83] SKIP ep=${ep.id}, disliked by ID")
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked by ID")
                         continue
                     }
                     // v2.4.83: Also check by title (stationId + title)
                     if (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.83] SKIP ep=${ep.id}, disliked by title: ${ep.title}")
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked by title: ${ep.title}")
                         continue
                     }
 
@@ -2171,11 +2171,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
 
                         // Found a cached episode without PCM — trigger PCM generation.
-                        // v2.4.148: Patrol only generates the lightweight 5-min preview PCM.
-                        // Full PCM is generated on-demand when the user taps AI segmentation,
-                        // preventing dozens of 100MB+ full PCM files from piling up.
-                        writePreCacheLog("patrolSubtitle: [v2.4.148] found cached episode without PCM: ${ep.title} (${ep.id}), triggering 5-min PCM generation only (5min=${hasPcm5min})")
-                        startPreCachePcmGeneration(ep, generateFullPcm = false)
+                        // v2.4.149: Respect user setting. Default generates full PCM to preserve behavior;
+                        // disabling it generates only the lightweight 5-min preview PCM.
+                        val settings = com.radio.app.models.AppSettings.getInstance(this@RadioPlaybackService)
+                        val shouldGenerateFullPcm = settings.patrolGenerateFullPcm
+                        writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id}), generateFullPcm=${shouldGenerateFullPcm}")
+                        startPreCachePcmGeneration(ep, generateFullPcm = shouldGenerateFullPcm)
                         try {
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2218,7 +2219,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     try {
                         isComplete = dbHelper.hasCompleteSubtitles(ep.id)
                     } catch (e: Exception) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.19] hasCompleteSubtitles failed for ${ep.id}: ${e.message}, treating as incomplete")
+                        writePreCacheLog("patrolSubtitle:  hasCompleteSubtitles failed for ${ep.id}: ${e.message}, treating as incomplete")
                     }
                     if (isComplete) {
                         withSubtitles++
@@ -2229,11 +2230,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             if (!hasRealSegs) {
                                 val epDuration = ep.duration?.let { if (it in 60..100000) it * 1000 else 0 } ?: 0
                                 val durMs = if (epDuration > 60000) epDuration.toLong() else 7200_000L
-                                writePreCacheLog("patrolSubtitle: [v2.4.91] subtitles complete but no real segments, auto-segmenting ${ep.id}")
+                                writePreCacheLog("patrolSubtitle:  subtitles complete but no real segments, auto-segmenting ${ep.id}")
                                 com.radio.app.utils.SegmentGenerator.postSegmentKeyword(this@RadioPlaybackService, ep.id, durMs)
                             }
                         } catch (e: Exception) {
-                            writePreCacheLog("patrolSubtitle: [v2.4.91] auto-segment failed for ${ep.id}: ${e.message}")
+                            writePreCacheLog("patrolSubtitle:  auto-segment failed for ${ep.id}: ${e.message}")
                         }
                         continue
                     }
@@ -2242,13 +2243,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // If so, this episode needs resume — prioritize it
                     val fullPcmFile = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
                     if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.14] found leftover full PCM for ${ep.id}, resuming subtitle generation")
+                        writePreCacheLog("patrolSubtitle:  found leftover full PCM for ${ep.id}, resuming subtitle generation")
                         startPreCacheSubtitleGeneration(ep)
                         return@launch
                     }
 
                     // Found a cached episode without subtitles — trigger subtitle generation
-                    writePreCacheLog("patrolSubtitle: [v2.4.13] found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
+                    writePreCacheLog("patrolSubtitle:  found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
                     startPreCacheSubtitleGeneration(ep)
                     // v2.4.135: 如果预生成字幕已关闭，不显示字幕生成通知
                     if (!subtitlesEnabled) return@launch
@@ -2285,7 +2286,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 
-                writePreCacheLog("patrolSubtitle: [v2.4.93] patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
+                writePreCacheLog("patrolSubtitle:  patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
 
                 // v2.4.93: Only process episodes AFTER the current one.
                 // Parse current episode's date for comparison.
@@ -2295,7 +2296,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     if (urlMatch != null) "${urlMatch.groupValues[1]}-${urlMatch.groupValues[2]}-${urlMatch.groupValues[3]}"
                     else ""
                 }
-                writePreCacheLog("patrolSubtitle: [v2.4.93] current episode date=$currentDateStr, only processing episodes after this date")
+                writePreCacheLog("patrolSubtitle:  current episode date=$currentDateStr, only processing episodes after this date")
 
                 // v2.4.92: Fallback — scan episodes directory for cached files NOT in preCacheList.
                 // v2.4.93: Restricted to only files dated >= current episode's date.
@@ -2314,7 +2315,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         "${fileDateMatch.groupValues[1]}-${fileDateMatch.groupValues[2]}-${fileDateMatch.groupValues[3]}"
                     } else ""
                     if (currentDateStr.isNotBlank() && fileDateStr.isNotBlank() && fileDateStr < currentDateStr) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.93] ORPHAN SKIP $cachedName: date $fileDateStr < current $currentDateStr (past episode)")
+                        writePreCacheLog("patrolSubtitle:  ORPHAN SKIP $cachedName: date $fileDateStr < current $currentDateStr (past episode)")
                         continue
                     }
                     // Try to find episode in DB by audio filename
@@ -2323,23 +2324,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Skip if already has complete subtitles
                     val isComplete = try { dbHelper.hasCompleteSubtitles(episodeId) } catch (_: Exception) { false }
                     if (isComplete) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN SKIP $cachedName: subtitles already complete (id=$episodeId)")
+                        writePreCacheLog("patrolSubtitle:  ORPHAN SKIP $cachedName: subtitles already complete (id=$episodeId)")
                         continue
                     }
                     // Skip if noPreprocess or disliked
                     if (settings.isNoPreprocess(episodeId)) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN SKIP $cachedName: noPreprocess (id=$episodeId)")
+                        writePreCacheLog("patrolSubtitle:  ORPHAN SKIP $cachedName: noPreprocess (id=$episodeId)")
                         continue
                     }
                     if (settings.isDisliked(episodeId)) {
-                        writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN SKIP $cachedName: disliked (id=$episodeId)")
+                        writePreCacheLog("patrolSubtitle:  ORPHAN SKIP $cachedName: disliked (id=$episodeId)")
                         continue
                     }
                     // Construct Episode and trigger subtitle generation
                     val stationId = dbEp?.stationId ?: cachedName.substringBefore("_")
                     val episodeTitle = dbEp?.title ?: cachedName.substringBeforeLast(".")
                     val audioUrl = dbEp?.audioUrl ?: "https://placeholder/$cachedName"
-                    writePreCacheLog("patrolSubtitle: [v2.4.92] ORPHAN FOUND: $cachedName (date=$fileDateStr) has no subtitles (id=$episodeId), triggering generation")
+                    writePreCacheLog("patrolSubtitle:  ORPHAN FOUND: $cachedName (date=$fileDateStr) has no subtitles (id=$episodeId), triggering generation")
                     val orphanEp = Episode(
                         id = episodeId,
                         title = episodeTitle,
@@ -2355,11 +2356,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 if (orphanFound) return@launch
 
-                writePreCacheLog("patrolSubtitle: [v2.4.93] no future orphaned files found, all done")
+                writePreCacheLog("patrolSubtitle:  no future orphaned files found, all done")
 
                 // v2.4.82: If there are episodes without audio, trigger pre-cache download
                 if (withoutAudio > 0 && !isPrecaching) {
-                    writePreCacheLog("patrolSubtitle: [v2.4.82] found $withoutAudio episodes without audio, triggering pre-cache download")
+                    writePreCacheLog("patrolSubtitle:  found $withoutAudio episodes without audio, triggering pre-cache download")
                     try {
                         serviceScope.launch { triggerPreCache() }
                     } catch (_: Exception) {}
@@ -2393,7 +2394,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     notifManager.notify(2002, notif)
                 } catch (_: Exception) {}
             } catch (e: Exception) {
-                writePreCacheLog("patrolSubtitle: [v2.4.13] patrol failed: ${e.message}")
+                writePreCacheLog("patrolSubtitle:  patrol failed: ${e.message}")
             }
         }
     }
@@ -2651,7 +2652,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // [v2.1.1] Mutable: will be updated on INFO_OUTPUT_FORMAT_CHANGED
             var actualInSampleRate = sampleRate
             var actualInChannels = channelCount
-            writePreCacheLog("decodeToPcmForPreCache: [v2.0.97] sampleRate=$sampleRate→${outSampleRate}, channels=$channelCount→${outChannels} (resampling to 16kHz mono)")
+            writePreCacheLog("decodeToPcmForPreCache:  sampleRate=$sampleRate→${outSampleRate}, channels=$channelCount→${outChannels} (resampling to 16kHz mono)")
 
             // [v2.0.70] Issue 6 Fix: Seek to 15-min offset to match subtitle service's expected range (15-20 min).
             // Previously decoded from 0 min, but subtitle service adds 15-min offset to timestamps,
@@ -2661,10 +2662,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // [v2.0.72] PCM2 Fix: Seek when duration unknown OR longer than 15min.
                 // Previously didn't seek when durationUs=0 (unknown), causing 0-5min decode instead of 15-20min.
                 extractor.seekTo(seekTargetUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                writePreCacheLog("decodeToPcmForPreCache: [v2.0.72] seeked to 15min offset, duration=${durationUs / 1000000}s")
+                writePreCacheLog("decodeToPcmForPreCache:  seeked to 15min offset, duration=${durationUs / 1000000}s")
                 true
             } else {
-                writePreCacheLog("decodeToPcmForPreCache: [v2.0.72] audio shorter than 15min (${durationUs/1000000}s), decoding from start")
+                writePreCacheLog("decodeToPcmForPreCache:  audio shorter than 15min (${durationUs/1000000}s), decoding from start")
                 false
             }
 
@@ -2714,12 +2715,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     codec.queueInputBuffer(eosIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 }
                                 inputDone = true
-                                writePreCacheLog("decodeToPcmForPreCache: [v2.0.72] reached stop time at ${currentSampleTime / 1000000}s (stopAt=${stopAtUs / 1000000}s)")
+                                writePreCacheLog("decodeToPcmForPreCache:  reached stop time at ${currentSampleTime / 1000000}s (stopAt=${stopAtUs / 1000000}s)")
                             } else if (durationUs > 0 && currentSampleTime >= durationUs) {
                                 // End of actual audio (for short files or when not seeked)
                                 codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 inputDone = true
-                                writePreCacheLog("decodeToPcmForPreCache: [v2.0.72] reached end of audio at ${currentSampleTime / 1000000}s (duration=${durationUs / 1000000}s)")
+                                writePreCacheLog("decodeToPcmForPreCache:  reached end of audio at ${currentSampleTime / 1000000}s (duration=${durationUs / 1000000}s)")
                             } else {
                                 codec.queueInputBuffer(inIdx, 0, sampleSize, currentSampleTime, 0)
                                 extractor.advance()
@@ -2766,9 +2767,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         try {
                             actualInSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                             actualInChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                            writePreCacheLog("decodeToPcmForPreCache: [v2.1.1] FORMAT_CHANGED: sampleRate=$actualInSampleRate, channels=$actualInChannels")
+                            writePreCacheLog("decodeToPcmForPreCache:  FORMAT_CHANGED: sampleRate=$actualInSampleRate, channels=$actualInChannels")
                         } catch (e: Exception) {
-                            writePreCacheLog("decodeToPcmForPreCache: [v2.1.1] FORMAT_CHANGED but failed to read format: ${e.message}")
+                            writePreCacheLog("decodeToPcmForPreCache:  FORMAT_CHANGED but failed to read format: ${e.message}")
                         }
                     }
                     else -> {}
@@ -2924,7 +2925,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun saveCurrentPosition() {
         if (isSeekingToPosition || pendingStartPosition >= 0) {
             // v2.4.37: Log why save is blocked for debugging
-            writeServiceLog("playback", "[v2.4.37] saveCurrentPosition: BLOCKED (isSeekingToPosition=$isSeekingToPosition, pendingStartPosition=$pendingStartPosition)")
+            writeServiceLog("playback", " saveCurrentPosition: BLOCKED (isSeekingToPosition=$isSeekingToPosition, pendingStartPosition=$pendingStartPosition)")
             return
         }
         // v2.4.108: Block saves during episode switching to prevent old position being
@@ -2932,7 +2933,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // cleared in STATE_READY. If the player hasn't reached STATE_READY for the new
         // episode yet, the position is still from the old episode.
         if (episodeSwitching) {
-            writeServiceLog("playback", "[v2.4.108] saveCurrentPosition: BLOCKED (episodeSwitching=true)")
+            writeServiceLog("playback", " saveCurrentPosition: BLOCKED (episodeSwitching=true)")
             return
         }
         // v2.4.36: Reduced from 30000ms to 5000ms - 30s block was too long, causing
@@ -2943,7 +2944,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.137: Extend to 15000ms to match getCurrentPosition switch window and block
         // the stale positions seen at 10-12s after rapid episode switches.
         if (System.currentTimeMillis() - lastPositionRestoreTime < 15000) {
-            writeServiceLog("playback", "[v2.4.137] saveCurrentPosition: BLOCKED (within 15s of restore)")
+            writeServiceLog("playback", " saveCurrentPosition: BLOCKED (within 15s of restore)")
             return
         }
         val ep = currentEpisode ?: return
@@ -2966,7 +2967,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // Now only check if position went backward by more than 5s (impossible in normal
             // playback, indicates stale position from a different episode).
             if (delta < -5000) {
-                writeServiceLog("playback", "[v2.4.121] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms, position went backward, likely stale)")
+                writeServiceLog("playback", " saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms, position went backward, likely stale)")
                 return
             }
             // v2.4.130: Re-introduce forward delta check with TIME-BASED filtering.
@@ -2978,7 +2979,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val elapsedMs = System.currentTimeMillis() - episodeStartTimeMs
             val maxReasonableDelta = elapsedMs + 10000
             if (delta > maxReasonableDelta && episodeStartTimeMs > 0) {
-                writeServiceLog("playback", "[v2.4.130] saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked position)")
+                writeServiceLog("playback", " saveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$expectedStart, delta=${delta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked position)")
                 return
             }
         }
@@ -2990,7 +2991,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.4.31] Fix: use commit() (synchronous) instead of apply() (asynchronous).
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().putLong(episodeKey, pos).commit()
-        writeServiceLog("playback", "[v2.4.63] saveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
+        writeServiceLog("playback", " saveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
     }
 
     // v2.4.86: Clear saved position from BOTH SharedPreferences AND database when episode completes.
@@ -3008,14 +3009,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             dbHelper.deletePlayProgress(episodeKey)
         } catch (e: Exception) {
-            writeServiceLog("playback", "[v2.4.86] clearSavedPosition: DB delete failed: ${e.message}")
+            writeServiceLog("playback", " clearSavedPosition: DB delete failed: ${e.message}")
         }
         // 3. Clear Activity's player_position_cache so replay doesn't jump to stale near-end position
         try {
             getSharedPreferences("player_position_cache", MODE_PRIVATE)
                 .edit().remove("cached_position").remove("cached_episode_id").apply()
         } catch (_: Exception) {}
-        writeServiceLog("playback", "[v2.4.86] clearSavedPosition: cleared all progress for episode=$episodeKey")
+        writeServiceLog("playback", " clearSavedPosition: cleared all progress for episode=$episodeKey")
     }
 
     private fun saveLastEpisode(episode: Episode) {
@@ -3054,13 +3055,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (episodeStartPos > 0 && pos > 0) {
             val delta = pos - episodeStartPos
             if (delta < -5000) {
-                writeServiceLog("playback", "[v2.4.133] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, backward, likely stale)")
+                writeServiceLog("playback", " forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms, backward, likely stale)")
                 return
             }
             val elapsedMs = System.currentTimeMillis() - episodeStartTimeMs
             val maxReasonableDelta = elapsedMs + 10000
             if (delta > maxReasonableDelta && episodeStartTimeMs > 0) {
-                writeServiceLog("playback", "[v2.4.133] forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked)")
+                writeServiceLog("playback", " forceSaveCurrentPosition: REJECTED (pos=$pos vs episodeStartPos=$episodeStartPos, delta=${delta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked)")
                 return
             }
         }
@@ -3068,7 +3069,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (episodeKey.isBlank()) return
         getSharedPreferences("playback_positions", MODE_PRIVATE)
             .edit().putLong(episodeKey, pos).commit()
-        writeServiceLog("playback", "[v2.4.63] forceSaveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
+        writeServiceLog("playback", " forceSaveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
     }
 
     /**
@@ -3088,7 +3089,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             putString("program_name", episode.programName)
             putLong("saved_at", System.currentTimeMillis())
         }.commit()  // v2.4.63: Use commit() for synchronous save
-        writeServiceLog("playback", "[v2.4.63] forceSaveLastEpisode: SAVED episode=${episode.title}, id=${episode.id}")
+        writeServiceLog("playback", " forceSaveLastEpisode: SAVED episode=${episode.title}, id=${episode.id}")
     }
 
     private fun startProgressPolling() {
@@ -3481,7 +3482,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
              // triggers isPastEnd → clearSavedPosition → autoPlayNextEpisode with wrong startPos.
              val withinEpisodeSwitchWindow = System.currentTimeMillis() - lastPositionRestoreTime < 10000
             if (isPastEnd && !withinEpisodeSwitchWindow && !episodeSwitching) {
-                writeServiceLog("notification", "[v2.4.86] PAST-END: pos=$pos > dur=$dur, clearing progress and triggering autoPlayNextEpisode")
+                writeServiceLog("notification", " PAST-END: pos=$pos > dur=$dur, clearing progress and triggering autoPlayNextEpisode")
                 // v2.4.86: Clear saved progress BEFORE switching to next episode
                 // so the completed episode can be replayed from the beginning
                 clearSavedPosition()
@@ -3504,13 +3505,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (stuckAtEndSince == 0L) {
                     stuckAtEndSince = System.currentTimeMillis()
                     stuckAtEndPos = pos
-                    writeServiceLog("notification", "[v2.4.6] STUCK-AT-END detected: pos=$pos, dur=$dur, distToEnd=${distToEnd}ms, starting 5s timer")
+                    writeServiceLog("notification", " STUCK-AT-END detected: pos=$pos, dur=$dur, distToEnd=${distToEnd}ms, starting 5s timer")
                 } else if (pos == stuckAtEndPos) {
                     // Position hasn't changed since we first detected near-end
                     val stuckDuration = System.currentTimeMillis() - stuckAtEndSince
                     // v2.4.84: Reduced from 15s to 5s - user sees progress bar at 100% for too long
                     if (stuckDuration >= 5000) {
-                        writeServiceLog("notification", "[v2.4.86] STUCK-AT-END CONFIRMED: pos=$pos unchanged for ${stuckDuration}ms, clearing progress and triggering autoPlayNextEpisode")
+                        writeServiceLog("notification", " STUCK-AT-END CONFIRMED: pos=$pos unchanged for ${stuckDuration}ms, clearing progress and triggering autoPlayNextEpisode")
                         // v2.4.86: Clear saved progress BEFORE switching to next episode
                         clearSavedPosition()
                         stuckAtEndSince = 0L
@@ -3529,7 +3530,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                         return
                     } else {
-                        writeServiceLog("notification", "[v2.4.6] STUCK-AT-END waiting: pos=$pos unchanged for ${stuckDuration}ms (need 5000ms)")
+                        writeServiceLog("notification", " STUCK-AT-END waiting: pos=$pos unchanged for ${stuckDuration}ms (need 5000ms)")
                     }
                 } else {
                     // Position changed (advanced slightly), reset timer
@@ -3539,7 +3540,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } else {
                 // Not near end, reset
                 if (stuckAtEndSince != 0L) {
-                    writeServiceLog("notification", "[v2.4.6] STUCK-AT-END cancelled: pos=$pos moved away from end (distToEnd=${distToEnd}ms)")
+                    writeServiceLog("notification", " STUCK-AT-END cancelled: pos=$pos moved away from end (distToEnd=${distToEnd}ms)")
                     stuckAtEndSince = 0L
                     stuckAtEndPos = 0L
                 }
@@ -4043,14 +4044,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.74] Issue 6/7 Fix: Only resume for TRANSIENT loss, not PERMANENT.
         // Permanent loss (Pinduoduo video) requires user to manually press play.
         if (pendingAudioFocusResume && pausedByAudioFocus && !userPaused && audioFocusLossType == FOCUS_LOSS_TRANSIENT) {
-            writeServiceLog("audiofocus", "[v2.0.74] debounce: executing delayed resume after TRANSIENT loss")
+            writeServiceLog("audiofocus", " debounce: executing delayed resume after TRANSIENT loss")
             pendingAudioFocusResume = false
             pausedByAudioFocus = false
             audioFocusLossType = FOCUS_LOSS_NONE
             player?.volume = 1.0f
             play()
         } else {
-            writeServiceLog("audiofocus", "[v2.0.74] debounce: NOT resuming (pending=$pendingAudioFocusResume, pausedByAF=$pausedByAudioFocus, userPaused=$userPaused, lossType=$audioFocusLossType)")
+            writeServiceLog("audiofocus", " debounce: NOT resuming (pending=$pendingAudioFocusResume, pausedByAF=$pausedByAudioFocus, userPaused=$userPaused, lossType=$audioFocusLossType)")
             pendingAudioFocusResume = false
             // If ducked, restore volume
             if (audioFocusLossType == FOCUS_LOSS_DUCK) {
@@ -4065,7 +4066,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val now = System.currentTimeMillis()
         val timeSinceLastChange = now - lastAudioFocusChangeTime
         lastAudioFocusChangeTime = now
-        writeServiceLog("audiofocus", "[v2.0.74] onAudioFocusChange: $focusChange (${focusChangeToString(focusChange)}), timeSinceLast=${timeSinceLastChange}ms, userPaused=$userPaused, pausedByAudioFocus=$pausedByAudioFocus, lossType=$audioFocusLossType, isPlaying=${player?.isPlaying}, playbackStarted=$playbackStarted")
+        writeServiceLog("audiofocus", " onAudioFocusChange: $focusChange (${focusChangeToString(focusChange)}), timeSinceLast=${timeSinceLastChange}ms, userPaused=$userPaused, pausedByAudioFocus=$pausedByAudioFocus, lossType=$audioFocusLossType, isPlaying=${player?.isPlaying}, playbackStarted=$playbackStarted")
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 // Cancel any pending debounced resume and probing
@@ -4080,7 +4081,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     FOCUS_LOSS_DUCK -> {
                         // Ducking: just restore volume, no resume needed (we never paused)
                         player?.volume = 1.0f
-                        writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_GAIN: restoring volume from duck, NOT resuming (was just ducked)")
+                        writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: restoring volume from duck, NOT resuming (was just ducked)")
                         pausedByAudioFocus = false
                         audioFocusLossType = FOCUS_LOSS_NONE
                         pendingAudioFocusResume = false
@@ -4092,14 +4093,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         // If GAIN arrives within 60s, resume. After 60s, give up and require manual play.
                         player?.volume = 1.0f
                         if (pausedByAudioFocus && !userPaused) {
-                            writeServiceLog("audiofocus", "[v2.0.75] AUDIOFOCUS_GAIN: PERMANENT loss ended within 60s, auto-resuming (app like Pinduoduo used permanent focus incorrectly)")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: PERMANENT loss ended within 60s, auto-resuming (app like Pinduoduo used permanent focus incorrectly)")
                             pausedByAudioFocus = false
                             audioFocusLossType = FOCUS_LOSS_NONE
                             audioFocusHandler.removeCallbacks(permanentLossRecoveryRunnable)
                             smartResumeRunning = false; audioFocusHandler.removeCallbacks(smartResumeRunnable)
                             play()
                         } else {
-                            writeServiceLog("audiofocus", "[v2.0.75] AUDIOFOCUS_GAIN: PERMANENT loss ended but not resuming (pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: PERMANENT loss ended but not resuming (pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
                             audioFocusLossType = FOCUS_LOSS_NONE
                             pausedByAudioFocus = false
                         }
@@ -4110,9 +4111,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         if (pausedByAudioFocus && !userPaused) {
                             pendingAudioFocusResume = true
                             audioFocusHandler.postDelayed(audioFocusResumeRunnable, 300)
-                            writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_GAIN: scheduling debounced resume in 300ms (TRANSIENT loss)")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: scheduling debounced resume in 300ms (TRANSIENT loss)")
                         } else {
-                            writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_GAIN: TRANSIENT loss ended but not resuming (pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: TRANSIENT loss ended but not resuming (pausedByAF=$pausedByAudioFocus, userPaused=$userPaused)")
                             audioFocusLossType = FOCUS_LOSS_NONE
                         }
                         return
@@ -4121,12 +4122,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         // No recorded loss: check if we're playing and restore volume
                         player?.volume = 1.0f
                         if (player?.isPlaying == true && !userPaused) {
-                            writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_GAIN: already playing, restoring volume")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: already playing, restoring volume")
                         } else if (!userPaused && !playbackInitializing && playbackStarted) {
-                            writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_GAIN: no loss recorded but not playing, attempting resume")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: no loss recorded but not playing, attempting resume")
                             play()
                         } else {
-                            writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_GAIN: no action needed (userPaused=$userPaused, initializing=$playbackInitializing)")
+                            writeServiceLog("audiofocus", " AUDIOFOCUS_GAIN: no action needed (userPaused=$userPaused, initializing=$playbackInitializing)")
                         }
                     }
                 }
@@ -4147,7 +4148,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val settings = AppSettings.getInstance(this@RadioPlaybackService)
                         smartResumePollMs = settings.pinduoduoDetectionInterval.toLong() * 1000
                     } catch (_: Exception) { smartResumePollMs = 5000L }
-                    writeServiceLog("audiofocus", "[v2.1.2] AUDIOFOCUS_LOSS (PERMANENT): pausing, starting smart resume polling every ${smartResumePollMs/1000}s")
+                    writeServiceLog("audiofocus", " AUDIOFOCUS_LOSS (PERMANENT): pausing, starting smart resume polling every ${smartResumePollMs/1000}s")
                     pause(userInitiated = false)
                     // [v2.0.88] Issue 3 Fix: Start smart resume polling.
                     // Instead of waiting passively for GAIN, actively check if other
@@ -4155,7 +4156,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     smartResumeRunning = true
                     audioFocusHandler.postDelayed(smartResumeRunnable, smartResumePollMs)
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.77] AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
+                    writeServiceLog("audiofocus", " AUDIOFOCUS_LOSS (PERMANENT): not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
@@ -4167,14 +4168,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 audioFocusLossType = FOCUS_LOSS_TRANSIENT
                 if (!userPaused && playbackStarted && player?.isPlaying == true) {
                     pausedByAudioFocus = true
-                    writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_LOSS_TRANSIENT: pausing for transient interruption (navigation/call), will auto-resume")
+                    writeServiceLog("audiofocus", " AUDIOFOCUS_LOSS_TRANSIENT: pausing for transient interruption (navigation/call), will auto-resume")
                     pause(userInitiated = false)
                 } else if (!userPaused && playbackStarted) {
                     // Player is buffering or preparing, mark flag but don't force pause
                     pausedByAudioFocus = true
-                    writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_LOSS_TRANSIENT: player not playing (buffering?), marking flag for resume")
+                    writeServiceLog("audiofocus", " AUDIOFOCUS_LOSS_TRANSIENT: player not playing (buffering?), marking flag for resume")
                 } else {
-                    writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_LOSS_TRANSIENT: not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
+                    writeServiceLog("audiofocus", " AUDIOFOCUS_LOSS_TRANSIENT: not pausing (userPaused=$userPaused, playbackStarted=$playbackStarted)")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
@@ -4186,7 +4187,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 pendingAudioFocusResume = false
                 audioFocusLossType = FOCUS_LOSS_DUCK
                 player?.volume = 0.2f
-                writeServiceLog("audiofocus", "[v2.0.74] AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK: ducking volume to 20% (no pause, will restore on GAIN)")
+                writeServiceLog("audiofocus", " AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK: ducking volume to 20% (no pause, will restore on GAIN)")
             }
         }
     }
@@ -4267,10 +4268,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (!cached.audioUrl.isNullOrBlank() && episode.audioUrl.isNullOrBlank()) {
                 merged.audioUrl = cached.audioUrl
             }
-            writeServiceLog("notification", "[v2.4.148] enrichEpisodeFromDb: episode=${episode.id}, filledTitle=${!hasTitle && !merged.title.isNullOrBlank()}, filledBroadcast=${!hasBroadcastAt && !merged.broadcastAt.isNullOrBlank()}, filledTimeRange=${!hasTimeRange && merged.startTime > 0 && merged.endTime > 0}")
+            writeServiceLog("notification", " enrichEpisodeFromDb: episode=${episode.id}, filledTitle=${!hasTitle && !merged.title.isNullOrBlank()}, filledBroadcast=${!hasBroadcastAt && !merged.broadcastAt.isNullOrBlank()}, filledTimeRange=${!hasTimeRange && merged.startTime > 0 && merged.endTime > 0}")
             return merged
         } catch (e: Exception) {
-            writeServiceLog("notification", "[v2.4.148] enrichEpisodeFromDb failed: ${e.message}")
+            writeServiceLog("notification", " enrichEpisodeFromDb failed: ${e.message}")
             return episode
         }
     }
@@ -4303,16 +4304,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val elapsedMs = System.currentTimeMillis() - episodeStartTimeMs
                 val maxReasonableDelta = elapsedMs + 10000  // 10s buffer
                 if (staleDelta < -5000) {
-                    writeServiceLog("playback", "[v2.4.121] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms, position went backward) for oldEpId=${oldEp.id}")
+                    writeServiceLog("playback", " playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms, position went backward) for oldEpId=${oldEp.id}")
                 } else if (staleDelta > maxReasonableDelta && episodeStartTimeMs > 0) {
                     // v2.4.129: Position is impossibly far ahead of start position.
                     // This is leaked from the previous episode — don't save it.
-                    writeServiceLog("playback", "[v2.4.129] playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked position) for oldEpId=${oldEp.id}")
+                    writeServiceLog("playback", " playEpisode: force-saved REJECTED (oldPos=$oldPos vs episodeStartPos=$episodeStartPos, delta=${staleDelta}ms > maxReasonable=${maxReasonableDelta}ms, elapsed=${elapsedMs}ms, likely leaked position) for oldEpId=${oldEp.id}")
                     // Keep existing saved position — don't overwrite with leaked value
                 } else {
                     getSharedPreferences("playback_positions", MODE_PRIVATE)
                         .edit().putLong(oldEp.id!!, oldPos).commit()
-                    writeServiceLog("playback", "[v2.4.106] playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
+                    writeServiceLog("playback", " playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
                 }
             }
             // v2.4.108: episodeSwitching flag (set above) now blocks saveCurrentPosition
@@ -4335,16 +4336,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // No start position specified by caller — load from saved
                 if (newEpSavedPos > 0) {
                     startPositionMs = newEpSavedPos
-                    writeServiceLog("playback", "[v2.4.133] playEpisode: loaded savedPos=$newEpSavedPos for $epIdForCheck from SharedPreferences")
+                    writeServiceLog("playback", " playEpisode: loaded savedPos=$newEpSavedPos for $epIdForCheck from SharedPreferences")
                 } else {
-                    writeServiceLog("playback", "[v2.4.133] playEpisode: no savedPos for $epIdForCheck, starting from 0")
+                    writeServiceLog("playback", " playEpisode: no savedPos for $epIdForCheck, starting from 0")
                 }
             } else if (startPositionMs > 30000 && newEpSavedPos > 0) {
                 // Caller specified a start position > 30s. Verify it matches saved position.
                 // If difference > 5min, it's likely an old episode position leaking through.
                 val delta = startPositionMs - newEpSavedPos
                 if (delta > 300000) {
-                    writeServiceLog("playback", "[v2.4.133] playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min), using savedPos=$newEpSavedPos instead")
+                    writeServiceLog("playback", " playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min), using savedPos=$newEpSavedPos instead")
                     startPositionMs = newEpSavedPos
                 }
             }
@@ -4373,8 +4374,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         firstBackwardSkipWindowStart = now
         val epId = episode.id ?: ""
         if (epId == lastPlayEpisodeEpisodeId && now - lastPlayEpisodeTime < 500) {
-            Log.d(TAG, "playEpisode: [v2.0.73] debounced duplicate call for $epTitle (${now - lastPlayEpisodeTime}ms ago), skipping")
-            writeServiceLog("playback", "playEpisode: [v2.0.73] DEBOUNCED duplicate for $epId")
+            Log.d(TAG, "playEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] debounced duplicate call for $epTitle (${now - lastPlayEpisodeTime}ms ago), skipping")
+            writeServiceLog("playback", "playEpisode:  DEBOUNCED duplicate for $epId")
             return
         }
         lastPlayEpisodeEpisodeId = epId
@@ -4481,7 +4482,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.144: Prefer locally cached audio file for playback if available.
         val localCacheFile = getLocalCacheFile(currentStreamUrl)
         currentPlaybackUri = if (localCacheFile != null) {
-            writeServiceLog("playback", "[v2.4.144] playEpisode: using local cache ${localCacheFile.absolutePath} (${localCacheFile.length()} bytes)")
+            writeServiceLog("playback", " playEpisode: using local cache ${localCacheFile.absolutePath} (${localCacheFile.length()} bytes)")
             Uri.fromFile(localCacheFile).toString()
         } else {
             currentStreamUrl
@@ -4607,7 +4608,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Additionally, isPastEnd check fires (old pos > new dur) → clearSavedPosition
                     // → autoPlayNextEpisode with wrong startPos. The 5-second block prevents both.
                     lastPositionRestoreTime = System.currentTimeMillis()
-                    writeServiceLog("playback", "[v2.4.108] playEpisode: setMediaItem+startPos($startPositionMs), prepared")
+                    writeServiceLog("playback", " playEpisode: setMediaItem+startPos($startPositionMs), prepared")
                 } else {
                     it.playWhenReady = true
                     it.setMediaItem(MediaItem.fromUri(currentPlaybackUri))
@@ -4652,16 +4653,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // [v2.3.5] If player is null (was released after error), recreate it and resume current episode
         if (player == null) {
-            writeServiceLog("playback", "[v2.3.5] play(): player is null, attempting recovery")
+            writeServiceLog("playback", " play(): player is null, attempting recovery")
             // Reset error state so we can retry
             errorRetryCount = 0
             isRetrying = false
             if (currentEpisode != null && currentStreamUrl.isNotEmpty()) {
-                writeServiceLog("playback", "[v2.3.5] play(): recovering with current episode at pos=${authoritativePosition}ms")
+                writeServiceLog("playback", " play(): recovering with current episode at pos=${authoritativePosition}ms")
                 playEpisode(currentEpisode!!, isLive, authoritativePosition.coerceAtLeast(0L))
                 return
             } else {
-                writeServiceLog("playback", "[v2.3.5] play(): no current episode to recover, callback onError")
+                writeServiceLog("playback", " play(): no current episode to recover, callback onError")
                 try { callback?.onError("播放器已重置，请重新选择节目") } catch (_: Exception) {}
                 return
             }
@@ -4672,7 +4673,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // This was the root cause of "notification stuck at 100% progress, pause/play doesn't fix it".
         val playerState = player?.playbackState ?: Player.STATE_IDLE
         if (playerState == Player.STATE_ENDED) {
-            writeServiceLog("playback", "[v2.0.87] play(): player in STATE_ENDED, seeking to 0 before play")
+            writeServiceLog("playback", " play(): player in STATE_ENDED, seeking to 0 before play")
             player?.seekTo(0)
             authoritativePosition = 0L
             maxKnownPosition = 0L
@@ -4687,7 +4688,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             prepared = true
         }
         // [v2.0.76] Issue 6 Fix: Immediately update MediaSession to STATE_PLAYING
-        writeServiceLog("notification", "[v2.0.87] play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
+        writeServiceLog("notification", " play() called, userPaused=false, updating MediaSession to STATE_PLAYING")
         forceNotificationUpdate = true
         // v2.4.117: removed lastNotificationContentHash=0 — force flag is sufficient
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
@@ -4749,7 +4750,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         focusRecoveryAttempts = 0
         player?.pause()
         // [v2.0.78] Issue 5/6 Fix: Immediately update MediaSession PlaybackState to STATE_PAUSED
-        writeServiceLog("notification", "[v2.0.78] pause(userInitiated=$userInitiated) called, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, updating MediaSession to STATE_PAUSED")
+        writeServiceLog("notification", " pause(userInitiated=$userInitiated) called, userPaused=$userPaused, pausedByAF=$pausedByAudioFocus, updating MediaSession to STATE_PAUSED")
         forceNotificationUpdate = true
         // v2.4.117: removed lastNotificationContentHash=0 — force flag is sufficient
         mediaSession?.setPlaybackState(PlaybackStateCompat.Builder()
@@ -4810,7 +4811,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // that override the correct start position. Since the start position is
         // already set, any seekTo during this window is unnecessary and harmful.
         if (episodeSwitching) {
-            writeServiceLog("playback", "[v2.4.110] seekTo($pos) BLOCKED (episodeSwitching=true, start pos already set via setMediaItem)")
+            writeServiceLog("playback", " seekTo($pos) BLOCKED (episodeSwitching=true, start pos already set via setMediaItem)")
             return
         }
         val now = System.currentTimeMillis()
@@ -4823,11 +4824,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val dupSamePos = (pos == lastSeekTargetPos) && (now - lastSeekCallTime < 500L)
         val rateLimited = (now - lastSeekCallTime < 200L) && lastSeekCallTime > 0
         if (dupSamePos) {
-            writeServiceLog("playback", "[v2.1.7] seekTo: DROPPED duplicate seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
+            writeServiceLog("playback", " seekTo: DROPPED duplicate seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
             return
         }
         if (rateLimited) {
-            writeServiceLog("playback", "[v2.1.7] seekTo: DROPPED rate-limited seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
+            writeServiceLog("playback", " seekTo: DROPPED rate-limited seek to $pos (lastSeek was ${now - lastSeekCallTime}ms ago)")
             return
         }
         lastSeekCallTime = now
@@ -4854,7 +4855,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         if (prepared && player != null) {
             player?.seekTo(pos)
-            writeServiceLog("playback", "[v2.0.77] seekTo: immediate seek to $pos (prepared=true)")
+            writeServiceLog("playback", " seekTo: immediate seek to $pos (prepared=true)")
             // [v2.4.6] Save position immediately after seek to prevent loss on crash.
             // Previously position was only saved periodically while playing.
             // If the app crashes (e.g., Whisper OOM), the last seek position would be lost.
@@ -4865,14 +4866,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (episodeKey.isNotBlank()) {
                     getSharedPreferences("playback_positions", MODE_PRIVATE)
                         .edit().putLong(episodeKey, pos).commit()  // commit() = synchronous write
-                    writeServiceLog("playback", "[v2.4.63] seekTo: saved position=$pos for episodeId=$episodeKey")
+                    writeServiceLog("playback", " seekTo: saved position=$pos for episodeId=$episodeKey")
                 }
             }
         } else {
             // Player not ready - store seek and apply when STATE_READY fires
             pendingStartPosition = pos
             positionRestoreRequested = true
-            writeServiceLog("playback", "[v2.0.77] seekTo: queued seek to $pos (prepared=$prepared, will apply on STATE_READY)")
+            writeServiceLog("playback", " seekTo: queued seek to $pos (prepared=$prepared, will apply on STATE_READY)")
         }
     }
     fun skipForward() {
@@ -4885,7 +4886,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         if (inBlackout || inBreaker) {
             // v2.4.35: Log but still allow - the blackout was blocking ALL user skips
-            writeServiceLog("playback", "[v2.4.35] skipForward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
+            writeServiceLog("playback", " skipForward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
         }
 
         // [v2.4.44] REMOVED post-breaker cooldown for skipForward.
@@ -4894,12 +4895,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.86] After protection window: only basic checks, no rate limiting
         // Episode-change cooldown
         if (lastEpisodeStartTime > 0 && now - lastEpisodeStartTime < EPISODE_CHANGE_SKIP_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.0.86] skipForward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms)")
+            writeServiceLog("playback", " skipForward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms)")
             return
         }
         // Debounce: 500ms to prevent double-tap
         if (now - lastSkipDirectionTime < SKIP_DEBOUNCE_MS && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.86] skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
+            writeServiceLog("playback", " skipForward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }
         lastSkipDirectionTime = now
@@ -4910,7 +4911,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val d = it.duration; if (d < 100000) d * 1000 else d
         } ?: 0
         val targetPos = if (dur > 0 && pPos > dur) dur else pPos
-        writeServiceLog("playback", "[v2.0.91] skipForward: curPos=$curPos -> targetPos=$targetPos")
+        writeServiceLog("playback", " skipForward: curPos=$curPos -> targetPos=$targetPos")
         // [v2.0.91] Reset backward skip counter when user skips forward (active user control)
         consecutiveBackwardSkips = 0
         firstBackwardSkipWindowStart = now
@@ -4928,7 +4929,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (inBlackout || inBreaker) {
             // v2.4.35: Log but still allow - the blackout was blocking ALL user skips
             // for 5 seconds after switching back to app, making buttons appear "unavailable"
-            writeServiceLog("playback", "[v2.4.35] skipBackward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
+            writeServiceLog("playback", " skipBackward: would be blocked by ${if (inBlackout) "blackout" else "breaker"}, but ALLOWING (user-initiated)")
         }
 
         // [v2.4.44] REMOVED post-breaker cooldown for skipBackward.
@@ -4936,7 +4937,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // Episode-change cooldown
         if (lastEpisodeStartTime > 0 && now - lastEpisodeStartTime < EPISODE_CHANGE_SKIP_COOLDOWN_MS) {
-            writeServiceLog("playback", "[v2.0.91] skipBackward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms)")
+            writeServiceLog("playback", " skipBackward: BLOCKED by episode-change cooldown (${now - lastEpisodeStartTime}ms)")
             return
         }
 
@@ -4951,7 +4952,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.4.36] Reduced debounce from 1000ms to 200ms - 1000ms was dropping too many
         // legitimate user skip requests. UI already has 500ms debounce.
         if (now - lastSkipDirectionTime < 200L && lastSkipDirectionTime > 0) {
-            writeServiceLog("playback", "[v2.0.91] skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
+            writeServiceLog("playback", " skipBackward: DROPPED (debounced, ${now - lastSkipDirectionTime}ms)")
             return
         }
 
@@ -4961,14 +4962,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // Low-position dedup
         if (targetPos == 0L) {
             if (now - lastSeekToZeroTime < LOW_POSITION_SKIP_DEDUP_MS && lastSeekToZeroTime > 0) {
-                writeServiceLog("playback", "[v2.0.91] skipBackward: DROPPED low-pos dedup (targetPos=0, ${now - lastSeekToZeroTime}ms since last seekTo(0))")
+                writeServiceLog("playback", " skipBackward: DROPPED low-pos dedup (targetPos=0, ${now - lastSeekToZeroTime}ms since last seekTo(0))")
                 return
             }
             lastSeekToZeroTime = now
         }
 
         lastSkipDirectionTime = now
-        writeServiceLog("playback", "[v2.0.91] skipBackward: curPos=$curPos -> targetPos=$targetPos (consecutive=$consecutiveBackwardSkips)")
+        writeServiceLog("playback", " skipBackward: curPos=$curPos -> targetPos=$targetPos (consecutive=$consecutiveBackwardSkips)")
         seekTo(targetPos)
     }
     fun isPlaying(): Boolean = player?.isPlaying ?: false
@@ -5008,7 +5009,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         maxKnownPosition = rawPos
                     }
                 } else {
-                    writeServiceLog("playback", "[v2.4.137] getCurrentPosition: rawPos=$rawPos far from seekTarget=$seekTargetPosition, keeping seeking state")
+                    writeServiceLog("playback", " getCurrentPosition: rawPos=$rawPos far from seekTarget=$seekTargetPosition, keeping seeking state")
                     return maxOf(authoritativePosition, seekTargetPosition)
                 }
             }
@@ -5043,7 +5044,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (prepared && rawPos > authoritativePosition && !isWithinSwitchWindow) {
             safeUpdatePosition(rawPos)
         } else if (prepared && rawPos > authoritativePosition && isWithinSwitchWindow) {
-            writeServiceLog("playback", "[v2.4.136] getCurrentPosition: ignoring rawPos=$rawPos during switch window (authPos=$authoritativePosition, elapsed=${System.currentTimeMillis() - lastPositionRestoreTime}ms)")
+            writeServiceLog("playback", " getCurrentPosition: ignoring rawPos=$rawPos during switch window (authPos=$authoritativePosition, elapsed=${System.currentTimeMillis() - lastPositionRestoreTime}ms)")
         }
         // Also maintain maxKnownPosition for backward compatibility
         if (rawPos > maxKnownPosition && prepared) {
@@ -5927,7 +5928,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         inPostResumeProtection = true
         consecutiveBackwardSkips = 0
         firstBackwardSkipWindowStart = now
-        writeServiceLog("playback", "[v2.0.91] onBind: client connected, starting post-resume blackout for ${POST_RESUME_BLACKOUT_MS}ms")
+        writeServiceLog("playback", " onBind: client connected, starting post-resume blackout for ${POST_RESUME_BLACKOUT_MS}ms")
         audioFocusHandler.postDelayed({
             inPostResumeProtection = false
             skipRequestCount = 0
@@ -5946,7 +5947,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         inPostResumeProtection = true
         consecutiveBackwardSkips = 0
         firstBackwardSkipWindowStart = now
-        writeServiceLog("playback", "[v2.0.91] onRebind: client reconnected, starting post-resume blackout for ${POST_RESUME_BLACKOUT_MS}ms")
+        writeServiceLog("playback", " onRebind: client reconnected, starting post-resume blackout for ${POST_RESUME_BLACKOUT_MS}ms")
         audioFocusHandler.postDelayed({
             inPostResumeProtection = false
             skipRequestCount = 0

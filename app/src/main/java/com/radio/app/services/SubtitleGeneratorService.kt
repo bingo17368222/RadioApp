@@ -206,7 +206,7 @@ class SubtitleGeneratorService : Service() {
         try {
             if (SUBTITLE_BUSY_FLAG.exists()) {
                 val flagAge = System.currentTimeMillis() - SUBTITLE_BUSY_FLAG.lastModified()
-                logToFile("onCreate: [v2.4.17] found stale subtitle busy flag (age=${flagAge}ms), deleting")
+                logToFile("onCreate: [${com.radio.app.RadioApplication.appVersionTag()}] found stale subtitle busy flag (age=${flagAge}ms), deleting")
                 SUBTITLE_BUSY_FLAG.delete()
             }
         } catch (_: Exception) {}
@@ -218,7 +218,7 @@ class SubtitleGeneratorService : Service() {
             if (nativeCrashFile.exists()) {
                 val crashContent = nativeCrashFile.readText()
                 if (crashContent.contains("CRASH signal=") || crashContent.contains("PRE-CRASH MARKER")) {
-                    logToFile("[v2.0.43] onCreate: DETECTED WHISPER CRASH from previous run: $crashContent")
+                    logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] onCreate: DETECTED WHISPER CRASH from previous run: $crashContent")
                     // Copy to external logs directory for user export
                     val extCrashDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "crash")
                     if (!extCrashDir.exists()) extCrashDir.mkdirs()
@@ -236,12 +236,12 @@ class SubtitleGeneratorService : Service() {
                     crashPrefs.edit().putString("last_crash_episode_id", lastEpisodeIdForCrashTracking ?: "").commit()
                     settings.save(this)
                     val trackedEpisodeId = crashPrefs.getString("last_crash_episode_id", "")
-                    logToFile("[v2.3.1] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount}, episode=$trackedEpisodeId)")
+                    logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] onCreate: Whisper crash detected (crashCount=${settings.whisperCrashCount}, episode=$trackedEpisodeId)")
                     // [v2.3.1] Per user requirement: NO auto-switching to other models on failure.
                     // Previously we auto-switched to Vosk after 2 Whisper crashes, but the user
                     // explicitly requested that subtitle generation failure should NOT trigger
                     // model switching. User must manually change ASR engine in Settings.
-                    logToFile("[v2.3.1] STRICT mode: NOT auto-switching to Vosk after Whisper crash (user preference)")
+                    logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] STRICT mode: NOT auto-switching to Vosk after Whisper crash (user preference)")
                     // v2.4.66: Send error broadcast so PlayerActivity can show Toast to user
                     sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                         "episodeId" to "",
@@ -284,7 +284,7 @@ class SubtitleGeneratorService : Service() {
             val lastEngine = restartPrefs.getString("lastEngine", null)
             val now = System.currentTimeMillis()
             if (lastEpisodeId != null && now - lastStartTime < 60000) {
-                logToFile("onCreate: [v2.0.77] Detected rapid restart for episode=$lastEpisodeId (${now - lastStartTime}ms ago), likely OOM kill. Engine=$lastEngine")
+                logToFile("onCreate: [${com.radio.app.RadioApplication.appVersionTag()}] Detected rapid restart for episode=$lastEpisodeId (${now - lastStartTime}ms ago), likely OOM kill. Engine=$lastEngine")
                 // [v2.0.77] Issue 2 Fix: Mark OOM with timestamp, not a permanent boolean.
                 // v2.0.76 used a permanent boolean which blocked all future Whisper attempts
                 // even after the user manually selected Whisper again. Use a timestamp so
@@ -296,7 +296,7 @@ class SubtitleGeneratorService : Service() {
                         .putLong("whisper_oom_time", now)
                         .putBoolean("whisper_oom_killed", true)
                         .apply()
-                    logToFile("onCreate: [v2.0.77] Recorded Whisper OOM at $now (cooldown 10min)")
+                    logToFile("onCreate: [${com.radio.app.RadioApplication.appVersionTag()}] Recorded Whisper OOM at $now (cooldown 10min)")
                 }
                 // [v2.0.93] Fix: Use engine-specific error message instead of hardcoded Whisper.
                 // Previously, Vosk OOM crashes also showed "Whisper引擎已进入10分钟冷却期" which was misleading.
@@ -341,7 +341,7 @@ class SubtitleGeneratorService : Service() {
                 val whisperDir = intent.getStringExtra("whisper_model_dir") ?: ""  // [v2.2.9]
                 // [v2.2.9] Reset forceVosk when Whisper is explicitly selected (user wants to retry)
                 val resetForceVosk = provider == "whisper-local"
-                logToFile("[v2.2.9] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir, whisperDir=$whisperDir, resetForceVosk=$resetForceVosk")
+                logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Received ASR_PROVIDER_CHANGED broadcast: provider=$provider, voskDir=$voskDir, whisperDir=$whisperDir, resetForceVosk=$resetForceVosk")
                 val settings = AppSettings.getInstance(context)
                 settings.asrProvider = provider
                 settings.voskModelDir = voskDir
@@ -363,7 +363,7 @@ class SubtitleGeneratorService : Service() {
                         .putInt("whisper_crash_count", if (resetForceVosk) 0 else settings.whisperCrashCount)
                         .commit()  // [v2.4.0] Use commit() for synchronous write across processes
                 } catch (_: Exception) {}
-                logToFile("[v2.2.9] ASR settings updated via broadcast + persisted to prefs: provider=${settings.safeAsrProvider()}, whisperDir=${settings.whisperModelDir}")
+                logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] ASR settings updated via broadcast + persisted to prefs: provider=${settings.safeAsrProvider()}, whisperDir=${settings.whisperModelDir}")
 
                 // [v2.1.2] Cancel current running task so the new ASR engine takes effect immediately.
                 // Previously, the running task would continue with the old engine until it finished.
@@ -373,7 +373,7 @@ class SubtitleGeneratorService : Service() {
                     var cancelled = 0
                     cancelledTasks.forEach { it.cancelled.set(true); cancelled++ }
                     if (cancelled > 0) {
-                        logToFile("[v2.1.6] Cancelled $cancelled active subtitle task(s) due to ASR provider change")
+                        logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Cancelled $cancelled active subtitle task(s) due to ASR provider change")
                     }
                     // [v2.3.9] Remove from activeTasks and re-generate with new engine
                     activeTasks.clear()
@@ -382,27 +382,27 @@ class SubtitleGeneratorService : Service() {
                     // Re-generate each cancelled task with the new ASR engine
                     cancelledTasks.forEach { oldCtx ->
                         if (oldCtx.audioUrl.isNotEmpty()) {
-                            logToFile("[v2.3.9] Re-generating subtitle for ${oldCtx.episodeId} with new ASR engine")
+                            logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Re-generating subtitle for ${oldCtx.episodeId} with new ASR engine")
                             // Use a minimal callback — the real callback was already consumed
                             val dummyCallback = object : SubtitleCallback {
                                 override fun onSubtitleGenerated(transcript: Transcript) {}
                                 override fun onProgressUpdate(progress: Int, total: Int) {}
                                 override fun onComplete(transcripts: List<Transcript>) {
-                                    logToFile("[v2.3.9] Re-generation complete for ${oldCtx.episodeId}: ${transcripts.size} transcripts")
+                                    logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Re-generation complete for ${oldCtx.episodeId}: ${transcripts.size} transcripts")
                                 }
                                 override fun onError(error: String) {
-                                    logToFile("[v2.3.9] Re-generation failed for ${oldCtx.episodeId}: $error")
+                                    logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Re-generation failed for ${oldCtx.episodeId}: $error")
                                 }
                             }
                             try {
                                 generateSubtitlesForEpisode(oldCtx.episodeId, oldCtx.audioUrl, dummyCallback)
                             } catch (e: Exception) {
-                                logToFile("[v2.3.9] Re-generation exception for ${oldCtx.episodeId}: ${e.message}")
+                                logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Re-generation exception for ${oldCtx.episodeId}: ${e.message}")
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    logToFile("[v2.1.2] Failed to cancel/restart task: ${e.message}")
+                    logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] Failed to cancel/restart task: ${e.message}")
                 }
             }
         }, android.content.IntentFilter("com.radio.app.ASR_PROVIDER_CHANGED"))
@@ -496,9 +496,9 @@ class SubtitleGeneratorService : Service() {
         // Save episode info to DB first
         try {
             dbHelper?.saveEpisodeInfo(episode)
-            logToFile("generateSubtitlesForEpisode: [v2.2.4] saved episode_info to DB, id=${episode.id}, title=${episode.title}")
+            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] saved episode_info to DB, id=${episode.id}, title=${episode.title}")
         } catch (e: Exception) {
-            logToFile("generateSubtitlesForEpisode: [v2.2.4] failed to save episode_info: ${e.message}")
+            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] failed to save episode_info: ${e.message}")
         }
         generateSubtitlesForEpisode(episode.id, episode.audioUrl, callback)
     }
@@ -592,7 +592,7 @@ class SubtitleGeneratorService : Service() {
                         val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@SubtitleGeneratorService)
                         // [v2.4.20] Resume mode: append new transcripts instead of deleting old ones
                         if (isResumeMode) {
-                            logToFile("onComplete: [v2.4.20] RESUME MODE: appending ${transcripts.size} new transcripts to existing ones for $episodeId")
+                            logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] RESUME MODE: appending ${transcripts.size} new transcripts to existing ones for $episodeId")
                             for (t in transcripts) {
                                 if (t.episodeId.isNullOrBlank()) t.episodeId = episodeId
                                 dbHelper.saveTranscript(t)
@@ -609,20 +609,20 @@ class SubtitleGeneratorService : Service() {
                         // [v2.4.12] Save the engine name used to generate subtitles
                         val engineName = if (currentModelName.isNotBlank()) currentModelName else "Unknown"
                         dbHelper.saveTranscriptEngine(episodeId, engineName)
-                        logToFile("onComplete: [v2.4.12] saved engine name '$engineName' for $episodeId")
+                        logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] saved engine name '$engineName' for $episodeId")
                         // [v2.4.31] Persist total processing time & audio duration so the speed
                         // ratio can be shown even when PlayerActivity restores from DB later.
                         dbHelper.saveTranscriptTiming(episodeId, currentProcessingTimeMs, currentAudioDurationMs)
-                        logToFile("onComplete: [v2.4.31] saved timing for $episodeId: processingTime=${currentProcessingTimeMs}ms, audioDuration=${currentAudioDurationMs}ms")
-                        logToFile("onComplete: [v2.2.6] ${if (isResumeMode) "appended" else "replaced with"} ${transcripts.size} new transcripts for $episodeId")
+                        logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] saved timing for $episodeId: processingTime=${currentProcessingTimeMs}ms, audioDuration=${currentAudioDurationMs}ms")
+                        logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] ${if (isResumeMode) "appended" else "replaced with"} ${transcripts.size} new transcripts for $episodeId")
                         // [v2.4.18] Mark subtitles as complete so patrol skips this episode
                         dbHelper.markSubtitlesComplete(episodeId)
-                        logToFile("onComplete: [v2.4.18] marked subtitles as COMPLETE for $episodeId")
+                        logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] marked subtitles as COMPLETE for $episodeId")
                     } catch (e: Exception) {
-                        logToFile("onComplete: [v2.2.6] failed to replace subtitles: ${e.message}")
+                        logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] failed to replace subtitles: ${e.message}")
                     }
                 } else {
-                    logToFile("onComplete: [v2.2.6] 0 transcripts generated, preserving existing subtitles for $episodeId")
+                    logToFile("onComplete: [${com.radio.app.RadioApplication.appVersionTag()}] 0 transcripts generated, preserving existing subtitles for $episodeId")
                 }
                 callback.onComplete(transcripts)
                 // [跨进程] 发送完成广播
@@ -670,14 +670,14 @@ class SubtitleGeneratorService : Service() {
                 // override ASR provider to Whisper
                 val asrProvider = if (forceWhisperBaseModel) {
                     ctx.log("ASR provider overridden to Whisper (forceWhisperBaseModel=true, pre-cache subtitle)")
-                    logToFile("generateSubtitlesForEpisode: [v2.4.17] forceWhisperBaseModel=true, using Whisper tiny for pre-cache, episodeId=$episodeId")
+                    logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] forceWhisperBaseModel=true, using Whisper tiny for pre-cache, episodeId=$episodeId")
                     AppSettings.ASR_WHISPER
                 } else {
                     settings.safeAsrProvider()
                 }
                 val savedVoskDir = settings.voskModelDir
                 ctx.log("ASR provider: $asrProvider (strict mode - NO auto-switch), savedVoskDir=$savedVoskDir")
-                logToFile("generateSubtitlesForEpisode: [v2.0.86] ASR engine = $asrProvider (STRICT - no auto-fallback), savedVoskDir=$savedVoskDir, episodeId=$episodeId")
+                logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] ASR engine = $asrProvider (STRICT - no auto-fallback), savedVoskDir=$savedVoskDir, episodeId=$episodeId")
                 logToFile("generateSubtitlesForEpisode: ASR engine selected = $asrProvider, savedVoskDir=$savedVoskDir, episodeId=$episodeId")
 
                 when {
@@ -691,10 +691,10 @@ class SubtitleGeneratorService : Service() {
                         val lastCrashEpisode = crashPrefs.getString("last_crash_episode_id", "")
                         if (settings.whisperCrashCount > 0 && lastCrashEpisode == episodeId) {
                             // Same episode crashing again - DON'T reset, let count accumulate
-                            logToFile("generateSubtitlesForEpisode: [v2.4.68] SAME episode crash ($episodeId, count=${settings.whisperCrashCount}), NOT resetting crash count")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] SAME episode crash ($episodeId, count=${settings.whisperCrashCount}), NOT resetting crash count")
                             if (settings.whisperCrashCount >= 3) {
                                 val errorMsg = "字幕引擎(Whisper)连续崩溃${settings.whisperCrashCount}次（episode=$episodeId），已达到最大重试次数。该音频可能在特定位置导致Whisper原生库崩溃。请尝试手动生成5分钟片段字幕，或更换ASR引擎。"
-                                logToFile("generateSubtitlesForEpisode: [v2.4.68] CRASH LIMIT REACHED: $errorMsg")
+                                logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] CRASH LIMIT REACHED: $errorMsg")
                                 settings.whisperCrashCount = 0
                                 crashPrefs.edit().putString("last_crash_episode_id", "").commit()
                                 settings.save(this@SubtitleGeneratorService)
@@ -707,7 +707,7 @@ class SubtitleGeneratorService : Service() {
                             settings.forceVoskUntil = 0
                             crashPrefs.edit().putString("last_crash_episode_id", "").commit()
                             settings.save(this)
-                            logToFile("generateSubtitlesForEpisode: [v2.3.1] resetting crash count (different episode), attempting Whisper as selected by user")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] resetting crash count (different episode), attempting Whisper as selected by user")
                         }
                         logToFile("generateSubtitlesForEpisode: entering Whisper branch (strict - no auto-fallback)")
                         val whisperModel = findWhisperModel()
@@ -721,7 +721,7 @@ class SubtitleGeneratorService : Service() {
                                 "modelName" to modelLabel,
                                 "engineType" to "whisper"
                             ))
-                            logToFile("generateSubtitlesForEpisode: [v2.0.91] broadcasting model name from start: $modelLabel (Whisper)")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] broadcasting model name from start: $modelLabel (Whisper)")
                             ctx.log("Using Whisper model: $whisperModel")
                             val success = generateWithWhisper(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
@@ -729,7 +729,7 @@ class SubtitleGeneratorService : Service() {
                                 // Per user requirement: "字幕生成失败时不允许跳转其他模型"
                                 val failReason = ctx.lastErrorDetail ?: "Whisper引擎处理失败（无详细错误）"
                                 ctx.log("Whisper subtitle generation FAILED. Reason: $failReason")
-                                logToFile("generateSubtitlesForEpisode: [v2.3.0] Whisper FAILED, reason=$failReason. STRICT mode, NO fallback.")
+                                logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Whisper FAILED, reason=$failReason. STRICT mode, NO fallback.")
                                 wrappedCallback.onError("$failReason")
                                 activeTasks.remove(episodeId)
                                 cleanupTask()
@@ -740,7 +740,7 @@ class SubtitleGeneratorService : Service() {
                             val failReason = "Whisper模型文件未找到（已搜索路径：${modelsDir?.absolutePath}、${filesDir}/engines）"
                             ctx.lastErrorDetail = failReason
                             ctx.log("ERROR: $failReason")
-                            logToFile("generateSubtitlesForEpisode: [v2.3.0] $failReason. STRICT mode, NO fallback.")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] $failReason. STRICT mode, NO fallback.")
                             wrappedCallback.onError("$failReason。请在设置→离线引擎管理中下载Whisper模型，或手动切换到其他ASR引擎。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
@@ -760,7 +760,7 @@ class SubtitleGeneratorService : Service() {
                                 "modelName" to modelLabel,
                                 "engineType" to "vosk"
                             ))
-                            logToFile("generateSubtitlesForEpisode: [v2.0.91] broadcasting model name from start: $modelLabel (Vosk)")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] broadcasting model name from start: $modelLabel (Vosk)")
                             ctx.log("Using Vosk model: $voskModel")
                             val pcm16kCache = find16kHzPcmCache(episodeId)
                             if (pcm16kCache != null) {
@@ -769,12 +769,12 @@ class SubtitleGeneratorService : Service() {
                             val success = generateWithVosk(episodeId, audioUrl, wrappedCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Vosk subtitle generation FAILED (error already reported by generateWithVosk)")
-                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk FAILED. NO auto-switch to Whisper per user requirement.")
+                                logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Vosk FAILED. NO auto-switch to Whisper per user requirement.")
                             }
                         } else {
                             // [v2.0.91] Vosk model not found - STRICT mode, NO fallback.
                             ctx.log("ERROR: Vosk model not found (no auto-switch to Whisper)")
-                            logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk model not found. NO fallback to Whisper.")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Vosk model not found. NO fallback to Whisper.")
                             wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB）。")
                             activeTasks.remove(episodeId)
                             cleanupTask()
@@ -788,7 +788,7 @@ class SubtitleGeneratorService : Service() {
                             AppSettings.ASR_FUNASR -> "FunASR"
                             else -> "当前ASR引擎（$asrProvider）"
                         }
-                        logToFile("generateSubtitlesForEpisode: [v2.0.91] Unsupported ASR provider '$asrProvider' for subtitle generation. Only Vosk/Whisper local engines are supported.")
+                        logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Unsupported ASR provider '$asrProvider' for subtitle generation. Only Vosk/Whisper local engines are supported.")
                         wrappedCallback.onError("${providerName}不支持离线字幕生成。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
                         activeTasks.remove(episodeId)
                         cleanupTask()
@@ -896,7 +896,7 @@ class SubtitleGeneratorService : Service() {
 
                 when {
                     asrProvider == AppSettings.ASR_WHISPER || asrProvider == "whisper-local" -> {
-                        logToFile("generateSubtitlesForEpisode: [v2.0.91] entering Whisper branch (segments)")
+                        logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] entering Whisper branch (segments)")
                         val whisperModel = findWhisperModel()
                         if (whisperModel != null) {
                             ctx.log("Using Whisper model for segments: $whisperModel")
@@ -907,19 +907,19 @@ class SubtitleGeneratorService : Service() {
                                 // call callback.onError (to avoid double-reporting), so we do it here.
                                 val failReason = ctx.lastErrorDetail ?: "Whisper分段处理失败（无详细错误）"
                                 ctx.log("Whisper segment generation FAILED. Reason: $failReason")
-                                logToFile("generateSubtitlesForEpisode: [v2.4.61] Whisper segments FAILED, reason=$failReason. NO auto-fallback.")
+                                logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Whisper segments FAILED, reason=$failReason. NO auto-fallback.")
                                 wrappedCallback.onError("$failReason")
                             }
                         } else {
                             ctx.log("ERROR: Whisper model selected but not found for segments")
-                            logToFile("generateSubtitlesForEpisode: [v2.0.91] Whisper model not found for segments. NO fallback.")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Whisper model not found for segments. NO fallback.")
                             wrappedCallback.onError("Whisper引擎未安装：缺少ggml模型文件。请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）。")
                             activeTasks.remove(segKey)
                             cleanupTask()
                         }
                     }
                     asrProvider == AppSettings.ASR_VOSK || asrProvider == "vosk-local" -> {
-                        logToFile("generateSubtitlesForEpisode: [v2.0.91] entering Vosk branch (segments, explicit)")
+                        logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] entering Vosk branch (segments, explicit)")
                         val voskModel = findVoskModel()
                         if (voskModel != null) {
                             ctx.log("Using Vosk model for segments: $voskModel")
@@ -930,11 +930,11 @@ class SubtitleGeneratorService : Service() {
                             val success = generateWithVosk(episodeId, audioUrl, subtitleCallback, ctx)
                             if (!success && !ctx.cancelled.get()) {
                                 ctx.log("Vosk segment generation FAILED (error already reported by generateWithVosk)")
-                                logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk segments FAILED. NO auto-fallback.")
+                                logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Vosk segments FAILED. NO auto-fallback.")
                             }
                         } else {
                             ctx.log("ERROR: No Vosk model for segments")
-                            logToFile("generateSubtitlesForEpisode: [v2.0.91] Vosk model not found for segments. NO fallback.")
+                            logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Vosk model not found for segments. NO fallback.")
                             wrappedCallback.onError("未找到Vosk模型，请在设置→离线引擎管理→下载Vosk模型（小模型约55MB）。")
                             activeTasks.remove(segKey)
                             cleanupTask()
@@ -946,7 +946,7 @@ class SubtitleGeneratorService : Service() {
                             AppSettings.ASR_FUNASR -> "FunASR"
                             else -> "当前ASR引擎（$asrProvider）"
                         }
-                        logToFile("generateSubtitlesForEpisode: [v2.0.91] Unsupported ASR provider '$asrProvider' for segments.")
+                        logToFile("generateSubtitlesForEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] Unsupported ASR provider '$asrProvider' for segments.")
                         wrappedCallback.onError("${providerName}不支持离线语音分段。请在设置→ASR引擎中选择「Vosk离线」或「Whisper离线」后重试。")
                         activeTasks.remove(segKey)
                         cleanupTask()
@@ -1064,7 +1064,7 @@ class SubtitleGeneratorService : Service() {
     private fun generateWithVosk(
         episodeId: String, audioUrl: String, callback: SubtitleCallback, ctx: TaskContext
     ): Boolean {
-        logToFile("generateWithVosk: START [v2.0.76], episodeId=$episodeId, audioUrl=$audioUrl")
+        logToFile("generateWithVosk: START [${com.radio.app.RadioApplication.appVersionTag()}], episodeId=$episodeId, audioUrl=$audioUrl")
         // [v2.0.76] Mark engine type for OOM detection, and clear Whisper OOM marker since Vosk works
         try {
             getSharedPreferences("subtitle_restart_guard", MODE_PRIVATE).edit()
@@ -1112,7 +1112,7 @@ class SubtitleGeneratorService : Service() {
             }
             if (pcmValid) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("[v2.0.67] Using chunked Vosk processing (PCM=${sizeMB}MB)")
+                ctx.log("${com.radio.app.RadioApplication.appVersionTag()} Using chunked Vosk processing (PCM=${sizeMB}MB)")
                 return processVoskInChunks(pcm16kFile, modelPath, callback, ctx)
             }
 
@@ -1135,11 +1135,11 @@ class SubtitleGeneratorService : Service() {
             val totalMemMB = memInfo.totalMem / 1024 / 1024
             val availMemMB = memInfo.availMem / 1024 / 1024
             val maxHeapMB = Runtime.getRuntime().maxMemory() / 1024 / 1024
-            logToFile("generateWithVosk: [v2.0.80] model=${modelSizeMB}MB, isLarge=$isLargeModel, totalMem=${totalMemMB}MB, avail=${availMemMB}MB, maxHeap=${maxHeapMB}MB, lowRam=${memInfo.lowMemory}")
+            logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] model=${modelSizeMB}MB, isLarge=$isLargeModel, totalMem=${totalMemMB}MB, avail=${availMemMB}MB, maxHeap=${maxHeapMB}MB, lowRam=${memInfo.lowMemory}")
             if (isLargeModel && totalMemMB < 2048) {
                 val detail = "Vosk大模型(${modelSizeMB}MB)需要2GB以上总内存（当前${totalMemMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("generateWithVosk: [v2.0.80] BLOCKING large model (low total RAM): $detail")
+                logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] BLOCKING large model (low total RAM): $detail")
                 callback.onError("$detail 请使用小模型(vosk-model-small-cn-0.22)。")
                 return false
             }
@@ -1151,15 +1151,15 @@ class SubtitleGeneratorService : Service() {
             if (isLargeModel && availMemMB < modelSizeMB + 1500) {
                 val detail = "Vosk大模型加载需要${modelSizeMB + 1500}MB可用内存（当前${availMemMB}MB）。大模型(vosk-model-cn-0.22)需要约3.5GB空闲内存才能稳定加载。"
                 ctx.lastErrorDetail = detail
-                logToFile("generateWithVosk: [v2.0.80] BLOCKING large model (insufficient avail mem): $detail")
+                logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] BLOCKING large model (insufficient avail mem): $detail")
                 callback.onError("$detail 请关闭其他应用释放内存后重试，或使用小模型(vosk-model-small-cn-0.22)。")
                 return false
             }
 
             // Get audio data - download/process first, then write to cache, then use chunked path
-            logToFile("generateWithVosk: [v2.0.78] calling getAudioDataForProcessing episodeId=$episodeId")
+            logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] calling getAudioDataForProcessing episodeId=$episodeId")
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
-            logToFile("generateWithVosk: [v2.0.78] getAudioDataForProcessing returned audioData=${audioData?.size ?: -1} bytes")
+            logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] getAudioDataForProcessing returned audioData=${audioData?.size ?: -1} bytes")
             if (audioData == null || audioData.isEmpty()) {
                 callback.onError("音频处理失败：无法获取音频数据。请检查网络连接后重试")
                 return false
@@ -1173,10 +1173,10 @@ class SubtitleGeneratorService : Service() {
                     fos.write(audioData)
                     fos.flush()
                 }
-                logToFile("generateWithVosk: [v2.0.78] Saved PCM cache: ${pcm16kFile.absolutePath}, size=${pcm16kFile.length()} bytes (${audioData.size/32000}s @ 16kHz mono)")
+                logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] Saved PCM cache: ${pcm16kFile.absolutePath}, size=${pcm16kFile.length()} bytes (${audioData.size/32000}s @ 16kHz mono)")
                 ctx.log("Saved ${audioData.size/1024}KB PCM to cache, starting chunked Vosk processing...")
             } catch (e: Exception) {
-                logToFile("generateWithVosk: [v2.0.78] Failed to write PCM cache: ${e.message}")
+                logToFile("generateWithVosk: [${com.radio.app.RadioApplication.appVersionTag()}] Failed to write PCM cache: ${e.message}")
                 // Continue anyway - we still have audioData in memory, but chunked path needs file
                 callback.onError("PCM缓存写入失败: ${e.message}")
                 return false
@@ -1219,7 +1219,7 @@ class SubtitleGeneratorService : Service() {
         val startOffsetBytes = 0L  // No skip needed in PCM
         val maxBytes = 5L * 60 * 16000 * 2  // 5 minutes
         val processLimit = minOf(totalSize, maxBytes)
-        logToFile("processVoskInChunks: [v2.0.55] totalSize=${totalSize / 1024}KB, skipped15Min=$skipped15Min, offset=${if (skipped15Min) startOffsetBytes / 1024 else 0}KB, limit=${processLimit / 1024}KB (5min)")
+        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] totalSize=${totalSize / 1024}KB, skipped15Min=$skipped15Min, offset=${if (skipped15Min) startOffsetBytes / 1024 else 0}KB, limit=${processLimit / 1024}KB (5min)")
         ctx.log("processVoskInChunks: PCM file size=${totalSize / 1024 / 1024}MB, processing ${if (skipped15Min) "15-20min" else "0-5min"} range in chunks")
         callback.onProgressUpdate(0, 100)
 
@@ -1258,7 +1258,7 @@ class SubtitleGeneratorService : Service() {
                 val detail = "Vosk原生库(libvosk.so)未加载"
                 ctx.lastErrorDetail = detail
                 ctx.log("ERROR: $detail")
-                logToFile("processVoskInChunks: [v2.0.76] FAILED: $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED: $detail")
                 callback.onError("$detail 请在设置→离线引擎管理→下载Vosk引擎（约50MB）。")
                 return false
             }
@@ -1268,7 +1268,7 @@ class SubtitleGeneratorService : Service() {
                 val detail = "Vosk Java类未加载(vosk.jar可能缺失)"
                 ctx.lastErrorDetail = detail
                 ctx.log("ERROR: $detail")
-                logToFile("processVoskInChunks: [v2.0.76] FAILED: $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED: $detail")
                 callback.onError("$detail 请在设置→离线引擎管理→下载Vosk引擎。")
                 return false
             }
@@ -1295,14 +1295,14 @@ class SubtitleGeneratorService : Service() {
             actManager?.getMemoryInfo(memInfo)
             val totalMemMB = memInfo.totalMem / 1024 / 1024
             val availMemMB = memInfo.availMem / 1024 / 1024
-            logToFile("processVoskInChunks: [v2.0.80] model=${modelSizeMB}MB, nameSuggestsLarge=$nameSuggestsLarge, isLarge=$isLargeModel, maxHeap=${maxHeapMB}MB, freeMem=${freeMemMB}MB, totalDevice=${totalMemMB}MB, avail=${availMemMB}MB, lowRam=${memInfo.lowMemory}")
+            logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] model=${modelSizeMB}MB, nameSuggestsLarge=$nameSuggestsLarge, isLarge=$isLargeModel, maxHeap=${maxHeapMB}MB, freeMem=${freeMemMB}MB, totalDevice=${totalMemMB}MB, avail=${availMemMB}MB, lowRam=${memInfo.lowMemory}")
             // [v2.0.75] Issue 4 Fix: Lower total RAM threshold from 3GB to 2GB.
             // Many modern phones with 2-3GB RAM can run the large model if enough memory is available.
             // The availMem check below is the real gatekeeper; totalMem is just a quick reject.
             if (isLargeModel && totalMemMB < 2048) {
                 val detail = "Vosk大模型(${modelSizeMB}MB)需要2GB以上总内存（当前${totalMemMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.80] BLOCKING large model load (low total RAM): $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] BLOCKING large model load (low total RAM): $detail")
                 ctx.log("ERROR: $detail")
                 callback.onError("$detail 请使用小模型(vosk-model-small-cn-0.22)。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
@@ -1313,14 +1313,14 @@ class SubtitleGeneratorService : Service() {
             if (isLargeModel && availMemMB < modelSizeMB + 1500) {
                 val detail = "Vosk大模型加载需要${modelSizeMB + 1500}MB可用内存（当前${availMemMB}MB）。大模型需要约3.5GB空闲内存才能稳定加载。"
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.80] BLOCKING large model load (insufficient avail mem): $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] BLOCKING large model load (insufficient avail mem): $detail")
                 ctx.log("ERROR: $detail")
                 callback.onError("$detail 请关闭其他应用释放内存后重试，或使用小模型(vosk-model-small-cn-0.22)。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to ctx.episodeId, "message" to detail))
                 return false
             }
-            logToFile("processVoskInChunks: [v2.0.75] Running GC before model loading, freeMem=${Runtime.getRuntime().freeMemory() / 1024 / 1024}MB")
+            logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Running GC before model loading, freeMem=${Runtime.getRuntime().freeMemory() / 1024 / 1024}MB")
             System.gc()
             Thread.sleep(200)
 
@@ -1332,7 +1332,7 @@ class SubtitleGeneratorService : Service() {
                 if (!amDir.exists() || !graphDir.exists()) {
                     val detail = "Vosk模型目录不完整(${modelDir.name}缺少am/或graph/子目录)"
                     ctx.lastErrorDetail = detail
-                    logToFile("processVoskInChunks: [v2.0.76] $detail")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] $detail")
                     callback.onError("$detail 请重新下载模型。")
                     return false
                 }
@@ -1341,17 +1341,17 @@ class SubtitleGeneratorService : Service() {
                 val amFiles = amDir.listFiles()?.toList() ?: emptyList()
                 val graphSize = graphFiles.sumOf { it.length() }
                 val amSize = amFiles.sumOf { it.length() }
-                logToFile("processVoskInChunks: [v2.0.70] Model dir check: am=${amDir.exists()} (${amFiles.size} files, ${amSize/1024/1024}MB), graph=${graphDir.exists()} (${graphFiles.size} files, ${graphSize/1024/1024}MB), conf=${confFile.exists()}")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Model dir check: am=${amDir.exists()} (${amFiles.size} files, ${amSize/1024/1024}MB), graph=${graphDir.exists()} (${graphFiles.size} files, ${graphSize/1024/1024}MB), conf=${confFile.exists()}")
                 if (graphSize < 1024 || amSize < 1024) {
                     val detail = "Vosk模型文件损坏(${modelDir.name} graph=${graphSize}B am=${amSize}B)"
                     ctx.lastErrorDetail = detail
-                    logToFile("processVoskInChunks: [v2.0.76] $detail")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] $detail")
                     callback.onError("$detail 请重新下载模型。")
                     sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                         "episodeId" to ctx.episodeId, "message" to detail))
                     return false
                 }
-                logToFile("processVoskInChunks: [v2.0.65] Model dir check passed: am=${amDir.exists()}, graph=${graphDir.exists()}, conf=${confFile.exists()}")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Model dir check passed: am=${amDir.exists()}, graph=${graphDir.exists()}, conf=${confFile.exists()}")
 
                 // [v2.3.0] Optimize for accuracy: use 60s trailing silence for ALL endpoint rules.
                 // This allows Vosk to accumulate very long speech segments (sentences/paragraphs)
@@ -1360,7 +1360,7 @@ class SubtitleGeneratorService : Service() {
                 try {
                     val modelConf = File(confFile, "model.conf")
                     val originalContent = if (modelConf.exists()) modelConf.readText() else ""
-                    logToFile("processVoskInChunks: [v2.3.0] Original model.conf: ${originalContent.take(300)}")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Original model.conf: ${originalContent.take(300)}")
                     // Append endpoint configuration with very long silence thresholds for ALL rules
                     val endpointRules = """
                         --endpoint.rule1.min-trailing-silence=60.0
@@ -1387,10 +1387,10 @@ class SubtitleGeneratorService : Service() {
                     }
                     if (modifiedContent != originalContent) {
                         modelConf.writeText(modifiedContent)
-                        logToFile("processVoskInChunks: [v2.3.0] Modified model.conf: ${modifiedContent.take(300)}")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Modified model.conf: ${modifiedContent.take(300)}")
                     }
                 } catch (e: Exception) {
-                    logToFile("processVoskInChunks: [v2.3.0] model.conf modification failed: ${e.message}")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] model.conf modification failed: ${e.message}")
                 }
 
                 try {
@@ -1404,7 +1404,7 @@ class SubtitleGeneratorService : Service() {
                         "Vosk模型加载失败(${cause?.javaClass?.simpleName}: ${cause?.message ?: me.message})"
                     }
                     ctx.lastErrorDetail = detail
-                    logToFile("processVoskInChunks: [v2.0.76] Model constructor FAILED: $detail")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Model constructor FAILED: $detail")
                     ctx.log("ERROR: $detail")
                     callback.onError("$detail 请重新下载模型或使用小模型。")
                     sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
@@ -1449,7 +1449,7 @@ class SubtitleGeneratorService : Service() {
                     // Try int parameter version first - VERY_LONG=3
                     val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", Int::class.javaPrimitiveType)
                     setEpMethod.invoke(recognizer, 3)  // 3 = VERY_LONG
-                    logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode(3=VERY_LONG) called via int param")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] setEndpointerMode(3=VERY_LONG) called via int param")
                 } catch (e: NoSuchMethodException) {
                     // Try enum parameter version
                     try {
@@ -1459,32 +1459,32 @@ class SubtitleGeneratorService : Service() {
                             ?: epModeClass.enumConstants?.find { it.toString() == "LONG" }
                         if (veryLongMode != null) {
                             setEpMethod.invoke(recognizer, veryLongMode)
-                            logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode(${veryLongMode}) called via enum param")
+                            logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] setEndpointerMode(${veryLongMode}) called via enum param")
                         } else {
-                            logToFile("processVoskInChunks: [v2.3.0] EndpointerMode.VERY_LONG/LONG not found in enum: ${epModeClass.enumConstants?.map { it.toString() }}")
+                            logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] EndpointerMode.VERY_LONG/LONG not found in enum: ${epModeClass.enumConstants?.map { it.toString() }}")
                         }
                     } catch (e2: Exception) {
-                        logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode not available (int nor enum), relying on endpoint.conf: ${e2.message}")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] setEndpointerMode not available (int nor enum), relying on endpoint.conf: ${e2.message}")
                     }
                 } catch (e: Exception) {
                     // If VERY_LONG (3) fails, try LONG (2)
                     try {
                         val setEpMethod = voskRecognizerClass!!.getMethod("setEndpointerMode", Int::class.javaPrimitiveType)
                         setEpMethod.invoke(recognizer, 2)  // 2 = LONG fallback
-                        logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode(3) failed, fell back to 2=LONG: ${e.message}")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] setEndpointerMode(3) failed, fell back to 2=LONG: ${e.message}")
                     } catch (e2: Exception) {
-                        logToFile("processVoskInChunks: [v2.3.0] setEndpointerMode failed entirely: ${e2.message}")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] setEndpointerMode failed entirely: ${e2.message}")
                     }
                 }
                 // [v2.0.66] Issue 6 Fix: Extract model name for display
                 val modelName = modelDir.name
                 currentModelName = modelName  // [v2.0.66] Issue 6: Set for broadcast
-                logToFile("processVoskInChunks: [v2.0.66] using model: $modelName")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] using model: $modelName")
                 logToFile("processVoskInChunks: Recognizer methods: ${voskRecognizerClass!!.declaredMethods.map { "${it.name}(${it.parameterTypes.map { p -> p.simpleName }})" }}")
             } catch (oom: OutOfMemoryError) {
                 val detail = "Vosk加载模型时内存不足(OutOfMemoryError: ${oom.message})"
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.76] $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] $detail")
                 callback.onError("$detail 请使用小模型或关闭其他应用。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to ctx.episodeId, "message" to detail))
@@ -1497,7 +1497,7 @@ class SubtitleGeneratorService : Service() {
                     else -> "Vosk模型初始化失败(${e.javaClass.simpleName}: ${e.message})"
                 }
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.76] FAILED to create Model/Recognizer: $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to create Model/Recognizer: $detail")
                 e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
                 callback.onError("$detail 请尝试重新下载模型或使用小模型。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
@@ -1506,7 +1506,7 @@ class SubtitleGeneratorService : Service() {
             } catch (e: UnsatisfiedLinkError) {
                 val detail = "Vosk原生方法调用失败(${e.message})"
                 ctx.lastErrorDetail = detail
-                logToFile("processVoskInChunks: [v2.0.76] UnsatisfiedLinkError: $detail")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] UnsatisfiedLinkError: $detail")
                 callback.onError("$detail 请重新安装Vosk引擎。")
                 sendSubtitleBroadcast("com.radio.app.SUBTITLE_ERROR", mapOf(
                     "episodeId" to ctx.episodeId, "message" to detail))
@@ -1563,13 +1563,13 @@ class SubtitleGeneratorService : Service() {
                 val currentTimeMs = (offset + bytesRead) * 1000L / 32000L
                 // [v2.3.0] Log every 10 chunks = 50s at 5s/chunk
                 if (chunkCount % 10 == 0) {
-                    logToFile("processVoskInChunks: [v2.3.0] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), accept=$acceptResult (T=$acceptTrueCount/F=$acceptFalseCount), transcripts=${allTranscripts.size}")
                 }
 
                 // [v2.0.67] Issue 3 Fix: Only call getResult() when acceptWaveForm=true (silence boundary).
                 if (acceptResult) {
                     val result = getResultMethod.invoke(recognizer) as? String ?: ""
-                    writeVoskLog("processVoskInChunks: [v2.3.0] acceptWaveForm=true at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
+                    writeVoskLog("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] acceptWaveForm=true at chunk $chunkCount, offset=$offset, result='${result.take(200)}'")
                     logToFile("processVoskInChunks: raw result: '${result.take(200)}'")
                     // ALWAYS reset partial state when acceptWaveForm returns true,
                     // because Vosk resets its internal buffer regardless of whether result text is empty.
@@ -1595,7 +1595,7 @@ class SubtitleGeneratorService : Service() {
                                     endTime = offsetMs + (offset + chunk.size) * 1000L / 32000L
                                 }
                                 val transcript = com.radio.app.models.Transcript(text = text, segmentStart = startTime, segmentEnd = endTime)
-                                logToFile("processVoskInChunks: [v2.3.0] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
+                                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] FINAL transcript #${allTranscripts.size + 1}: start=${startTime}ms, end=${endTime}ms, text='${text.take(80)}'")
                                 allTranscripts.add(transcript)
                                 if (allTranscripts.size == 1) {
                                     val firstResultTime = System.currentTimeMillis() - processingStartTime
@@ -1616,14 +1616,14 @@ class SubtitleGeneratorService : Service() {
                     // With 5s chunks and interval=2, this means one partial query every 10s instead of every 5s.
                     val partial = getPartialResultMethod.invoke(recognizer) as? String ?: ""
                     if (chunkCount % 10 == 0) {
-                        logToFile("processVoskInChunks: [v2.3.0] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk=$chunkCount, rawPartial='${partial.take(100)}', accepted=$acceptResult, timeMs=$currentTimeMs, lastPartialEmit=$lastPartialEmitTime, lastForceEmit=$lastForceEmitTime")
                     }
                     if (partial.isNotBlank()) {
                         try {
                             val partialJson = org.json.JSONObject(partial)
                             val partialText = partialJson.optString("partial", "").trim()
                             if (chunkCount % 10 == 0) {
-                                logToFile("processVoskInChunks: [v2.3.0] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
+                                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk=$chunkCount, partialText='$partialText', lastEmittedPartial='$lastPartialText', len=${partialText.length}")
                             }
                             // [v2.3.0] More conservative partial emit rules for accuracy:
                             // - Require minimum 2 Chinese chars (6 bytes in UTF-8, ~2 chars)
@@ -1642,7 +1642,7 @@ class SubtitleGeneratorService : Service() {
                                     segmentStart = partialStartTime,
                                     segmentEnd = partialEndTime
                                 )
-                                logToFile("processVoskInChunks: [v2.3.0] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
+                                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] PARTIAL: chunk=$chunkCount, start=${partialStartTime}ms, text='${partialText.take(80)}'")
                                 writeVoskLog("partial: chunk=$chunkCount, text='${partialText.take(100)}'")
                                 allTranscripts.add(transcript)
                                 callback.onSubtitleGenerated(transcript)
@@ -1656,12 +1656,12 @@ class SubtitleGeneratorService : Service() {
 
                 // [v2.0.91] Log progress every 40 chunks = 40s at 1s/chunk
                 if (chunkCount % 40 == 0) {
-                    writeVoskLog("processVoskInChunks: [v2.0.91] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
+                    writeVoskLog("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] progress - chunk=$chunkCount, offset=$offset (${currentTimeMs}ms), transcripts=${allTranscripts.size}, acceptTrue=$acceptTrueCount, acceptFalse=$acceptFalseCount")
                 }
 
                 offset += bytesRead
                 if (chunkCount % 40 == 0) {
-                    logToFile("processVoskInChunks: [v2.0.91] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
+                    logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] processed chunk $chunkCount, totalBytes=$offset, transcripts so far=${allTranscripts.size}")
                 }
                 val progress = (offset * 100 / totalSize).toInt()
                 if (progress > lastProgress + 2) {
@@ -1691,7 +1691,7 @@ class SubtitleGeneratorService : Service() {
                         val flushStart = flushOffsetMs + offset * 1000L / 32000L
                         val flushEnd = flushOffsetMs + (offset + chunkSize) * 1000L / 32000L
                         val transcript = com.radio.app.models.Transcript(text = flushText, segmentStart = flushStart, segmentEnd = flushEnd)
-                        logToFile("processVoskInChunks: [v2.0.69] getFinalResult flush transcript at ${flushStart}ms: '${flushText.take(50)}...'")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] getFinalResult flush transcript at ${flushStart}ms: '${flushText.take(50)}...'")
                         writeVoskLog("getFinalResult flush: chunk=$chunkCount, text='${flushText.take(100)}'")
                         allTranscripts.add(transcript)
                         callback.onSubtitleGenerated(transcript)
@@ -1707,14 +1707,14 @@ class SubtitleGeneratorService : Service() {
                         val partialStart = partialOffsetMs + offset * 1000L / 32000L
                         val partialEnd = partialOffsetMs + (offset + chunkSize) * 1000L / 32000L
                         val transcript = com.radio.app.models.Transcript(text = partialText, segmentStart = partialStart, segmentEnd = partialEnd)
-                        logToFile("processVoskInChunks: [v2.0.69] remaining partial flush at ${partialStart}ms: '${partialText.take(50)}...'")
+                        logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] remaining partial flush at ${partialStart}ms: '${partialText.take(50)}...'")
                         writeVoskLog("remaining partial flush: text='${partialText.take(100)}'")
                         allTranscripts.add(transcript)
                         callback.onSubtitleGenerated(transcript)
                     }
                 }
             } catch (e: Exception) {
-                logToFile("processVoskInChunks: [v2.0.69] flush attempt failed: ${e.message}")
+                logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] flush attempt failed: ${e.message}")
             }
 
             // Get final result
@@ -1756,7 +1756,7 @@ class SubtitleGeneratorService : Service() {
         } catch (e: Throwable) {
             val detail = "Vosk处理异常(${e.javaClass.name}: ${e.message})"
             ctx.lastErrorDetail = detail
-            logToFile("processVoskInChunks: [v2.0.76] OUTER CATCH: $detail")
+            logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] OUTER CATCH: $detail")
             e.stackTrace.take(10).forEach { logToFile("processVoskInChunks: at $it") }
             ctx.log("ERROR: $detail")
             callback.onError("$detail")
@@ -1769,7 +1769,7 @@ class SubtitleGeneratorService : Service() {
             try { model?.let { voskModelClass!!.getMethod("close").invoke(it) } } catch (_: Exception) {}
             try { inputStream.close() } catch (_: Exception) {}
             // [v2.0.90] Force GC after Vosk cleanup to release native memory references before Whisper
-            logToFile("processVoskInChunks: [v2.0.90] Vosk resources closed, forcing GC to free native memory")
+            logToFile("processVoskInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Vosk resources closed, forcing GC to free native memory")
             System.gc()
         }
     }
@@ -1987,29 +1987,29 @@ class SubtitleGeneratorService : Service() {
                     if (pcmFile.exists()) pcmFile.delete()
                     val rangeLabel = "${start/60000000}-${(start+dur)/60000000}min"
                     try {
-                        logToFile("downloadAndProcessAudio: [v2.0.74] attempting decode range $rangeLabel")
+                        logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] attempting decode range $rangeLabel")
                         decodeToPcm(tempAudioFile, pcmFile, dur, ctx, startUs = start)
                         val pcmSize = pcmFile.length()
                         if (pcmSize > 100000) {  // At least ~3 seconds of audio
-                            logToFile("downloadAndProcessAudio: [v2.0.74] decode OK for $rangeLabel: $pcmSize bytes")
+                            logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decode OK for $rangeLabel: $pcmSize bytes")
                             decodedOk = true
                             if (start > 0) fallbackUsed = true
                             break
                         } else {
-                            logToFile("downloadAndProcessAudio: [v2.0.74] decode for $rangeLabel produced only $pcmSize bytes, trying next range")
+                            logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decode for $rangeLabel produced only $pcmSize bytes, trying next range")
                         }
                     } catch (e: Exception) {
-                        logToFile("downloadAndProcessAudio: [v2.0.74] decode for $rangeLabel failed: ${e.message}")
+                        logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decode for $rangeLabel failed: ${e.message}")
                     }
                 }
                 if (!decodedOk) {
                     ctx.log("ERROR: Failed to decode any PCM data from audio file")
-                    logToFile("downloadAndProcessAudio: [v2.0.74] ALL decode ranges failed")
+                    logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] ALL decode ranges failed")
                     return null
                 }
                 val pcmData = pcmFile.readBytes()
                 ctx.log("Decoded to ${pcmData.size} bytes of 16kHz PCM (${pcmData.size / 32000}s)${if (fallbackUsed) " (fallback range used)" else " from 15-20 min"}")
-                logToFile("downloadAndProcessAudio: [v2.0.74] decoded to ${pcmData.size} bytes PCM, cached to ${pcmFile.absolutePath}${if (fallbackUsed) " (FALLBACK)" else ""}")
+                logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decoded to ${pcmData.size} bytes PCM, cached to ${pcmFile.absolutePath}${if (fallbackUsed) " (FALLBACK)" else ""}")
                 return pcmData
             } finally {
                 tempAudioFile.delete()
@@ -2066,10 +2066,10 @@ class SubtitleGeneratorService : Service() {
             val hasMinSize = totalModelSize >= minModelSize
 
             if (hasCriticalFiles && hasMinSize) {
-                logToFile("isValidVoskModel: [v2.0.72] ${dir.name} ACCEPTED (am=${amFiles.size} files/${totalAmSize/1024/1024}MB, graph=${graphFiles.size} files/${totalGraphSize/1024/1024}MB, total=${totalModelSize/1024/1024}MB, hasFinalMdl=$hasFinalMdl, hasHCLr=$hasHclrFst)")
+                logToFile("isValidVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] ${dir.name} ACCEPTED (am=${amFiles.size} files/${totalAmSize/1024/1024}MB, graph=${graphFiles.size} files/${totalGraphSize/1024/1024}MB, total=${totalModelSize/1024/1024}MB, hasFinalMdl=$hasFinalMdl, hasHCLr=$hasHclrFst)")
                 return true
             } else {
-                logToFile("isValidVoskModel: [v2.0.72] ${dir.name} REJECTED - hasFinalMdl=$hasFinalMdl, hasHCLr=$hasHclrFst, totalModelSize=${totalModelSize/1024/1024}MB (need ${minModelSize/1024/1024}MB), amFiles=${amFiles.map { "${it.name}(${it.length()/1024}KB)" }}, graphFiles=${graphFiles.map { "${it.name}(${it.length()/1024}KB)" }}")
+                logToFile("isValidVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] ${dir.name} REJECTED - hasFinalMdl=$hasFinalMdl, hasHCLr=$hasHclrFst, totalModelSize=${totalModelSize/1024/1024}MB (need ${minModelSize/1024/1024}MB), amFiles=${amFiles.map { "${it.name}(${it.length()/1024}KB)" }}, graphFiles=${graphFiles.map { "${it.name}(${it.length()/1024}KB)" }}")
                 return false
             }
         }
@@ -2081,7 +2081,7 @@ class SubtitleGeneratorService : Service() {
             if (subAm.exists() && subAm.isDirectory && subGraph.exists() && subGraph.isDirectory) {
                 // [v2.0.72] Recursively validate nested models too
                 if (isValidVoskModel(sub)) {
-                    logToFile("isValidVoskModel: [v2.0.72] ${dir.name} accepted (nested valid model in ${sub.name})")
+                    logToFile("isValidVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] ${dir.name} accepted (nested valid model in ${sub.name})")
                     return true
                 }
             }
@@ -2136,7 +2136,7 @@ class SubtitleGeneratorService : Service() {
         // [v2.0.61] Issue 6 Fix: Use saved Vosk model directory if set
         val savedVoskDir = AppSettings.getInstance(this).voskModelDir
         if (savedVoskDir.isNotEmpty()) {
-            logToFile("findVoskModel: [v2.0.61] savedVoskDir=$savedVoskDir, looking for this specific model")
+            logToFile("findVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] savedVoskDir=$savedVoskDir, looking for this specific model")
         }
         // 1. 检查外部存储手动下载的模型（只查找Vosk模型，不查找Whisper ggml模型）
         val modelsDir = getExternalFilesDir("models")
@@ -2148,17 +2148,17 @@ class SubtitleGeneratorService : Service() {
                 if (savedVoskDir.isNotEmpty()) {
                     val savedDir = modelDirs.find { it.name == savedVoskDir }
                     if (savedDir != null && isValidVoskModel(savedDir)) {
-                        logToFile("findVoskModel: [v2.0.61] FOUND saved model: ${savedDir.name}")
+                        logToFile("findVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] FOUND saved model: ${savedDir.name}")
                         return savedDir.absolutePath
                     }
-                    logToFile("findVoskModel: [v2.0.61] saved model $savedVoskDir not found or invalid, falling back to auto-detect")
+                    logToFile("findVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] saved model $savedVoskDir not found or invalid, falling back to auto-detect")
                 }
                 // [v2.0.71] Issue 9 Fix: Sort SMALL models first (not large). Large models
                 // (1.3GB) often fail to load due to memory constraints. Small models (~50MB)
                 // are more reliable. Only use large if no small model is available.
                 val voskDirs = modelDirs.filter { it.name.contains("vosk", ignoreCase = true) }
                     .sortedBy { !it.name.contains("small", ignoreCase = true) }  // Small models first
-                logToFile("findVoskModel: [v2.0.71] voskDirs found (sorted, SMALL models first): ${voskDirs.map { it.name }}")
+                logToFile("findVoskModel: [${com.radio.app.RadioApplication.appVersionTag()}] voskDirs found (sorted, SMALL models first): ${voskDirs.map { it.name }}")
                 for (dir in voskDirs) {
                     val dirFiles = dir.listFiles()?.map { "${it.name}(${if (it.isDirectory) "dir" else "${it.length()}B"})" } ?: listOf("(null listFiles)")
                     logToFile("findVoskModel: checking ${dir.name}, files=${dirFiles.take(20)}")
@@ -2262,7 +2262,7 @@ class SubtitleGeneratorService : Service() {
         logToFile("findWhisperModel: searching for Whisper ggml models... (forceWhisperBaseModel=$forceWhisperBaseModel)")
         // [v2.4.17] Changed from Whisper base to Whisper tiny for pre-cache subtitle generation (faster)
         if (forceWhisperBaseModel) {
-            logToFile("findWhisperModel: [v2.4.17] forceWhisperBaseModel=true, looking for Whisper tiny model specifically")
+            logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] forceWhisperBaseModel=true, looking for Whisper tiny model specifically")
             val modelsDir = getExternalFilesDir("models")
             if (modelsDir != null && modelsDir.exists()) {
                 val modelDirs = modelsDir.listFiles()?.filter { it.isDirectory }
@@ -2276,12 +2276,12 @@ class SubtitleGeneratorService : Service() {
                     for (dir in tinyDirs) {
                         val binFile = findWhisperBinFile(dir)
                         if (binFile != null) {
-                            logToFile("findWhisperModel: [v2.4.17] FOUND Whisper tiny model for pre-cache: ${binFile.absolutePath}")
+                            logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] FOUND Whisper tiny model for pre-cache: ${binFile.absolutePath}")
                             return binFile.absolutePath
                         }
                     }
                     // [v2.4.17] Fallback to base if tiny not found
-                    logToFile("findWhisperModel: [v2.4.17] Whisper tiny not found, trying base model")
+                    logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] Whisper tiny not found, trying base model")
                     val baseDirs = modelDirs.filter {
                         it.name.contains("whisper", ignoreCase = true) &&
                         it.name.contains("base", ignoreCase = true) &&
@@ -2290,11 +2290,11 @@ class SubtitleGeneratorService : Service() {
                     for (dir in baseDirs) {
                         val binFile = findWhisperBinFile(dir)
                         if (binFile != null) {
-                            logToFile("findWhisperModel: [v2.4.17] FOUND Whisper base model (fallback): ${binFile.absolutePath}")
+                            logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] FOUND Whisper base model (fallback): ${binFile.absolutePath}")
                             return binFile.absolutePath
                         }
                     }
-                    logToFile("findWhisperModel: [v2.4.17] Whisper tiny/base not found, falling back to normal search")
+                    logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] Whisper tiny/base not found, falling back to normal search")
                 }
             }
             // Fall through to normal search if tiny not found
@@ -2302,7 +2302,7 @@ class SubtitleGeneratorService : Service() {
         // [v2.2.9] Check for saved Whisper model preference first
         val savedWhisperDir = AppSettings.getInstance(this).whisperModelDir
         if (savedWhisperDir.isNotEmpty()) {
-            logToFile("findWhisperModel: [v2.2.9] savedWhisperDir=$savedWhisperDir, looking for this specific model")
+            logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] savedWhisperDir=$savedWhisperDir, looking for this specific model")
         }
         val modelsDir = getExternalFilesDir("models")
         if (modelsDir != null && modelsDir.exists()) {
@@ -2314,11 +2314,11 @@ class SubtitleGeneratorService : Service() {
                     if (savedDir != null) {
                         val binFile = findWhisperBinFile(savedDir)
                         if (binFile != null) {
-                            logToFile("findWhisperModel: [v2.2.9] FOUND saved Whisper model: ${binFile.absolutePath}")
+                            logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] FOUND saved Whisper model: ${binFile.absolutePath}")
                             return binFile.absolutePath
                         }
                     }
-                    logToFile("findWhisperModel: [v2.2.9] saved model $savedWhisperDir not found or invalid, falling back to auto-detect")
+                    logToFile("findWhisperModel: [${com.radio.app.RadioApplication.appVersionTag()}] saved model $savedWhisperDir not found or invalid, falling back to auto-detect")
                 }
                 // Priority 2: Search directories containing "whisper" in name
                 val whisperDirs = modelDirs.filter { it.name.contains("whisper", ignoreCase = true) && it.name != "whisper-engine" }
@@ -2582,14 +2582,14 @@ class SubtitleGeneratorService : Service() {
         if (whisperProcessingActive) {
             val detail = "字幕引擎(Whisper)正在处理其他任务，请等待当前任务完成后重试。"
             ctx.lastErrorDetail = detail
-            logToFile("generateWithWhisper: [v2.4.61] another whisper processing is active, NOT cancelling old tasks (user preference)")
+            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] another whisper processing is active, NOT cancelling old tasks (user preference)")
             ctx.log("ERROR: $detail")
             // Don't call callback.onError() here - the caller will do it with proper wrapping
             // (avoids double error broadcast)
             return false
         }
         whisperProcessingActive = true
-        logToFile("generateWithWhisper: START [v2.1.2], episodeId=$episodeId, audioUrl=$audioUrl")
+        logToFile("generateWithWhisper: START [${com.radio.app.RadioApplication.appVersionTag()}], episodeId=$episodeId, audioUrl=$audioUrl")
 
         // [v2.1.2] Check if this episode caused a native crash recently.
         // If so, skip Whisper and return error to prevent infinite crash loop.
@@ -2603,7 +2603,7 @@ class SubtitleGeneratorService : Service() {
             // The crash marker is still cleared to prevent stale data.
             if (crashedEpisode != null) {
                 crashMarker.edit().clear().apply()
-                logToFile("generateWithWhisper: [v2.4.2] cleared crash marker (was episode=$crashedEpisode, ${(now-crashTime)/1000}s ago)")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] cleared crash marker (was episode=$crashedEpisode, ${(now-crashTime)/1000}s ago)")
             }
         } catch (_: Exception) {}
 
@@ -2624,7 +2624,7 @@ class SubtitleGeneratorService : Service() {
             if (!nativeLibResult) {
                 val detail = "Whisper原生库(libwhisper.so)未找到。模型文件已下载但缺少JNI库。"
                 ctx.lastErrorDetail = detail
-                logToFile("generateWithWhisper: [v2.0.76] FAILED: $detail")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED: $detail")
                 ctx.log("ERROR: $detail")
                 callback.onError("$detail 请在设置→离线引擎管理→安装Whisper引擎。")
                 return false
@@ -2637,7 +2637,7 @@ class SubtitleGeneratorService : Service() {
             if (whisperModel == null || modelFile == null || !modelFile.exists()) {
                 val detail = "Whisper模型文件未找到（路径=${modelFile?.absolutePath ?: whisperModel ?: "null"}）"
                 ctx.lastErrorDetail = detail
-                logToFile("generateWithWhisper: [v2.0.76] FAILED: $detail")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED: $detail")
                 ctx.log("ERROR: $detail")
                 callback.onError("$detail 请在设置→离线引擎管理→下载Whisper引擎（tiny版约75MB）。")
                 return false
@@ -2651,7 +2651,7 @@ class SubtitleGeneratorService : Service() {
             // Manual subtitle generation uses 5-min PCM (for quick testing).
             // Pre-cache runs in background and needs complete subtitles.
             if (forceWhisperBaseModel) {
-                logToFile("generateWithWhisper: [v2.4.10] pre-cache mode, generating FULL audio PCM")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] pre-cache mode, generating FULL audio PCM")
                 val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
                 var pcmDecodeTimeMs = 0L  // [v2.4.18] Track PCM decode time separately
@@ -2677,12 +2677,12 @@ class SubtitleGeneratorService : Service() {
                             val prevInfo = dbHelper.getTranscriptEngineInfo(episodeId)
                             prevProcessingTimeMs = prevInfo.processingTimeMs
                             prevAudioDurationMs = prevInfo.audioDurationMs
-                            logToFile("generateWithWhisper: [v2.4.20] RESUME MODE: found $existingCount partial transcripts, last end=${maxEndMs}ms, resuming from sample $resumeFromSample (${maxEndMs/1000}s), prevTime=${prevProcessingTimeMs}ms, prevAudio=${prevAudioDurationMs}ms")
+                            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] RESUME MODE: found $existingCount partial transcripts, last end=${maxEndMs}ms, resuming from sample $resumeFromSample (${maxEndMs/1000}s), prevTime=${prevProcessingTimeMs}ms, prevAudio=${prevAudioDurationMs}ms")
                             ctx.log("续传字幕 (从 ${maxEndMs/1000}s 处继续)")
                         }
                     }
                 } catch (e: Exception) {
-                    logToFile("generateWithWhisper: [v2.4.20] failed to check resume status: ${e.message}")
+                    logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] failed to check resume status: ${e.message}")
                 }
 
                 try {
@@ -2695,14 +2695,14 @@ class SubtitleGeneratorService : Service() {
                         // v2.4.68: Check PCM size — if too small (< 20 min of audio), delete and regenerate.
                         // User requirement: PCM < 20 minutes is considered abnormal. Regenerate from source.
                         if (pcmDurationSec < 1200) {
-                            logToFile("generateWithWhisper: [v2.4.68] cached PCM too small (${sizeMB}MB, ${pcmDurationSec}s < 1200s), deleting and re-decoding from source")
+                            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] cached PCM too small (${sizeMB}MB, ${pcmDurationSec}s < 1200s), deleting and re-decoding from source")
                             ctx.log("PCM缓存太小(${pcmDurationSec}s)，重新解码音频...")
                             fullPcmFile.delete()
                             val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                             if (fullInfoFile.exists()) fullInfoFile.delete()
                             // Fall through to re-decode below
                         } else {
-                            logToFile("generateWithWhisper: [v2.4.14] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
+                            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM cache found (${sizeMB}MB, ${pcmDurationSec}s), resuming processing")
                             ctx.log("完整PCM缓存 (${sizeMB}MB)")
                             val result = processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, resumeFromSample, prevProcessingTimeMs, prevAudioDurationMs)  // [v2.4.20] pass resumeFromSample, [v2.4.63] pass prev timing
                             // [v2.4.14] Only delete full PCM on success; keep for resume on failure
@@ -2710,14 +2710,14 @@ class SubtitleGeneratorService : Service() {
                                 // [v2.4.18] Compute stats BEFORE deleting file
                                 val totalTimeMs = System.currentTimeMillis() - statsStartTime
                                 val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
-                                logToFile("generateWithWhisper: [v2.4.18] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=0ms (cached), whisperTime=${totalTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=0ms (cached), whisperTime=${totalTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (resumed from cache)")
                                 fullPcmFile.delete()
                                 // [v2.4.16] Fix: Also delete corresponding info file
                                 val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                                 if (fullInfoFile.exists()) fullInfoFile.delete()
-                                logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] deleted full PCM + info after successful processing")
                             } else {
-                                logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] keeping full PCM for resume (processing failed)")
                             }
                             return result
                         }
@@ -2733,15 +2733,15 @@ class SubtitleGeneratorService : Service() {
                     }
                     val cacheFile = java.io.File(com.radio.app.RadioApplication.getEpisodesCacheDir(this), audioFileName)
                     if (!cacheFile.exists() || cacheFile.length() < 1024) {
-                        logToFile("generateWithWhisper: [v2.4.10] cached audio not found: ${cacheFile.absolutePath}, falling back to 5min PCM")
+                        logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] cached audio not found: ${cacheFile.absolutePath}, falling back to 5min PCM")
                         // Fall through to 5-min PCM logic below
                     } else {
                         ctx.log("正在解码完整音频为PCM...")
-                        logToFile("generateWithWhisper: [v2.4.10] decoding full audio to PCM: ${cacheFile.absolutePath} (${cacheFile.length()/1024/1024}MB)")
+                        logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full audio to PCM: ${cacheFile.absolutePath} (${cacheFile.length()/1024/1024}MB)")
                         val decodeStartTime = System.currentTimeMillis()  // [v2.4.18] Track PCM decode time
                         val success = decodeFullAudioToPcm(cacheFile, fullPcmFile, ctx)
                         pcmDecodeTimeMs = System.currentTimeMillis() - decodeStartTime  // [v2.4.18] Record decode time
-                        logToFile("generateWithWhisper: [v2.4.18] PCM decode took ${pcmDecodeTimeMs}ms")
+                        logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] PCM decode took ${pcmDecodeTimeMs}ms")
                         if (success && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                             val sizeMB = fullPcmFile.length() / 1024 / 1024
                             // [v2.4.18] Read PCM length BEFORE deleting
@@ -2751,19 +2751,19 @@ class SubtitleGeneratorService : Service() {
                             // User requirement: PCM < 20 minutes is considered abnormal.
                             if (pcmDurationSec < 1200) {
                                 val errorMsg = "解码后PCM太小 (${sizeMB}MB, ${pcmDurationSec}s < 1200s/20min)，可能音频文件不完整。跳过字幕生成。"
-                                logToFile("generateWithWhisper: [v2.4.68] WARNING: $errorMsg")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: $errorMsg")
                                 ctx.log(errorMsg)
                                 callback.onError(errorMsg)
                                 return false
                             }
-                            logToFile("generateWithWhisper: [v2.4.10] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
+                            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM generated (${sizeMB}MB, ${pcmDurationSec}s), processing with Whisper")
                             ctx.log("完整PCM解码完成 (${sizeMB}MB)")
                             // v2.4.39: PCM decode takes 130-370s. During that time, the service
                             // may have been killed and restarted by Android, setting globalCancelled=true.
                             // If this task's ctx is not cancelled, clear globalCancelled so the
                             // while loop in processWhisperInChunks can execute.
                             if (!ctx.cancelled.get()) {
-                                logToFile("generateWithWhisper: [v2.4.39] clearing globalCancelled (was ${globalCancelled.get()}) before Whisper processing")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] clearing globalCancelled (was ${globalCancelled.get()}) before Whisper processing")
                                 globalCancelled.set(false)
                             }
                             val whisperStartTime = System.currentTimeMillis()  // [v2.4.18] Track Whisper processing time
@@ -2774,18 +2774,18 @@ class SubtitleGeneratorService : Service() {
                                 // [v2.4.18] Compute stats BEFORE deleting file
                                 val totalTimeMs = System.currentTimeMillis() - statsStartTime
                                 val speedRatio = if (totalTimeMs > 0) String.format("%.2f", pcmDurationSec.toDouble() / (totalTimeMs / 1000.0)) else "N/A"
-                                logToFile("generateWithWhisper: [v2.4.18] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=${pcmDecodeTimeMs}ms, whisperTime=${whisperTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (full decode + whisper)")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] STATS: episode=$episodeId, audioDuration=${pcmDurationSec}s, pcmDecodeTime=${pcmDecodeTimeMs}ms, whisperTime=${whisperTimeMs}ms, totalTime=${totalTimeMs}ms, speed=${speedRatio}x (full decode + whisper)")
                                 fullPcmFile.delete()
                                 // [v2.4.16] Fix: Also delete corresponding info file
                                 val fullInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                                 if (fullInfoFile.exists()) fullInfoFile.delete()
-                                logToFile("generateWithWhisper: [v2.4.14] deleted full PCM + info after successful processing")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] deleted full PCM + info after successful processing")
                             } else {
-                                logToFile("generateWithWhisper: [v2.4.14] keeping full PCM for resume (processing failed)")
+                                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] keeping full PCM for resume (processing failed)")
                             }
                             return result
                         } else {
-                            logToFile("generateWithWhisper: [v2.4.10] full PCM decode failed, falling back to 5min PCM")
+                            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM decode failed, falling back to 5min PCM")
                             fullPcmFile.delete()
                             // [v2.4.16] Fix: Also delete corresponding info file on failure
                             val failInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
@@ -2793,7 +2793,7 @@ class SubtitleGeneratorService : Service() {
                         }
                     }
                 } catch (e: Exception) {
-                    logToFile("generateWithWhisper: [v2.4.10] full PCM generation error: ${e.message}, falling back to 5min PCM")
+                    logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM generation error: ${e.message}, falling back to 5min PCM")
                     fullPcmFile.delete()
                     // [v2.4.16] Fix: Also delete corresponding info file on error
                     val errInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
@@ -2804,7 +2804,7 @@ class SubtitleGeneratorService : Service() {
             if (pcm16kFile.exists() && pcm16kFile.length() > 1024 * 500) {
                 val sizeMB = pcm16kFile.length() / 1024 / 1024
                 ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
-                logToFile("generateWithWhisper: [v2.0.99] using PCM cache (${sizeMB}MB)")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] using PCM cache (${sizeMB}MB)")
                 return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)  // [v2.4.63] non-precache path: no resume/timing accumulation
             }
 
@@ -2814,19 +2814,19 @@ class SubtitleGeneratorService : Service() {
                 val detail = "音频数据获取失败（PCM缓存不可用，网络可能断开）"
                 ctx.lastErrorDetail = detail
                 ctx.log("ERROR: $detail")
-                logToFile("generateWithWhisper: [v2.0.76] FAILED: $detail")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED: $detail")
                 callback.onError("$detail 请检查网络连接后重试。")
                 return false
             }
 
             // [v2.0.99] Save to unified _5min.pcm file
             pcm16kFile.writeBytes(audioData)
-            logToFile("generateWithWhisper: [v2.0.99] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
+            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
             return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)  // [v2.4.63] non-precache path: no resume/timing accumulation
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
             ctx.lastErrorDetail = detail
-            logToFile("generateWithWhisper: [v2.0.76] EXCEPTION: $detail")
+            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] EXCEPTION: $detail")
             ctx.log("ERROR: $detail")
             if (e is OutOfMemoryError) {
                 callback.onError("内存不足：Whisper处理需要更多内存。请尝试：1)关闭其他应用 2)使用更小的Whisper模型（tiny版）")
@@ -2934,15 +2934,15 @@ class SubtitleGeneratorService : Service() {
             val lastOomTime = oomMarker.getLong("whisper_oom_time", 0L)
             val now = System.currentTimeMillis()
             if (lastOomTime > 0 && (now - lastOomTime) < 10L * 60 * 1000) {
-                logToFile("processWhisperInChunks: [v2.0.93] WARNING: Recent OOM ${((now - lastOomTime) / 1000)}s ago, but proceeding per user request (no cooldown)")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: Recent OOM ${((now - lastOomTime) / 1000)}s ago, but proceeding per user request (no cooldown)")
             }
-            logToFile("processWhisperInChunks: [v2.0.93] Memory: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Memory: availMem=${availMemMB}MB, freeHeap=${freeHeapMB}MB, modelSize=${modelSizeMB}MB, lowRam=${memInfo.lowMemory}")
             // [v2.3.8] For large models (small=465MB), require more available memory.
             // Small model needs ~1.5GB to load + inference. If availMem < modelSize*2, abort early.
             if (modelSizeMB > 300 && availMemMB < modelSizeMB * 2) {
                 val detail = "Whisper ${modelSizeMB}MB模型需要至少${modelSizeMB * 2}MB可用内存（当前${availMemMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.3.8] INSUFFICIENT MEMORY for large model: $detail")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] INSUFFICIENT MEMORY for large model: $detail")
                 callback.onError("$detail。建议使用tiny(74MB)或base(141MB)模型，或关闭其他应用后重试。")
                 return false
             }
@@ -2954,7 +2954,7 @@ class SubtitleGeneratorService : Service() {
             // Native whisper uses native memory (mmap/malloc), NOT Java heap.
             // Low Java heap is NORMAL when native memory is in use.
             // The abort at freeHeap < 2MB was preventing processing entirely.
-            logToFile("processWhisperInChunks: [v2.4.25] skipping heap checks (native code uses native memory)")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] skipping heap checks (native code uses native memory)")
 
             // [v2.0.93] Lowered system memory requirement.
             // tiny model: ~75MB weights (mmap'd) + ~30-50MB runtime = ~105-125MB total.
@@ -2962,14 +2962,14 @@ class SubtitleGeneratorService : Service() {
             if (availMemMB < requiredMemMB) {
                 val detail = "Whisper内存不足（可用${availMemMB}MB，需要${requiredMemMB}MB=模型${modelSizeMB}MB+推理${requiredMemMB - modelSizeMB}MB）"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.0.93] INSUFFICIENT MEMORY for Whisper: availMem=${availMemMB}MB < required=$requiredMemMB")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] INSUFFICIENT MEMORY for Whisper: availMem=${availMemMB}MB < required=$requiredMemMB")
                 callback.onError("$detail。请关闭其他应用释放内存后重试。")
                 return false
             }
             // [v2.0.91] Don't hard-block on lowMemory flag — it can be true even when enough mem exists.
             // Log warning but continue; LMKD will kill us if truly out of memory.
             if (memInfo.lowMemory) {
-                logToFile("processWhisperInChunks: [v2.0.91] WARNING: System reports lowMemory=true, but availMem=${availMemMB}MB >= required=${requiredMemMB}MB. Attempting to load anyway...")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: System reports lowMemory=true, but availMem=${availMemMB}MB >= required=${requiredMemMB}MB. Attempting to load anyway...")
             }
 
             // Initialize whisper context
@@ -2978,7 +2978,7 @@ class SubtitleGeneratorService : Service() {
             try {
                 ctxPtr = bridge.initFromFile(modelPath)
             } catch (oom: OutOfMemoryError) {
-                logToFile("processWhisperInChunks: [v2.0.75] OOM during whisper_init_from_file: ${oom.message}")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] OOM during whisper_init_from_file: ${oom.message}")
                 callback.onError("Whisper模型加载内存不足。请使用tiny模型或减少同时运行的应用。")
                 return false
             }
@@ -3003,14 +3003,14 @@ class SubtitleGeneratorService : Service() {
             // v2.4.56: Revert tiny model full PCM - only pre-cache (isFullPcm) uses full audio.
             // Manual generation uses 5-min PCM for quick testing.
             val bytesToRead = if (isFullPcm) fileBytes.toInt() else minOf(fileBytes, maxPcmBytes).toInt()
-            logToFile("[v2.4.56] processWhisperInChunks: isFullPcm=$isFullPcm, fileBytes=$fileBytes, bytesToRead=$bytesToRead")
+            logToFile("[${com.radio.app.RadioApplication.appVersionTag()}] processWhisperInChunks: isFullPcm=$isFullPcm, fileBytes=$fileBytes, bytesToRead=$bytesToRead")
             if (bytesToRead <= 0) {
                 logToFile("processWhisperInChunks: PCM too small (${fileBytes} bytes), aborting")
                 callback.onError("音频文件太短，无法处理")
                 try { bridge.free(ctxPtr) } catch (_: Exception) {}
                 return false
             }
-            logToFile("processWhisperInChunks: [v2.0.75] PCM=${fileBytes} bytes, reading ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s), isFrom15Min=$isFrom15MinRange, isFullPcm=$isFullPcm, offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] PCM=${fileBytes} bytes, reading ${bytesToRead} bytes (${bytesToRead / 16000 / 2}s), isFrom15Min=$isFrom15MinRange, isFullPcm=$isFullPcm, offsetMs=$whisperOffsetMs")
 
             // [v2.0.89] Issue 5 Fix: STREAMING PCM processing — do NOT load entire file into memory.
             // v2.0.78 loaded entire PCM as ByteArray(9.6MB) + FloatArray(19.2MB) = 29MB Java heap.
@@ -3052,7 +3052,7 @@ class SubtitleGeneratorService : Service() {
             // Beam search doesn't significantly improve Chinese broadcast quality
             val optMode = com.radio.app.whisper.WhisperBridge.OPT_SPEED
             val optModeName = "SPEED(greedy)"
-            logToFile("processWhisperInChunks: [v2.4.23] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] modelSize=${modelSizeMB}MB, chunkSize=${chunkSize/16000}s, optMode=$optModeName")
 
             // [v2.4.24] Reusable buffers to reduce GC pressure
             var pcmChunk: ByteArray? = null
@@ -3075,7 +3075,7 @@ class SubtitleGeneratorService : Service() {
             // than the current episode's PCM file. This causes the while loop to never execute
             // (totalSamplesRead >= totalSamplesToRead), producing 0 transcripts from 0 chunks.
             if (resumeFromSample > 0 && resumeFromSample >= totalSamplesToRead) {
-                logToFile("processWhisperInChunks: [v2.4.40] RESUME RESET: resumeFromSample ($resumeFromSample) >= totalSamplesToRead ($totalSamplesToRead), starting from beginning")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] RESUME RESET: resumeFromSample ($resumeFromSample) >= totalSamplesToRead ($totalSamplesToRead), starting from beginning")
                 resumeFromSample = 0
                 totalSamplesRead = 0
             }
@@ -3083,14 +3083,14 @@ class SubtitleGeneratorService : Service() {
                 // Skip the first resumeFromSample samples (2 bytes each)
                 val skipBytes = resumeFromSample.toLong() * 2
                 val actuallySkipped = pcmInput.skip(skipBytes)
-                logToFile("processWhisperInChunks: [v2.4.20] RESUME: skipped $actuallySkipped bytes ($resumeFromSample samples), starting from sample $resumeFromSample")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] RESUME: skipped $actuallySkipped bytes ($resumeFromSample samples), starting from sample $resumeFromSample")
                 if (actuallySkipped < skipBytes) {
-                    logToFile("processWhisperInChunks: [v2.4.20] RESUME WARNING: could not skip all bytes, skipping ${actuallySkipped / 2} samples instead")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] RESUME WARNING: could not skip all bytes, skipping ${actuallySkipped / 2} samples instead")
                     totalSamplesRead = (actuallySkipped / 2).toInt()
                 }
             }
 
-            logToFile("processWhisperInChunks: [v2.3.0] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (STRICT mode, no engine switching), offsetMs=$whisperOffsetMs")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] STREAMING processing $totalSamplesToRead samples in ${chunkSize/16000}s chunks (STRICT mode, no engine switching), offsetMs=$whisperOffsetMs")
 
             // [v2.4.18] Track 10-minute interval timing for Whisper processing
             val tenMinStartSamples = 10 * 60 * 16000  // 10 minutes of audio at 16kHz
@@ -3111,7 +3111,7 @@ class SubtitleGeneratorService : Service() {
                 // Read one chunk of PCM bytes from file
                 val samplesToRead = minOf(chunkSize, totalSamplesToRead - totalSamplesRead)
                 if (samplesToRead < chunkSize / 10) {  // [v2.4.6] Dynamic threshold = 10% of chunk size
-                    logToFile("processWhisperInChunks: [v2.3.2] last chunk too small ($samplesToRead samples), skipping")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] last chunk too small ($samplesToRead samples), skipping")
                     break
                 }
                 val bytesForChunk = (samplesToRead * 2).toInt()
@@ -3136,7 +3136,7 @@ class SubtitleGeneratorService : Service() {
 
                 val chunkStartSec = totalSamplesRead / 16000
                 val chunkEndSec = (totalSamplesRead + samplesToRead) / 16000
-                logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk $chunkIdx: samples [$totalSamplesRead-${totalSamplesRead + samplesToRead}) ($samplesToRead samples, ${chunkStartSec}s-${chunkEndSec}s)")
 
                 // [v2.0.91] Heap check — lower thresholds
                 // [v2.4.3] Removed CRITICALLY LOW HEAP abort entirely.
@@ -3163,7 +3163,7 @@ class SubtitleGeneratorService : Service() {
                 // [v2.2.5] Adjusted native threshold for 10s chunks with tiny model
                 val whisperNativeThreshold = 100L
                 if (availNativeMB < whisperNativeThreshold) {
-                    logToFile("processWhisperInChunks: [v2.0.93] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] LOW NATIVE MEMORY before chunk $chunkIdx: availMem=${availNativeMB}MB < ${whisperNativeThreshold}MB, aborting")
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper推理时系统可用内存不足（可用${availNativeMB}MB，推理需要约${whisperNativeThreshold}MB）"
                         ctx.lastErrorDetail = detail
@@ -3172,7 +3172,7 @@ class SubtitleGeneratorService : Service() {
                         pcmInput.close()
                         return false
                     } else {
-                        logToFile("processWhisperInChunks: [v2.0.91] Returning ${allTranscripts.size} partial transcripts before native OOM")
+                        logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] Returning ${allTranscripts.size} partial transcripts before native OOM")
                         break
                     }
                 }
@@ -3188,9 +3188,9 @@ class SubtitleGeneratorService : Service() {
 
                 try {
                     // [v2.1.9] Add logging right before JNI call to pinpoint crash location
-                    logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk $chunkIdx: BEFORE bridge.full, ctxPtr=$ctxPtr, samples=$samplesToRead")
                     val result = bridge.full(ctxPtr, chunkSamples!!, samplesToRead)
-                    logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx: AFTER bridge.full returned $result")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk $chunkIdx: AFTER bridge.full returned $result")
 
                     if (result == 0) {
                         val nSeg = bridge.fullNSegments(ctxPtr)
@@ -3214,9 +3214,9 @@ class SubtitleGeneratorService : Service() {
                         markerTranscript.episodeId = episodeId
                         val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@SubtitleGeneratorService)
                         dbHelper.saveTranscript(markerTranscript)
-                        logToFile("processWhisperInChunks: [v2.4.67] saved progress marker chunkEnd=${chunkEndMs}ms (nSeg=$nSeg)")
+                        logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] saved progress marker chunkEnd=${chunkEndMs}ms (nSeg=$nSeg)")
                     } catch (e: Exception) {
-                        logToFile("processWhisperInChunks: [v2.4.67] failed to save progress marker: ${e.message}")
+                        logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] failed to save progress marker: ${e.message}")
                     }
 
                         for (i in 0 until nSeg) {
@@ -3249,34 +3249,34 @@ class SubtitleGeneratorService : Service() {
                         // whisper_full returns: 0=success, 1=mel compute failed, 2=encode failed, 3=decode failed, etc.
                         // Count consecutive errors just like crashes to trigger Vosk fallback quickly.
                         consecutiveCrashes++
-                        logToFile("processWhisperInChunks: [v2.3.0] chunk $chunkIdx failed with code $result (consecutive errors=$consecutiveCrashes)")
+                        logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk $chunkIdx failed with code $result (consecutive errors=$consecutiveCrashes)")
                     }
                 } catch (oom: OutOfMemoryError) {
-                    logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx OOM: ${oom.message}")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk $chunkIdx OOM: ${oom.message}")
                     consecutiveCrashes++
                     System.gc()
                     Thread.sleep(500)
                 } catch (e: Throwable) {
-                    logToFile("processWhisperInChunks: [v2.0.90] chunk $chunkIdx CRASHED: ${e.javaClass.name}: ${e.message}")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] chunk $chunkIdx CRASHED: ${e.javaClass.name}: ${e.message}")
                     consecutiveCrashes++
                 }
 
                 // [v2.3.0] Abort early after 3 consecutive failures (crashes OR error codes).
                 // Previously we only counted exceptions, but whisper_full returning -1/1/2/3 also means failure.
                 if (consecutiveCrashes >= 3) {
-                    logToFile("processWhisperInChunks: [v2.3.0] $consecutiveCrashes consecutive failures (code=$chunkErrorCode), aborting. Transcripts so far: ${allTranscripts.size}")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] $consecutiveCrashes consecutive failures (code=$chunkErrorCode), aborting. Transcripts so far: ${allTranscripts.size}")
                     // [v2.3.0] Dump native log tail for diagnostics
                     try {
                         val nativeLog = java.io.File(filesDir, "logs/subtitle/native.log")
                         if (nativeLog.exists()) {
                             val tail = nativeLog.readText().takeLast(2000)
-                            logToFile("processWhisperInChunks: [v2.3.0] native log tail:\n$tail")
+                            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] native log tail:\n$tail")
                         }
                     } catch (_: Exception) {}
                     if (allTranscripts.isEmpty()) {
                         val detail = "Whisper引擎推理失败（连续${consecutiveCrashes}次chunk返回错误码$chunkErrorCode）"
                         ctx.lastErrorDetail = detail
-                        logToFile("processWhisperInChunks: [v2.3.0] $detail - aborting (STRICT mode, no fallback)")
+                        logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] $detail - aborting (STRICT mode, no fallback)")
                         callback.onError("$detail")
                         try { bridge.free(ctxPtr) } catch (_: Exception) {}
                         pcmInput.close()
@@ -3306,7 +3306,7 @@ class SubtitleGeneratorService : Service() {
                     val segmentTimeMs = now - tenMinSegmentStartTime
                     val audioProcessedSec = totalSamplesRead / 16000
                     val segmentAudioSec = (totalSamplesRead - lastTenMinCheckpoint) / 16000
-                    logToFile("processWhisperInChunks: [v2.4.18] 10-MIN-CHECKPOINT #${tenMinSegmentIdx}: audioAt=${audioProcessedSec}s, segmentAudio=${segmentAudioSec}s, segmentTime=${segmentTimeMs}ms, speed=${String.format("%.2f", segmentAudioSec.toDouble() / (segmentTimeMs / 1000.0))}x")
+                    logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] 10-MIN-CHECKPOINT #${tenMinSegmentIdx}: audioAt=${audioProcessedSec}s, segmentAudio=${segmentAudioSec}s, segmentTime=${segmentTimeMs}ms, speed=${String.format("%.2f", segmentAudioSec.toDouble() / (segmentTimeMs / 1000.0))}x")
                     lastTenMinCheckpoint = totalSamplesRead
                     tenMinSegmentStartTime = now
                     tenMinSegmentIdx++
@@ -3333,7 +3333,7 @@ class SubtitleGeneratorService : Service() {
                 }
                 val detail = "Whisper处理完成但未识别到任何内容（${chunkIdx}个chunk，0条字幕）${memNote}"
                 ctx.lastErrorDetail = detail
-                logToFile("processWhisperInChunks: [v2.3.8] WARNING: 0 transcripts generated! $detail")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: 0 transcripts generated! $detail")
                 callback.onError("$detail")
                 return false
             }
@@ -3346,33 +3346,33 @@ class SubtitleGeneratorService : Service() {
                 // Accumulate: total = previous session + this session
                 currentProcessingTimeMs = prevProcessingTimeMs + thisSessionProcessingMs
                 currentAudioDurationMs = prevAudioDurationMs + thisSessionAudioMs
-                logToFile("processWhisperInChunks: [v2.4.63] ACCUMULATED timing: prevProc=${prevProcessingTimeMs}ms + thisProc=${thisSessionProcessingMs}ms = ${currentProcessingTimeMs}ms, prevAudio=${prevAudioDurationMs}ms + thisAudio=${thisSessionAudioMs}ms = ${currentAudioDurationMs}ms")
+                logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] ACCUMULATED timing: prevProc=${prevProcessingTimeMs}ms + thisProc=${thisSessionProcessingMs}ms = ${currentProcessingTimeMs}ms, prevAudio=${prevAudioDurationMs}ms + thisAudio=${thisSessionAudioMs}ms = ${currentAudioDurationMs}ms")
             } else {
                 currentProcessingTimeMs = thisSessionProcessingMs
                 currentAudioDurationMs = thisSessionAudioMs
             }
             val ratioStr = if (currentProcessingTimeMs > 0)
                 String.format("%.2f", currentAudioDurationMs.toDouble() / currentProcessingTimeMs) else "N/A"
-            logToFile("processWhisperInChunks: [v2.4.31] timing: processingTime=${currentProcessingTimeMs}ms (${currentProcessingTimeMs / 1000}s), audioDuration=${currentAudioDurationMs}ms (${currentAudioDurationMs / 1000}s), ratio=${ratioStr}x")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] timing: processingTime=${currentProcessingTimeMs}ms (${currentProcessingTimeMs / 1000}s), audioDuration=${currentAudioDurationMs}ms (${currentAudioDurationMs / 1000}s), ratio=${ratioStr}x")
             callback.onComplete(allTranscripts)
             return true
 
         } catch (e: UnsatisfiedLinkError) {
             val detail = "Whisper JNI桥接未找到(${e.message})"
             ctx.lastErrorDetail = detail
-            logToFile("processWhisperInChunks: [v2.0.76] UnsatisfiedLinkError: $detail")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] UnsatisfiedLinkError: $detail")
             callback.onError("$detail 请确保引擎文件已正确安装。")
             return false
         } catch (oom: OutOfMemoryError) {
             val detail = "Whisper内存不足(OutOfMemoryError: ${oom.message})"
             ctx.lastErrorDetail = detail
-            logToFile("processWhisperInChunks: [v2.0.76] OOM EXCEPTION: $detail")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] OOM EXCEPTION: $detail")
             callback.onError("$detail 请关闭其他应用或使用更小的模型。")
             return false
         } catch (e: Exception) {
             val detail = "Whisper处理异常(${e.javaClass.name}: ${e.message})"
             ctx.lastErrorDetail = detail
-            logToFile("processWhisperInChunks: [v2.0.76] EXCEPTION: $detail")
+            logToFile("processWhisperInChunks: [${com.radio.app.RadioApplication.appVersionTag()}] EXCEPTION: $detail")
             callback.onError("$detail")
             return false
         }
@@ -3395,7 +3395,7 @@ class SubtitleGeneratorService : Service() {
                 logToFile("find16kHzPcmCache: found PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
                 return pcmFile
             } else if (pcmFile.exists()) {
-                logToFile("find16kHzPcmCache: [v2.1.0] PCM too small (${pcmFile.length()} bytes < ${minValid}), deleting")
+                logToFile("find16kHzPcmCache: [${com.radio.app.RadioApplication.appVersionTag()}] PCM too small (${pcmFile.length()} bytes < ${minValid}), deleting")
                 try { pcmFile.delete() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
@@ -3448,7 +3448,7 @@ class SubtitleGeneratorService : Service() {
     private fun decodeFullAudioToPcm(
         audioFile: File, pcmFile: File, ctx: TaskContext
     ): Boolean {
-        logToFile("decodeFullAudioToPcm: [v2.4.10] START, audio=${audioFile.absolutePath} (${audioFile.length()/1024/1024}MB)")
+        logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] START, audio=${audioFile.absolutePath} (${audioFile.length()/1024/1024}MB)")
         var extractor: MediaExtractor? = null
         var codec: MediaCodec? = null
         var fos: FileOutputStream? = null
@@ -3467,7 +3467,7 @@ class SubtitleGeneratorService : Service() {
                 }
             }
             if (audioTrack < 0) {
-                logToFile("decodeFullAudioToPcm: [v2.4.10] no audio track found")
+                logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] no audio track found")
                 return false
             }
 
@@ -3480,10 +3480,10 @@ class SubtitleGeneratorService : Service() {
                 if (format.containsKey(MediaFormat.KEY_DURATION)) {
                     sourceDurationUs = format.getLong(MediaFormat.KEY_DURATION)
                     val sourceDurationSec = sourceDurationUs / 1000000
-                    logToFile("decodeFullAudioToPcm: [v2.4.68] source track duration=${sourceDurationSec}s (${sourceDurationUs}us)")
+                    logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] source track duration=${sourceDurationSec}s (${sourceDurationUs}us)")
                 }
             } catch (e: Exception) {
-                logToFile("decodeFullAudioToPcm: [v2.4.68] failed to read KEY_DURATION: ${e.message}")
+                logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] failed to read KEY_DURATION: ${e.message}")
             }
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
@@ -3498,7 +3498,7 @@ class SubtitleGeneratorService : Service() {
             val outSampleRate = 16000
             val outChannels = 1
 
-            logToFile("decodeFullAudioToPcm: [v2.4.10] input: ${inSampleRate}Hz ${inChannels}ch -> output: ${outSampleRate}Hz ${outChannels}ch")
+            logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] input: ${inSampleRate}Hz ${inChannels}ch -> output: ${outSampleRate}Hz ${outChannels}ch")
 
             fos = FileOutputStream(pcmFile)
             val bufferInfo = MediaCodec.BufferInfo()
@@ -3517,7 +3517,7 @@ class SubtitleGeneratorService : Service() {
             while (!outputDone && !ctx.cancelled.get()) {
                 val now = System.currentTimeMillis()
                 if (now - decodeStartTime > maxDecodeTimeMs) {
-                    logToFile("decodeFullAudioToPcm: [v2.4.10] max decode time reached, stopping")
+                    logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] max decode time reached, stopping")
                     outputDone = true
                     break
                 }
@@ -3545,9 +3545,9 @@ class SubtitleGeneratorService : Service() {
                     try {
                         inSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                         inChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        logToFile("decodeFullAudioToPcm: [v2.4.15] FORMAT_CHANGED: actual sampleRate=$inSampleRate, channels=$inChannels")
+                        logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] FORMAT_CHANGED: actual sampleRate=$inSampleRate, channels=$inChannels")
                     } catch (e: Exception) {
-                        logToFile("decodeFullAudioToPcm: [v2.4.15] FORMAT_CHANGED but failed to read format: ${e.message}")
+                        logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] FORMAT_CHANGED but failed to read format: ${e.message}")
                     }
                 }
                 if (outIdx >= 0) {
@@ -3590,21 +3590,21 @@ class SubtitleGeneratorService : Service() {
 
             val sizeMB = pcmFile.length() / 1024 / 1024
             val durationSec = pcmFile.length() / 2 / outSampleRate
-            logToFile("decodeFullAudioToPcm: [v2.4.10] DONE, output=${sizeMB}MB (${durationSec}s), took ${System.currentTimeMillis()-decodeStartTime}ms")
+            logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] DONE, output=${sizeMB}MB (${durationSec}s), took ${System.currentTimeMillis()-decodeStartTime}ms")
             // v2.4.68: Compare PCM duration to source duration. If PCM is much shorter (<80%),
             // the decoder may have stopped early. Log a warning.
             if (sourceDurationUs > 0) {
                 val sourceDurationSec = sourceDurationUs / 1000000
                 val ratio = durationSec.toDouble() / sourceDurationSec.toDouble()
-                logToFile("decodeFullAudioToPcm: [v2.4.68] duration check: PCM=${durationSec}s, source=${sourceDurationSec}s, ratio=${String.format("%.2f", ratio)}")
+                logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] duration check: PCM=${durationSec}s, source=${sourceDurationSec}s, ratio=${String.format("%.2f", ratio)}")
                 if (ratio < 0.8) {
-                    logToFile("decodeFullAudioToPcm: [v2.4.68] WARNING: PCM is only ${String.format("%.0f%%", ratio*100)} of source duration! Decoder may have stopped early.")
+                    logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: PCM is only ${String.format("%.0f%%", ratio*100)} of source duration! Decoder may have stopped early.")
                 }
             }
             return pcmFile.exists() && pcmFile.length() > 1024 * 100
 
         } catch (e: Exception) {
-            logToFile("decodeFullAudioToPcm: [v2.4.10] EXCEPTION: ${e.message}")
+            logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] EXCEPTION: ${e.message}")
             return false
         } finally {
             try { fos?.close() } catch (_: Exception) {}
@@ -3822,9 +3822,9 @@ class SubtitleGeneratorService : Service() {
             try {
                 val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
                 infoFile.writeText("sampleRate=${SAMPLE_RATE}\nchannels=1\nversion=3\nsource=SubtitleGeneratorService")
-                logToFile("decodeToPcm: [v2.0.96] wrote .info file: sampleRate=${SAMPLE_RATE}, channels=1")
+                logToFile("decodeToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] wrote .info file: sampleRate=${SAMPLE_RATE}, channels=1")
             } catch (e: Exception) {
-                logToFile("decodeToPcm: [v2.0.96] failed to write .info file: ${e.message}")
+                logToFile("decodeToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] failed to write .info file: ${e.message}")
             }
             try { codec.stop(); codec.release() } catch (_: Exception) {}
             try { fos.close() } catch (_: Exception) {}
@@ -4114,7 +4114,7 @@ class SubtitleGeneratorService : Service() {
             if (!activeTasks.containsKey(episodeId)) {
                 // [v2.4.10] Set force Whisper base flag for pre-cache subtitle generation
                 forceWhisperBaseModel = forceWhisperBase
-                logToFile("onStartCommand: [v2.0.58] starting $taskType task for episode=$episodeId (cross-process mode), forceWhisperBase=$forceWhisperBase, isPreCache=$isPreCacheSubtitle")
+                logToFile("onStartCommand: [${com.radio.app.RadioApplication.appVersionTag()}] starting $taskType task for episode=$episodeId (cross-process mode), forceWhisperBase=$forceWhisperBase, isPreCache=$isPreCacheSubtitle")
                 if (taskType == "segment") {
                     val dummyCallback = object : SegmentCallback {
                         override fun onSegmentGenerated(segment: VoiceSegment) {}
@@ -4129,7 +4129,7 @@ class SubtitleGeneratorService : Service() {
                         override fun onProgressUpdate(progress: Int, total: Int) {}
                         override fun onError(error: String) {
                             // v2.4.64: Pre-cache task failure - show notification with failure reason
-                            logToFile("onStartCommand: [v2.4.64] PRE-CACHE subtitle task FAILED for $episodeId: $error")
+                            logToFile("onStartCommand: [${com.radio.app.RadioApplication.appVersionTag()}] PRE-CACHE subtitle task FAILED for $episodeId: $error")
                             try {
                                 val notif = NotificationCompat.Builder(this@SubtitleGeneratorService, CHANNEL_ID_ERROR)
                                     .setSmallIcon(android.R.drawable.ic_dialog_alert)

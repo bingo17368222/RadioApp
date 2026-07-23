@@ -401,7 +401,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "jitter.log")
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-            java.io.FileWriter(logFile, true).use { it.append("[$ts][v2.0.43] [EPISODE] EpisodesFragment.onEpisodeClick: BEFORE click - target='${episode.title}', id=${episode.id}, url=$audioUrl\n") }
+            java.io.FileWriter(logFile, true).use { it.append("[$ts]${com.radio.app.RadioApplication.appVersionTag()} [EPISODE] EpisodesFragment.onEpisodeClick: BEFORE click - target='${episode.title}', id=${episode.id}, url=$audioUrl\n") }
         } catch (_: Exception) {}
 
         episode.stationId?.let { stationId ->

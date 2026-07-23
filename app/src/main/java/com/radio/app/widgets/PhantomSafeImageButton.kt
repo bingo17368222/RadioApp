@@ -55,7 +55,7 @@ class PhantomSafeImageButton @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.action == MotionEvent.ACTION_DOWN) {
             realTouchPending = true
-            debugLog("[v2.4.58] onTouchEvent ACTION_DOWN - realTouchPending=true")
+            debugLog("${com.radio.app.RadioApplication.appVersionTag()} onTouchEvent ACTION_DOWN - realTouchPending=true")
         }
         return super.onTouchEvent(event)
     }
@@ -64,12 +64,12 @@ class PhantomSafeImageButton @JvmOverloads constructor(
         if (!realTouchPending) {
             // This is a phantom click from performAccessibilityActionInternal.
             // Block it completely.
-            debugLog("[v2.4.58] performClick BLOCKED (no real touch pending) - phantom click eliminated")
+            debugLog("${com.radio.app.RadioApplication.appVersionTag()} performClick BLOCKED (no real touch pending) - phantom click eliminated")
             return false
         }
         // Real touch confirmed - consume the flag and allow the click
         realTouchPending = false
-        debugLog("[v2.4.58] performClick ALLOWED (real touch confirmed)")
+        debugLog("${com.radio.app.RadioApplication.appVersionTag()} performClick ALLOWED (real touch confirmed)")
         return super.performClick()
     }
 }

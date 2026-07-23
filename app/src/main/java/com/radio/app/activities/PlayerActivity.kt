@@ -217,7 +217,7 @@ class PlayerActivity : AppCompatActivity() {
                         val modelLabel = formatModelName(modelName)
                         binding.tvSubtitleStatus.text = "字幕生成中 · $modelLabel"
                         binding.tvSubtitleStatus.visibility = View.VISIBLE
-                        android.util.Log.d("PlayerActivity", "[v2.0.69] Subtitle model info: $modelName ($engineType) -> $modelLabel")
+                        android.util.Log.d("PlayerActivity", "[${com.radio.app.RadioApplication.appVersionTag()}] Subtitle model info: $modelName ($engineType) -> $modelLabel")
                     }
                 }
                 "com.radio.app.SUBTITLE_COMPLETE" -> {
@@ -367,7 +367,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
                     binding.seekBar.progress = savedPos.toInt()
                     binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
-                    writeNotificationLog("[v2.4.135] episodeChanged reset UI position to savedPos=$savedPos, dur=$svcDur for ep=${ep.id}")
+                    writeNotificationLog(" episodeChanged reset UI position to savedPos=$savedPos, dur=$svcDur for ep=${ep.id}")
                 }
                 updateUI()
                 // v2.4.134: 与 onEpisodeChanged 回调路径保持一致——切换节目后必须强制刷新
@@ -377,7 +377,7 @@ class PlayerActivity : AppCompatActivity() {
                 // onPositionChanged 在 stabilize 期间接受了旧位置。
                 runOnUiThread {
                     if (_binding == null) return@runOnUiThread
-                    writeJitterLog("[v2.4.134] episodeChanged broadcast: force-refresh position for ${ep?.id}")
+                    writeJitterLog(" episodeChanged broadcast: force-refresh position for ${ep?.id}")
                     lastDisplayedPositionMs = 0
                     val savedPos = if (ep != null) getSavedPositionForEpisode(this@PlayerActivity, ep.id) else 0L
                     jitterSyncBaseline = savedPos
@@ -388,12 +388,12 @@ class PlayerActivity : AppCompatActivity() {
                         binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                         binding.seekBar.progress = savedPos.toInt()
                         setEpisodeSwitchLock(savedPos)
-                        writeJitterLog("[v2.4.134] episodeChanged broadcast: set position lock to savedPos=$savedPos")
+                        writeJitterLog(" episodeChanged broadcast: set position lock to savedPos=$savedPos")
                     } else {
                         binding.tvCurrentTime.text = "00:00 / --:--"
                         binding.seekBar.progress = 0
                         setEpisodeSwitchLock(0L)
-                        writeJitterLog("[v2.4.134] episodeChanged broadcast: set position lock to 0 (no saved position)")
+                        writeJitterLog(" episodeChanged broadcast: set position lock to 0 (no saved position)")
                     }
                 }
             }
@@ -474,7 +474,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / --:--"
                     binding.seekBar.progress = svcPos.toInt()
                 }
-                writeJitterLog("[v2.0.62] onServiceConnected: synced UI to service position=$svcPos, dur=$svcDur")
+                writeJitterLog(" onServiceConnected: synced UI to service position=$svcPos, dur=$svcDur")
             } else if (isFreshStart || !sameEpisode) {
                 // v2.4.123: Switching to a different episode — DON'T sync UI to old service position.
                 // Set UI to the new episode's saved position or 0, so the progress bar
@@ -486,14 +486,14 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBar.progress = savedPos.toInt()
                     // v2.4.132: Set position lock to prevent old episode position from leaking
                     setEpisodeSwitchLock(savedPos)
-                    writeJitterLog("[v2.4.123] onServiceConnected: episode switch, pre-set UI to savedPos=$savedPos (NOT syncing to old svcPos=$svcPos), locked to $savedPos")
+                    writeJitterLog(" onServiceConnected: episode switch, pre-set UI to savedPos=$savedPos (NOT syncing to old svcPos=$svcPos), locked to $savedPos")
                 } else {
                     lastDisplayedPositionMs = 0
                     binding.tvCurrentTime.text = "00:00 / --:--"
                     binding.seekBar.progress = 0
                     // v2.4.132: Lock to 0 since no saved position
                     setEpisodeSwitchLock(0L)
-                    writeJitterLog("[v2.4.123] onServiceConnected: episode switch, reset UI to 0 (NOT syncing to old svcPos=$svcPos), locked to 0")
+                    writeJitterLog(" onServiceConnected: episode switch, reset UI to 0 (NOT syncing to old svcPos=$svcPos), locked to 0")
                 }
             } else if (svcPos > 0) {
                 lastDisplayedPositionMs = svcPos
@@ -509,7 +509,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / --:--"
                     binding.seekBar.progress = svcPos.toInt()
                 }
-                writeJitterLog("[v2.0.62] onServiceConnected: synced UI to service position=$svcPos, dur=$svcDur")
+                writeJitterLog(" onServiceConnected: synced UI to service position=$svcPos, dur=$svcDur")
             } else {
                 // Service reports 0 - either fresh start or just killed. Pre-set UI to saved position.
                 val savedPos = getSavedPositionForEpisode(this@PlayerActivity, currentEpisode?.id ?: "")
@@ -518,7 +518,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                     binding.seekBar.progress = savedPos.toInt()
                     binding.tvLiveIndicator.text = "恢复中..."
-                    writeJitterLog("[v2.0.62] onServiceConnected: service pos=0, pre-set UI to savedPos=$savedPos")
+                    writeJitterLog(" onServiceConnected: service pos=0, pre-set UI to savedPos=$savedPos")
                 } else {
                     lastDisplayedPositionMs = 0
                 }
@@ -636,7 +636,7 @@ class PlayerActivity : AppCompatActivity() {
                     // [v2.0.71] Only skip restart if BOTH title AND ID match
                     setPlaybackInProgress(this@PlayerActivity, null)
                     val svcPos = playbackService?.getCurrentPosition() ?: 0L
-                    val msg = "[v2.0.64] JITTER-GUARD: same episode title+id '${svcEpisode.title}'/'${svcEpisode.id}' (URL differs), syncing to service position=$svcPos without restart"
+                    val msg = "${com.radio.app.RadioApplication.appVersionTag()} JITTER-GUARD: same episode title+id '${svcEpisode.title}'/'${svcEpisode.id}' (URL differs), syncing to service position=$svcPos without restart"
                     android.util.Log.d("PlayerActivity", msg)
                     writeJitterLog(msg)
                     lastDisplayedPositionMs = svcPos
@@ -690,7 +690,7 @@ class PlayerActivity : AppCompatActivity() {
             } else if (svcStarted && !sameEpisode && isFreshStart) {
                 // [v2.0.43] Issue 5 Fix: 用户主动选择了新节目，service正在播放旧节目。
                 // 必须播放用户选择的节目，而不是同步到service的旧节目。
-                writeJitterLog("[v2.0.43] JITTER-GUARD BYPASSED: isFreshStart=true, user selected '${currentEpisode?.title}' but service playing '${playbackService?.getCurrentEpisode()?.title}'. Playing user's selection.")
+                writeJitterLog(" JITTER-GUARD BYPASSED: isFreshStart=true, user selected '${currentEpisode?.title}' but service playing '${playbackService?.getCurrentEpisode()?.title}'. Playing user's selection.")
                 // 不return，继续执行下面的playEpisode逻辑
             }
 
@@ -736,7 +736,7 @@ class PlayerActivity : AppCompatActivity() {
             // 让服务重新初始化时 seek 到正确位置。onResume 已经处理了 UI 防抖（只在服务无位置时显示缓存位置）。
             // 之前设为 0 会导致播放从头开始（进度回退），设为 -1 也一样。
             if (!svcStarted) {
-                writeJitterLog("[v2.0.42] Service was killed (!svcStarted), keeping savedPos=${savedPos}ms (valid=$isValidSavedPos) to pass to playEpisode for position restore")
+                writeJitterLog(" Service was killed (!svcStarted), keeping savedPos=${savedPos}ms (valid=$isValidSavedPos) to pass to playEpisode for position restore")
             }
 
             // [v2.0.62] Issue 1 Fix: Pre-set UI to savedPos when service is killed
@@ -746,7 +746,7 @@ class PlayerActivity : AppCompatActivity() {
                 binding.seekBar.progress = savedPos.toInt()
                 binding.tvLiveIndicator.text = "恢复中..."
                 lastDisplayedPositionMs = savedPos
-                writeJitterLog("[v2.0.62] Pre-setting UI to saved position: ${savedPos}ms (svcStarted=$svcStarted, isFreshStart=$isFreshStart)")
+                writeJitterLog(" Pre-setting UI to saved position: ${savedPos}ms (svcStarted=$svcStarted, isFreshStart=$isFreshStart)")
             } else if (!isFreshStart && currentEpisode != null && savedPos > 0 && !isValidSavedPos) {
                 writeJitterLog("Skipping invalid saved position: ${savedPos}ms exceeds maxDuration=$maxDuration, episode=${currentEpisode?.title}")
             }
@@ -754,7 +754,7 @@ class PlayerActivity : AppCompatActivity() {
             val msg = if (sameEpisode && !svcStarted) {
                 "Same episode, service was killed, restoring from saved position: ${savedPos}ms (valid=$isValidSavedPos)"
             } else {
-                "[v2.0.43] [EPISODE] Different episode, starting new playback: ${currentEpisode?.title} (was svc=${playbackService?.getCurrentEpisode()?.title}), isFreshStart=$isFreshStart"
+                "${com.radio.app.RadioApplication.appVersionTag()} [EPISODE] Different episode, starting new playback: ${currentEpisode?.title} (was svc=${playbackService?.getCurrentEpisode()?.title}), isFreshStart=$isFreshStart"
             }
             android.util.Log.d("PlayerActivity", msg)
             writeJitterLog(msg)
@@ -807,7 +807,7 @@ class PlayerActivity : AppCompatActivity() {
                                 val cachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
                                 val restorePos = if (cachedPos > 30000 && cachedEpId == episode.id) cachedPos else savedPos
                                 if (restorePos > 30000) {
-                                    writeJitterLog("[v2.4.45] onServiceConnected: isFreshStart, restoring pos=$restorePos (saved=$savedPos, cached=$cachedPos, svcStarted=$svcStarted)")
+                                    writeJitterLog(" onServiceConnected: isFreshStart, restoring pos=$restorePos (saved=$savedPos, cached=$cachedPos, svcStarted=$svcStarted)")
                                 }
                                 restorePos
                             }
@@ -833,15 +833,15 @@ class PlayerActivity : AppCompatActivity() {
                             val activityCachedEpId = getSharedPreferences("player_position_cache", MODE_PRIVATE).getString("cached_episode_id", "")
                             // v2.4.66: Only use Activity cache as fallback if SharedPreferences has no position
                             if (!svcStarted && savedPosition <= 0 && activityCachedPos > 30000 && activityCachedEpId == episode.id) {
-                                writeJitterLog("[v2.4.66] No savedPos in SharedPreferences, using Activity cached pos=$activityCachedPos as fallback")
+                                writeJitterLog(" No savedPos in SharedPreferences, using Activity cached pos=$activityCachedPos as fallback")
                                 savedPosition = activityCachedPos
                             } else if (!svcStarted && savedPosition > 0 && activityCachedPos > 30000 && activityCachedEpId == episode.id) {
                                 // v2.4.66: Use whichever is larger (more recent) position
                                 if (savedPosition < activityCachedPos) {
-                                    writeJitterLog("[v2.4.66] Activity cached pos=$activityCachedPos is more recent than savedPos=$savedPosition, using cached")
+                                    writeJitterLog(" Activity cached pos=$activityCachedPos is more recent than savedPos=$savedPosition, using cached")
                                     savedPosition = activityCachedPos
                                 } else {
-                                    writeJitterLog("[v2.4.66] Using SharedPreferences savedPos=$savedPosition (more recent than Activity cache=$activityCachedPos)")
+                                    writeJitterLog(" Using SharedPreferences savedPos=$savedPosition (more recent than Activity cache=$activityCachedPos)")
                                 }
                             }
                             val epDurMs = episode.duration * if (episode.duration > 0 && episode.duration < 100000) 1000 else 1
@@ -849,7 +849,7 @@ class PlayerActivity : AppCompatActivity() {
                                 writeJitterLog("Service killed restore: savedPosition=${savedPosition}ms exceeds episode duration=${epDurMs}ms, clamping to 0")
                                 savedPosition = 0L
                             }
-                            val msg = "[v2.0.76] restoring position: savedPos=${savedPosition}ms, epDur=${epDurMs}ms, svcStarted=$svcStarted, activityCached=$activityCachedPos"
+                            val msg = "${com.radio.app.RadioApplication.appVersionTag()} restoring position: savedPos=${savedPosition}ms, epDur=${epDurMs}ms, svcStarted=$svcStarted, activityCached=$activityCachedPos"
                             android.util.Log.d("PlayerActivity", msg)
                             writeJitterLog(msg)
                             if (savedPosition > 0) {
@@ -976,7 +976,7 @@ class PlayerActivity : AppCompatActivity() {
                 // play/pause button icon and "播放中" text, causing visual flicker.
                 // During a seek, we know playback is still active, so don't change button state.
                 if (isUserSeeking) {
-                    writeJitterLog("[v2.4.47] onStateChanged: SUPPRESSED (isUserSeeking, playing=$playing)")
+                    writeJitterLog(" onStateChanged: SUPPRESSED (isUserSeeking, playing=$playing)")
                     return@runOnUiThread
                 }
                 updatePlayPauseButton(playing)
@@ -1010,7 +1010,7 @@ class PlayerActivity : AppCompatActivity() {
                         episodeSwitchLockRejectCount++
                         val lockElapsed = now - episodeSwitchLockStartMs
                         if (episodeSwitchLockRejectCount >= 3 || lockElapsed > 8000L) {
-                            writeJitterLog("[v2.4.141] POS-LOCK: stale lock cleared (pos=$position, lock=$episodeSwitchLockPos, rejects=$episodeSwitchLockRejectCount, elapsed=${lockElapsed}ms)")
+                            writeJitterLog(" POS-LOCK: stale lock cleared (pos=$position, lock=$episodeSwitchLockPos, rejects=$episodeSwitchLockRejectCount, elapsed=${lockElapsed}ms)")
                             clearEpisodeSwitchLock()
                             lastDisplayedPositionMs = position
                             jitterSyncBaseline = position
@@ -1029,13 +1029,13 @@ class PlayerActivity : AppCompatActivity() {
                             return@runOnUiThread
                         }
                         if (consecutiveBackwardJumps == 0 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.4.132] POS-LOCK: reject pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms, rejects=$episodeSwitchLockRejectCount)")
+                            writeJitterLog(" POS-LOCK: reject pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms, rejects=$episodeSwitchLockRejectCount)")
                         }
                         consecutiveBackwardJumps++
                         return@runOnUiThread
                     } else {
                         // Position matches lock — clear lock and accept
-                        writeJitterLog("[v2.4.132] POS-LOCK: accept pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms), clearing lock")
+                        writeJitterLog(" POS-LOCK: accept pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms), clearing lock")
                         clearEpisodeSwitchLock()
                         lastDisplayedPositionMs = position
                         jitterSyncBaseline = position
@@ -1072,11 +1072,11 @@ class PlayerActivity : AppCompatActivity() {
                     val oldDuration = currentPlaybackDurationMs
                     val timeSinceEpisodeChange = now - (jitterSyncTimeMs)
                     if (oldDuration > 10000 && position > oldDuration * 0.9 && timeSinceEpisodeChange < 5000) {
-                        writeJitterLog("[v2.4.91] onPositionChanged: episode changed to $currentEpId, but pos=$position is near old duration=$oldDuration (>90%), likely stale — waiting (timeout in ${(5000-timeSinceEpisodeChange)/1000}s)")
+                        writeJitterLog(" onPositionChanged: episode changed to $currentEpId, but pos=$position is near old duration=$oldDuration (>90%), likely stale — waiting (timeout in ${(5000-timeSinceEpisodeChange)/1000}s)")
                         return@runOnUiThread
                     }
                     if (oldDuration > 10000 && position > oldDuration * 0.9 && timeSinceEpisodeChange >= 5000) {
-                        writeJitterLog("[v2.4.91] onPositionChanged: stale position timeout expired, accepting pos=$position")
+                        writeJitterLog(" onPositionChanged: stale position timeout expired, accepting pos=$position")
                     }
                     // [v2.0.73] Issue 1 Fix: Don't accept position=0 on episode change (player not ready yet).
                     // Wait for a valid position (>2s) before setting baseline, otherwise UI flashes 0.
@@ -1093,7 +1093,7 @@ class PlayerActivity : AppCompatActivity() {
                             if (delta > 300000) {
                                 // Position is more than 5 minutes ahead of expected start — likely
                                 // the old episode's position still being reported by ExoPlayer.
-                                writeJitterLog("[v2.4.123] onPositionChanged: episode changed to $currentEpId, REJECTING pos=$position (expected ~$expectedStart, delta=${delta}ms, likely old episode position)")
+                                writeJitterLog(" onPositionChanged: episode changed to $currentEpId, REJECTING pos=$position (expected ~$expectedStart, delta=${delta}ms, likely old episode position)")
                                 lastJitterEpisodeId = currentEpId
                                 // Don't update lastDisplayedPositionMs — keep the savedPos set in onServiceConnected
                                 return@runOnUiThread
@@ -1101,11 +1101,11 @@ class PlayerActivity : AppCompatActivity() {
                         } else if (expectedStart <= 0 && position > 30000) {
                             // v2.4.128: No saved position for new episode, but position > 30s.
                             // This is likely the old episode's position — reject it.
-                            writeJitterLog("[v2.4.128] onPositionChanged: episode changed to $currentEpId, REJECTING pos=$position (no savedPos, pos > 30s, likely old episode position)")
+                            writeJitterLog(" onPositionChanged: episode changed to $currentEpId, REJECTING pos=$position (no savedPos, pos > 30s, likely old episode position)")
                             lastJitterEpisodeId = currentEpId
                             return@runOnUiThread
                         }
-                        writeJitterLog("[v2.0.73] onPositionChanged: episode changed from $lastJitterEpisodeId to $currentEpId, resetting jitter guard (pos=$position)")
+                        writeJitterLog(" onPositionChanged: episode changed from $lastJitterEpisodeId to $currentEpId, resetting jitter guard (pos=$position)")
                         lastJitterEpisodeId = currentEpId
                         lastDisplayedPositionMs = position
                         consecutiveBackwardJumps = 0
@@ -1117,7 +1117,7 @@ class PlayerActivity : AppCompatActivity() {
                     } else {
                         // [v2.4.19] Episode changed with pos=0: reset to 0 instead of HOLDING old position
                         // Old code held lastDisplayedPositionMs which caused flicker between old/new episode positions
-                        writeJitterLog("[v2.4.19] onPositionChanged: episode changed to $currentEpId, pos=$position (<2s), resetting to 0 (was lastPos=$lastDisplayedPositionMs)")
+                        writeJitterLog(" onPositionChanged: episode changed to $currentEpId, pos=$position (<2s), resetting to 0 (was lastPos=$lastDisplayedPositionMs)")
                         lastJitterEpisodeId = currentEpId
                         lastDisplayedPositionMs = 0
                         consecutiveBackwardJumps = 0
@@ -1148,7 +1148,7 @@ class PlayerActivity : AppCompatActivity() {
                     val deltaFromTarget = kotlin.math.abs(position - seekTargetPositionMs)
                     if (deltaFromTarget <= 5000L) {
                         // Position is close to target - seek complete, accept it
-                        writeJitterLog("[v2.4.43] SEEK-LOCK: accept pos=$position (target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
+                        writeJitterLog(" SEEK-LOCK: accept pos=$position (target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
                         lastDisplayedPositionMs = position
                         displayPosition = position
                         seekTargetPositionMs = -1L  // Clear target
@@ -1168,7 +1168,7 @@ class PlayerActivity : AppCompatActivity() {
                         displayPosition = lastDisplayedPositionMs
                         // Log occasionally
                         if (consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.4.43] SEEK-LOCK: hold at $lastDisplayedPositionMs (ignoring pos=$position, target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
+                            writeJitterLog(" SEEK-LOCK: hold at $lastDisplayedPositionMs (ignoring pos=$position, target=$seekTargetPositionMs, delta=${deltaFromTarget}ms)")
                         }
                         consecutiveBackwardJumps++
                     }
@@ -1189,7 +1189,7 @@ class PlayerActivity : AppCompatActivity() {
                         // Position is far from baseline - HOLD
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 0 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.4.41] STAB-HOLD: keep $lastDisplayedPositionMs (ignoring pos=$position, baseline=$jitterSyncBaseline, delta=${deltaFromBaseline}ms, stabRemaining=${jitterStabilizeMs - (now - jitterSyncTimeMs)}ms)")
+                            writeJitterLog(" STAB-HOLD: keep $lastDisplayedPositionMs (ignoring pos=$position, baseline=$jitterSyncBaseline, delta=${deltaFromBaseline}ms, stabRemaining=${jitterStabilizeMs - (now - jitterSyncTimeMs)}ms)")
                         }
                         consecutiveBackwardJumps++
                     }
@@ -1201,12 +1201,12 @@ class PlayerActivity : AppCompatActivity() {
                     if (isPositionNearZero) {
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 10 == 0) {
-                            writeJitterLog("[v2.4.41] ZERO-BLOCK: keeping $lastDisplayedPositionMs (ignoring near-zero pos=$position, delta=${backwardDelta}ms)")
+                            writeJitterLog(" ZERO-BLOCK: keeping $lastDisplayedPositionMs (ignoring near-zero pos=$position, delta=${backwardDelta}ms)")
                         }
                         consecutiveBackwardJumps++
                     } else if (backwardDelta >= 300_000L && !recentPause) {
                         // Genuine large backward jump: episode switch or user seek to earlier position
-                        writeJitterLog("[v2.4.41] LEGIT-BACK: accepting $lastDisplayedPositionMs->$position (delta=${backwardDelta}ms)")
+                        writeJitterLog(" LEGIT-BACK: accepting $lastDisplayedPositionMs->$position (delta=${backwardDelta}ms)")
                         lastDisplayedPositionMs = position
                         displayPosition = position
                         jitterSyncTimeMs = now
@@ -1215,14 +1215,14 @@ class PlayerActivity : AppCompatActivity() {
                     } else {
                         displayPosition = lastDisplayedPositionMs
                         if (consecutiveBackwardJumps == 1 || consecutiveBackwardJumps % 10 == 0) {
-                            writeJitterLog("[v2.4.41] HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms)")
+                            writeJitterLog(" HOLD: keeping $lastDisplayedPositionMs (ignoring backward to $position, delta=${backwardDelta}ms)")
                         }
                         consecutiveBackwardJumps++
                     }
                 } else {
                     // [v2.4.41] Normal forward progress - accept
                     if (position > lastDisplayedPositionMs && consecutiveBackwardJumps > 0) {
-                        writeJitterLog("[v2.4.41] FORWARD after $consecutiveBackwardJumps holds: $lastDisplayedPositionMs->$position")
+                        writeJitterLog(" FORWARD after $consecutiveBackwardJumps holds: $lastDisplayedPositionMs->$position")
                     }
                     consecutiveBackwardJumps = 0
                     lastDisplayedPositionMs = position
@@ -1293,14 +1293,14 @@ class PlayerActivity : AppCompatActivity() {
                 currentEpisode = episode
                 // [v2.0.62] Reset UI position tracking for new episode
                 lastDisplayedPositionMs = 0
-                writeJitterLog("[v2.0.62] onEpisodeChanged: reset lastDisplayedPositionMs=0 for new episode")
+                writeJitterLog(" onEpisodeChanged: reset lastDisplayedPositionMs=0 for new episode")
                 // v2.4.128: Set jitterSyncBaseline to new episode's saved position.
                 // This prevents old episode's position from being accepted during stabilization.
                 val savedPos = getSavedPositionForEpisode(this@PlayerActivity, episode.id)
                 jitterSyncBaseline = savedPos
                 jitterSyncTimeMs = System.currentTimeMillis()
                 consecutiveBackwardJumps = 0
-                writeJitterLog("[v2.4.128] onEpisodeChanged: set jitterSyncBaseline=$savedPos for ${episode.id}, starting stabilization")
+                writeJitterLog(" onEpisodeChanged: set jitterSyncBaseline=$savedPos for ${episode.id}, starting stabilization")
                 // v2.4.131: Immediately update UI to show saved position for the new episode.
                 // Without this, the UI keeps showing the old episode's position until the next
                 // onPositionChanged callback, which may take several seconds. This caused the
@@ -1312,13 +1312,13 @@ class PlayerActivity : AppCompatActivity() {
                     // v2.4.132: Set position lock to saved position. Only accept positions
                     // within ±5s of this value. Prevents old episode position from leaking.
                     setEpisodeSwitchLock(savedPos)
-                    writeJitterLog("[v2.4.132] onEpisodeChanged: set position lock to savedPos=$savedPos")
+                    writeJitterLog(" onEpisodeChanged: set position lock to savedPos=$savedPos")
                 } else {
                     binding.tvCurrentTime.text = "00:00 / --:--"
                     binding.seekBar.progress = 0
                     // v2.4.132: No saved position — lock to 0
                     setEpisodeSwitchLock(0L)
-                    writeJitterLog("[v2.4.132] onEpisodeChanged: set position lock to 0 (no saved position)")
+                    writeJitterLog(" onEpisodeChanged: set position lock to 0 (no saved position)")
                 }
                 // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
                 clearSubtitles()
@@ -1549,7 +1549,7 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvLiveIndicator.text = "连接中..."
                 lastDisplayedPositionMs = savedPos
                 preFilled = true
-                android.util.Log.d("PlayerActivity", "initViews: [v2.3.1] pre-filled saved position ${savedPos}ms to avoid flicker")
+                android.util.Log.d("PlayerActivity", "initViews: [${com.radio.app.RadioApplication.appVersionTag()}] pre-filled saved position ${savedPos}ms to avoid flicker")
             }
         }
         if (!preFilled) {
@@ -1575,7 +1575,7 @@ class PlayerActivity : AppCompatActivity() {
                 seekTargetPositionMs = targetPos
                 lastDisplayedPositionMs = targetPos
                 consecutiveBackwardJumps = 0
-                writeJitterLog("[v2.4.41] onSegmentClick: seekTarget=$targetPos")
+                writeJitterLog(" onSegmentClick: seekTarget=$targetPos")
                 playbackService?.seekTo(targetPos)
                 window.decorView.removeCallbacks(resetSeekRunnable)
                 window.decorView.postDelayed(resetSeekRunnable, 5000L)
@@ -1838,26 +1838,26 @@ class PlayerActivity : AppCompatActivity() {
                     val dur = service.getDuration()
                     val epId = currentEpisode?.id ?: ""
                     if (pos > 0 && epId.isNotBlank()) {
-                        writeJitterLog("[v2.4.63] Manual pause: force saving progress pos=$pos, dur=$dur, epId=$epId")
+                        writeJitterLog(" Manual pause: force saving progress pos=$pos, dur=$dur, epId=$epId")
                         // 1. Save to play_progress DB table
                         try {
                             val dbHelper = RadioDatabaseHelper.getInstance(this)
                             dbHelper.savePlayProgress(com.radio.app.models.PlayProgress(episodeId = epId, progress = pos, recordedAt = System.currentTimeMillis()))
                         } catch (e: Exception) {
-                            writeJitterLog("[v2.4.63] Manual pause: savePlayProgress failed: ${e.message}")
+                            writeJitterLog(" Manual pause: savePlayProgress failed: ${e.message}")
                         }
                         // v2.4.63: 2. Force save to playback_positions SharedPreferences via service
                         // This ensures the position is immediately persisted (not just cached in Activity)
                         try {
                             service.forceSaveCurrentPosition()
                         } catch (e: Exception) {
-                            writeJitterLog("[v2.4.63] Manual pause: forceSaveCurrentPosition failed: ${e.message}")
+                            writeJitterLog(" Manual pause: forceSaveCurrentPosition failed: ${e.message}")
                         }
                         // v2.4.63: 3. Force save last episode info so it can be restored on next app launch
                         try {
                             currentEpisode?.let { ep -> service.forceSaveLastEpisode(ep) }
                         } catch (e: Exception) {
-                            writeJitterLog("[v2.4.63] Manual pause: forceSaveLastEpisode failed: ${e.message}")
+                            writeJitterLog(" Manual pause: forceSaveLastEpisode failed: ${e.message}")
                         }
                         // v2.4.63: 4. Update Activity's cached position
                         lastDisplayedPositionMs = pos
@@ -1866,7 +1866,7 @@ class PlayerActivity : AppCompatActivity() {
                             .putLong("cached_duration", dur)
                             .putString("cached_episode_id", epId)
                             .commit()
-                        writeJitterLog("[v2.4.63] Manual pause: position cached and persisted pos=$pos, epId=$epId")
+                        writeJitterLog(" Manual pause: position cached and persisted pos=$pos, epId=$epId")
                     }
                 } else {
                     service.play()
@@ -1899,7 +1899,7 @@ class PlayerActivity : AppCompatActivity() {
             // v2.4.41: Record current position BEFORE seek for target calculation
             val svcPosBefore = playbackService?.getCurrentPosition() ?: 0L
             consecutiveBackwardJumps = 0
-            writeJitterLog("[v2.4.41] $btnName: isUserSeeking=true, svcPosBefore=$svcPosBefore")
+            writeJitterLog(" $btnName: isUserSeeking=true, svcPosBefore=$svcPosBefore")
             action()
             // v2.4.41: After seek action, get the NEW position as the seek target.
             // ExoPlayer updates its position immediately after seekTo(), even before buffering completes.
@@ -1908,11 +1908,11 @@ class PlayerActivity : AppCompatActivity() {
             if (svcPosAfter > 0) {
                 seekTargetPositionMs = svcPosAfter
                 lastDisplayedPositionMs = svcPosAfter  // Show target position immediately
-                writeJitterLog("[v2.4.41] $btnName: seekTarget=$svcPosAfter (was $svcPosBefore)")
+                writeJitterLog(" $btnName: seekTarget=$svcPosAfter (was $svcPosBefore)")
             } else {
                 // Service reports 0 - keep target as svcPosBefore (fallback)
                 seekTargetPositionMs = svcPosBefore
-                writeJitterLog("[v2.4.41] $btnName: svcPosAfter=0, using svcPosBefore=$svcPosBefore as target")
+                writeJitterLog(" $btnName: svcPosAfter=0, using svcPosBefore=$svcPosBefore as target")
             }
             window.decorView.removeCallbacks(resetSeekRunnable)
             // v2.4.41: Keep 5s window. SEEK-LOCK will clear target as soon as
@@ -1939,7 +1939,7 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnSkipBackward.setOnClickListener {
             // v2.4.58: PhantomSafeImageButton blocks phantom clicks at performClick level.
             // If this code runs, it's a REAL touch-initiated click.
-            writeJitterLog("[v2.4.58] btnSkipBackward onClick: REAL touch confirmed (phantom blocked at view level)")
+            writeJitterLog(" btnSkipBackward onClick: REAL touch confirmed (phantom blocked at view level)")
             // v2.4.66: Force save current position before seeking
             playbackService?.forceSaveCurrentPosition()
             performSeek({ playbackService?.skipBackward() }, "btnSkipBackward")
@@ -1991,7 +1991,7 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
-            writeJitterLog("[v2.4.27] btnAiSegment CLICKED: episodeId=${episode.id}")
+            writeJitterLog(" btnAiSegment CLICKED: episodeId=${episode.id}")
             startAiProcessing("segment")
             // [v2.4.24] Get duration on main thread BEFORE spawning background thread
             val dur = playbackService?.getDuration()?.toInt() ?: 0
@@ -2000,7 +2000,7 @@ class PlayerActivity : AppCompatActivity() {
             val aiModel = settings.safeAiModel()
             // v2.4.44: Record start time for engine/time display
             val segStartTime = System.currentTimeMillis()
-            writeJitterLog("[v2.4.27] btnAiSegment: aiModel=$aiModel")
+            writeJitterLog(" btnAiSegment: aiModel=$aiModel")
             Thread {
                 try {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
@@ -2008,7 +2008,7 @@ class PlayerActivity : AppCompatActivity() {
                     // v2.4.101: Audio-vad mode doesn't need subtitles - skip the check
                     if (aiModel != AppSettings.AI_MODEL_AUDIO_VAD) {
                         val transcriptCount = dbHelper.getTranscriptCount(episode.id)
-                        writeJitterLog("[v2.4.23] btnAiSegment: transcriptCount=$transcriptCount")
+                        writeJitterLog(" btnAiSegment: transcriptCount=$transcriptCount")
 
                         // v2.4.74: Removed isComplete check - partial subtitles can also be used for AI segmentation
                         if (transcriptCount < 1) {
@@ -2019,7 +2019,7 @@ class PlayerActivity : AppCompatActivity() {
                             return@Thread
                         }
                     } else {
-                        writeJitterLog("[v2.4.101] btnAiSegment: audio-vad mode, skipping subtitle check")
+                        writeJitterLog(" btnAiSegment: audio-vad mode, skipping subtitle check")
                     }
 
                     // Generate content-based segments from subtitles
@@ -2031,7 +2031,7 @@ class PlayerActivity : AppCompatActivity() {
                         val transcriptMax = dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
                         if (transcriptMax > 0) transcriptMax else episode.duration.toInt()
                     }
-                    writeJitterLog("[v2.4.27] btnAiSegment: dur=$dur, maxEnd=$maxEnd")
+                    writeJitterLog(" btnAiSegment: dur=$dur, maxEnd=$maxEnd")
 
                     // [v2.4.28] When AI分段模型 = 阿里MNN-LLM, use OFFLINE MNN-LLM for intelligent classification
                     // If MNN fails, show error directly - NO fallback to keyword-based segmentation
@@ -2045,7 +2045,7 @@ class PlayerActivity : AppCompatActivity() {
 
                     if (aiModel == AppSettings.AI_MODEL_AUDIO_VAD) {
                         // v2.4.96: Audio-based segmentation using Silero VAD + YAMNet dual model
-                        writeJitterLog("[v2.4.96] btnAiSegment: using audio-vad segmentation")
+                        writeJitterLog(" btnAiSegment: using audio-vad segmentation")
                         runOnUiThread { Toast.makeText(this, "音频分段分析中(VAD+YAMNet)...", Toast.LENGTH_SHORT).show() }
 
                         try {
@@ -2071,12 +2071,12 @@ class PlayerActivity : AppCompatActivity() {
                                     }
                                 }
                             )
-                            writeJitterLog("[v2.4.96] btnAiSegment: audio-vad returned ${segments_result.size} segments")
+                            writeJitterLog(" btnAiSegment: audio-vad returned ${segments_result.size} segments")
                             segments = segments_result
                         } catch (e: Throwable) {
                             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
                             // and NoClassDefFoundError which extend Error, not Exception.
-                            writeJitterLog("[v2.4.96] btnAiSegment: audio-vad error: ${e.javaClass.simpleName}: ${e.message}")
+                            writeJitterLog(" btnAiSegment: audio-vad error: ${e.javaClass.simpleName}: ${e.message}")
                             val elapsed = System.currentTimeMillis() - segStartTime
                             runOnUiThread {
                                 if (_binding != null) {
@@ -2100,32 +2100,32 @@ class PlayerActivity : AppCompatActivity() {
                         if (!mnnModelDir.exists()) {
                             mnnModelDir = File(modelsDir, "mnn-llm/Qwen1.5-1.8B-Chat-MNN")
                         }
-                        writeJitterLog("[v2.4.89] btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
+                        writeJitterLog(" btnAiSegment: mnnModelDir=${mnnModelDir.absolutePath}, exists=${mnnModelDir.exists()}")
 
                         if (!MnnLlmBridge.isModelInstalled(mnnModelDir)) {
                             val err = MnnLlmBridge.lastError
-                            writeJitterLog("[v2.4.28] btnAiSegment: MNN model not installed: $err")
+                            writeJitterLog(" btnAiSegment: MNN model not installed: $err")
                             runOnUiThread { Toast.makeText(this, "MNN模型未安装或文件不完整: $err\n请在离线引擎页面重新下载。", Toast.LENGTH_LONG).show() }
                         } else {
                             runOnUiThread { Toast.makeText(this, "正在加载MNN离线模型...", Toast.LENGTH_SHORT).show() }
                             try {
-                                writeJitterLog("[v2.4.28] btnAiSegment: initializing MnnLlmBridge...")
+                                writeJitterLog(" btnAiSegment: initializing MnnLlmBridge...")
                                 val initOk = MnnLlmBridge.init(mnnModelDir, this@PlayerActivity)
-                                writeJitterLog("[v2.4.28] btnAiSegment: MnnLlmBridge.init result=$initOk")
+                                writeJitterLog(" btnAiSegment: MnnLlmBridge.init result=$initOk")
                                 if (!initOk) {
                                     val err = MnnLlmBridge.lastError
-                                    writeJitterLog("[v2.4.28] btnAiSegment: MNN init failed: $err")
+                                    writeJitterLog(" btnAiSegment: MNN init failed: $err")
                                     runOnUiThread { Toast.makeText(this, "MNN模型加载失败: $err", Toast.LENGTH_LONG).show() }
                                 } else {
                                     val transcripts = dbHelper.getTranscripts(episode.id)
                                     val subtitleData = transcripts.map { Triple(it.segmentStart, it.segmentEnd, it.text ?: "") }
-                                    writeJitterLog("[v2.4.30] btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM (batched)")
+                                    writeJitterLog(" btnAiSegment: feeding ${subtitleData.size} subtitles to MNN-LLM (batched)")
 
                                     runOnUiThread { Toast.makeText(this, "MNN分析中(分批处理)...", Toast.LENGTH_SHORT).show() }
 
                                     val results = MnnLlmBridge.classifySubtitles(subtitleData) { current, total, mnnResponse ->
                                         val pct = if (total > 0) current * 100 / total else 0
-                                        writeJitterLog("[v2.4.30] btnAiSegment: MNN progress $current/$total ($pct%) response='${mnnResponse.take(60)}'")
+                                        writeJitterLog(" btnAiSegment: MNN progress $current/$total ($pct%) response='${mnnResponse.take(60)}'")
                                         runOnUiThread {
                                             if (_binding != null) {
                                                 // v2.4.77: Show MNN response in status text
@@ -2137,7 +2137,7 @@ class PlayerActivity : AppCompatActivity() {
                                             updateSegmentNotification(pct)
                                         }
                                     }
-                                    writeJitterLog("[v2.4.30] btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
+                                    writeJitterLog(" btnAiSegment: MNN-LLM returned ${results?.size ?: 0} results")
 
                                     if (results != null && results.isNotEmpty()) {
                                         // v2.4.41: Merge consecutive segments of the same type
@@ -2167,10 +2167,10 @@ class PlayerActivity : AppCompatActivity() {
                                             }
                                         }
                                         segments = mergedSegments
-                                        writeJitterLog("[v2.4.41] btnAiSegment: MNN merged ${rawSegments.size} → ${mergedSegments.size} segments (dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}})")
+                                        writeJitterLog(" btnAiSegment: MNN merged ${rawSegments.size} → ${mergedSegments.size} segments (dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}})")
                                         // v2.4.57: Detect abnormal results (all same type = likely garbage)
                                         if (mergedSegments.size == 1) {
-                                            writeJitterLog("[v2.4.57] btnAiSegment: ABNORMAL - only 1 segment (all ${if (mergedSegments[0].hasVoice) "dry" else "water"}), likely MNN garbage output")
+                                            writeJitterLog(" btnAiSegment: ABNORMAL - only 1 segment (all ${if (mergedSegments[0].hasVoice) "dry" else "water"}), likely MNN garbage output")
                                             runOnUiThread {
                                                 finishAiProcessing("segment")
                                                 Toast.makeText(this, "MNN分段异常：所有内容被划分为同一类型，可能是模型输出异常。请尝试重新分段。", Toast.LENGTH_LONG).show()
@@ -2178,13 +2178,13 @@ class PlayerActivity : AppCompatActivity() {
                                             return@Thread
                                         }
                                     } else {
-                                        writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM returned no results")
+                                        writeJitterLog(" btnAiSegment: MNN-LLM returned no results")
                                         runOnUiThread { Toast.makeText(this, "MNN分析无结果，请检查日志", Toast.LENGTH_LONG).show() }
                                     }
                                 }
                                 MnnLlmBridge.release()
                             } catch (e: Exception) {
-                                writeJitterLog("[v2.4.28] btnAiSegment: MNN-LLM error: ${e.message}")
+                                writeJitterLog(" btnAiSegment: MNN-LLM error: ${e.message}")
                                 runOnUiThread { Toast.makeText(this, "MNN离线分析错误: ${e.message}", Toast.LENGTH_LONG).show() }
                                 try { MnnLlmBridge.release() } catch (_: Exception) {}
                             }
@@ -2197,10 +2197,10 @@ class PlayerActivity : AppCompatActivity() {
                             AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
                             else -> "关键词"
                         }
-                        writeJitterLog("[v2.4.58] btnAiSegment: using $engineLabel segmentation (aiModel=$aiModel)")
+                        writeJitterLog(" btnAiSegment: using $engineLabel segmentation (aiModel=$aiModel)")
                         if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                     }
-                    writeJitterLog("[v2.4.28] btnAiSegment: generated ${segments.size} segments")
+                    writeJitterLog(" btnAiSegment: generated ${segments.size} segments")
 
                     // v2.4.44: Save segments to database for persistence
                     try {
@@ -2208,9 +2208,9 @@ class PlayerActivity : AppCompatActivity() {
                         dbHelper.saveVoiceSegments(episode.id, segments)
                         // v2.4.44: Update episode segment count in DB
                         dbHelper.updateEpisodeSegmentCount(episode.id, segments.size)
-                        writeJitterLog("[v2.4.44] btnAiSegment: saved ${segments.size} segments to DB for episode=${episode.id}")
+                        writeJitterLog(" btnAiSegment: saved ${segments.size} segments to DB for episode=${episode.id}")
                     } catch (e: Exception) {
-                        writeJitterLog("[v2.4.44] btnAiSegment: failed to save segments to DB: ${e.message}")
+                        writeJitterLog(" btnAiSegment: failed to save segments to DB: ${e.message}")
                     }
 
                     val segElapsed = System.currentTimeMillis() - segStartTime
@@ -2249,7 +2249,7 @@ class PlayerActivity : AppCompatActivity() {
                         finishAiProcessing("segment")
                     }
                 } catch (e: Exception) {
-                    writeJitterLog("[v2.4.23] btnAiSegment ERROR: ${e.message}")
+                    writeJitterLog(" btnAiSegment ERROR: ${e.message}")
                     runOnUiThread {
                         finishAiProcessing("segment")
                         Toast.makeText(this, "AI分段错误: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -2283,7 +2283,7 @@ class PlayerActivity : AppCompatActivity() {
                     seekTargetPositionMs = targetPos
                     lastDisplayedPositionMs = targetPos
                     consecutiveBackwardJumps = 0
-                    writeJitterLog("[v2.4.41] seekBar: seekTarget=$targetPos")
+                    writeJitterLog(" seekBar: seekTarget=$targetPos")
                     playbackService?.seekTo(targetPos)
                 }
                 window.decorView.removeCallbacks(resetSeekRunnable)
@@ -2431,7 +2431,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             android.util.Log.w("PlayerActivity", "Subtitle service disconnected (process may have crashed)")
-            writeJitterLog("[v2.0.59] Subtitle service disconnected (process crashed?)")
+            writeJitterLog(" Subtitle service disconnected (process crashed?)")
             subtitleService = null
             subtitleServiceBound = false
             // Issue 9 (partial): the subtitle service died while we may have been showing
@@ -2647,7 +2647,7 @@ class PlayerActivity : AppCompatActivity() {
                 // v2.4.45: Log when updateUI is holding (diagnosing jitter)
                 val delta = svcPos - lastDisplayedPositionMs
                 if (kotlin.math.abs(delta) > 3000) {
-                    writeJitterLog("[v2.4.45] updateUI HOLD: isUserSeeking=$isUserSeeking, stab=$inStabilization, svcPos=$svcPos, displayPos=$lastDisplayedPositionMs, delta=$delta")
+                    writeJitterLog(" updateUI HOLD: isUserSeeking=$isUserSeeking, stab=$inStabilization, svcPos=$svcPos, displayPos=$lastDisplayedPositionMs, delta=$delta")
                 }
             }
             // When isUserSeeking or in stabilization: keep lastDisplayedPositionMs as-is
@@ -2694,19 +2694,19 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun playEpisodeAtIndex(index: Int) {
         if (index < 0 || index >= episodeList.size) {
-            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: INVALID index=$index, episodeList.size=${episodeList.size}")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: INVALID index=$index, episodeList.size=${episodeList.size}")
             return
         }
-        writeJitterLog("[v2.0.42] playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
-        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
+        writeJitterLog(" playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: START, index=$index, episodeList.size=${episodeList.size}")
         if (playbackService == null) {
-            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: ERROR - playbackService is null, cannot switch episode")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: ERROR - playbackService is null, cannot switch episode")
             Toast.makeText(this, "播放服务未连接，无法切换", Toast.LENGTH_SHORT).show()
             return
         }
         var targetIdx = index
         var targetEpisode = episodeList[targetIdx]
-        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: targetEpisode title=${targetEpisode.title}, id=${targetEpisode.id}, audioUrl=${targetEpisode.audioUrl}")
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: targetEpisode title=${targetEpisode.title}, id=${targetEpisode.id}, audioUrl=${targetEpisode.audioUrl}")
         val settings = AppSettings.getInstance(this)
         // 跳过不喜欢的节目（最多跳过10个，避免死循环）
         var skipCount = 0
@@ -2730,37 +2730,37 @@ class PlayerActivity : AppCompatActivity() {
         // Issue 10 Fix 2: clear old subtitles when switching episodes
         clearSubtitles()
         saveLastEpisode()
-        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: BEFORE playEpisode - target=${targetEpisode.title}, id=${targetEpisode.id}, url=${targetEpisode.audioUrl}")
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: BEFORE playEpisode - target=${targetEpisode.title}, id=${targetEpisode.id}, url=${targetEpisode.audioUrl}")
         val beforeEpisode = playbackService?.getCurrentEpisode()
-        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: BEFORE - service current=${beforeEpisode?.title} (id=${beforeEpisode?.id})")
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: BEFORE - service current=${beforeEpisode?.title} (id=${beforeEpisode?.id})")
         playbackService?.playEpisode(targetEpisode, false)
         // Issue 5 Fix: 立即验证切换是否生效（不依赖延迟）
         val immediateAfter = playbackService?.getCurrentEpisode()
-        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: IMMEDIATE AFTER - service=${immediateAfter?.title} (id=${immediateAfter?.id}), target=${targetEpisode.title}, match=${targetEpisode.id == immediateAfter?.id}")
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: IMMEDIATE AFTER - service=${immediateAfter?.title} (id=${immediateAfter?.id}), target=${targetEpisode.title}, match=${targetEpisode.id == immediateAfter?.id}")
         if (targetEpisode.id != immediateAfter?.id) {
-            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: WARNING - service episode did NOT change! before=${beforeEpisode?.id}, after=${immediateAfter?.id}, target=${targetEpisode.id}")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: WARNING - service episode did NOT change! before=${beforeEpisode?.id}, after=${immediateAfter?.id}, target=${targetEpisode.id}")
         }
         // Issue 5 Fix: 延迟校验（500ms）确认切换是否真正生效
         Handler(Looper.getMainLooper()).postDelayed({
             val verifyEpisode = playbackService?.getCurrentEpisode()
-            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: DELAYED VERIFY (500ms) - service=${verifyEpisode?.title} (id=${verifyEpisode?.id}), target=${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == verifyEpisode?.id}")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: DELAYED VERIFY (500ms) - service=${verifyEpisode?.title} (id=${verifyEpisode?.id}), target=${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == verifyEpisode?.id}")
         }, 500)
         // Issue 5 Fix: 再延迟2秒做最终校验
         Handler(Looper.getMainLooper()).postDelayed({
             val finalEpisode = playbackService?.getCurrentEpisode()
-            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: FINAL VERIFY (2s) - service=${finalEpisode?.title} (id=${finalEpisode?.id}), target=${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == finalEpisode?.id}")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: FINAL VERIFY (2s) - service=${finalEpisode?.title} (id=${finalEpisode?.id}), target=${targetEpisode.title} (id=${targetEpisode.id}), match=${targetEpisode.id == finalEpisode?.id}")
         }, 2000)
         // Issue 4: 切歌后刷新节目列表适配器，使高亮跟随当前播放节目
         episodeListAdapter?.let { adapter ->
             adapter.currentlyPlayingId = targetEpisode.id
             adapter.notifyDataSetChanged()
-            writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: refreshed adapter, currentlyPlayingId=${adapter.currentlyPlayingId}")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: refreshed adapter, currentlyPlayingId=${adapter.currentlyPlayingId}")
         }
         voiceSegments = generateSimulatedSegments()
         if (voiceSegments.isNotEmpty()) updateSegmentsUI()
         updateUI()
         setupPreCacheList()
-        writeEpisodeLog("[v2.0.42] playEpisodeAtIndex: DONE, switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: DONE, switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
     }
 
     // Issue 6 & 11: 弹出当前节目列表对话框。高亮正在播放的节目（Issue 6），点击任意节目通过
@@ -2863,7 +2863,7 @@ class PlayerActivity : AppCompatActivity() {
                 (currentEpisode != null && episode.title != null &&
                  currentEpisode?.title == episode.title &&
                  currentEpisode?.stationId == episode.stationId)
-            writeEpisodeLog("[v2.0.42] onBindViewHolder: pos=$position, title=${episode.title}, id=${episode.id}, isPlaying=$isPlaying, currentlyPlayingId=$currentlyPlayingId")
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onBindViewHolder: pos=$position, title=${episode.title}, id=${episode.id}, isPlaying=$isPlaying, currentlyPlayingId=$currentlyPlayingId")
 
             holder.tvTitle.text = if (isPlaying) "▶ ${episode.title}" else episode.title
             holder.tvTime.text = try {
@@ -2894,7 +2894,7 @@ class PlayerActivity : AppCompatActivity() {
                 holder.tvPlayingIndicator.visibility = View.VISIBLE
                 holder.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
                 holder.btnPlay.setColorFilter(accentColor)
-                writeEpisodeLog("[v2.0.42] onBindViewHolder: HIGHLIGHT pos=$position title=${episode.title}, alpha=180, accentColor=$accentColor")
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onBindViewHolder: HIGHLIGHT pos=$position title=${episode.title}, alpha=180, accentColor=$accentColor")
             } else {
                 holder.itemView.background = holder.originalBackground
                 val density = ctx.resources.displayMetrics.density
@@ -2910,7 +2910,7 @@ class PlayerActivity : AppCompatActivity() {
             // Issue 5 Fix: 使用 bindingAdapterPosition 替代 position，确保点击位置准确
             holder.itemView.setOnClickListener {
                 val clickPos = holder.bindingAdapterPosition
-                writeEpisodeLog("[v2.0.42] onItemClick: bindingAdapterPosition=$clickPos, position=$position, title=${episodes.getOrNull(clickPos)?.title}")
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onItemClick: bindingAdapterPosition=$clickPos, position=$position, title=${episodes.getOrNull(clickPos)?.title}")
                 if (clickPos >= 0 && clickPos < episodes.size) {
                     onItemClicked?.invoke(clickPos)
                 }
@@ -3199,7 +3199,7 @@ class PlayerActivity : AppCompatActivity() {
     private val segmentCancelReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == SEGMENT_CANCEL_ACTION) {
-                writeJitterLog("[v2.4.45] Segment notification cancel clicked")
+                writeJitterLog(" Segment notification cancel clicked")
                 segmentProcessing = false
                 finishAiProcessing("segment")
                 Toast.makeText(this@PlayerActivity, "AI分段已取消", Toast.LENGTH_SHORT).show()
@@ -3209,7 +3209,10 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun showSegmentNotification(progress: Int) {
         try {
-            val nm = getSystemService(NotificationManager::class.java)
+            // v2.4.149: Use applicationContext so the notification survives Activity destruction
+            // and can keep updating while the segment thread runs in background.
+            val ctx = applicationContext
+            val nm = ctx.getSystemService(NotificationManager::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val channel = NotificationChannel(SEGMENT_CHANNEL_ID, "AI分段处理", NotificationManager.IMPORTANCE_LOW)
                 nm.createNotificationChannel(channel)
@@ -3223,13 +3226,13 @@ class PlayerActivity : AppCompatActivity() {
             val notifContent = "AI分段: ${progress}%"
 
             // v2.4.45: Add cancel action button
-            val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(packageName)
+            val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(ctx.packageName)
             val cancelPending = android.app.PendingIntent.getBroadcast(
-                this, 20001, cancelIntent,
+                ctx, 20001, cancelIntent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
 
-            val notification = NotificationCompat.Builder(this, SEGMENT_CHANNEL_ID)
+            val notification = NotificationCompat.Builder(ctx, SEGMENT_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(notifTitle)
                 .setContentText(notifContent)
@@ -3640,10 +3643,10 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
-            writeJitterLog("[v2.4.25] generateContentBasedSegments: ${mergedSegments.size} segments (merged from ${segments.size}) from ${transcripts.size} transcripts, dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}}")
+            writeJitterLog(" generateContentBasedSegments: ${mergedSegments.size} segments (merged from ${segments.size}) from ${transcripts.size} transcripts, dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}}")
             return mergedSegments
         } catch (e: Exception) {
-            writeJitterLog("[v2.4.25] generateContentBasedSegments failed: ${e.message}")
+            writeJitterLog(" generateContentBasedSegments failed: ${e.message}")
             return emptyList()
         }
     }
@@ -3845,7 +3848,7 @@ class PlayerActivity : AppCompatActivity() {
         jitterStabilizeMs = if (wasAlreadyConnected) 3000L else JITTER_STABILIZE_MS_DEFAULT  // v2.4.41: 1s→3s
         jitterSyncTimeMs = syncTime
         consecutiveBackwardJumps = 0
-        writeJitterLog("[v2.3.1] onResume: stabilization STARTED (${jitterStabilizeMs}ms), svcPos=$svcPos, cachedPos=$cachedPos, cachedEpId=$cachedEpId, serviceBound=$serviceBound, wasAlreadyConnected=$wasAlreadyConnected")
+        writeJitterLog(" onResume: stabilization STARTED (${jitterStabilizeMs}ms), svcPos=$svcPos, cachedPos=$cachedPos, cachedEpId=$cachedEpId, serviceBound=$serviceBound, wasAlreadyConnected=$wasAlreadyConnected")
 
         // [v2.0.85] Fix: When service is not bound (svcPos=0), do NOT display stale cachedPos.
         // v2.0.76 would show cachedPos then snap to svcPos when service connects = visible flicker.
@@ -3862,17 +3865,17 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvCurrentTime.text = "${formatTime(svcPos.toInt())} / ${if (svcDur > 0) formatTime(svcDur.toInt()) else "--:--"}"
                 binding.seekBar.progress = svcPos.toInt()
             }
-            writeJitterLog("[v2.3.1] onResume: UI immediately synced to svcPos=$svcPos, dur=$svcDur")
+            writeJitterLog(" onResume: UI immediately synced to svcPos=$svcPos, dur=$svcDur")
         } else if (cachedPos > 0 && _binding != null && cachedEpId == currentEpisode?.id) {
             // [v2.3.1] Service not ready yet - show cached position (which we already pre-filled
             // in initViews) to prevent "00:00" gap. onServiceConnected will correct when ready.
             // [v2.4.19] Only show if cachedEpId matches current episode
-            writeJitterLog("[v2.3.1] onResume: service not ready (svcPos=$svcPos), keeping pre-filled cached=$cachedPos, waiting for onServiceConnected")
+            writeJitterLog(" onResume: service not ready (svcPos=$svcPos), keeping pre-filled cached=$cachedPos, waiting for onServiceConnected")
         } else {
             // [v2.4.19] Service not bound AND cached position is from a different episode (or no cache)
             // Don't show stale position - reset to 0 and wait for valid callback
             lastDisplayedPositionMs = 0
-            writeJitterLog("[v2.4.19] onResume: service not bound, cachedEpId=$cachedEpId != currentEpId=${currentEpisode?.id}, NOT showing stale cachedPos=$cachedPos")
+            writeJitterLog(" onResume: service not bound, cachedEpId=$cachedEpId != currentEpId=${currentEpisode?.id}, NOT showing stale cachedPos=$cachedPos")
         }
 
         // [v2.4.17] Sync title from service's currentEpisode to prevent stale title after background episode switch
@@ -3880,7 +3883,7 @@ class PlayerActivity : AppCompatActivity() {
             try {
                 val svcEpisode = playbackService?.getCurrentEpisode()
                 if (svcEpisode != null && svcEpisode.id != currentEpisode?.id) {
-                    writeJitterLog("[v2.4.17] onResume: syncing episode from service: ${svcEpisode.title} (id=${svcEpisode.id}), was: ${currentEpisode?.title}")
+                    writeJitterLog(" onResume: syncing episode from service: ${svcEpisode.title} (id=${svcEpisode.id}), was: ${currentEpisode?.title}")
                     currentEpisode = svcEpisode
                     lastDisplayedPositionMs = 0
                     lastJitterEpisodeId = svcEpisode.id
@@ -3889,7 +3892,7 @@ class PlayerActivity : AppCompatActivity() {
                     updateUI()
                 }
             } catch (e: Exception) {
-                writeJitterLog("[v2.4.17] onResume: failed to sync episode: ${e.message}")
+                writeJitterLog(" onResume: failed to sync episode: ${e.message}")
             }
         }
 
@@ -4147,7 +4150,7 @@ class PlayerActivity : AppCompatActivity() {
             // Fix: If service position is >10s behind lastDisplayedPositionMs, use the
             // last displayed position instead (which was verified by jitter guard).
             if (isPrepared && pos > 0 && lastDisplayedPositionMs > pos + 10000L) {
-                writeJitterLog("[v2.4.49] onPause: service pos=$pos is behind display=$lastDisplayedPositionMs by ${lastDisplayedPositionMs - pos}ms, using display pos")
+                writeJitterLog(" onPause: service pos=$pos is behind display=$lastDisplayedPositionMs by ${lastDisplayedPositionMs - pos}ms, using display pos")
                 pos = lastDisplayedPositionMs
             }
             // v2.4.35: Cache position even at 0 seconds - previously required pos > 5000
@@ -4362,7 +4365,7 @@ class PlayerActivity : AppCompatActivity() {
                 seekTargetPositionMs = targetPos
                 lastDisplayedPositionMs = targetPos
                 consecutiveBackwardJumps = 0
-                writeJitterLog("[v2.4.41] transcriptClick: seekTarget=$targetPos")
+                writeJitterLog(" transcriptClick: seekTarget=$targetPos")
                 playbackService?.seekTo(targetPos)
                 window.decorView.removeCallbacks(resetSeekRunnable)
                 window.decorView.postDelayed(resetSeekRunnable, 5000L)

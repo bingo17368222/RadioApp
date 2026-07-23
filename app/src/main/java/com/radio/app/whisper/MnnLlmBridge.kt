@@ -119,7 +119,7 @@ class MnnLlmBridge {
                 }
 
                 val files = modelDir.listFiles()?.map { "${it.name}(${it.length()})" } ?: emptyList()
-                mnnLog("init: [v2.4.87] modelDir=${modelDir.absolutePath}, files=$files")
+                mnnLog("init: [${com.radio.app.RadioApplication.appVersionTag()}] modelDir=${modelDir.absolutePath}, files=$files")
 
                 val extLibsDir = File(modelDir.parentFile, "mnn-libs")
                 mnnLog("init: extLibsDir=${extLibsDir.absolutePath}, exists=${extLibsDir.exists()}")
@@ -333,7 +333,7 @@ class MnnLlmBridge {
             if (groups.isEmpty()) return null
 
             val allResults = mutableListOf<MnnSegmentResult>()
-            Log.i(TAG, "classifySubtitles: [v2.4.87] ${groups.size} segments")
+            Log.i(TAG, "classifySubtitles: [${com.radio.app.RadioApplication.appVersionTag()}] ${groups.size} segments")
 
             val classifyLog = try {
                 val f = java.io.File("/storage/emulated/0/RadioApp/logs/subtitle/mnn_classify.log")
@@ -342,7 +342,7 @@ class MnnLlmBridge {
             } catch (_: Exception) { null }
 
             try {
-                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [v2.4.87] START, ${groups.size} segments\n")
+                classifyLog?.write("[${System.currentTimeMillis()}] classifySubtitles: [${com.radio.app.RadioApplication.appVersionTag()}] START, ${groups.size} segments\n")
             } catch (_: Exception) {}
 
             var garbageCount = 0

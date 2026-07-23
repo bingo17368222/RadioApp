@@ -105,6 +105,17 @@ class RadioApplication : Application() {
             }
         }
 
+        // v2.4.149: Central helper so every log line can tag the current APK version
+        // without hard-coding a version string.
+        @JvmStatic
+        fun appVersionTag(): String {
+            return try {
+                "[v${instance.packageManager.getPackageInfo(instance.packageName, 0).versionName}]"
+            } catch (_: Exception) {
+                "[v?]"
+            }
+        }
+
         // v2.4.147: Delete all existing log files so each new APK version starts with clean logs.
         fun clearAllLogs(context: android.content.Context) {
             try {

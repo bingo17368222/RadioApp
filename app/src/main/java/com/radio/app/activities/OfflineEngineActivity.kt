@@ -631,7 +631,7 @@ class OfflineEngineActivity : AppCompatActivity() {
                         // libsDir must be models/mnn-llm/mnn-libs (same as isValidMnnModelDir checks)
                         val libsDir = File(targetDir.parentFile, "mnn-libs")
                         if (!libsDir.exists()) libsDir.mkdirs()
-                        writeEngineLog("downloadModel: [v2.4.31] downloading MNN .so files...")
+                        writeEngineLog("downloadModel: [${com.radio.app.RadioApplication.appVersionTag()}] downloading MNN .so files...")
                         withContext(Dispatchers.Main) {
                             btn.text = "下载运行库..."
                             progressBar?.progress = 90
@@ -639,9 +639,9 @@ class OfflineEngineActivity : AppCompatActivity() {
                         val soSuccess = withContext(Dispatchers.IO) {
                             downloadAndExtractMnnLibs(libsDir)
                         }
-                        writeEngineLog("downloadModel: [v2.4.31] MNN .so download result=$soSuccess")
+                        writeEngineLog("downloadModel: [${com.radio.app.RadioApplication.appVersionTag()}] MNN .so download result=$soSuccess")
                         if (!soSuccess) {
-                            writeEngineLog("downloadModel: [v2.4.31] MNN .so download FAILED")
+                            writeEngineLog("downloadModel: [${com.radio.app.RadioApplication.appVersionTag()}] MNN .so download FAILED")
                             withContext(Dispatchers.Main) {
                                 btn.text = "继续下载"
                                 Toast.makeText(this@OfflineEngineActivity, "MNN运行库下载失败，请重试", Toast.LENGTH_LONG).show()
