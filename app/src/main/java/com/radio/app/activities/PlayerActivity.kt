@@ -79,8 +79,13 @@ class PlayerActivity : AppCompatActivity() {
     // and notification when the user returns to the Activity.
     private var lastSegmentProgress = 0
     // v2.4.146: Persist progress across Activity recreation.
+    // v2.4.148: Use episode-specific keys to prevent the "19% -> 0% -> complete" bug where an
+    // old Activity instance finishing a different episode cleared the global progress key.
     private val SEGMENT_PROGRESS_PREFS = "segment_progress_prefs"
-    private val KEY_LAST_SEGMENT_PROGRESS = "last_segment_progress"
+    private val KEY_EPISODE_PROGRESS_PREFIX = "progress_"
+    private val KEY_EPISODE_COMPLETE_PREFIX = "complete_"
+    private fun segmentProgressKey(episodeId: String?) = "${KEY_EPISODE_PROGRESS_PREFIX}${episodeId ?: "unknown"}"
+    private fun segmentCompleteKey(episodeId: String?) = "${KEY_EPISODE_COMPLETE_PREFIX}${episodeId ?: "unknown"}"
     // v2.4.147: Poll persisted progress so a recreated Activity can keep up with a running segment task.
     private var segmentProgressPoller: Handler? = null
     private var segmentProgressRunnable: Runnable? = null
@@ -412,10 +417,14 @@ class PlayerActivity : AppCompatActivity() {
         // otherwise the UI appears cancelled even though the task is still running.
         subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
         segmentProcessing = prefs.getBoolean("segment_processing", false)
-        // v2.4.146: Restore persisted progress so the UI doesn't reset to 0% after Activity recreation.
-        lastSegmentProgress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
-            .getInt(KEY_LAST_SEGMENT_PROGRESS, 0)
-        android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing progress=$lastSegmentProgress savedEpisode=$savedEpisodeId current=$currentId")
+        // v2.4.148: Restore episode-specific progress. If this episode was already marked
+        // complete, don't show the progress bar anymore.
+        val currentEpisodeId = currentEpisode?.id ?: savedEpisodeId
+        val progressPrefs = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+        val isComplete = progressPrefs.getBoolean(segmentCompleteKey(currentEpisodeId), false)
+        lastSegmentProgress = if (isComplete) 100 else progressPrefs.getInt(segmentProgressKey(currentEpisodeId), 0)
+        if (isComplete) segmentProcessing = false
+        android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing progress=$lastSegmentProgress complete=$isComplete savedEpisode=$savedEpisodeId current=$currentEpisodeId")
 
         // Safety: only on a genuine fresh start (no saved state) do we clear.
         // If a segment task was saved, keep it alive so it can finish in background.
@@ -424,7 +433,9 @@ class PlayerActivity : AppCompatActivity() {
             segmentProcessing = false
             lastSegmentProgress = 0
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
+                .putInt(segmentProgressKey(currentEpisodeId), 0)
+                .putBoolean(segmentCompleteKey(currentEpisodeId), false)
+                .apply()
             android.util.Log.d("PlayerActivity", "restoreProcessingState: genuine fresh start with no saved state, cleared processing flags")
         }
     }
@@ -2038,13 +2049,18 @@ class PlayerActivity : AppCompatActivity() {
                         runOnUiThread { Toast.makeText(this, "音频分段分析中(VAD+YAMNet)...", Toast.LENGTH_SHORT).show() }
 
                         try {
+                            val episodeIdForProgress = episode.id
                             val segments_result = com.radio.app.utils.AudioSegmentAnalyzer.analyzeEpisode(
                                 this@PlayerActivity, episode.id, maxEnd.toLong(), episode.audioUrl,
-                                progressCallback = { pct ->
+                                progressCallback = { rawPct ->
+                                    // v2.4.148: Never report progress backwards; use episode-specific key.
+                                    val pct = maxOf(rawPct, lastSegmentProgress)
                                     lastSegmentProgress = pct
-                                    // v2.4.146: Persist progress so UI restores correctly after Activity recreation.
+                                    val progressKey = segmentProgressKey(episodeIdForProgress)
                                     getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                                        .putInt(KEY_LAST_SEGMENT_PROGRESS, pct).apply()
+                                        .putInt(progressKey, pct)
+                                        .putBoolean(segmentCompleteKey(episodeIdForProgress), false)
+                                        .apply()
                                     runOnUiThread {
                                         if (_binding != null && segmentProcessing) {
                                             // v2.4.145: Keep the progress bar and notification moving instead of stuck at 0%
@@ -3058,10 +3074,22 @@ class PlayerActivity : AppCompatActivity() {
         if (taskType == "subtitle") subtitleProcessing = true
         else if (taskType == "segment") {
             segmentProcessing = true
-            lastSegmentProgress = 0  // v2.4.145: Reset progress for new segment task
-            // v2.4.146: Reset persisted progress too.
-            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
+            val currentEpisodeId = currentEpisode?.id
+            val progressKey = segmentProgressKey(currentEpisodeId)
+            val completeKey = segmentCompleteKey(currentEpisodeId)
+            val progressPrefs = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+            // v2.4.148: Only reset progress when starting a brand-new task for this episode.
+            // If a previous run left progress in-flight (e.g. user rotated the screen),
+            // keep the existing persisted value so the progress bar doesn't jump back to 0%.
+            if (progressPrefs.getBoolean(completeKey, false)) {
+                lastSegmentProgress = 0
+                progressPrefs.edit()
+                    .putInt(progressKey, 0)
+                    .putBoolean(completeKey, false)
+                    .apply()
+            } else {
+                lastSegmentProgress = progressPrefs.getInt(progressKey, 0)
+            }
             // v2.4.147: Start polling persisted progress for this task.
             startSegmentProgressPoller()
         }
@@ -3098,10 +3126,14 @@ class PlayerActivity : AppCompatActivity() {
             }
         } else {
             segmentProcessing = false
-            // v2.4.146: Reset persisted progress when segment processing finishes.
-            lastSegmentProgress = 0
+            // v2.4.148: Mark this episode as complete instead of resetting to 0. Keeping 100%
+            // in prefs prevents a recreated Activity from briefly showing 0% before the result UI.
+            val currentEpisodeId = currentEpisode?.id
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
+                .putInt(segmentProgressKey(currentEpisodeId), 100)
+                .putBoolean(segmentCompleteKey(currentEpisodeId), true)
+                .apply()
+            lastSegmentProgress = 100
             // v2.4.147: Stop the progress poller.
             stopSegmentProgressPoller()
             if (_binding != null) {
@@ -3125,8 +3157,11 @@ class PlayerActivity : AppCompatActivity() {
         val runnable = object : Runnable {
             override fun run() {
                 if (!segmentProcessing) return
-                val progress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
-                    .getInt(KEY_LAST_SEGMENT_PROGRESS, lastSegmentProgress)
+                // v2.4.148: Read episode-specific progress; never go backwards.
+                val currentEpisodeId = currentEpisode?.id
+                val rawProgress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+                    .getInt(segmentProgressKey(currentEpisodeId), lastSegmentProgress)
+                val progress = maxOf(rawProgress, lastSegmentProgress)
                 if (progress != lastSegmentProgress) {
                     lastSegmentProgress = progress
                     if (_binding != null) {
@@ -3768,6 +3803,15 @@ class PlayerActivity : AppCompatActivity() {
                 startSegmentProgressPoller()
             } else {
                 binding.btnAiSegment.isEnabled = true
+                // v2.4.148: Ensure completed episode's progress UI is hidden even if prefs
+                // were updated while the Activity was destroyed.
+                val currentEpisodeId = currentEpisode?.id
+                val isComplete = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+                    .getBoolean(segmentCompleteKey(currentEpisodeId), false)
+                if (isComplete) {
+                    binding.progressAi.visibility = View.GONE
+                    binding.tvAiStatus.visibility = if (voiceSegments.isNotEmpty()) View.VISIBLE else View.GONE
+                }
             }
         }
         

@@ -1988,13 +1988,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * This generates 5-min PCM and full PCM without generating subtitles.
      * Used when pre-generate subtitles is OFF but preprocessing is ON.
      */
-    private fun startPreCachePcmGeneration(episode: Episode) {
+    private fun startPreCachePcmGeneration(episode: Episode, generateFullPcm: Boolean = true) {
         val episodeId = episode.id ?: return
         if (episodeId.isBlank()) return
         val audioUrl = episode.audioUrl ?: return
         if (audioUrl.isBlank()) return
 
-        writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl)")
+        writePreCacheLog("startPreCachePcmGeneration: [v2.4.148] starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm)")
 
         // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {
@@ -2019,7 +2019,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // in .info files).
                 val expectedDurationMs = episode.duration?.let { if (it > 0) it * 1000L else 0L } ?: 0L
                 val success = com.radio.app.utils.AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    this, episodeId, audioUrl, expectedDurationMs
+                    this, episodeId, audioUrl, expectedDurationMs, generateFullPcm
                 )
                 if (success) {
                     writePreCacheLog("startPreCachePcmGeneration: [v2.4.125] PCM generation SUCCESS for $episodeId")
@@ -2123,8 +2123,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                 // [v2.4.19] Also check for leftover _full.pcm (interrupted generation) - prioritize these
                 for (i in scanOrder) {
-                    val ep = preCacheList[i]
+                    var ep = preCacheList[i]
                     if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
+                    // v2.4.148: The pre-cache list may contain only id+url. Enrich from the
+                    // episode_info DB so patrol notifications and skip-by-title work offline.
+                    ep = enrichEpisodeFromDbIfNeeded(ep)
                     totalScanned++
 
                     // Check if audio is cached
@@ -2162,14 +2165,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
                         val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
 
-                        if (hasPcm5min && hasPcmFull) {
+                        if (hasPcm5min) {
                             withSubtitles++ // count as "already processed"
                             continue
                         }
 
-                        // Found a cached episode without PCM — trigger PCM generation
-                        writePreCacheLog("patrolSubtitle: [v2.4.123] found cached episode without PCM: ${ep.title} (${ep.id}), triggering PCM generation (5min=${hasPcm5min}, full=${hasPcmFull})")
-                        startPreCachePcmGeneration(ep)
+                        // Found a cached episode without PCM — trigger PCM generation.
+                        // v2.4.148: Patrol only generates the lightweight 5-min preview PCM.
+                        // Full PCM is generated on-demand when the user taps AI segmentation,
+                        // preventing dozens of 100MB+ full PCM files from piling up.
+                        writePreCacheLog("patrolSubtitle: [v2.4.148] found cached episode without PCM: ${ep.title} (${ep.id}), triggering 5-min PCM generation only (5min=${hasPcm5min})")
+                        startPreCachePcmGeneration(ep, generateFullPcm = false)
                         try {
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2177,21 +2183,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
                                 }
                             }
-                            // v2.4.132: Show EPISODE's broadcast date/time (not current date).
-                            // broadcastAt format: "2024-08-30T19:00:00" → display "2024-08-30 19:00"
-                            val epDateStr = if (ep.broadcastAt.length >= 16) {
-                                ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
-                            } else if (ep.broadcastAt.length >= 10) {
-                                ep.broadcastAt.substring(0, 10)
-                            } else {
-                                // Fallback: extract date from episode ID (format: xxx-2024-08-30-N)
-                                val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
-                                dateMatch?.value ?: "未知日期"
+                            // v2.4.148: Prefer DB-cached startTime/endTime for patrol notification.
+                            // This keeps the date/time visible even when offline.
+                            val epDateStr = when {
+                                ep.startTime > 0 && ep.endTime > ep.startTime -> {
+                                    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                                    fmt.format(java.util.Date(ep.startTime)) + "-" + fmt.format(java.util.Date(ep.endTime)).substringAfter(' ')
+                                }
+                                ep.broadcastAt.length >= 16 -> {
+                                    ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
+                                }
+                                ep.broadcastAt.length >= 10 -> {
+                                    ep.broadcastAt.substring(0, 10)
+                                }
+                                else -> {
+                                    // Fallback: extract date from episode ID (format: xxx-2024-08-30-N)
+                                    val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
+                                    dateMatch?.value ?: "未知日期"
+                                }
                             }
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
-                                .setContentTitle("预处理PCM [$epDateStr]")
-                                .setContentText("正在为 ${ep.title ?: ep.id} 生成PCM文件...")
+                                .setContentTitle("预处理PCM [${ep.title ?: ep.id}]")
+                                .setContentText("$epDateStr · 正在生成PCM文件...")
                                 .setAutoCancel(true)
                                 .build()
                             val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2246,10 +2260,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预生成字幕", NotificationManager.IMPORTANCE_LOW))
                             }
                         }
+                        // v2.4.148: Prefer DB-cached startTime/endTime/timeRange for subtitle patrol notification.
+                        val subDateStr = when {
+                            ep.startTime > 0 && ep.endTime > ep.startTime -> {
+                                val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                                fmt.format(java.util.Date(ep.startTime)) + "-" + fmt.format(java.util.Date(ep.endTime)).substringAfter(' ')
+                            }
+                            ep.broadcastAt.length >= 16 -> ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
+                            ep.broadcastAt.length >= 10 -> ep.broadcastAt.substring(0, 10)
+                            else -> {
+                                val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
+                                dateMatch?.value ?: "未知日期"
+                            }
+                        }
                         val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
                             .setSmallIcon(android.R.drawable.ic_media_ff)
-                            .setContentTitle("预生成字幕")
-                            .setContentText("正在为 ${ep.title ?: ep.id} 生成字幕...")
+                            .setContentTitle("预生成字幕 [${ep.title ?: ep.id}]")
+                            .setContentText("$subDateStr · 正在生成字幕...")
                             .setAutoCancel(true)
                             .build()
                         val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -4206,6 +4233,48 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) { Log.e(TAG, "playStation failed", e) }
     }
 
+    /**
+     * v2.4.148: Enrich an Episode object with metadata from the pre-cached episode_info table.
+     * This ensures the notification shows title/date/time even when offline or the caller's
+     * Episode object was created from a minimal intent/extra without full metadata.
+     */
+    private fun enrichEpisodeFromDbIfNeeded(episode: Episode): Episode {
+        if (episode.id.isNullOrBlank()) return episode
+        val hasTitle = !episode.title.isNullOrBlank()
+        val hasBroadcastAt = !episode.broadcastAt.isNullOrBlank()
+        val hasDuration = episode.duration > 0
+        val hasTimeRange = episode.startTime > 0 && episode.endTime > 0
+        if (hasTitle && hasBroadcastAt && hasDuration && hasTimeRange) return episode
+        try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+            val cached = dbHelper.getEpisodeInfo(episode.id) ?: return episode
+            val merged = episode.copy()
+            if (!cached.title.isNullOrBlank() && episode.title.isNullOrBlank()) {
+                merged.title = cached.title
+            }
+            if (!cached.broadcastAt.isNullOrBlank() && episode.broadcastAt.isNullOrBlank()) {
+                merged.broadcastAt = cached.broadcastAt
+            }
+            if (cached.duration > 0 && episode.duration <= 0) {
+                merged.duration = cached.duration
+            }
+            if (cached.startTime > 0 && episode.startTime <= 0) {
+                merged.startTime = cached.startTime
+            }
+            if (cached.endTime > 0 && episode.endTime <= 0) {
+                merged.endTime = cached.endTime
+            }
+            if (!cached.audioUrl.isNullOrBlank() && episode.audioUrl.isNullOrBlank()) {
+                merged.audioUrl = cached.audioUrl
+            }
+            writeServiceLog("notification", "[v2.4.148] enrichEpisodeFromDb: episode=${episode.id}, filledTitle=${!hasTitle && !merged.title.isNullOrBlank()}, filledBroadcast=${!hasBroadcastAt && !merged.broadcastAt.isNullOrBlank()}, filledTimeRange=${!hasTimeRange && merged.startTime > 0 && merged.endTime > 0}")
+            return merged
+        } catch (e: Exception) {
+            writeServiceLog("notification", "[v2.4.148] enrichEpisodeFromDb failed: ${e.message}")
+            return episode
+        }
+    }
+
     fun playEpisode(episode: Episode?, live: Boolean, startPositionMs: Long = -1L) {
         // [v2.3.2] Null-safety: episode can be null in rare race conditions
         if (episode == null) {
@@ -4325,6 +4394,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.d(TAG, "playEpisode: same episode but service was killed, NOT preserving stale authoritativePosition=$authoritativePosition, will use startPositionMs=$startPositionMs")
         }
 
+        // v2.4.148: When offline or the Episode object lacks metadata, enrich it from the
+        // pre-cached episode_info table so the notification always shows title/date/time.
+        var episode = enrichEpisodeFromDbIfNeeded(episode)
         currentEpisode = episode; currentStation = null; isLive = live
         prepared = false; errorRetryCount = 0; isRetrying = false
         // [v2.3.1] Cancel any pending retry from previous failed episode (null-safe)
@@ -4428,7 +4500,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // This caused pre-cache to be re-triggered every time user switches episodes,
         // even within the 2-minute throttle window. The throttle will naturally allow
         // the next check after the window expires.
-        if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
+
+        // v2.4.148: Prefer the DB-cached startTime/endTime for the notification time range.
+        // These are populated when the schedule is fetched and saved to episode_info, so they
+        // remain available even when offline. Fall back to broadcastAt parsing only when needed.
+        val epStartMs = episode.startTime
+        val epEndMs = episode.endTime
+        if (epStartMs > 0 && epEndMs > epStartMs) {
+            val startTotalMin = ((epStartMs / 60000) % 1440).toInt()
+            val endTotalMin = ((epEndMs / 60000) % 1440).toInt()
+            notificationTimeRange = String.format(
+                "%02d:%02d-%02d:%02d",
+                startTotalMin / 60, startTotalMin % 60,
+                endTotalMin / 60, endTotalMin % 60
+            )
+            notificationDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(epStartMs))
+        } else if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
             notificationDate = episode.broadcastAt.substring(0, 10) // "2024-06-04"
             val timePart = episode.broadcastAt.substring(11, 16) // "07:00"
             val durationMin = episode.duration / 60

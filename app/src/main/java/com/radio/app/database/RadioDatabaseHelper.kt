@@ -28,7 +28,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 8
+        private const val DATABASE_VERSION = 9
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -55,7 +55,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, PRIMARY KEY(episode_id, segment_start))")
         // [v2.2.4] Episode metadata cache table
-        db.execSQL("CREATE TABLE $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
+        // v2.4.148: Added start_time/end_time for offline notification time range display.
+        db.execSQL("CREATE TABLE $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, start_time INTEGER DEFAULT 0, end_time INTEGER DEFAULT 0, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
     }
 
@@ -70,6 +71,11 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         if (oldVersion < 4) {
             db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
+        }
+        // v2.4.148: Add start_time/end_time columns for offline notification time range display.
+        if (oldVersion < 9) {
+            try { db.execSQL("ALTER TABLE $TABLE_EPISODE_INFO ADD COLUMN start_time INTEGER DEFAULT 0") } catch (_: Exception) {}
+            try { db.execSQL("ALTER TABLE $TABLE_EPISODE_INFO ADD COLUMN end_time INTEGER DEFAULT 0") } catch (_: Exception) {}
         }
         // [v2.4.12] Add transcript_engine table for tracking subtitle generation engine
         if (oldVersion < 5) {
@@ -518,6 +524,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 put("title", effectiveTitle)
                 put("broadcast_at", effectiveBroadcastAt)
                 put("duration", episode.duration)
+                // v2.4.148: Persist start/end timestamps for offline notification display.
+                put("start_time", episode.startTime)
+                put("end_time", episode.endTime)
                 put("audio_url", episode.audioUrl)
                 put("station_id", episode.stationId)
                 put("station_name", episode.stationName)
@@ -540,6 +549,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                         put("title", effectiveTitle)
                         put("broadcast_at", effectiveBroadcastAt)
                         put("duration", episode.duration)
+                        // v2.4.148: Persist start/end timestamps for offline notification display.
+                        put("start_time", episode.startTime)
+                        put("end_time", episode.endTime)
                         put("audio_url", episode.audioUrl)
                         put("station_id", episode.stationId)
                         put("station_name", episode.stationName)
@@ -598,6 +610,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         title = c.getString(c.getColumnIndexOrThrow("title"))
         broadcastAt = c.getString(c.getColumnIndexOrThrow("broadcast_at"))
         duration = c.getLong(c.getColumnIndexOrThrow("duration"))
+        // v2.4.148: Restore start/end timestamps from DB cache.
+        startTime = c.getLong(c.getColumnIndexOrThrow("start_time"))
+        endTime = c.getLong(c.getColumnIndexOrThrow("end_time"))
         audioUrl = c.getString(c.getColumnIndexOrThrow("audio_url"))
         stationId = c.getString(c.getColumnIndexOrThrow("station_id"))
         stationName = c.getString(c.getColumnIndexOrThrow("station_name"))

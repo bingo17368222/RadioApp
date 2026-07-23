@@ -289,7 +289,13 @@ object AudioSegmentAnalyzer {
      * @param audioUrl Audio URL (for finding cached audio file)
      * @return true if PCM files were generated or already valid
       */
-    fun preGeneratePcmFiles(context: Context, episodeId: String, audioUrl: String?, expectedDurationMs: Long = 0): Boolean {
+    fun preGeneratePcmFiles(
+        context: Context,
+        episodeId: String,
+        audioUrl: String?,
+        expectedDurationMs: Long = 0,
+        generateFullPcm: Boolean = true
+    ): Boolean {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
@@ -325,11 +331,49 @@ object AudioSegmentAnalyzer {
             }
         }
 
+        // v2.4.148: Lightweight mode — patrol only needs the 5-min preview PCM.
+        // Validate the 5-min preview independently; it does not require a full-duration check.
+        if (!generateFullPcm) {
+            val min5Valid = min5PcmFile.exists() &&
+                    min5PcmFile.length() >= 4 * 60 * 16000 * 2 && // at least 4 minutes
+                    min5PcmFile.length() <= 6 * 60 * 16000 * 2     // at most 6 minutes
+            if (min5Valid) {
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] 5-min PCM already valid for $episodeId (${min5PcmFile.length()} bytes). Skipping decode.\n")
+                return true
+            }
+            // v2.4.148: Delete only the stale 5-min preview, never the full PCM, when in lightweight mode.
+            if (min5PcmFile.exists()) min5PcmFile.delete()
+            if (min5InfoFile.exists()) min5InfoFile.delete()
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] generating 5-min PCM only for $episodeId\n")
+            val fiveMinMs = 5 * 60 * 1000L
+            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, maxDecodeDurationMs = fiveMinMs)
+            if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] FAILED to decode 5-min PCM for $episodeId\n")
+                return false
+            }
+            // Rename decoded file to the 5-min target name.
+            if (decoded.absolutePath != min5PcmFile.absolutePath) {
+                decoded.renameTo(min5PcmFile)
+            }
+            val min5DurationMs = min5PcmFile.length() / (16000 * 2) * 1000
+            writePcmInfo(min5InfoFile, mp4DurationMs.coerceAtLeast(min5DurationMs), min5DurationMs, 16000, 1)
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] 5-min PCM generated for $episodeId (${min5PcmFile.length()} bytes, ${min5DurationMs}ms)\n")
+            return min5PcmFile.exists() && min5PcmFile.length() > 16000
+        }
+
         // v2.4.139: Validate using .info file. If valid and durations match, skip all decoding.
-        // If we still don't know the MP4 duration, never consider the cached info valid — regenerate.
         val validInfo = if (mp4DurationMs > 0) validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs) else null
         if (validInfo != null && min5PcmFile.exists() && min5PcmFile.length() > 16000) {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms). Skipping decode.\n")
+            return true
+        }
+
+        // v2.4.148: If we still don't know the MP4 duration but both PCM files already exist,
+        // keep them. Deleting valid, large PCM just because MediaExtractor returned 0 is the root
+        // cause of repeated full-PCM regeneration and 100MB+ file accumulation.
+        if (mp4DurationMs <= 0 && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100 &&
+            min5PcmFile.exists() && min5PcmFile.length() > 16000) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.148] keeping existing PCM for $episodeId because MediaExtractor duration is 0 but files exist (full=${fullPcmFile.length()}, min5=${min5PcmFile.length()}).\n")
             return true
         }
 
@@ -342,7 +386,7 @@ object AudioSegmentAnalyzer {
 
         // Decode full PCM from scratch.
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
-        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs)
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] FAILED to decode full PCM for $episodeId\n")
             return false
@@ -390,7 +434,48 @@ object AudioSegmentAnalyzer {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [v2.4.139] WARNING: mp4DurationMs is 0, skipping .info write for $episodeId to avoid invalid info files.\n")
         }
 
+        // v2.4.148: Enforce a global size limit on the PCM cache after generating a full PCM.
+        cleanupPcmCache(context)
+
         return fullPcmFile.exists() && fullPcmFile.length() > 16000
+    }
+
+    /**
+     * v2.4.148: Limit total PCM cache size. Called after generating a full PCM.
+     * Keeps the most-recently-used files up to maxSizeBytes and deletes the rest.
+     * Default limit: 1 GB. Always preserves files touched within the last 10 minutes.
+     */
+    fun cleanupPcmCache(context: Context, maxSizeBytes: Long = 1024L * 1024L * 1024L, minAgeMs: Long = 10 * 60 * 1000L) {
+        try {
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+            val files = pcmCacheDir.listFiles()?.filter { it.isFile && it.name.endsWith(".pcm") } ?: return
+            if (files.isEmpty()) return
+            val totalBytes = files.sumOf { it.length() }
+            if (totalBytes <= maxSizeBytes) return
+            val now = System.currentTimeMillis()
+            // Sort by lastModified ascending (oldest first).
+            val sorted = files.sortedBy { it.lastModified() }
+            var deleted = 0L
+            var deletedCount = 0
+            for (f in sorted) {
+                if (totalBytes - deleted <= maxSizeBytes) break
+                // Never delete files touched in the last 10 minutes (current generation).
+                if (now - f.lastModified() < minAgeMs) continue
+                val len = f.length()
+                val infoFile = File(pcmCacheDir, f.name.replace(".pcm", ".info"))
+                if (f.delete()) {
+                    deleted += len
+                    deletedCount++
+                    if (infoFile.exists()) infoFile.delete()
+                }
+            }
+            if (deletedCount > 0) {
+                val precacheLog = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+                precacheLog.parentFile?.mkdirs()
+                val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+                precacheLog.appendText("[$ts] cleanupPcmCache: deleted $deletedCount files, freed ${deleted / 1024 / 1024}MB (remaining ${(totalBytes - deleted) / 1024 / 1024}MB)\n")
+            }
+        } catch (_: Exception) {}
     }
 
     /**
@@ -507,9 +592,32 @@ object AudioSegmentAnalyzer {
             }
         }
 
+        // v2.4.148: Wrap the caller's progress callback so decode reports 0-20%
+        // and analysis reports 21-100%. This fixes the "stuck at 0%" problem where
+        // decodeAudioToPcm took several minutes without any progress update.
+        var decodeProgressPct = -1
+        var analysisProgressPct = -1
+        val wrappedProgressCallback: ((Int) -> Unit)? = progressCallback?.let { original ->
+            { pct ->
+                val mapped = 20 + (pct * 80 / 100).coerceIn(0, 80)
+                if (mapped != analysisProgressPct) {
+                    analysisProgressPct = mapped
+                    original(mapped)
+                }
+            }
+        }
+
         // v2.4.138: If still no valid PCM, decode from scratch.
         if (pcmFile == null) {
-            pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl)
+            val decodeCallback: ((Int) -> Unit)? = progressCallback?.let { original ->
+                { pct ->
+                    if (pct != decodeProgressPct) {
+                        decodeProgressPct = pct
+                        original(pct)
+                    }
+                }
+            }
+            pcmFile = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, decodeCallback)
             if (pcmFile == null) {
                 Log.e(TAG, "analyzeEpisode: no PCM file found for $episodeId (audioUrl=$audioUrl)")
                 throw RuntimeException("无法获取音频数据: 未找到PCM缓存文件，本地无缓存音频，URL解码失败(可能需要联网)")
@@ -521,7 +629,7 @@ object AudioSegmentAnalyzer {
             vadLog("[v2.4.138] analyzeEpisode: decoded fresh PCM for $episodeId (${pcmFile.length()} bytes, pcmDuration=${pcmDurationMs}ms)")
         }
 
-        return analyzePcmFile(context, pcmFile, durationMs, progressCallback)
+        return analyzePcmFile(context, pcmFile, durationMs, wrappedProgressCallback)
     }
 
     /**
@@ -554,7 +662,16 @@ object AudioSegmentAnalyzer {
      * v2.4.99: Find audio file by URL-based filename (not episode ID).
      * This is a fallback when no pre-decoded PCM file exists.
      */
-    private fun decodeAudioToPcm(context: Context, episodeId: String, outputDir: File, audioUrl: String? = null, startOffsetBytes: Long = 0): File? {
+    private fun decodeAudioToPcm(
+        context: Context,
+        episodeId: String,
+        outputDir: File,
+        audioUrl: String? = null,
+        durationMs: Long = 0,
+        startOffsetBytes: Long = 0,
+        maxDecodeDurationMs: Long = 0,
+        progressCallback: ((Int) -> Unit)? = null
+    ): File? {
         try {
             val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
             val cachedFiles = episodesDir.listFiles()?.filter {
@@ -594,7 +711,7 @@ object AudioSegmentAnalyzer {
                 // v2.4.101: No cached file — try streaming from URL directly via MediaExtractor
                 if (audioUrl != null && audioUrl.startsWith("http")) {
                     Log.i(TAG, "decodeAudioToPcm: no cached file, trying URL: $audioUrl")
-                    return decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"))
+                    return decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"), durationMs, maxDecodeDurationMs, progressCallback)
                 }
                 Log.e(TAG, "decodeAudioToPcm: no cached audio file found for $episodeId, files in episodes dir: ${cachedFiles.map { it.name }}")
                 return null
@@ -661,6 +778,23 @@ object AudioSegmentAnalyzer {
             // v2.4.132: Fixed max PCM size — 300MB = ~2.6 hours at 16kHz mono 16-bit.
             // Old value was 500MB which was way too high (indicated wrong sample rate).
             val maxPcmBytes = 300 * 1024 * 1024  // 300MB max
+
+            // v2.4.148: Estimate expected PCM size for progress reporting.
+            // 16kHz mono 16-bit = 32000 bytes/sec. Use duration if known, else rough file-size estimate.
+            val expectedPcmBytes = when {
+                durationMs > 0 -> (durationMs * 16000L * 2L / 1000L).coerceAtLeast(1L)
+                audioFile.length() > 1024 -> (audioFile.length() * 10).coerceAtLeast(1L)
+                else -> 1L
+            }
+            var lastReportedDecodeProgress = -1
+            fun reportDecodeProgressIfNeeded() {
+                if (progressCallback == null) return
+                val pct = (totalPcmBytes * 20 / expectedPcmBytes).toInt().coerceIn(0, 20)
+                if (pct != lastReportedDecodeProgress) {
+                    lastReportedDecodeProgress = pct
+                    try { progressCallback.invoke(pct) } catch (_: Exception) {}
+                }
+            }
 
             // v2.4.132: Resampling state — continuous phase tracking (same as SubtitleGeneratorService)
             var resamplePhase = 0.0
@@ -755,14 +889,24 @@ object AudioSegmentAnalyzer {
                                 outBuf.get(outBytes)
                                 fos.write(outBytes)
                                 totalPcmBytes += outBytes.size
+                                reportDecodeProgressIfNeeded()
                             } else {
                                 fos.write(chunk)
                                 totalPcmBytes += chunk.size
+                                reportDecodeProgressIfNeeded()
                             }
 
                             if (totalPcmBytes >= maxPcmBytes) {
                                 Log.i(TAG, "decodeAudioToPcm: reached max size limit ($maxPcmBytes bytes)")
                                 break
+                            }
+                            // v2.4.148: Stop early if caller only needs a prefix (e.g. 5-min preview).
+                            if (maxDecodeDurationMs > 0) {
+                                val decodedMs = totalPcmBytes * 1000L / (16000L * 2L)
+                                if (decodedMs >= maxDecodeDurationMs) {
+                                    Log.i(TAG, "decodeAudioToPcm: reached maxDecodeDurationMs ($maxDecodeDurationMs ms)")
+                                    break
+                                }
                             }
                         }
                         decoder.releaseOutputBuffer(outputBufferIndex, false)
@@ -793,7 +937,13 @@ object AudioSegmentAnalyzer {
      * v2.4.101: Download and decode audio from URL directly using MediaExtractor.
      * MediaExtractor supports HTTP URLs natively. Decodes to 16kHz mono PCM.
      */
-    private fun decodeUrlToPcm(audioUrl: String, outputFile: File): File? {
+    private fun decodeUrlToPcm(
+        audioUrl: String,
+        outputFile: File,
+        durationMs: Long = 0,
+        maxDecodeDurationMs: Long = 0,
+        progressCallback: ((Int) -> Unit)? = null
+    ): File? {
         try {
             Log.i(TAG, "decodeUrlToPcm: downloading and decoding from $audioUrl")
             val extractor = android.media.MediaExtractor()
@@ -827,9 +977,21 @@ object AudioSegmentAnalyzer {
             var totalPcmBytes = 0
             // v2.4.128: FIX — was 50MB, which truncated PCM to ~26 minutes.
             // A 2-hour audio at 16kHz mono 16-bit produces ~230MB of PCM.
-            val maxPcmBytes = 500 * 1024 * 1024  // 500MB max (~2.7 hours at 16kHz mono)
+            val maxPcmBytes = 300 * 1024 * 1024  // v2.4.148: Unified to 300MB max (~2.6 hours)
             val needResample = sampleRate != 16000 || channelCount != 1
             val fos = java.io.FileOutputStream(outputFile)
+
+            // v2.4.148: Progress reporting for URL decode (streaming fallback).
+            val expectedPcmBytes = if (durationMs > 0) (durationMs * 16000L * 2L / 1000L).coerceAtLeast(1L) else 1L
+            var lastReportedDecodeProgress = -1
+            fun reportDecodeProgressIfNeeded() {
+                if (progressCallback == null) return
+                val pct = (totalPcmBytes * 20 / expectedPcmBytes).toInt().coerceIn(0, 20)
+                if (pct != lastReportedDecodeProgress) {
+                    lastReportedDecodeProgress = pct
+                    try { progressCallback.invoke(pct) } catch (_: Exception) {}
+                }
+            }
 
             try {
                 var inputEos = false
@@ -881,14 +1043,24 @@ object AudioSegmentAnalyzer {
                                 outBuf.get(outBytes)
                                 fos.write(outBytes)
                                 totalPcmBytes += outBytes.size
+                                reportDecodeProgressIfNeeded()
                             } else {
                                 fos.write(chunk)
                                 totalPcmBytes += chunk.size
+                                reportDecodeProgressIfNeeded()
                             }
 
                             if (totalPcmBytes >= maxPcmBytes) {
                                 Log.i(TAG, "decodeUrlToPcm: reached max size limit ($maxPcmBytes bytes)")
                                 break
+                            }
+                            // v2.4.148: Stop early if caller only needs a prefix.
+                            if (maxDecodeDurationMs > 0) {
+                                val decodedMs = totalPcmBytes * 1000L / (16000L * 2L)
+                                if (decodedMs >= maxDecodeDurationMs) {
+                                    Log.i(TAG, "decodeUrlToPcm: reached maxDecodeDurationMs ($maxDecodeDurationMs ms)")
+                                    break
+                                }
                             }
                         }
                         decoder.releaseOutputBuffer(outputBufferIndex, false)
@@ -905,7 +1077,7 @@ object AudioSegmentAnalyzer {
             }
 
             Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes to ${outputFile.name}")
-            // v2.4.138: .info file with duration metadata is now written by the caller.
+            // v2.4.148: .info file with duration metadata is now written by the caller.
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeUrlToPcm failed: ${e.message}")
