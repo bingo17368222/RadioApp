@@ -6,18 +6,18 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import com.radio.app.R
 
 /**
- * v2.4.150/v2.4.153: Independent notification helper for AI audio segmentation.
+ * v2.4.150/v2.4.154: Independent notification helper for AI audio segmentation.
  *
  * Uses applicationContext so the notification keeps updating even when the
  * PlayerActivity that started the segment thread has been destroyed.
  *
- * v2.4.153: Switched to a custom layout so the episode title can wrap to two lines
- * and the progress percentage / elapsed / ETA are shown where the progress bar was.
+ * v2.4.154: Reverted to the standard notification template so the original
+ * system color scheme is used (better visibility). Keeps the cancel action
+ * and shows progress / elapsed / ETA in the content text instead of a progress bar.
  */
 object SegmentNotificationHelper {
     private const val SEGMENT_NOTIFICATION_ID = 20001
@@ -55,10 +55,6 @@ object SegmentNotificationHelper {
                 }
             }
 
-            val remoteViews = RemoteViews(appCtx.packageName, R.layout.notification_segment)
-            remoteViews.setTextViewText(R.id.segment_notification_title, episodeTitle)
-            remoteViews.setTextViewText(R.id.segment_notification_info, infoText)
-
             val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(appCtx.packageName)
             val cancelPending = PendingIntent.getBroadcast(
                 appCtx, 20001, cancelIntent,
@@ -67,10 +63,13 @@ object SegmentNotificationHelper {
 
             val notification = NotificationCompat.Builder(appCtx, SEGMENT_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setCustomContentView(remoteViews)
-                .setCustomBigContentView(remoteViews)
                 .setContentTitle(episodeTitle)
                 .setContentText(infoText)
+                .setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .setBigContentTitle(episodeTitle)
+                        .bigText(infoText)
+                )
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOnlyAlertOnce(true)
