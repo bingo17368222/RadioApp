@@ -78,6 +78,9 @@ class PlayerActivity : AppCompatActivity() {
     // v2.4.145: Remember the last reported AI segment progress so we can restore the UI
     // and notification when the user returns to the Activity.
     private var lastSegmentProgress = 0
+    // v2.4.146: Persist progress across Activity recreation.
+    private val SEGMENT_PROGRESS_PREFS = "segment_progress_prefs"
+    private val KEY_LAST_SEGMENT_PROGRESS = "last_segment_progress"
     private var segmentListDisplayText: String = ""  // v2.4.50: Store "片段列表" text to prevent overwrite
     private var lastSkipBackwardTime: Long = 0  // v2.4.54: Debounce backward skip
     private var onResumeTimestamp: Long = 0  // v2.4.55: Post-resume seek blackout
@@ -406,13 +409,19 @@ class PlayerActivity : AppCompatActivity() {
         // otherwise the UI appears cancelled even though the task is still running.
         subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
         segmentProcessing = prefs.getBoolean("segment_processing", false)
-        android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing savedEpisode=$savedEpisodeId current=$currentId")
+        // v2.4.146: Restore persisted progress so the UI doesn't reset to 0% after Activity recreation.
+        lastSegmentProgress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+            .getInt(KEY_LAST_SEGMENT_PROGRESS, 0)
+        android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing progress=$lastSegmentProgress savedEpisode=$savedEpisodeId current=$currentId")
 
         // Safety: only on a genuine fresh start (no saved state) do we clear.
         // If a segment task was saved, keep it alive so it can finish in background.
         if (isFreshStart && savedEpisodeId.isNullOrBlank()) {
             subtitleProcessing = false
             segmentProcessing = false
+            lastSegmentProgress = 0
+            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
             android.util.Log.d("PlayerActivity", "restoreProcessingState: genuine fresh start with no saved state, cleared processing flags")
         }
     }
@@ -2030,6 +2039,9 @@ class PlayerActivity : AppCompatActivity() {
                                 this@PlayerActivity, episode.id, maxEnd.toLong(), episode.audioUrl,
                                 progressCallback = { pct ->
                                     lastSegmentProgress = pct
+                                    // v2.4.146: Persist progress so UI restores correctly after Activity recreation.
+                                    getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                                        .putInt(KEY_LAST_SEGMENT_PROGRESS, pct).apply()
                                     runOnUiThread {
                                         if (_binding != null && segmentProcessing) {
                                             // v2.4.145: Keep the progress bar and notification moving instead of stuck at 0%
@@ -3044,6 +3056,9 @@ class PlayerActivity : AppCompatActivity() {
         else if (taskType == "segment") {
             segmentProcessing = true
             lastSegmentProgress = 0  // v2.4.145: Reset progress for new segment task
+            // v2.4.146: Reset persisted progress too.
+            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
         }
         saveProcessingState()
         // v2.4.44: Show notification for AI segmentation (like subtitle generation)
@@ -3078,6 +3093,10 @@ class PlayerActivity : AppCompatActivity() {
             }
         } else {
             segmentProcessing = false
+            // v2.4.146: Reset persisted progress when segment processing finishes.
+            lastSegmentProgress = 0
+            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                .putInt(KEY_LAST_SEGMENT_PROGRESS, 0).apply()
             if (_binding != null) {
                 binding.progressAi.visibility = View.GONE
                 binding.tvAiStatus.visibility = if (voiceSegments.isNotEmpty()) View.VISIBLE else View.GONE
