@@ -1699,7 +1699,7 @@ object AudioSegmentAnalyzer {
                 cause.printStackTrace(java.io.PrintWriter(sw))
                 vadLog("FAILED stack trace: ${sw.toString().take(800)}")
             }
-            return Pair(0.5f, state)
+            return Triple(0.5f, state, context)
         }
     }
 
