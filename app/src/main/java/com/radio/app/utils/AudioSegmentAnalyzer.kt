@@ -69,8 +69,8 @@ object AudioSegmentAnalyzer {
         } catch (_: Exception) {}
     }
 
-    // v2.4.150: Format milliseconds as mm:ss or hh:mm:ss for user-friendly logs.
-    private fun formatDurationMs(ms: Long): String {
+    // v2.4.150: Format milliseconds as mm:ss or hh:mm:ss for user-friendly logs and UI.
+    fun formatDurationMs(ms: Long): String {
         val totalSeconds = ms / 1000
         val hours = totalSeconds / 3600
         val minutes = (totalSeconds % 3600) / 60
@@ -124,6 +124,14 @@ object AudioSegmentAnalyzer {
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
+
+    // v2.4.150: Result bundle for audio segmentation, including the engine used and timing.
+    data class SegmentAnalysisResult(
+        val segments: List<VoiceSegment>,
+        val engineName: String,
+        val processingTimeMs: Long,
+        val audioDurationMs: Long
+    )
 
     /**
      * Check if YAMNet model file exists.
@@ -545,15 +553,16 @@ object AudioSegmentAnalyzer {
      * @param episodeId Episode ID
      * @param durationMs Duration in milliseconds
      * @param audioUrl Audio URL (for finding cached audio file)
-     * @return List of VoiceSegments
+     * @param progressCallback (progressPermille 0-1000, elapsedMs, etaMs)
+     * @return SegmentAnalysisResult containing segments, engine name and timing
      */
     fun analyzeEpisode(
         context: Context,
         episodeId: String,
         durationMs: Long,
         audioUrl: String? = null,
-        progressCallback: ((Int) -> Unit)? = null
-    ): List<VoiceSegment> {
+        progressCallback: ((Int, Long, Long) -> Unit)? = null
+    ): SegmentAnalysisResult {
         // v2.4.115: Initialize file-based logger for VAD diagnostics
         setLogContext(context)
 
@@ -621,28 +630,42 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // v2.4.148: Wrap the caller's progress callback so decode reports 0-20%
-        // and analysis reports 21-100%. This fixes the "stuck at 0%" problem where
+        // v2.4.148: Wrap the caller's progress callback so decode reports 0-200‰
+        // and analysis reports 201-1000‰. This fixes the "stuck at 0%" problem where
         // decodeAudioToPcm took several minutes without any progress update.
+        // v2.4.152: Use 0-1000 permille so the progress bar/text can move in 0.1% steps.
+        // Even when integer percent stays the same (e.g. "34%"), the UI still advances.
         var decodeProgressPct = -1
-        var analysisProgressPct = -1
-        val wrappedProgressCallback: ((Int) -> Unit)? = progressCallback?.let { original ->
-            { pct ->
-                val mapped = 20 + (pct * 80 / 100).coerceIn(0, 80)
-                if (mapped != analysisProgressPct) {
-                    analysisProgressPct = mapped
-                    original(mapped)
+        var analysisProgressPermille = -1
+        var lastDecodeForwardTimeMs = 0L
+        var lastAnalysisForwardTimeMs = 0L
+        val wrappedProgressCallback: ((Int, Long, Long) -> Unit)? = progressCallback?.let { original ->
+            { analysisPermille, elapsedMs, etaMs ->
+                val nowMs = System.currentTimeMillis()
+                // Analysis phase occupies the 200-1000‰ range.
+                val mapped = 200 + (analysisPermille * 800 / 1000).coerceIn(0, 800)
+                if (mapped != analysisProgressPermille || nowMs - lastAnalysisForwardTimeMs >= 1000) {
+                    analysisProgressPermille = mapped
+                    lastAnalysisForwardTimeMs = nowMs
+                    original(mapped, elapsedMs, etaMs)
                 }
             }
         }
 
         // v2.4.138: If still no valid PCM, decode from scratch.
         if (pcmFile == null) {
+            val decodeStartMs = System.currentTimeMillis()
             val decodeCallback: ((Int) -> Unit)? = progressCallback?.let { original ->
                 { pct ->
-                    if (pct != decodeProgressPct) {
+                    val nowMs = System.currentTimeMillis()
+                    if (pct != decodeProgressPct || nowMs - lastDecodeForwardTimeMs >= 1000) {
                         decodeProgressPct = pct
-                        original(pct)
+                        lastDecodeForwardTimeMs = nowMs
+                        val decodeElapsedMs = nowMs - decodeStartMs
+                        // pct is 0-20% of total work (0-200‰); ETA is still in decode-time domain.
+                        val decodeEtaMs = if (pct > 0) (decodeElapsedMs * (20 - pct) / pct) else 0L
+                        // Map the 0-20% decode range to 0-200‰ of the overall progress.
+                        original(pct * 10, decodeElapsedMs, decodeEtaMs)
                     }
                 }
             }
@@ -817,11 +840,15 @@ object AudioSegmentAnalyzer {
             }
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: START episode=$episodeId, audioFile=${audioFile.name} (${audioFile.length()} bytes), durationMs=$durationMs, expectedPcmBytes=$expectedPcmBytes, maxPcmBytes=$maxPcmBytes, maxDecodeDurationMs=$maxDecodeDurationMs")
             var lastReportedDecodeProgress = -1
+            var lastDecodeProgressTimeMs = 0L
             fun reportDecodeProgressIfNeeded() {
                 if (progressCallback == null) return
+                val nowMs = System.currentTimeMillis()
                 val pct = (totalPcmBytes * 20 / expectedPcmBytes).toInt().coerceIn(0, 20)
-                if (pct != lastReportedDecodeProgress) {
+                // v2.4.151: Also report once per second so elapsed/ETA keep refreshing.
+                if (pct != lastReportedDecodeProgress || nowMs - lastDecodeProgressTimeMs >= 1000) {
                     lastReportedDecodeProgress = pct
+                    lastDecodeProgressTimeMs = nowMs
                     try { progressCallback.invoke(pct) } catch (_: Exception) {}
                 }
             }
@@ -1020,11 +1047,15 @@ object AudioSegmentAnalyzer {
             val expectedPcmBytes = if (durationMs > 0) (durationMs * 16000L * 2L / 1000L).coerceAtLeast(1L) else 1L
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: START url=$audioUrl, durationMs=$durationMs, expectedPcmBytes=$expectedPcmBytes, maxPcmBytes=$maxPcmBytes, maxDecodeDurationMs=$maxDecodeDurationMs")
             var lastReportedDecodeProgress = -1
+            var lastDecodeProgressTimeMs = 0L
             fun reportDecodeProgressIfNeeded() {
                 if (progressCallback == null) return
+                val nowMs = System.currentTimeMillis()
                 val pct = (totalPcmBytes * 20 / expectedPcmBytes).toInt().coerceIn(0, 20)
-                if (pct != lastReportedDecodeProgress) {
+                // v2.4.151: Also report once per second so elapsed/ETA keep refreshing.
+                if (pct != lastReportedDecodeProgress || nowMs - lastDecodeProgressTimeMs >= 1000) {
                     lastReportedDecodeProgress = pct
+                    lastDecodeProgressTimeMs = nowMs
                     try { progressCallback.invoke(pct) } catch (_: Exception) {}
                 }
             }
@@ -1133,14 +1164,15 @@ object AudioSegmentAnalyzer {
      * @param context Application context
      * @param pcmFile 16kHz mono 16-bit PCM file
      * @param durationMs Total duration in milliseconds
-     * @return List of VoiceSegments
+     * @param progressCallback (progressPermille 0-1000, elapsedMs, etaMs)
+     * @return SegmentAnalysisResult containing segments, engine name and timing
      */
     fun analyzePcmFile(
         context: Context,
         pcmFile: File,
         durationMs: Long,
-        progressCallback: ((Int) -> Unit)? = null
-    ): List<VoiceSegment> {
+        progressCallback: ((Int, Long, Long) -> Unit)? = null
+    ): SegmentAnalysisResult {
         if (!pcmFile.exists() || pcmFile.length() < 16000) {
             Log.w(TAG, "PCM file too small or missing: ${pcmFile.absolutePath}")
             throw RuntimeException("PCM文件太小或不存在: ${pcmFile.name} (${pcmFile.length()} bytes)")
@@ -1215,30 +1247,39 @@ object AudioSegmentAnalyzer {
             val vadConfidenceWindow = ArrayDeque<Int>(VAD_LOW_CONFIDENCE_WINDOW)
 
             // v2.4.144/v2.4.150: Report analysis progress so the UI progress bar does not sit at 0%.
-            // Use finer granularity (0.5%) and log ETA to avoid the "stuck at 34%" feeling.
+            // v2.4.152: Report in 0-1000 permille so the UI can move in 0.1% steps and no longer
+            // appears frozen at integer percentages like 34%.
             val totalSamples = samples.size
             val totalDurationMs = (totalSamples * 1000L / YAMNET_SAMPLE_RATE)
             var lastReportedProgress = -1
             val analysisStartTimeMs = System.currentTimeMillis()
             var lastFriendlyLogTimeMs = 0L
+            var lastCallbackTimeMs = 0L
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 开始音频分段分析：总时长 ${formatDurationMs(totalDurationMs)}，共 $totalSamples 样本")
 
             while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
-                val progress = (pos * 100 / totalSamples).coerceIn(0, 99)
-                if (progress != lastReportedProgress) {
+                val progress = (pos.toLong() * 1000L / totalSamples).toInt().coerceIn(0, 1000)
+                val nowMs = System.currentTimeMillis()
+                val processedMs = (pos * 1000L / YAMNET_SAMPLE_RATE)
+                val elapsedMs = nowMs - analysisStartTimeMs
+                val etaMs = if (processedMs > 0) (elapsedMs * (totalDurationMs - processedMs) / processedMs) else 0L
+
+                // v2.4.150: Always invoke callback so notification/UI can refresh elapsed/ETA
+                // even when integer percent stays the same (e.g. stuck at 34%). Throttle by
+                // only invoking on progress change or once per second to avoid excessive work.
+                if (progress != lastReportedProgress || nowMs - lastCallbackTimeMs >= 1000) {
                     lastReportedProgress = progress
-                    try { progressCallback?.invoke(progress) } catch (_: Exception) { }
+                    lastCallbackTimeMs = nowMs
+                    try { progressCallback?.invoke(progress, elapsedMs, etaMs) } catch (_: Exception) { }
                 }
 
                 // v2.4.150: Log user-friendly progress every ~5% or 30s to show it is alive.
-                val nowMs = System.currentTimeMillis()
-                val processedMs = (pos * 1000L / YAMNET_SAMPLE_RATE)
-                if ((progress > 0 && progress % 5 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
+                // v2.4.152: progress is now permille, so log every 50‰ (5%).
+                if ((progress > 0 && progress % 50 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
                     || (nowMs - lastFriendlyLogTimeMs > 30_000)) {
                     lastFriendlyLogTimeMs = nowMs
-                    val elapsedMs = nowMs - analysisStartTimeMs
-                    val etaMs = if (processedMs > 0) (elapsedMs * (totalDurationMs - processedMs) / processedMs) else 0L
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progress}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
+                    val progressPercent = String.format(java.util.Locale.US, "%.1f", progress / 10f)
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progressPercent}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
                 }
 
                 val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
@@ -1420,9 +1461,15 @@ object AudioSegmentAnalyzer {
             val segments = mergeFramesIntoSegments(frameResults, durationMs)
             Log.i(TAG, "Generated ${segments.size} segments (dry=${segments.count { it.label == "干货" }}, water=${segments.count { it.label == "水货" }})")
             val totalElapsedMs = System.currentTimeMillis() - analysisStartTimeMs
-            val modeName = if (vadMalfunction) "YAMNet 单独模式" else "VAD+YAMNet 双模型模式"
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段），分析模式=$modeName，总耗时 ${formatDurationMs(totalElapsedMs)}")
-            return segments
+            val modeName = if (vadMalfunction) "YAMNet" else "VAD+YAMNet"
+            val displayModeName = if (vadMalfunction) "YAMNet 单独模式" else "VAD+YAMNet 双模型模式"
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段），分析模式=$displayModeName，总耗时 ${formatDurationMs(totalElapsedMs)}")
+            return SegmentAnalysisResult(
+                segments = segments,
+                engineName = modeName,
+                processingTimeMs = totalElapsedMs,
+                audioDurationMs = totalDurationMs
+            )
 
         } finally {
             yamnetInterpreter.close()

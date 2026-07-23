@@ -228,24 +228,59 @@ object SegmentGenerator {
                 return
             }
 
+            // v2.4.151: Track timing so we can persist engine + elapsed time for all segment paths.
+            val segStartTime = System.currentTimeMillis()
             val settings = com.radio.app.models.AppSettings.getInstance(context)
-            val segments = if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_AUDIO_VAD) {
+            val segments: List<VoiceSegment>
+            val engineName: String
+            val processingTimeMs: Long
+            val audioDurationMs: Long
+
+            if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_AUDIO_VAD) {
                 // v2.4.95: Audio-based segmentation (Silero VAD + YAMNet)
                 Log.i(TAG, "postSegmentKeyword: using audio-vad mode for episode=$episodeId")
                 // v2.4.99: Look up audio URL from database for PCM file finding
                 val audioUrl = try {
                     RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)?.audioUrl
                 } catch (_: Exception) { null }
-                tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
+                val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
+                segments = result?.segments ?: emptyList()
+                engineName = result?.engineName ?: "VAD+YAMNet"
+                processingTimeMs = result?.processingTimeMs ?: (System.currentTimeMillis() - segStartTime)
+                audioDurationMs = result?.audioDurationMs ?: durationMs
             } else {
                 // Keyword-based segments
                 Log.i(TAG, "postSegmentKeyword: using keyword-based for episode=$episodeId")
-                generateKeywordSegments(context, episodeId, durationMs)
+                engineName = when (settings.aiModel) {
+                    com.radio.app.models.AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
+                    else -> "关键词"
+                }
+                segments = generateKeywordSegments(context, episodeId, durationMs)
+                processingTimeMs = System.currentTimeMillis() - segStartTime
+                audioDurationMs = durationMs
             }
 
             if (segments.isNotEmpty()) {
                 dbHelper.saveVoiceSegments(episodeId, segments)
                 dbHelper.updateEpisodeSegmentCount(episodeId, segments.size)
+                // v2.4.151: Persist engine and timing for permanent display.
+                try {
+                    val dryCount = segments.count { it.hasVoice }
+                    dbHelper.saveSegmentAnalysisInfo(
+                        com.radio.app.database.SegmentAnalysisInfo(
+                            episodeId = episodeId,
+                            engineName = engineName,
+                            generatedAt = System.currentTimeMillis(),
+                            processingTimeMs = processingTimeMs,
+                            audioDurationMs = audioDurationMs,
+                            segmentCount = segments.size,
+                            dryCount = dryCount,
+                            waterCount = segments.size - dryCount
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "postSegmentKeyword: failed to save segment analysis info: ${e.message}")
+                }
                 Log.i(TAG, "postSegmentKeyword: saved ${segments.size} segments for episode=$episodeId")
             }
         } catch (e: Exception) {
@@ -255,21 +290,21 @@ object SegmentGenerator {
 
     /**
      * v2.4.96: Try to generate segments using audio analysis (Silero VAD + YAMNet).
-     * Uses the new analyzeEpisode method which finds PCM files automatically.
+     * v2.4.151: Returns the full SegmentAnalysisResult so callers can persist engine & timing.
      */
     private fun tryGenerateAudioSegments(
         context: Context,
         episodeId: String,
         durationMs: Long,
         audioUrl: String? = null
-    ): List<VoiceSegment> {
+    ): AudioSegmentAnalyzer.SegmentAnalysisResult? {
         try {
-            val segments = AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl)
-            Log.i(TAG, "tryGenerateAudioSegments: got ${segments.size} segments from audio analysis")
-            return segments
+            val result = AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl)
+            Log.i(TAG, "tryGenerateAudioSegments: got ${result.segments.size} segments from audio analysis (engine=${result.engineName}, time=${result.processingTimeMs}ms)")
+            return result
         } catch (e: Exception) {
             Log.e(TAG, "tryGenerateAudioSegments failed: ${e.message}")
-            return emptyList()
+            return null
         }
     }
 }
