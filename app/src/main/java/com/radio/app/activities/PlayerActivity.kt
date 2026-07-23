@@ -2116,7 +2116,7 @@ class PlayerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 if (_binding != null) {
                                     // v2.4.144: Show engine + elapsed time even on failure so the user sees it finished
-                                    binding.tvAiStatus.text = "AI分段失败：$segEngineName (耗时: ${elapsed / 1000}s) — ${e.javaClass.simpleName}"
+                                    binding.tvAiStatus.text = "AI分段失败：$segEngineName (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsed)}) — ${e.javaClass.simpleName}"
                                     binding.tvAiStatus.visibility = View.VISIBLE
                                 }
                                 Toast.makeText(this, "音频分段失败: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
@@ -2287,8 +2287,8 @@ class PlayerActivity : AppCompatActivity() {
                             // v2.4.150: Load persisted engine/time from DB (audio-vad path saved it above).
                             val dbAnalysisInfo = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getSegmentAnalysisInfo(episode.id)
                             val displayEngine = dbAnalysisInfo?.engineName ?: segEngineName
-                            val displayTimeSec = (dbAnalysisInfo?.processingTimeMs ?: segElapsed) / 1000
-                            binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngine (耗时: ${displayTimeSec}s)"
+                            val displayTimeText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(dbAnalysisInfo?.processingTimeMs ?: segElapsed)
+                            binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngine (耗时: $displayTimeText)"
                             segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
                             // v2.4.57: Also persist to SharedPreferences so it survives Activity recreation
                             getSharedPreferences("segment_info", MODE_PRIVATE).edit()
@@ -2301,7 +2301,7 @@ class PlayerActivity : AppCompatActivity() {
                                 Toast.LENGTH_LONG).show()
                         } else {
                             // v2.4.144: Show engine + elapsed time even when no segments were generated
-                            binding.tvAiStatus.text = "AI分段无结果：$segEngineName (耗时: ${segElapsed / 1000}s)"
+                            binding.tvAiStatus.text = "AI分段无结果：$segEngineName (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(segElapsed)})"
                             binding.tvAiStatus.visibility = View.VISIBLE
                             Toast.makeText(this, "AI分段失败：无法生成分段", Toast.LENGTH_SHORT).show()
                         }
@@ -4001,7 +4001,7 @@ class PlayerActivity : AppCompatActivity() {
                 val savedEngine = dbAnalysisInfo?.engineName ?: prefs.getString("seg_engine_${episode.id}", null)
                 val savedTime = dbAnalysisInfo?.processingTimeMs ?: prefs.getLong("seg_time_${episode.id}", 0L)
                 if (savedEngine != null && _binding != null) {
-                    val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${savedTime / 1000}s)"
+                    val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)})"
                     binding.tvAiStatus.text = restoredText
                     segmentListDisplayText = restoredText
                     binding.tvAiStatus.visibility = View.VISIBLE

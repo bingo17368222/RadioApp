@@ -108,15 +108,14 @@ object AudioSegmentAnalyzer {
     private const val VAD_DRY_THRESHOLD = 0.45f
     private const val VAD_WATER_THRESHOLD = 0.15f
 
-    // v2.4.150: VAD malfunction detection now uses a sliding window instead of strict consecutive
-    // frames. This avoids the "frequent jump" problem where vadProb hovers around 0.01 and keeps
-    // resetting the counter, delaying the switch to YAMNet-only mode and causing unstable
-    // dual-model classification.
-    private const val VAD_LOW_CONFIDENCE_WINDOW = 8
-    private const val VAD_LOW_CONFIDENCE_REQUIRED = 5
-    private const val VAD_SUSPICIOUS_THRESHOLD = 0.05f
+    // v2.4.150/v2.4.153: VAD malfunction detection now uses a sliding window instead of strict
+    // consecutive frames. v2.4.153 widens the window and raises thresholds so that short intro
+    // music/silence or a few low-prob frames no longer trigger an early switch to YAMNet-only.
+    private const val VAD_LOW_CONFIDENCE_WINDOW = 15
+    private const val VAD_LOW_CONFIDENCE_REQUIRED = 10
+    private const val VAD_SUSPICIOUS_THRESHOLD = 0.10f
     private const val VAD_STRONG_THRESHOLD = 0.01f
-    private const val VAD_YAMNET_SPEECH_THRESHOLD = 0.6f
+    private const val VAD_YAMNET_SPEECH_THRESHOLD = 0.65f
 
     // Energy thresholds (relative to max energy)
     private const val ENERGY_SILENCE_RATIO = 0.05f
@@ -1329,17 +1328,24 @@ object AudioSegmentAnalyzer {
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
 
-                // v2.4.150: Sliding-window VAD malfunction detection with hysteresis.
+                // v2.4.150/v2.4.153: Sliding-window VAD malfunction detection with hysteresis.
+                // Only count a frame as suspicious when YAMNet is clearly speech (not music) and
+                // VAD probability is very low. Do not declare malfunction until the window is full
+                // AND we have processed at least 30 frames, so short intros no longer cause an
+                // early switch to YAMNet-only mode.
                 if (!vadMalfunction) {
+                    val isClearlySpeech = yamnetSpeech > VAD_YAMNET_SPEECH_THRESHOLD && yamnetSpeech > yamnetMusic
                     val score = when {
-                        vadProb < VAD_STRONG_THRESHOLD && yamnetSpeech > VAD_YAMNET_SPEECH_THRESHOLD -> 2
-                        vadProb < VAD_SUSPICIOUS_THRESHOLD && yamnetSpeech > VAD_YAMNET_SPEECH_THRESHOLD -> 1
+                        vadProb < VAD_STRONG_THRESHOLD && isClearlySpeech -> 2
+                        vadProb < VAD_SUSPICIOUS_THRESHOLD && isClearlySpeech -> 1
                         else -> 0
                     }
                     if (vadConfidenceWindow.size >= VAD_LOW_CONFIDENCE_WINDOW) vadConfidenceWindow.removeFirst()
                     vadConfidenceWindow.addLast(score)
                     val windowScore = vadConfidenceWindow.sum()
-                    if (windowScore >= VAD_LOW_CONFIDENCE_REQUIRED) {
+                    if (vadConfidenceWindow.size >= VAD_LOW_CONFIDENCE_WINDOW &&
+                        frameResults.size >= 30 &&
+                        windowScore >= VAD_LOW_CONFIDENCE_REQUIRED) {
                         val strongCount = vadConfidenceWindow.count { it == 2 }
                         val suspiciousCount = vadConfidenceWindow.count { it == 1 }
                         vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD 模型对该音频响应不稳定（最近 ${vadConfidenceWindow.size} 帧中，strong=$strongCount 帧 prob<${VAD_STRONG_THRESHOLD}，suspicious=$suspiciousCount 帧 prob<${VAD_SUSPICIOUS_THRESHOLD}，YAMNet speech>${VAD_YAMNET_SPEECH_THRESHOLD}）。已自动切换到 YAMNet 单独分析模式，避免双模型反复跳转。")

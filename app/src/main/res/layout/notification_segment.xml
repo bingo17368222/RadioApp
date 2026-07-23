@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/segment_notification_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#CC1a1a2e"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp">
+
+    <!-- 标题：允许两行，减少截断 -->
+    <TextView
+        android:id="@+id/segment_notification_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Radio App"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:textColor="#FFFFFF"
+        android:maxLines="2"
+        android:ellipsize="end" />
+
+    <!-- 进度信息（显示在原来进度条的位置） -->
+    <TextView
+        android:id="@+id/segment_notification_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="AI分段: 0% (已用 00:00，预计剩余 00:00)"
+        android:textSize="12sp"
+        android:textColor="#CCCCCC"
+        android:maxLines="2"
+        android:ellipsize="end" />
+</LinearLayout>

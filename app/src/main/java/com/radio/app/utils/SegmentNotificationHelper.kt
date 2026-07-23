@@ -6,14 +6,18 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import com.radio.app.R
 
 /**
- * v2.4.150: Independent notification helper for AI audio segmentation.
+ * v2.4.150/v2.4.153: Independent notification helper for AI audio segmentation.
  *
  * Uses applicationContext so the notification keeps updating even when the
  * PlayerActivity that started the segment thread has been destroyed.
+ *
+ * v2.4.153: Switched to a custom layout so the episode title can wrap to two lines
+ * and the progress percentage / elapsed / ETA are shown where the progress bar was.
  */
 object SegmentNotificationHelper {
     private const val SEGMENT_NOTIFICATION_ID = 20001
@@ -40,9 +44,9 @@ object SegmentNotificationHelper {
                 nm.createNotificationChannel(channel)
             }
 
-            // v2.4.152: progress is 0-1000 permille; show as x.x%.
+            // progress is 0-1000 permille; show as x.x%.
             val percentText = String.format(java.util.Locale.US, "%.1f", progress / 10f)
-            val content = buildString {
+            val infoText = buildString {
                 append("AI分段: ${percentText}%")
                 if (elapsedText.isNotEmpty()) {
                     append(" (已用 $elapsedText")
@@ -50,6 +54,10 @@ object SegmentNotificationHelper {
                     append(")")
                 }
             }
+
+            val remoteViews = RemoteViews(appCtx.packageName, R.layout.notification_segment)
+            remoteViews.setTextViewText(R.id.segment_notification_title, episodeTitle)
+            remoteViews.setTextViewText(R.id.segment_notification_info, infoText)
 
             val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(appCtx.packageName)
             val cancelPending = PendingIntent.getBroadcast(
@@ -59,9 +67,10 @@ object SegmentNotificationHelper {
 
             val notification = NotificationCompat.Builder(appCtx, SEGMENT_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
+                .setCustomContentView(remoteViews)
+                .setCustomBigContentView(remoteViews)
                 .setContentTitle(episodeTitle)
-                .setContentText(content)
-                .setProgress(1000, progress, progress == 0)
+                .setContentText(infoText)
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOnlyAlertOnce(true)
