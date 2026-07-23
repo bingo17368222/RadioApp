@@ -977,6 +977,9 @@ object AudioSegmentAnalyzer {
             // v3/v4: combined state [2,1,N] → N*2 floats
             var vadState = FloatBuffer.wrap(FloatArray(vadModel.stateSize))
 
+            // v2.4.141: Count consecutive low-confidence VAD windows before declaring malfunction.
+            var vadLowConfidenceFrames = 0
+
             while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
                 val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
                 val timestampMs = (pos.toLong() * 1000 / YAMNET_SAMPLE_RATE)
@@ -1019,14 +1022,21 @@ object AudioSegmentAnalyzer {
                 // v2.4.128: Moved rmsEnergy/zcr computation here for diagnostics
                 val rmsEnergy = computeRmsEnergy(window, 0, window.size)
                 val zcr = computeZeroCrossingRate(window)
-                // v2.4.135: Early VAD malfunction detection. If Silero VAD reports extremely low
-                // probability but YAMNet clearly detects speech in the current frame, switch to
-                // YAMNet-only classification immediately. This avoids aborting segmentation on
-                // audio where VAD fails to produce meaningful probabilities.
+                // v2.4.141: Early VAD malfunction detection. Require several consecutive low-prob
+                // frames before switching to YAMNet-only mode. A single window can be low simply
+                // because the audio is quiet/intro; only a persistent stream of near-zero probabilities
+                // while YAMNet still detects speech indicates that VAD is not useful for this episode.
                 if (!vadMalfunction && vadProb < 0.01f && yamnetSpeech > 0.3f) {
-                    vadLog("[v2.4.135] VAD malfunction detected early (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.3). Switching to YAMNet-only mode.")
-                    Log.w(TAG, "[v2.4.135] VAD malfunction — falling back to YAMNet-only mode")
-                    vadMalfunction = true  // Flag to use YAMNet-only classification
+                    vadLowConfidenceFrames++
+                    if (vadLowConfidenceFrames >= 3) {
+                        vadLog("[v2.4.141] VAD malfunction detected after $vadLowConfidenceFrames low-prob frames (vadProb=$vadProb < 0.01, yamnetSpeech=$yamnetSpeech > 0.3). Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[v2.4.141] VAD malfunction — falling back to YAMNet-only mode")
+                        vadMalfunction = true  // Flag to use YAMNet-only classification
+                    } else {
+                        vadLog("[v2.4.141] VAD low confidence frame $vadLowConfidenceFrames/3 (vadProb=$vadProb, yamnetSpeech=$yamnetSpeech), not switching yet")
+                    }
+                } else if (!vadMalfunction) {
+                    vadLowConfidenceFrames = 0
                 }
 
                 // v2.4.137: Wait until 30 frames (~30s) before declaring VAD malfunction. Some episodes

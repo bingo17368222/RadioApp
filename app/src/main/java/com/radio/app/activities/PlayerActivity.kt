@@ -112,6 +112,11 @@ class PlayerActivity : AppCompatActivity() {
     // This prevents old episode's position from leaking through after stabilization.
     @Volatile
     private var episodeSwitchLockPos = -1L
+    // v2.4.141: Track when the lock was set and how many callbacks have been rejected.
+    // If the saved position is stale (playback moved on while the UI was away), we must
+    // eventually give up and sync to the live service position instead of freezing the UI.
+    private var episodeSwitchLockStartMs = 0L
+    private var episodeSwitchLockRejectCount = 0
     private val JITTER_STABILIZE_MS_DEFAULT = 5000L  // 5s for cold start / activity recreate
     private var jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT  // dynamic duration, set in onResume
     // Count consecutive backward jumps to detect player reset
@@ -342,7 +347,7 @@ class PlayerActivity : AppCompatActivity() {
                     jitterSyncTimeMs = System.currentTimeMillis()
                     jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
                     consecutiveBackwardJumps = 0
-                    episodeSwitchLockPos = savedPos
+                    setEpisodeSwitchLock(savedPos)
                     // Apply to UI immediately in case service is not yet prepared
                     val svcDur = playbackService?.getDuration() ?: ep.duration
                     binding.seekBar.max = if (svcDur > 0) svcDur.toInt() else binding.seekBar.max
@@ -368,12 +373,12 @@ class PlayerActivity : AppCompatActivity() {
                         lastDisplayedPositionMs = savedPos
                         binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                         binding.seekBar.progress = savedPos.toInt()
-                        episodeSwitchLockPos = savedPos
+                        setEpisodeSwitchLock(savedPos)
                         writeJitterLog("[v2.4.134] episodeChanged broadcast: set position lock to savedPos=$savedPos")
                     } else {
                         binding.tvCurrentTime.text = "00:00 / --:--"
                         binding.seekBar.progress = 0
-                        episodeSwitchLockPos = 0L
+                        setEpisodeSwitchLock(0L)
                         writeJitterLog("[v2.4.134] episodeChanged broadcast: set position lock to 0 (no saved position)")
                     }
                 }
@@ -454,14 +459,14 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCurrentTime.text = "${formatTime(savedPos.toInt())} / --:--"
                     binding.seekBar.progress = savedPos.toInt()
                     // v2.4.132: Set position lock to prevent old episode position from leaking
-                    episodeSwitchLockPos = savedPos
+                    setEpisodeSwitchLock(savedPos)
                     writeJitterLog("[v2.4.123] onServiceConnected: episode switch, pre-set UI to savedPos=$savedPos (NOT syncing to old svcPos=$svcPos), locked to $savedPos")
                 } else {
                     lastDisplayedPositionMs = 0
                     binding.tvCurrentTime.text = "00:00 / --:--"
                     binding.seekBar.progress = 0
                     // v2.4.132: Lock to 0 since no saved position
-                    episodeSwitchLockPos = 0L
+                    setEpisodeSwitchLock(0L)
                     writeJitterLog("[v2.4.123] onServiceConnected: episode switch, reset UI to 0 (NOT syncing to old svcPos=$svcPos), locked to 0")
                 }
             } else if (svcPos > 0) {
@@ -511,7 +516,7 @@ class PlayerActivity : AppCompatActivity() {
                     jitterSyncTimeMs = System.currentTimeMillis()
                     jitterStabilizeMs = JITTER_STABILIZE_MS_DEFAULT
                     consecutiveBackwardJumps = 0
-                    episodeSwitchLockPos = savedPos
+                    setEpisodeSwitchLock(savedPos)
                     clearSubtitles()
                     updateUI()
                     restoreBackgroundResults()
@@ -890,6 +895,18 @@ class PlayerActivity : AppCompatActivity() {
     private fun writeDislikeLog(msg: String) = writeLog("dislike", msg)
     private fun writeNotificationLog(msg: String) = writeLog("notification", msg)
 
+    // v2.4.141: Helpers to manage the episode-switch position lock consistently.
+    private fun setEpisodeSwitchLock(pos: Long) {
+        episodeSwitchLockPos = pos
+        episodeSwitchLockStartMs = System.currentTimeMillis()
+        episodeSwitchLockRejectCount = 0
+    }
+    private fun clearEpisodeSwitchLock() {
+        episodeSwitchLockPos = -1L
+        episodeSwitchLockStartMs = 0L
+        episodeSwitchLockRejectCount = 0
+    }
+
     // Issue 6 & 8: episode list operations (highlight + click-to-switch) now written to
     // the jitter log so they are included in the user's log export.
     private fun writeEpisodeLog(message: String) {
@@ -960,16 +977,40 @@ class PlayerActivity : AppCompatActivity() {
                 if (episodeSwitchLockPos >= 0 && !isUserSeeking) {
                     val delta = kotlin.math.abs(position - episodeSwitchLockPos)
                     if (delta > 5000L) {
-                        // Position is too far from lock — reject it
+                        // v2.4.141: Don't reject forever. If the saved position is stale
+                        // (playback continued while the UI was away), the live service position
+                        // will keep drifting away from the lock. After 3 rejected callbacks or
+                        // 8 seconds, treat the lock as stale and sync to the live position.
+                        episodeSwitchLockRejectCount++
+                        val lockElapsed = now - episodeSwitchLockStartMs
+                        if (episodeSwitchLockRejectCount >= 3 || lockElapsed > 8000L) {
+                            writeJitterLog("[v2.4.141] POS-LOCK: stale lock cleared (pos=$position, lock=$episodeSwitchLockPos, rejects=$episodeSwitchLockRejectCount, elapsed=${lockElapsed}ms)")
+                            clearEpisodeSwitchLock()
+                            lastDisplayedPositionMs = position
+                            jitterSyncBaseline = position
+                            jitterSyncTimeMs = now
+                            consecutiveBackwardJumps = 0
+                            lastJitterEpisodeId = currentEpisode?.id
+                            // Sync UI to the live service position and continue normally.
+                            if (duration > 0) {
+                                binding.tvCurrentTime.text = "${formatTime(position.toInt())} / ${formatTime(duration.toInt())}"
+                                binding.seekBar.max = duration.toInt()
+                                binding.seekBar.progress = position.toInt()
+                            } else {
+                                binding.tvCurrentTime.text = "${formatTime(position.toInt())} / --:--"
+                                binding.seekBar.progress = position.toInt()
+                            }
+                            return@runOnUiThread
+                        }
                         if (consecutiveBackwardJumps == 0 || consecutiveBackwardJumps % 5 == 0) {
-                            writeJitterLog("[v2.4.132] POS-LOCK: reject pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms)")
+                            writeJitterLog("[v2.4.132] POS-LOCK: reject pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms, rejects=$episodeSwitchLockRejectCount)")
                         }
                         consecutiveBackwardJumps++
                         return@runOnUiThread
                     } else {
                         // Position matches lock — clear lock and accept
                         writeJitterLog("[v2.4.132] POS-LOCK: accept pos=$position (lock=$episodeSwitchLockPos, delta=${delta}ms), clearing lock")
-                        episodeSwitchLockPos = -1L
+                        clearEpisodeSwitchLock()
                         lastDisplayedPositionMs = position
                         jitterSyncBaseline = position
                         jitterSyncTimeMs = now
@@ -1093,8 +1134,8 @@ class PlayerActivity : AppCompatActivity() {
                         jitterSyncBaseline = position
                         jitterSyncTimeMs = now
                         consecutiveBackwardJumps = 0
-                        // v2.4.132: Clear position lock on user seek completion
-                        episodeSwitchLockPos = -1L
+                        // v2.4.132/v2.4.141: Clear position lock on user seek completion
+                        clearEpisodeSwitchLock()
                     } else {
                         // Position is far from target - ExoPlayer is still buffering
                         // HOLD at last displayed position (which was set to target in performSeek)
@@ -1244,13 +1285,13 @@ class PlayerActivity : AppCompatActivity() {
                     binding.seekBar.progress = savedPos.toInt()
                     // v2.4.132: Set position lock to saved position. Only accept positions
                     // within ±5s of this value. Prevents old episode position from leaking.
-                    episodeSwitchLockPos = savedPos
+                    setEpisodeSwitchLock(savedPos)
                     writeJitterLog("[v2.4.132] onEpisodeChanged: set position lock to savedPos=$savedPos")
                 } else {
                     binding.tvCurrentTime.text = "00:00 / --:--"
                     binding.seekBar.progress = 0
                     // v2.4.132: No saved position — lock to 0
-                    episodeSwitchLockPos = 0L
+                    setEpisodeSwitchLock(0L)
                     writeJitterLog("[v2.4.132] onEpisodeChanged: set position lock to 0 (no saved position)")
                 }
                 // Issue 10 Fix 2: clear old subtitles so the new episode only shows its own
