@@ -993,12 +993,16 @@ object AudioSegmentAnalyzer {
                 val timestampMs = (pos.toLong() * 1000 / YAMNET_SAMPLE_RATE)
 
                 // YAMNet classification
-                val (yamnetSpeech, yamnetMusic, yamnetSilence) = classifyWithYamnet(yamnetInterpreter, window)
+                val yamnet = classifyWithYamnet(yamnetInterpreter, window)
+                val yamnetSpeech = yamnet.speech
+                val yamnetMusic = yamnet.music
+                val yamnetSilence = yamnet.silence
+                val yamnetMaxRawScore = yamnet.maxRawScore
 
                 // v2.4.126: Log YAMNet results for first 5 frames to diagnose "全部是水货"
                 if (frameResults.size < 5) {
-                    Log.i(TAG, "YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence")
-                    vadLog("YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, rmsEnergy=${computeRmsEnergy(window, 0, window.size)}")
+                    Log.i(TAG, "YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore")
+                    vadLog("YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore, rmsEnergy=${computeRmsEnergy(window, 0, window.size)}")
                 }
 
                 // Silero VAD
@@ -1092,25 +1096,30 @@ object AudioSegmentAnalyzer {
                 // the audio clearly has energy (which would mean the model is truly broken).
                 // Otherwise we let classifyFrameYamnetOnly fall back to energy-based classification.
                 if (frameResults.size == 4) {
+                    // v2.4.143: A frame is "all-half" only if speech/music/silence are ~0.5 AND the
+                    // model's highest raw logit is also near 0. If another class has a high logit
+                    // (e.g. idx=132 scoring 0.89), the model is alive and simply didn't detect speech.
                     val yamnetAllHalf = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
                                         kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
-                                        kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f
+                                        kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f &&
+                                        kotlin.math.abs(yamnetMaxRawScore) < 0.1f
                     if (yamnetAllHalf) {
-                        // Check how many of the first 5 frames are all ~0.5
+                        // Check how many of the first 5 frames are all ~0.5 (with dead model check)
                         val halfFrames = frameResults.take(4).count { fr ->
                             kotlin.math.abs(fr.yamnetSpeech - 0.5f) < 0.05f &&
                             kotlin.math.abs(fr.yamnetMusic - 0.5f) < 0.05f &&
-                            kotlin.math.abs(fr.yamnetSilence - 0.5f) < 0.05f
+                            kotlin.math.abs(fr.yamnetSilence - 0.5f) < 0.05f &&
+                            kotlin.math.abs(fr.yamnetMaxRawScore) < 0.1f
                         } + 1
-                        vadLog("[v2.4.140] YAMNet all-half at frame 4: halfFrames=$halfFrames/5, rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy")
+                        vadLog("[v2.4.143] YAMNet all-half at frame 4: halfFrames=$halfFrames/5, maxRawScore=$yamnetMaxRawScore, rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy")
                         // Only abort if at least 4 of the first 5 frames are all ~0.5 AND there is
                         // meaningful audio energy. If VAD already malfunctioned and we switched to
                         // YAMNet-only, YAMNet worked for the earlier frames, so a single half frame
                         // is just an uncertain classification — keep going.
                         if (halfFrames >= 4 && rmsEnergy > maxEnergy * 0.01f && !vadMalfunction) {
                             val diag = buildString {
-                                append("YAMNet模型故障: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence\n")
-                                append("前5帧中$halfFrames 帧全部≈0.5（sigmoid(0)，模型未处理输入）。分段已中止，不使用其他分类方法。\n")
+                                append("YAMNet模型故障: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore\n")
+                                append("前5帧中$halfFrames 帧全部≈0.5且最大logit≈0（sigmoid(0)，模型未处理输入）。分段已中止，不使用其他分类方法。\n")
                                 append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
                                 var sMin = Float.MAX_VALUE
                                 var sMax = -Float.MAX_VALUE
@@ -1130,7 +1139,7 @@ object AudioSegmentAnalyzer {
                             Log.e(TAG, "[v2.4.140] YAMNet malfunction:\n$diag")
                             throw RuntimeException(diag)
                         } else {
-                            vadLog("[v2.4.140] YAMNet single/all-half frame treated as uncertain; continuing with energy fallback (vadMalfunction=$vadMalfunction)")
+                            vadLog("[v2.4.143] YAMNet all-half but model alive (maxRawScore=$yamnetMaxRawScore) or insufficient frames; continuing with energy fallback (vadMalfunction=$vadMalfunction)")
                         }
                     }
                 }
@@ -1146,7 +1155,7 @@ object AudioSegmentAnalyzer {
                         yamnetSpeech, yamnetMusic, yamnetSilence, vadProb, rmsEnergy, zcr, maxEnergy
                     )
                 }
-                frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, yamnetSilence, rmsEnergy))
+                frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, yamnetSilence, yamnetMaxRawScore, rmsEnergy))
 
                 pos += FRAME_STEP_SAMPLES
             }
@@ -1201,10 +1210,20 @@ object AudioSegmentAnalyzer {
     // v2.4.130: Store YAMNet input shape from model for correct tensor creation
     private var yamnetInputShape: IntArray = intArrayOf(1, 15600)
 
+    private data class YamnetResult(
+        val speech: Float,
+        val music: Float,
+        val silence: Float,
+        // v2.4.143: Raw max logit. If all logits are near 0, every sigmoid is ~0.5 and the model
+        // is effectively unresponsive. If some other class has a high logit while speech/music/
+        // silence are 0.5, the model is still working — just not detecting those categories.
+        val maxRawScore: Float
+    )
+
     private fun classifyWithYamnet(
         interpreter: Interpreter,
         samples: FloatArray
-    ): Triple<Float, Float, Float> {
+    ): YamnetResult {
         try {
             // v2.4.130: Use model's actual input shape instead of hardcoded [1, 15600].
             // The loaded model reports input=[15600] (1D), not [1, 15600] (2D).
@@ -1235,6 +1254,12 @@ object AudioSegmentAnalyzer {
             interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
             val scores = outputBuffer.floatArray
 
+            // Find max raw logit for every frame (used by malfunction detection)
+            var maxRawScore = -Float.MAX_VALUE
+            for (i in scores.indices) {
+                if (scores[i] > maxRawScore) maxRawScore = scores[i]
+            }
+
             // v2.4.129: Log raw output scores for first 3 calls
             if (yamnetCallCount <= 3) {
                 val rawSpeech = scores.getOrElse(YAMNET_IDX_SPEECH) { 0f }
@@ -1258,11 +1283,11 @@ object AudioSegmentAnalyzer {
                 sigmoid(scores.getOrElse(YAMNET_IDX_MUSIC) { 0f }),
                 sigmoid(scores.getOrElse(YAMNET_IDX_SONG) { 0f })
             )
-            return Triple(speechProb, musicProb, silenceProb)
+            return YamnetResult(speechProb, musicProb, silenceProb, maxRawScore)
         } catch (e: Exception) {
             Log.e(TAG, "YAMNet classification failed: ${e.message}")
             vadLog("[v2.4.129] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            return Triple(0f, 0f, 0f)
+            return YamnetResult(0f, 0f, 0f, 0f)
         }
     }
 
@@ -1919,6 +1944,9 @@ object AudioSegmentAnalyzer {
         val yamnetSpeech: Float,
         val yamnetMusic: Float,
         val yamnetSilence: Float, // v2.4.140: stored for robust YAMNet malfunction detection
+        // v2.4.143: Raw max logit from the full 521-class output. Needed to distinguish
+        // "model is dead (all logits ~0)" from "speech/music/silence classes happen to be 0.5".
+        val yamnetMaxRawScore: Float,
         val rmsEnergy: Float
     )
 
