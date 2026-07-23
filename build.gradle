@@ -4,6 +4,7 @@ buildscript {
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
         maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
+        google()
         mavenCentral()
     }
     dependencies {
@@ -16,6 +17,7 @@ allprojects {
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
         maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
+        google()
         mavenCentral()
     }
 }
