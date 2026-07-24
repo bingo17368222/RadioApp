@@ -541,6 +541,34 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         } catch (_: Exception) {}
     }
 
+    // v2.4.155: Total duration of AI-detected dry segments for an episode.
+    fun getDrySegmentsTotalDuration(episodeId: String): Long {
+        var total = 0L
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery(
+                "SELECT segment_start, segment_end FROM $TABLE_VOICE_SEGMENTS_AI WHERE episode_id = ? AND has_voice = 1 ORDER BY segment_start ASC",
+                arrayOf(episodeId)
+            )
+            cursor.use {
+                while (it.moveToNext()) {
+                    val start = it.getLong(0)
+                    val end = it.getLong(1)
+                    if (end > start) total += (end - start)
+                }
+            }
+        } catch (_: Exception) {}
+        return total
+    }
+
+    // v2.4.155: Dry segment duration as a percentage of total audio duration.
+    fun getDryPercentage(episodeId: String): Float {
+        val info = getSegmentAnalysisInfo(episodeId) ?: return 0f
+        if (info.audioDurationMs <= 0) return 0f
+        val dryMs = getDrySegmentsTotalDuration(episodeId)
+        return dryMs.toFloat() / info.audioDurationMs.toFloat() * 100f
+    }
+
     // v2.4.44: Update segment count for an episode (for episode list display)
     fun updateEpisodeSegmentCount(episodeId: String, count: Int) {
         try {

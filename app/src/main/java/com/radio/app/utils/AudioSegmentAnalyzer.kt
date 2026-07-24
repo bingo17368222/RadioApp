@@ -105,8 +105,13 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    private const val VAD_DRY_THRESHOLD = 0.45f
-    private const val VAD_WATER_THRESHOLD = 0.15f
+    // v2.4.155: Raise VAD thresholds so music/noise is less likely to be classified as speech.
+    private const val VAD_DRY_THRESHOLD = 0.65f
+    private const val VAD_WATER_THRESHOLD = 0.30f
+
+    // v2.4.155: YAMNet classification thresholds (separate from the VAD malfunction heuristic).
+    private const val YAMNET_SPEECH_DRY_THRESHOLD = 0.55f
+    private const val YAMNET_MUSIC_WATER_THRESHOLD = 0.50f
 
     // v2.4.150/v2.4.153: VAD malfunction detection now uses a sliding window instead of strict
     // consecutive frames. v2.4.153 widens the window and raises thresholds so that short intro
@@ -2115,12 +2120,12 @@ object AudioSegmentAnalyzer {
         }
 
         // 2. Music: YAMNet says music clearly louder than speech, VAD says no speech
-        if (yamnetMusic > 0.5f && yamnetMusic > yamnetSpeech + 0.1f && vadProb < VAD_DRY_THRESHOLD) {
+        if (yamnetMusic > YAMNET_MUSIC_WATER_THRESHOLD && yamnetMusic > yamnetSpeech + 0.1f && vadProb < VAD_DRY_THRESHOLD) {
             return FrameType.WATER
         }
 
-        // 3. Speech: YAMNet says speech, VAD confirms
-        if (yamnetSpeech > 0.3f && vadProb > VAD_DRY_THRESHOLD) {
+        // 3. Speech: YAMNet says speech confidently, VAD confirms
+        if (yamnetSpeech > YAMNET_SPEECH_DRY_THRESHOLD && vadProb > VAD_DRY_THRESHOLD) {
             return FrameType.DRY
         }
 
@@ -2139,8 +2144,8 @@ object AudioSegmentAnalyzer {
             return FrameType.WATER
         }
 
-        // 7. Default: use VAD as tiebreaker
-        return if (vadProb > 0.4f) FrameType.DRY else FrameType.WATER
+        // 7. Default: use VAD as tiebreaker (v2.4.155: raise to reduce false dry)
+        return if (vadProb > 0.55f) FrameType.DRY else FrameType.WATER
     }
 
     // v2.4.133: YAMNet-only classification when VAD malfunctions.
@@ -2163,14 +2168,14 @@ object AudioSegmentAnalyzer {
             return FrameType.SILENCE
         }
 
-        // v2.4.147: Music detection must be confident and clearly louder than speech.
+        // v2.4.147/v2.4.155: Music detection must be confident and clearly louder than speech.
         // Otherwise speech with background music gets misclassified as water.
-        if (yamnetMusic > 0.5f && yamnetMusic > yamnetSpeech + 0.1f) {
+        if (yamnetMusic > YAMNET_MUSIC_WATER_THRESHOLD && yamnetMusic > yamnetSpeech + 0.1f) {
             return FrameType.WATER
         }
 
-        // 3. Speech: YAMNet says speech
-        if (yamnetSpeech > 0.3f) {
+        // 3. Speech: YAMNet says speech confidently (v2.4.155: raised to reduce false dry)
+        if (yamnetSpeech > YAMNET_SPEECH_DRY_THRESHOLD) {
             return FrameType.DRY
         }
 
@@ -2179,8 +2184,8 @@ object AudioSegmentAnalyzer {
             return FrameType.WATER
         }
 
-        // 5. Default: use YAMNet speech as tiebreaker
-        return if (yamnetSpeech > 0.2f) FrameType.DRY else FrameType.WATER
+        // 5. Default: use YAMNet speech as tiebreaker (v2.4.155: raised to reduce false dry)
+        return if (yamnetSpeech > 0.4f) FrameType.DRY else FrameType.WATER
     }
 
     // ===== Segment merging =====

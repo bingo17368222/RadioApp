@@ -4502,20 +4502,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // even within the 2-minute throttle window. The throttle will naturally allow
         // the next check after the window expires.
 
-        // v2.4.148: Prefer the DB-cached startTime/endTime for the notification time range.
-        // These are populated when the schedule is fetched and saved to episode_info, so they
-        // remain available even when offline. Fall back to broadcastAt parsing only when needed.
+        // v2.4.155: Always use Asia/Shanghai timezone for notification date/time because
+        // the schedule API returns timestamps in Shanghai time. Previous code used device
+        // default timezone / raw epoch minutes, causing wrong hours when the device was not
+        // in Shanghai time or when startTime/endTime were stored as epoch millis.
+        val shanghaiTz = java.util.TimeZone.getTimeZone("Asia/Shanghai")
         val epStartMs = episode.startTime
         val epEndMs = episode.endTime
         if (epStartMs > 0 && epEndMs > epStartMs) {
-            val startTotalMin = ((epStartMs / 60000) % 1440).toInt()
-            val endTotalMin = ((epEndMs / 60000) % 1440).toInt()
-            notificationTimeRange = String.format(
-                "%02d:%02d-%02d:%02d",
-                startTotalMin / 60, startTotalMin % 60,
-                endTotalMin / 60, endTotalMin % 60
-            )
-            notificationDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(epStartMs))
+            val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = shanghaiTz }
+            val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).apply { timeZone = shanghaiTz }
+            notificationTimeRange = "${timeFmt.format(Date(epStartMs))}-${timeFmt.format(Date(epEndMs))}"
+            notificationDate = dateFmt.format(Date(epStartMs))
         } else if (episode.broadcastAt != null && episode.broadcastAt.length >= 16) {
             notificationDate = episode.broadcastAt.substring(0, 10) // "2024-06-04"
             val timePart = episode.broadcastAt.substring(11, 16) // "07:00"
