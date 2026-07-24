@@ -13,7 +13,7 @@ import java.nio.FloatBuffer
 import java.nio.channels.FileChannel
 
 /**
- * v2.4.161: Audio-based AI segment analyzer using Silero + YAMNet cascade.
+ * v2.4.162: Audio-based AI segment analyzer using Silero + YAMNet cascade.
  *
  * Silero VAD (ONNX, ~2.3MB): Coarse speech/silence region segmentation
  * YAMNet (TFLite, ~4.1MB): Audio classification (521 categories: Speech, Narration, Singing, Music, etc.)
@@ -21,8 +21,11 @@ import java.nio.channels.FileChannel
  * Processing:
  * 1. Read 16kHz mono PCM data.
  * 2. Silero VAD: traverse whole audio (512 samples/chunk) to split speech/silence intervals.
- * 3. Speech intervals: run YAMNet densely (0.975s window, 0.5s hop) and apply cascade rules.
- * 4. Silence intervals: sparse YAMNet sampling (every 3s, 1.2s window) to recover missed voice.
+ * 3. Speech intervals: run YAMNet densely (0.975s window, 0.5s hop), merge same-type windows
+ *    within each interval, and return interval-local sub-segments.
+ * 4. Silence intervals: default to silence segment, then sparse YAMNet sampling (every 3s,
+ *    1.2s window, center 0.975s fed to YAMNet) to recover missed voice; hits split the
+ *    interval into dry/silence sub-segments.
  * 5. Post-process: merge fragments (<700ms), absorb short music gaps (<1s), merge close dry segments (<1.3s).
  *
  * Requires runtime libraries (downloaded from offline engine management):
@@ -1203,13 +1206,17 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.161: Analyze PCM audio file using Silero + YAMNet cascade.
+     * v2.4.162: Analyze PCM audio file using Silero + YAMNet cascade.
      *
      * Pipeline:
      * 1. Silero VAD coarse segmentation (whole audio, 512-sample chunks).
-     * 2. YAMNet classification on speech intervals (0.975s window, 0.5s hop).
-     * 3. Sparse YAMNet sampling in silence intervals (every 3s, 1.2s window).
-     * 4. Post-processing: merge fragments, absorb short music gaps, merge close dry segments.
+     * 2. YAMNet classification on speech intervals (0.975s window, 0.5s hop), producing
+     *    interval-local sub-segments so that adjacent speech intervals separated by silence
+     *    are no longer merged into a single segment.
+     * 3. Sparse YAMNet sampling in silence intervals (every 3s, 1.2s window, center 0.975s
+     *    fed to YAMNet). Silence intervals are first marked as silence, then split by hits.
+     * 4. Collect and sort all interval-local sub-segments, merge adjacent same-type segments,
+     *    then post-process.
      *
      * @param context Application context
      * @param pcmFile 16kHz mono 16-bit PCM file
@@ -1293,13 +1300,14 @@ object AudioSegmentAnalyzer {
 
             // ===== Phase 2: YAMNet classification of speech intervals (300-900‰) =====
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 2/3: YAMNet classification of ${speechRanges.size} speech intervals")
-            val frameResults = mutableListOf<FrameResult>()
+            val intervalSegments = mutableListOf<VoiceSegment>()
             val totalSpeechDurationMs = speechRanges.sumOf { it.durationMs }
             var processedSpeechMs = 0L
 
             for (range in speechRanges) {
                 checkCancelled()
-                classifySpeechInterval(samples, range, yamnetInterpreter, frameResults)
+                val subSegments = classifySpeechInterval(samples, range, yamnetInterpreter)
+                intervalSegments.addAll(subSegments)
                 processedSpeechMs += range.durationMs
                 val mapped = if (totalSpeechDurationMs > 0) {
                     300 + (processedSpeechMs * 600 / totalSpeechDurationMs).toInt()
@@ -1309,24 +1317,17 @@ object AudioSegmentAnalyzer {
 
             // ===== Phase 3: Sparse YAMNet sampling in silence intervals (900-1000‰) =====
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 3/3: sparse YAMNet sampling of ${silenceRanges.size} silence intervals")
-            val dryRangesFromSilence = mutableListOf<TimeRange>()
             for ((index, range) in silenceRanges.withIndex()) {
                 checkCancelled()
-                sampleSilenceInterval(samples, range, yamnetInterpreter, dryRangesFromSilence)
+                val subSegments = sampleSilenceInterval(samples, range, yamnetInterpreter)
+                intervalSegments.addAll(subSegments)
                 val mapped = 900 + ((index + 1) * 100 / silenceRanges.size.coerceAtLeast(1)).coerceIn(0, 100)
                 reportProgress(mapped.coerceIn(900, 1000))
             }
 
-            // Merge frame results into initial segments
-            var segments = mergeFramesIntoSegments(frameResults, outputDurationMs)
-
-            // Add dry ranges found in silence intervals
-            for (range in dryRangesFromSilence) {
-                segments.add(createSegment(range.startMs, range.endMs, FrameType.DRY))
-            }
-
-            // Sort, merge and post-process
-            segments = segments.sortedBy { it.start }.toMutableList()
+            // Sort and merge adjacent same-type segments, then post-process
+            intervalSegments.sortBy { it.start }
+            var segments = mergeAdjacentSameTypeSegments(intervalSegments).toMutableList()
             segments = postProcessSegments(segments).toMutableList()
 
             // Ensure the full duration is covered
@@ -1653,76 +1654,130 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.161: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop).
+     * v2.4.162: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop),
+     * merging consecutive same-type windows into interval-local sub-segments.
      */
     private fun classifySpeechInterval(
         samples: FloatArray,
         range: TimeRange,
-        yamnetInterpreter: Interpreter,
-        frameResults: MutableList<FrameResult>
-    ) {
+        yamnetInterpreter: Interpreter
+    ): List<VoiceSegment> {
         val startSample = (range.startMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
         val endSample = (range.endMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
+        val intervalEndSample = endSample.coerceAtMost(samples.size)
+        val intervalEndMs = (intervalEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+
+        // Interval too short for a full YAMNet window: VAD already marked it as speech, default to dry.
+        if (intervalEndSample - startSample < YAMNET_WINDOW_SAMPLES) {
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${intervalEndSample - startSample} samples), defaulting to dry")
+            return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
+        }
+
+        val segments = mutableListOf<VoiceSegment>()
+        var currentType: FrameType? = null
+        var currentStartMs = range.startMs
+
+        fun flushSegment(upToMs: Long) {
+            val t = currentType ?: return
+            if (upToMs > currentStartMs) {
+                segments.add(createSegment(currentStartMs, upToMs, t))
+            }
+        }
+
         var pos = startSample.coerceIn(0, samples.size)
-        while (pos + YAMNET_WINDOW_SAMPLES <= endSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+        while (pos + YAMNET_WINDOW_SAMPLES <= intervalEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
-            val timestampMs = (pos.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+            val windowStartMs = (pos.toLong() * 1000L / YAMNET_SAMPLE_RATE)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
-            frameResults.add(FrameResult(
-                timestampMs = timestampMs,
-                type = type,
-                vadProb = 1f,
-                yamnetSpeech = yamnet.speech,
-                yamnetMusic = yamnet.music,
-                yamnetSilence = yamnet.silence,
-                yamnetMaxRawScore = yamnet.maxRawScore,
-                rmsEnergy = 0f
-            ))
+
+            if (currentType == null) {
+                currentType = type
+                // Anchor the first segment at the interval start to avoid tiny gaps.
+                currentStartMs = range.startMs
+            } else if (type != currentType) {
+                flushSegment(windowStartMs)
+                currentType = type
+                currentStartMs = windowStartMs
+            }
+
             pos += YAMNET_SPEECH_HOP_SAMPLES
         }
+
+        // Flush final segment up to the interval end so the interval is fully covered.
+        flushSegment(intervalEndMs)
+
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: produced ${segments.size} sub-segment(s)")
+        return segments
     }
 
     /**
-     * v2.4.161: Sparse YAMNet sampling in a silence interval to find missed voice.
-     * @return true if the whole interval should be marked as speech (two consecutive hits).
+     * v2.4.162: Sparse YAMNet sampling in a silence interval to find missed voice.
+     * Returns interval-local sub-segments: a default silence segment covering the interval,
+     * split by dry sub-segments around each hit. If two consecutive sampling points both hit,
+     * the entire interval is marked as dry.
      */
     private fun sampleSilenceInterval(
         samples: FloatArray,
         range: TimeRange,
-        yamnetInterpreter: Interpreter,
-        dryRanges: MutableList<TimeRange>
-    ): Boolean {
+        yamnetInterpreter: Interpreter
+    ): List<VoiceSegment> {
         var currentMs = range.startMs
         var consecutiveHits = 0
+        val hitRanges = mutableListOf<TimeRange>()
+
         while (currentMs + SILENCE_SAMPLE_WINDOW_MS <= range.endMs) {
             val centerMs = currentMs + SILENCE_SAMPLE_WINDOW_MS / 2
             val centerSample = (centerMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
             val halfWindow = SILENCE_SAMPLE_WINDOW_SAMPLES / 2
-            val startSample = (centerSample - halfWindow).coerceAtLeast(0)
-            val endSample = (centerSample + halfWindow).coerceAtMost(samples.size)
-            if (endSample - startSample < SILENCE_SAMPLE_WINDOW_SAMPLES) {
+            val windowStartSample = centerSample - halfWindow
+            // v2.4.162 CRITICAL FIX: feed YAMNet the center 15600 samples of the 19200-sample window.
+            val yamnetStartSample = windowStartSample + (SILENCE_SAMPLE_WINDOW_SAMPLES - YAMNET_WINDOW_SAMPLES) / 2
+            val yamnetEndSample = yamnetStartSample + YAMNET_WINDOW_SAMPLES
+
+            if (yamnetStartSample < 0 || yamnetEndSample > samples.size) {
                 currentMs += SILENCE_SAMPLE_INTERVAL_MS
                 continue
             }
-            val window = samples.copyOfRange(startSample, endSample)
+
+            val window = samples.copyOfRange(yamnetStartSample, yamnetEndSample)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             if (yamnet.voiceSum >= VOICE_SUM_THRESHOLD) {
                 consecutiveHits++
                 val spreadStartMs = (centerMs - SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtLeast(range.startMs)
                 val spreadEndMs = (centerMs + SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtMost(range.endMs)
-                dryRanges.add(TimeRange(spreadStartMs, spreadEndMs))
+                hitRanges.add(TimeRange(spreadStartMs, spreadEndMs))
                 if (consecutiveHits >= 2) {
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive YAMNet hits -> mark whole as dry")
-                    dryRanges.add(TimeRange(range.startMs, range.endMs))
-                    return true
+                    return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
                 }
             } else {
                 consecutiveHits = 0
             }
             currentMs += SILENCE_SAMPLE_INTERVAL_MS
         }
-        return false
+
+        // No hits: the whole silence interval remains silent.
+        if (hitRanges.isEmpty()) {
+            return listOf(createSegment(range.startMs, range.endMs, FrameType.SILENCE))
+        }
+
+        // Build silence/dry sub-segments that fully cover the interval.
+        val segments = mutableListOf<VoiceSegment>()
+        var cursorMs = range.startMs
+        for (hit in hitRanges) {
+            if (hit.startMs > cursorMs) {
+                segments.add(createSegment(cursorMs, hit.startMs, FrameType.SILENCE))
+            }
+            segments.add(createSegment(hit.startMs, hit.endMs, FrameType.DRY))
+            cursorMs = maxOf(cursorMs, hit.endMs)
+        }
+        if (cursorMs < range.endMs) {
+            segments.add(createSegment(cursorMs, range.endMs, FrameType.SILENCE))
+        }
+
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: ${hitRanges.size} sparse hit(s) -> ${segments.size} sub-segment(s)")
+        return segments
     }
 
     // ===== Silero VAD (ONNX Runtime via reflection, no SessionOptions) =====
@@ -2246,6 +2301,28 @@ object AudioSegmentAnalyzer {
         val lastEnd = durationMs
         segments.add(createSegment(segStart, lastEnd, segType))
         return segments
+    }
+
+    /**
+     * v2.4.162: Merge adjacent (or 1ms-overlapping due to rounding) segments of the same label.
+     * Called after collecting interval-local sub-segments from all speech/silence ranges.
+     */
+    private fun mergeAdjacentSameTypeSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
+        if (segments.isEmpty()) return emptyList()
+        val sorted = segments.sortedBy { it.start }
+        val merged = mutableListOf<VoiceSegment>()
+        var current = sorted[0]
+        for (i in 1 until sorted.size) {
+            val next = sorted[i]
+            if (current.label == next.label && next.start <= current.end + 1) {
+                current.end = maxOf(current.end, next.end)
+            } else {
+                merged.add(current)
+                current = next
+            }
+        }
+        merged.add(current)
+        return merged
     }
 
     /**
