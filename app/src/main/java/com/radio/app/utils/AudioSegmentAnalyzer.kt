@@ -1404,20 +1404,26 @@ object AudioSegmentAnalyzer {
                     }
                 }
 
-                // v2.4.137: Wait until 30 frames (~30s) before declaring VAD malfunction. Some episodes
-                // start with a long intro/silence, and aborting after only 5 frames falsely rejects them.
+                // v2.4.159: Wait until 30 frames (~30s) before deciding how to handle low VAD confidence.
+                // A low VAD probability at the start simply means the audio begins with music/silence,
+                // which is correct behavior — NOT a model malfunction. We only abort when BOTH VAD and
+                // YAMNet are dead (all key YAMNet scores ≈0.5 with max logit≈0). Otherwise we switch to
+                // YAMNet-only mode and continue segmentation, letting YAMNet classify music as water.
                 if (frameResults.size == 29 && vadProb < 0.01f && !vadMalfunction) {
-                    // v2.4.147: YAMNet speech > 0.6 means actual speech detection (>0.5 = no speech).
-                    val yamnetWorking = frameResults.any { it.yamnetSpeech > 0.6f } || yamnetSpeech > 0.6f
-                    if (yamnetWorking) {
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction at frame 30 but YAMNet is working. Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction at frame 30 — falling back to YAMNet-only mode")
-                        vadMalfunction = true  // Flag to use YAMNet-only classification
-                    } else {
+                    val yamnetDead = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
+                                     kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
+                                     kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f &&
+                                     kotlin.math.abs(yamnetMaxRawScore) < 0.1f
+                    val yamnetHasValidOutput = yamnetMaxRawScore > 0.1f ||
+                                               yamnetMusic > 0.55f ||
+                                               yamnetSilence > 0.55f ||
+                                               yamnetSpeech > 0.55f
+                    if (yamnetDead || (!yamnetHasValidOutput && rmsEnergy > maxEnergy * 0.01f)) {
                         val diag = buildString {
-                            append("VAD模型故障: 前30帧prob值全部<0.01 (avg=$vadProb)。\n")
-                            append("VAD模型未检测到语音，YAMNet也未检测到语音(speech<0.3)。分段已中止。\n")
-                            append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
+                            append("VAD+YAMNet模型故障: 前30帧VAD prob=$vadProb。\n")
+                            append("YAMNet speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore。\n")
+                            append("双模型均未产生有效输出，且音频有能量(rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy)。分段已中止。\n")
+                            append("PCM: ${samples.size} samples\n")
                             var sMin = Float.MAX_VALUE
                             var sMax = -Float.MAX_VALUE
                             var sSum = 0.0
@@ -1433,10 +1439,14 @@ object AudioSegmentAnalyzer {
                             append("VAD model: stateSize=${vadModel.stateSize}\n")
                             append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
                         }
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] ERROR: VAD malfunction.\n$diag")
-                        Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction:\n$diag")
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] ERROR: VAD+YAMNet malfunction.\n$diag")
+                        Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD+YAMNet malfunction:\n$diag")
                         throw RuntimeException(diag)
-                    }  // end of else block
+                    } else {
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD low confidence for first 30 frames but YAMNet is alive (speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore). Switching to YAMNet-only mode.")
+                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD low confidence at frame 30 — falling back to YAMNet-only mode")
+                        vadMalfunction = true  // Flag to use YAMNet-only classification
+                    }
                 }
 
                 // v2.4.128/v2.4.140: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0)).

@@ -1614,6 +1614,19 @@ class PlayerActivity : AppCompatActivity() {
         binding.recyclerSegments.adapter = segmentAdapter
         updateSegmentsUI()
 
+        // v2.4.159: Database is the authoritative source for segments. Intent extras may be
+        // stale or empty (e.g., when the Activity is recreated from the notification), so load
+        // persisted segments first. Only fall back to intent/simulated segments when DB has none.
+        val dbSegments = loadSegmentsFromDb()
+        if (dbSegments.isNotEmpty()) {
+            voiceSegments = dbSegments
+            updateSegmentsUI()
+            restoreSegmentModelInfo()
+        } else if (voiceSegments.isEmpty()) {
+            voiceSegments = generateSimulatedSegments()
+            if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+        }
+
         // Feature A: subtitle RecyclerView setup
         subtitleAdapter = SubtitleEntryAdapter()
         // [功能2] 长按字幕提取为干货/水货关键词
@@ -1637,18 +1650,68 @@ class PlayerActivity : AppCompatActivity() {
             }
         })
 
+        updateEpisodeNavVisibility()
+    }
+
+    /**
+     * v2.4.159: Central helper that decides whether the previous/next episode navigation bar
+     * should be visible. Must be called whenever episodeList or currentEpisodeIndex changes,
+     * because initViews() runs before the service has restored the persisted episode list.
+     */
+    private fun updateEpisodeNavVisibility() {
+        if (_binding == null) return
         val isLiveNav = currentEpisode?.isLive ?: false
         if (!isLiveNav && episodeList.size > 1 && currentEpisodeIndex >= 0) {
-            binding.layoutEpisodeNav.visibility = View.VISIBLE
+            if (binding.layoutEpisodeNav.visibility != View.VISIBLE) {
+                binding.layoutEpisodeNav.visibility = View.VISIBLE
+                binding.btnPrevEpisode.setOnClickListener { playPrevEpisode() }
+                binding.btnNextEpisode.setOnClickListener { playNextEpisode() }
+            }
             binding.tvEpisodeNavHint.text = " ▼ ${currentEpisodeIndex + 1}/${episodeList.size} "
-            binding.btnPrevEpisode.setOnClickListener {
-                playPrevEpisode()
-            }
-            binding.btnNextEpisode.setOnClickListener {
-                playNextEpisode()
-            }
         } else {
             binding.layoutEpisodeNav.visibility = View.GONE
+        }
+    }
+
+    /**
+     * v2.4.159: Load real (non-simulated) voice segments for the current episode from DB.
+     */
+    private fun loadSegmentsFromDb(): List<VoiceSegment> {
+        val episode = currentEpisode ?: return emptyList()
+        val episodeId = episode.id ?: return emptyList()
+        if (episodeId.isBlank()) return emptyList()
+        return try {
+            com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId).filter { !it.isSimulated }
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "loadSegmentsFromDb failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * v2.4.159: Restore the segment engine/time status text from DB or SharedPreferences.
+     * Called both from initViews() and restoreBackgroundResults() so model info is always shown.
+     */
+    private fun restoreSegmentModelInfo() {
+        val episode = currentEpisode ?: return
+        val episodeId = episode.id ?: return
+        if (episodeId.isBlank()) return
+        if (_binding == null) return
+        val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+        val dbAnalysisInfo = dbHelper.getSegmentAnalysisInfo(episodeId)
+        val prefs = getSharedPreferences("segment_info", MODE_PRIVATE)
+        val savedEngine = dbAnalysisInfo?.engineName ?: prefs.getString("seg_engine_${episodeId}", null)
+        val savedTime = dbAnalysisInfo?.processingTimeMs ?: prefs.getLong("seg_time_${episodeId}", 0L)
+        if (savedEngine != null) {
+            val dryPercent = dbHelper.getDryPercentage(episodeId)
+            val dryPercentText = String.format(java.util.Locale.US, "%.1f", dryPercent)
+            val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)"
+            binding.tvAiStatus.text = restoredText
+            segmentListDisplayText = restoredText
+            binding.tvAiStatus.visibility = View.VISIBLE
+        } else if (segmentListDisplayText.isNotEmpty()) {
+            binding.tvAiStatus.text = segmentListDisplayText
+            binding.tvAiStatus.visibility = View.VISIBLE
         }
     }
 
@@ -2702,7 +2765,8 @@ class PlayerActivity : AppCompatActivity() {
         // 更新标题
         if (currentEpisode != null) {
             binding.tvStationName.text = currentEpisode!!.title ?: "节目回放"
-            binding.tvEpisodeNavHint.text = " ▼ ${currentEpisodeIndex + 1}/${episodeList.size} "
+            // v2.4.159: Keep episode nav visibility in sync whenever the title/index changes.
+            updateEpisodeNavVisibility()
             // Show broadcast date, duration
             val infoParts = mutableListOf<String>()
             if (!currentEpisode!!.broadcastAt.isNullOrBlank()) {
@@ -2858,6 +2922,8 @@ class PlayerActivity : AppCompatActivity() {
         Toast.makeText(this, "切换到: ${targetEpisode.title}", Toast.LENGTH_SHORT).show()
         currentEpisodeIndex = targetIdx
         currentEpisode = targetEpisode
+        // v2.4.159: Refresh episode nav buttons immediately when switching episodes.
+        updateEpisodeNavVisibility()
         // Issue 10 Fix 2: clear old subtitles when switching episodes
         clearSubtitles()
         saveLastEpisode()
@@ -4075,28 +4141,15 @@ class PlayerActivity : AppCompatActivity() {
         val dbSegments = dbHelper.getVoiceSegments(episode.id)
         if (dbSegments.isNotEmpty()) {
             val realSegments = dbSegments.filter { !it.isSimulated }
+            // v2.4.159: DB is authoritative. Replace empty/simulated/in-memory segments with DB segments.
             if (realSegments.isNotEmpty() && (voiceSegments.isEmpty() || voiceSegments.all { it.isSimulated })) {
                 voiceSegments = realSegments
                 updateSegmentsUI()
-                // v2.4.150: Restore "片段列表" text from DB first, then SharedPreferences fallback.
-                val dbAnalysisInfo = dbHelper.getSegmentAnalysisInfo(episode.id)
-                val prefs = getSharedPreferences("segment_info", MODE_PRIVATE)
-                val savedEngine = dbAnalysisInfo?.engineName ?: prefs.getString("seg_engine_${episode.id}", null)
-                val savedTime = dbAnalysisInfo?.processingTimeMs ?: prefs.getLong("seg_time_${episode.id}", 0L)
-                if (savedEngine != null && _binding != null) {
-                    // v2.4.155: Restore dry percentage along with engine/time.
-                    val dryPercent = dbHelper.getDryPercentage(episode.id)
-                    val dryPercentText = String.format(java.util.Locale.US, "%.1f", dryPercent)
-                    val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)"
-                    binding.tvAiStatus.text = restoredText
-                    segmentListDisplayText = restoredText
-                    binding.tvAiStatus.visibility = View.VISIBLE
-                } else if (segmentListDisplayText.isNotEmpty() && _binding != null) {
-                    binding.tvAiStatus.text = segmentListDisplayText
-                    binding.tvAiStatus.visibility = View.VISIBLE
-                }
             }
         }
+        // v2.4.159: Always restore segment model info from DB, even if segments were already
+        // loaded from intent. This fixes "sometimes model info shown, sometimes not".
+        restoreSegmentModelInfo()
 
         // 检查字幕结果
         val dbTranscripts = dbHelper.getTranscripts(episode.id)
