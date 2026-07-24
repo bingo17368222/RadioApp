@@ -147,22 +147,24 @@ object AudioSegmentAnalyzer {
     private const val VAD_MIN_SPEECH_DURATION_MS = 500L
     private const val VAD_MIN_SILENCE_DURATION_MS = 800L
 
-    // v2.4.164: YAMNet decision thresholds
-    // Raised thresholds to reduce false-positive "dry" segments (ads, jingles, background music).
-    // - VOICE_SUM_THRESHOLD: a frame needs meaningful combined voice activation to be considered dry.
-    // - BG_MUSIC_SUM_THRESHOLD: music must be a sizable fraction of voice before we treat voice+music as water.
-    // - SINGING_FORCE_THRESHOLD: singing must clearly dominate voice activity to force dry protection.
-    private const val VOICE_SUM_THRESHOLD = 0.20f
-    private const val BG_MUSIC_SUM_THRESHOLD = 0.50f
+    // v2.4.165: YAMNet decision thresholds
+    // Balanced thresholds: avoid both false-positive dry (ads/jingles) and false-negative dry
+    // (host speech with light background music or weak microphone signal).
+    // - VOICE_SUM_THRESHOLD: a frame needs clear combined voice activation to be considered dry.
+    // - BG_MUSIC_SUM_THRESHOLD: music must be a notable fraction of voice before voice+music becomes water.
+    // - SINGING_FORCE_THRESHOLD: singing must dominate voice activity to force dry protection.
+    private const val VOICE_SUM_THRESHOLD = 0.10f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.30f
     private const val SINGING_RATIO_THRESHOLD = 0.35f
-    private const val SINGING_FORCE_THRESHOLD = 0.35f
+    private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
-    // v2.4.164: Post-processing thresholds
-    // Less aggressive absorption of short water gaps into dry, so ads/jingles stay water.
-    private const val MIN_FRAGMENT_MS = 1500L
-    private const val MAX_PURE_MUSIC_GAP_MS = 300L
-    private const val MAX_DRY_GAP_MS = 2500L
+    // v2.4.165: Post-processing thresholds
+    // Moderate merging: absorb short water/silence gaps into dry to reduce fragment count,
+    // while keeping obvious ads/jingles longer than the gap threshold as standalone water.
+    private const val MIN_FRAGMENT_MS = 1000L
+    private const val MAX_PURE_MUSIC_GAP_MS = 1000L
+    private const val MAX_DRY_GAP_MS = 3000L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
@@ -1522,17 +1524,17 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.164: Apply YAMNet decision rules using calibrated probabilities.
+     * v2.4.165: Apply YAMNet decision rules using calibrated probabilities.
      *
      * YAMNet outputs logits; after sigmoid, an inactive class has probability ~0.5.
      * Using raw sigmoid values directly makes sum-based thresholds meaningless because
      * every inactive class contributes 0.5. We therefore subtract 0.5 to obtain an
      * "activation strength" relative to the neutral baseline.
      *
-     * Strategy to keep dry ratio down:
-     * - Require meaningful combined voice activation before a frame can be dry.
-     * - Keep strong singing as dry (goal: preserve host singing with accompaniment).
-     * - Voice with strong music -> ads / accompanied songs -> water.
+     * Balanced strategy:
+     * - Clear voice activity -> dry (host speech / dialogue).
+     * - Voice with notable music -> water (ads / accompanied songs).
+     * - Strong singing -> dry (preserve host singing).
      * - Weak ambiguous frames default to silence, not dry.
      */
     private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
@@ -1694,8 +1696,12 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.162: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop),
+     * v2.4.165: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop),
      * merging consecutive same-type windows into interval-local sub-segments.
+     *
+     * To reduce over-segmentation caused by single noisy YAMNet windows, we apply a
+     * small majority-vote smoothing over the last 3 windows before deciding to switch
+     * segment type. This keeps real content boundaries while removing flicker.
      */
     private fun classifySpeechInterval(
         samples: FloatArray,
@@ -1724,6 +1730,9 @@ object AudioSegmentAnalyzer {
             }
         }
 
+        // Smoothing buffer: majority vote over recent windows to suppress flicker.
+        val recentTypes = mutableListOf<FrameType>()
+
         var pos = startSample.coerceIn(0, samples.size)
         while (pos + YAMNET_WINDOW_SAMPLES <= intervalEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
@@ -1731,13 +1740,17 @@ object AudioSegmentAnalyzer {
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
 
+            recentTypes.add(type)
+            if (recentTypes.size > 3) recentTypes.removeAt(0)
+            val stableType = recentTypes.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: type
+
             if (currentType == null) {
-                currentType = type
+                currentType = stableType
                 // Anchor the first segment at the interval start to avoid tiny gaps.
                 currentStartMs = range.startMs
-            } else if (type != currentType) {
+            } else if (stableType != currentType) {
                 flushSegment(windowStartMs)
-                currentType = type
+                currentType = stableType
                 currentStartMs = windowStartMs
             }
 
