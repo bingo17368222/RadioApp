@@ -13,19 +13,17 @@ import java.nio.FloatBuffer
 import java.nio.channels.FileChannel
 
 /**
- * v2.4.95: Audio-based AI segment analyzer using dual models.
+ * v2.4.161: Audio-based AI segment analyzer using Silero + YAMNet cascade.
  *
- * Silero VAD (ONNX, ~2.3MB): High-precision voice activity detection
- * YAMNet (TFLite, ~4.1MB): Audio classification (521 categories: Speech, Music, Silence, etc.)
+ * Silero VAD (ONNX, ~2.3MB): Coarse speech/silence region segmentation
+ * YAMNet (TFLite, ~4.1MB): Audio classification (521 categories: Speech, Narration, Singing, Music, etc.)
  *
  * Processing:
- * 1. Read 16kHz mono PCM data
- * 2. Slide window (YAMNet: 0.975s, Silero VAD: 0.5s step)
- * 3. For each window:
- *    - YAMNet: classify into Speech/Music/Silence probabilities
- *    - Silero VAD: get speech probability
- * 4. Fuse results: Speech+VAD → 干货, Music → 水货, Silence → boundary
- * 5. Merge consecutive same-type frames into segments
+ * 1. Read 16kHz mono PCM data.
+ * 2. Silero VAD: traverse whole audio (512 samples/chunk) to split speech/silence intervals.
+ * 3. Speech intervals: run YAMNet densely (0.975s window, 0.5s hop) and apply cascade rules.
+ * 4. Silence intervals: sparse YAMNet sampling (every 3s, 1.2s window) to recover missed voice.
+ * 5. Post-process: merge fragments (<700ms), absorb short music gaps (<1s), merge close dry segments (<1.3s).
  *
  * Requires runtime libraries (downloaded from offline engine management):
  * - libonnxruntime.so, libonnxruntime4j_jni.so (for Silero VAD)
@@ -114,48 +112,48 @@ object AudioSegmentAnalyzer {
     private const val YAMNET_NUM_CLASSES = 521
 
     // YAMNet class indices (from AudioSet ontology)
-    // v2.4.145: Corrected indices based on official yamnet_class_map.csv
-    private const val YAMNET_IDX_SPEECH = 0       // Speech
-    private const val YAMNET_IDX_SILENCE = 494    // Silence (was 78 = Meow)
-    private const val YAMNET_IDX_MUSIC = 132      // Music (was 137 = Bass guitar)
-    private const val YAMNET_IDX_SONG = 261       // Song (was 138 = Acoustic guitar)
+    // v2.4.161: Expanded indices for Silero + YAMNet cascade
+    private const val YAMNET_IDX_SPEECH = 0             // Speech
+    private const val YAMNET_IDX_NARRATION = 3          // Narration, monologue
+    private const val YAMNET_IDX_SINGING = 24           // Singing
+    private const val YAMNET_IDX_MUSIC = 132            // Music
+    private const val YAMNET_IDX_INSTRUMENTAL = 133     // Musical instrument
+    private const val YAMNET_IDX_POP_MUSIC = 211        // Pop music
+    private const val YAMNET_IDX_SONG = 261             // Song
+    private const val YAMNET_IDX_BACKGROUND_MUSIC = 262 // Background music
+    private const val YAMNET_IDX_THEME_MUSIC = 263      // Theme music
+    private const val YAMNET_IDX_JINGLE = 264           // Jingle
+    private const val YAMNET_IDX_SILENCE = 494          // Silence
 
-    // Frame step: 0.5s (8000 samples at 16kHz)
-    private const val FRAME_STEP_SAMPLES = 8000
-    // v2.4.150: When VAD malfunctions we fall back to YAMNet-only classification. Running YAMNet
-    // every 0.5s/1s is too slow for long audio and makes the progress bar appear stuck. Use a 2s
-    // hop in this mode to speed up analysis while still keeping reasonable segment resolution.
-    private const val YAMNET_ONLY_STEP_SAMPLES = 32000
+    // v2.4.161: YAMNet hop in speech intervals (0.5s = 8000 samples at 16kHz)
+    private const val YAMNET_SPEECH_HOP_SAMPLES = 8000
 
-    // Silero VAD: 512 samples per chunk
+    // v2.4.161: Sparse sampling in silence intervals
+    private const val SILENCE_SAMPLE_INTERVAL_MS = 3000L
+    private const val SILENCE_SAMPLE_WINDOW_MS = 1200L
+    private const val SILENCE_SAMPLE_WINDOW_SAMPLES = 19200
+    private const val SILENCE_SAMPLE_HALF_SPREAD_MS = 1800L
+
+    // Silero VAD: 512 samples per chunk (32ms at 16kHz)
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.156: Rebalance VAD thresholds so normal speech is not forced into "水货".
-    private const val VAD_DRY_THRESHOLD = 0.55f
-    private const val VAD_WATER_THRESHOLD = 0.35f
+    // v2.4.161: Silero VAD parameters for coarse region segmentation only
+    private const val VAD_THRESHOLD = 0.47f
+    private const val VAD_MIN_SPEECH_DURATION_MS = 320L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 500L
 
-    // v2.4.156: Rebalance YAMNet thresholds so speech is recognized as "干货" more easily
-    // while music still needs to be clearly dominant to become "水货".
-    private const val YAMNET_SPEECH_DRY_THRESHOLD = 0.50f
-    private const val YAMNET_MUSIC_WATER_THRESHOLD = 0.55f
+    // v2.4.161: YAMNet decision thresholds
+    private const val VOICE_SUM_THRESHOLD = 0.15f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.26f
+    private const val SINGING_RATIO_THRESHOLD = 0.27f
+    private const val SINGING_FORCE_THRESHOLD = 0.08f
+    private const val MUSIC_AD_THRESHOLD = 0.30f
 
-    // v2.4.158: Minimum segment duration. Segments shorter than this are merged into
-    // adjacent segments to avoid many tiny (few-second) fragments.
-    private const val MIN_SEGMENT_DURATION_MS = 30_000L
-
-    // v2.4.150/v2.4.153: VAD malfunction detection now uses a sliding window instead of strict
-    // consecutive frames. v2.4.156 makes the detector stricter so a few low-prob frames no
-    // longer switch the whole episode to YAMNet-only mode.
-    private const val VAD_LOW_CONFIDENCE_WINDOW = 15
-    private const val VAD_LOW_CONFIDENCE_REQUIRED = 12
-    private const val VAD_SUSPICIOUS_THRESHOLD = 0.08f
-    private const val VAD_STRONG_THRESHOLD = 0.005f
-    private const val VAD_YAMNET_SPEECH_THRESHOLD = 0.70f
-
-    // Energy thresholds (relative to max energy)
-    private const val ENERGY_SILENCE_RATIO = 0.05f
-    private const val ENERGY_MUSIC_RATIO = 0.3f
+    // v2.4.161: Post-processing thresholds
+    private const val MIN_FRAGMENT_MS = 700L
+    private const val MAX_PURE_MUSIC_GAP_MS = 1000L
+    private const val MAX_DRY_GAP_MS = 1300L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
@@ -1205,7 +1203,13 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * Analyze PCM audio file and generate segments using dual models.
+     * v2.4.161: Analyze PCM audio file using Silero + YAMNet cascade.
+     *
+     * Pipeline:
+     * 1. Silero VAD coarse segmentation (whole audio, 512-sample chunks).
+     * 2. YAMNet classification on speech intervals (0.975s window, 0.5s hop).
+     * 3. Sparse YAMNet sampling in silence intervals (every 3s, 1.2s window).
+     * 4. Post-processing: merge fragments, absorb short music gaps, merge close dry segments.
      *
      * @param context Application context
      * @param pcmFile 16kHz mono 16-bit PCM file
@@ -1224,21 +1228,12 @@ object AudioSegmentAnalyzer {
             throw RuntimeException("PCM文件太小或不存在: ${pcmFile.name} (${pcmFile.length()} bytes)")
         }
 
-        // v2.4.134: 重置 object 级状态，防止跨集泄漏。
-        // 故障原因：vadMalfunction / yamnetCallCount / vadRunCount 是 object 单例字段，
-        // 一旦某一集触发 VAD 故障并把 vadMalfunction 置为 true，后续所有集都会进入
-        // YAMNet-only 模式（见 line ~974 classifyFrameYamnetOnly），即使该集 VAD
-        // 完全正常也无法使用双模型融合，导致分段异常。
-        // yamnetCallCount / vadRunCount 用于日志采样窗口，跨集累积会让首帧日志失效。
-        // 注意：yamnetInputShape 不在此处重置——它由 loadYamnetModel() 在每次调用
-        // 时根据当前模型重新设置，没有跨集污染问题。
+        // v2.4.161: Reset object-level counters
         synchronized(this) {
-            vadMalfunction = false
             yamnetCallCount = 0
             vadRunCount = 0
         }
 
-        // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded.")
             throw RuntimeException("音频分段运行库未加载，请重新下载运行库")
@@ -1250,10 +1245,7 @@ object AudioSegmentAnalyzer {
             throw RuntimeException("模型未安装: YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
         }
 
-        // Load YAMNet (TFLite) - throws exception on failure
         val yamnetInterpreter = loadYamnetModel(File(modelDir, "yamnet.tflite"))
-
-        // Load Silero VAD (ONNX Runtime via reflection) - throws exception on failure
         val vadModel = loadSileroVad(File(modelDir, "silero_vad.onnx"))
 
         try {
@@ -1263,274 +1255,94 @@ object AudioSegmentAnalyzer {
                 throw RuntimeException("PCM数据太短: ${samples.size} 样本 (需要至少 $YAMNET_WINDOW_SAMPLES)")
             }
 
-            // Compute max energy for normalization
-            var maxEnergy = 0f
-            var pos = 0
-            while (pos + FRAME_STEP_SAMPLES <= samples.size) {
-                val winSize = minOf(YAMNET_WINDOW_SAMPLES, samples.size - pos)
-                val energy = computeRmsEnergy(samples, pos, winSize)
-                if (energy > maxEnergy) maxEnergy = energy
-                pos += FRAME_STEP_SAMPLES
-            }
-            if (maxEnergy < 1e-6f) maxEnergy = 1e-6f
-            Log.i(TAG, "PCM: ${samples.size} samples, maxEnergy=$maxEnergy")
-
-            val frameResults = mutableListOf<FrameResult>()
-            pos = 0
-
-            // VAD state buffer - size depends on model version
-            // v1/v2: separate h [2,1,32] and c [2,1,32] → 64 floats each
-            // v3/v4: combined state [2,1,N] → N*2 floats
-            var vadState = FloatBuffer.wrap(FloatArray(vadModel.stateSize))
-            // v2.4.142: Context buffer for Silero VAD (last 64 samples of previous chunk).
-            var vadContext = FloatArray(VAD_CONTEXT_SIZE) { 0f }
-
-            // v2.4.150: Sliding-window VAD malfunction detector. Replaces the strict consecutive
-            // counter which caused "frequent jump" when vadProb hovered around 0.01.
-            // Each recent frame scores: strong=2 (prob<0.01 & yamnetSpeech>0.6), suspicious=1
-            // (prob<0.05 & yamnetSpeech>0.6), normal=0. Malfunction is declared when the sum
-            // over the last VAD_LOW_CONFIDENCE_WINDOW frames reaches VAD_LOW_CONFIDENCE_REQUIRED.
-            val vadConfidenceWindow = ArrayDeque<Int>(VAD_LOW_CONFIDENCE_WINDOW)
-
-            // v2.4.144/v2.4.150: Report analysis progress so the UI progress bar does not sit at 0%.
-            // v2.4.152: Report in 0-1000 permille so the UI can move in 0.1% steps and no longer
-            // appears frozen at integer percentages like 34%.
             val totalSamples = samples.size
             val totalDurationMs = (totalSamples * 1000L / YAMNET_SAMPLE_RATE)
-            var lastReportedProgress = -1
+            val outputDurationMs = if (durationMs > 0) durationMs else totalDurationMs
             val analysisStartTimeMs = System.currentTimeMillis()
-            var lastFriendlyLogTimeMs = 0L
+            var lastReportedProgress = -1
             var lastCallbackTimeMs = 0L
+            var lastFriendlyLogTimeMs = 0L
+
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 开始音频分段分析：总时长 ${formatDurationMs(totalDurationMs)}，共 $totalSamples 样本")
 
-            while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
-                checkCancelled()
-                val progress = (pos.toLong() * 1000L / totalSamples).toInt().coerceIn(0, 1000)
+            fun reportProgress(mapped: Int, force: Boolean = false) {
                 val nowMs = System.currentTimeMillis()
-                val processedMs = (pos * 1000L / YAMNET_SAMPLE_RATE)
-                val elapsedMs = nowMs - analysisStartTimeMs
-                val etaMs = if (processedMs > 0) (elapsedMs * (totalDurationMs - processedMs) / processedMs) else 0L
-
-                // v2.4.150: Always invoke callback so notification/UI can refresh elapsed/ETA
-                // even when integer percent stays the same (e.g. stuck at 34%). Throttle by
-                // only invoking on progress change or once per second to avoid excessive work.
-                if (progress != lastReportedProgress || nowMs - lastCallbackTimeMs >= 1000) {
-                    lastReportedProgress = progress
+                if (mapped != lastReportedProgress || force || nowMs - lastCallbackTimeMs >= 1000) {
+                    lastReportedProgress = mapped
                     lastCallbackTimeMs = nowMs
-                    try { progressCallback?.invoke(progress, elapsedMs, etaMs) } catch (_: Exception) { }
+                    val elapsedMs = nowMs - analysisStartTimeMs
+                    val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
+                    try { progressCallback?.invoke(mapped, elapsedMs, etaMs) } catch (_: Exception) { }
                 }
-
-                // v2.4.150: Log user-friendly progress every ~5% or 30s to show it is alive.
-                // v2.4.152: progress is now permille, so log every 50‰ (5%).
-                if ((progress > 0 && progress % 50 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
+                if ((mapped > 0 && mapped % 50 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
                     || (nowMs - lastFriendlyLogTimeMs > 30_000)) {
                     lastFriendlyLogTimeMs = nowMs
-                    val progressPercent = String.format(java.util.Locale.US, "%.1f", progress / 10f)
+                    val processedMs = (mapped * totalDurationMs / 1000L).coerceAtMost(totalDurationMs)
+                    val elapsedMs = nowMs - analysisStartTimeMs
+                    val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
+                    val progressPercent = String.format(java.util.Locale.US, "%.1f", mapped / 10f)
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progressPercent}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
                 }
-
-                val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
-                val timestampMs = (pos.toLong() * 1000 / YAMNET_SAMPLE_RATE)
-
-                // YAMNet classification
-                val yamnet = classifyWithYamnet(yamnetInterpreter, window)
-                val yamnetSpeech = yamnet.speech
-                val yamnetMusic = yamnet.music
-                val yamnetSilence = yamnet.silence
-                val yamnetMaxRawScore = yamnet.maxRawScore
-
-                // v2.4.126: Log YAMNet results for first 5 frames to diagnose "全部是水货"
-                if (frameResults.size < 5) {
-                    Log.i(TAG, "YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore")
-                    vadLog("YAMNet frame #${frameResults.size}: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore, rmsEnergy=${computeRmsEnergy(window, 0, window.size)}")
-                }
-
-                // Silero VAD
-                var vadProb = 0f
-                var vadChunks = 0
-                var vadPos = 0
-                while (vadPos + VAD_FRAME_SIZE <= window.size) {
-                    val chunk = window.copyOfRange(vadPos, vadPos + VAD_FRAME_SIZE)
-                    val (prob, newState, newContext) = runSileroVad(vadModel, chunk, vadContext, vadState)
-                    vadState = newState
-                    vadContext = newContext
-                    if (frameResults.size < 3 && vadChunks < 10) {
-                        vadLog("VAD chunk #$vadChunks: prob=$prob, energy=${computeRmsEnergy(chunk, 0, chunk.size)}")
-                    }
-                    vadProb += prob
-                    vadChunks++
-                    vadPos += VAD_FRAME_SIZE
-                }
-                if (vadChunks > 0) vadProb /= vadChunks
-                // v2.4.109: Log averaged VAD prob for first 5 frames
-                if (frameResults.size < 5) {
-                    Log.i(TAG, "VAD frame #${frameResults.size}: avgProb=$vadProb, vadChunks=$vadChunks, energy=${computeRmsEnergy(window, 0, window.size)}")
-                }
-
-                // v2.4.126: Detect VAD malfunction (prob always < 0.01)
-                // v2.4.128: When VAD OR YAMNet malfunction is detected, preserve error info
-                // and STOP segmentation. Do NOT fall back to other classification methods
-                // (energy+ZCR, YAMNet-only, etc.). Per user request:
-                // "音频分段出错时，保留错误信息，不使用其他分类方法跳转"
-                // v2.4.128: Moved rmsEnergy/zcr computation here for diagnostics
-                val rmsEnergy = computeRmsEnergy(window, 0, window.size)
-                val zcr = computeZeroCrossingRate(window)
-
-                // v2.4.150/v2.4.153: Sliding-window VAD malfunction detection with hysteresis.
-                // Only count a frame as suspicious when YAMNet is clearly speech (not music) and
-                // VAD probability is very low. Do not declare malfunction until the window is full
-                // AND we have processed at least 30 frames, so short intros no longer cause an
-                // early switch to YAMNet-only mode.
-                if (!vadMalfunction) {
-                    val isClearlySpeech = yamnetSpeech > VAD_YAMNET_SPEECH_THRESHOLD && yamnetSpeech > yamnetMusic
-                    val score = when {
-                        vadProb < VAD_STRONG_THRESHOLD && isClearlySpeech -> 2
-                        vadProb < VAD_SUSPICIOUS_THRESHOLD && isClearlySpeech -> 1
-                        else -> 0
-                    }
-                    if (vadConfidenceWindow.size >= VAD_LOW_CONFIDENCE_WINDOW) vadConfidenceWindow.removeFirst()
-                    vadConfidenceWindow.addLast(score)
-                    val windowScore = vadConfidenceWindow.sum()
-                    if (vadConfidenceWindow.size >= VAD_LOW_CONFIDENCE_WINDOW &&
-                        frameResults.size >= 30 &&
-                        windowScore >= VAD_LOW_CONFIDENCE_REQUIRED) {
-                        val strongCount = vadConfidenceWindow.count { it == 2 }
-                        val suspiciousCount = vadConfidenceWindow.count { it == 1 }
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD 模型对该音频响应不稳定（最近 ${vadConfidenceWindow.size} 帧中，strong=$strongCount 帧 prob<${VAD_STRONG_THRESHOLD}，suspicious=$suspiciousCount 帧 prob<${VAD_SUSPICIOUS_THRESHOLD}，YAMNet speech>${VAD_YAMNET_SPEECH_THRESHOLD}）。已自动切换到 YAMNet 单独分析模式，避免双模型反复跳转。")
-                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD malfunction — falling back to YAMNet-only mode")
-                        vadMalfunction = true
-                    } else if (score > 0 && frameResults.size < 30) {
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD 低置信度累计 ${windowScore}/${VAD_LOW_CONFIDENCE_REQUIRED}（vadProb=$vadProb，yamnetSpeech=$yamnetSpeech），暂不切换")
-                    }
-                }
-
-                // v2.4.159: Wait until 30 frames (~30s) before deciding how to handle low VAD confidence.
-                // A low VAD probability at the start simply means the audio begins with music/silence,
-                // which is correct behavior — NOT a model malfunction. We only abort when BOTH VAD and
-                // YAMNet are dead (all key YAMNet scores ≈0.5 with max logit≈0). Otherwise we switch to
-                // YAMNet-only mode and continue segmentation, letting YAMNet classify music as water.
-                if (frameResults.size == 29 && vadProb < 0.01f && !vadMalfunction) {
-                    val yamnetDead = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
-                                     kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
-                                     kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f &&
-                                     kotlin.math.abs(yamnetMaxRawScore) < 0.1f
-                    val yamnetHasValidOutput = yamnetMaxRawScore > 0.1f ||
-                                               yamnetMusic > 0.55f ||
-                                               yamnetSilence > 0.55f ||
-                                               yamnetSpeech > 0.55f
-                    if (yamnetDead || (!yamnetHasValidOutput && rmsEnergy > maxEnergy * 0.01f)) {
-                        val diag = buildString {
-                            append("VAD+YAMNet模型故障: 前30帧VAD prob=$vadProb。\n")
-                            append("YAMNet speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore。\n")
-                            append("双模型均未产生有效输出，且音频有能量(rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy)。分段已中止。\n")
-                            append("PCM: ${samples.size} samples\n")
-                            var sMin = Float.MAX_VALUE
-                            var sMax = -Float.MAX_VALUE
-                            var sSum = 0.0
-                            for (s in samples) {
-                                if (s < sMin) sMin = s
-                                if (s > sMax) sMax = s
-                                sSum += s
-                            }
-                            val sMean = (sSum / samples.size).toFloat()
-                            append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
-                            append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
-                            append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
-                            append("VAD model: stateSize=${vadModel.stateSize}\n")
-                            append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
-                        }
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] ERROR: VAD+YAMNet malfunction.\n$diag")
-                        Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD+YAMNet malfunction:\n$diag")
-                        throw RuntimeException(diag)
-                    } else {
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD low confidence for first 30 frames but YAMNet is alive (speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore). Switching to YAMNet-only mode.")
-                        Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] VAD low confidence at frame 30 — falling back to YAMNet-only mode")
-                        vadMalfunction = true  // Flag to use YAMNet-only classification
-                    }
-                }
-
-                // v2.4.128/v2.4.140: Detect YAMNet malfunction (all values ~0.5 = sigmoid(0)).
-                // Originally this aborted segmentation to catch wrong input-shape bugs. Now that
-                // the input shape is correct, a single transitional frame near 0.5 is not a model
-                // failure. We only abort if YAMNet consistently outputs ~0.5 for many frames and
-                // the audio clearly has energy (which would mean the model is truly broken).
-                // Otherwise we let classifyFrameYamnetOnly fall back to energy-based classification.
-                if (frameResults.size == 4) {
-                    // v2.4.143: A frame is "all-half" only if speech/music/silence are ~0.5 AND the
-                    // model's highest raw logit is also near 0. If another class has a high logit
-                    // (e.g. idx=132 scoring 0.89), the model is alive and simply didn't detect speech.
-                    val yamnetAllHalf = kotlin.math.abs(yamnetSpeech - 0.5f) < 0.05f &&
-                                        kotlin.math.abs(yamnetMusic - 0.5f) < 0.05f &&
-                                        kotlin.math.abs(yamnetSilence - 0.5f) < 0.05f &&
-                                        kotlin.math.abs(yamnetMaxRawScore) < 0.1f
-                    if (yamnetAllHalf) {
-                        // Check how many of the first 5 frames are all ~0.5 (with dead model check)
-                        val halfFrames = frameResults.take(4).count { fr ->
-                            kotlin.math.abs(fr.yamnetSpeech - 0.5f) < 0.05f &&
-                            kotlin.math.abs(fr.yamnetMusic - 0.5f) < 0.05f &&
-                            kotlin.math.abs(fr.yamnetSilence - 0.5f) < 0.05f &&
-                            kotlin.math.abs(fr.yamnetMaxRawScore) < 0.1f
-                        } + 1
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] YAMNet all-half at frame 4: halfFrames=$halfFrames/5, maxRawScore=$yamnetMaxRawScore, rmsEnergy=$rmsEnergy, maxEnergy=$maxEnergy")
-                        // Only abort if at least 4 of the first 5 frames are all ~0.5 AND there is
-                        // meaningful audio energy. If VAD already malfunctioned and we switched to
-                        // YAMNet-only, YAMNet worked for the earlier frames, so a single half frame
-                        // is just an uncertain classification — keep going.
-                        if (halfFrames >= 4 && rmsEnergy > maxEnergy * 0.01f && !vadMalfunction) {
-                            val diag = buildString {
-                                append("YAMNet模型故障: speech=$yamnetSpeech, music=$yamnetMusic, silence=$yamnetSilence, maxRawScore=$yamnetMaxRawScore\n")
-                                append("前5帧中$halfFrames 帧全部≈0.5且最大logit≈0（sigmoid(0)，模型未处理输入）。分段已中止，不使用其他分类方法。\n")
-                                append("PCM: ${samples.size} samples, maxEnergy=$maxEnergy\n")
-                                var sMin = Float.MAX_VALUE
-                                var sMax = -Float.MAX_VALUE
-                                var sSum = 0.0
-                                for (s in samples) {
-                                    if (s < sMin) sMin = s
-                                    if (s > sMax) sMax = s
-                                    sSum += s
-                                }
-                                val sMean = (sSum / samples.size).toFloat()
-                                append("PCM sample range: [$sMin, $sMax], mean=$sMean\n")
-                                append("First 10 samples: ${samples.take(10).joinToString(", ")}\n")
-                                append("PCM file: ${pcmFile.name} (${pcmFile.length()} bytes)\n")
-                                append("Window energy: rmsEnergy=$rmsEnergy, zcr=$zcr\n")
-                            }
-                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] ERROR: YAMNet malfunction.\n$diag")
-                            Log.e(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] YAMNet malfunction:\n$diag")
-                            throw RuntimeException(diag)
-                        } else {
-                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] YAMNet all-half but model alive (maxRawScore=$yamnetMaxRawScore) or insufficient frames; continuing with energy fallback (vadMalfunction=$vadMalfunction)")
-                        }
-                    }
-                }
-
-                // Energy features (supplementary) — computed above for v2.4.128 diagnostics
-
-                // Fuse: dual-model classification
-                // v2.4.133: When VAD malfunctions, use YAMNet-only classification
-                val type = if (vadMalfunction) {
-                    classifyFrameYamnetOnly(yamnetSpeech, yamnetMusic, yamnetSilence, rmsEnergy, zcr, maxEnergy)
-                } else {
-                    classifyFrameDualModel(
-                        yamnetSpeech, yamnetMusic, yamnetSilence, vadProb, rmsEnergy, zcr, maxEnergy
-                    )
-                }
-                frameResults.add(FrameResult(timestampMs, type, vadProb, yamnetSpeech, yamnetMusic, yamnetSilence, yamnetMaxRawScore, rmsEnergy))
-
-                // v2.4.149: Use a larger hop in YAMNet-only mode to avoid 8-minute stalls.
-                pos += if (vadMalfunction) YAMNET_ONLY_STEP_SAMPLES else FRAME_STEP_SAMPLES
             }
 
-            Log.i(TAG, "Analyzed ${frameResults.size} frames")
-            val segments = mergeFramesIntoSegments(frameResults, durationMs)
-            Log.i(TAG, "Generated ${segments.size} segments (dry=${segments.count { it.label == "干货" }}, water=${segments.count { it.label == "水货" }})")
+            // ===== Phase 1: Silero VAD coarse segmentation (0-300‰) =====
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 1/3: Silero VAD coarse segmentation")
+            val (speechRanges, silenceRanges) = runSileroVadIntervals(samples, vadModel) { progressPermille ->
+                reportProgress((progressPermille * 300 / 1000).coerceIn(0, 300))
+            }
+
+            // ===== Phase 2: YAMNet classification of speech intervals (300-900‰) =====
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 2/3: YAMNet classification of ${speechRanges.size} speech intervals")
+            val frameResults = mutableListOf<FrameResult>()
+            val totalSpeechDurationMs = speechRanges.sumOf { it.durationMs }
+            var processedSpeechMs = 0L
+
+            for (range in speechRanges) {
+                checkCancelled()
+                classifySpeechInterval(samples, range, yamnetInterpreter, frameResults)
+                processedSpeechMs += range.durationMs
+                val mapped = if (totalSpeechDurationMs > 0) {
+                    300 + (processedSpeechMs * 600 / totalSpeechDurationMs).toInt()
+                } else 300
+                reportProgress(mapped.coerceIn(300, 900))
+            }
+
+            // ===== Phase 3: Sparse YAMNet sampling in silence intervals (900-1000‰) =====
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 3/3: sparse YAMNet sampling of ${silenceRanges.size} silence intervals")
+            val dryRangesFromSilence = mutableListOf<TimeRange>()
+            for ((index, range) in silenceRanges.withIndex()) {
+                checkCancelled()
+                sampleSilenceInterval(samples, range, yamnetInterpreter, dryRangesFromSilence)
+                val mapped = 900 + ((index + 1) * 100 / silenceRanges.size.coerceAtLeast(1)).coerceIn(0, 100)
+                reportProgress(mapped.coerceIn(900, 1000))
+            }
+
+            // Merge frame results into initial segments
+            var segments = mergeFramesIntoSegments(frameResults, outputDurationMs)
+
+            // Add dry ranges found in silence intervals
+            for (range in dryRangesFromSilence) {
+                segments.add(createSegment(range.startMs, range.endMs, FrameType.DRY))
+            }
+
+            // Sort, merge and post-process
+            segments = segments.sortedBy { it.start }.toMutableList()
+            segments = postProcessSegments(segments).toMutableList()
+
+            // Ensure the full duration is covered
+            if (segments.isEmpty()) {
+                segments = mutableListOf(VoiceSegment().apply {
+                    start = 0L; end = outputDurationMs; hasVoice = true; label = "干货"; isSimulated = false
+                })
+            }
+
             val totalElapsedMs = System.currentTimeMillis() - analysisStartTimeMs
-            val modeName = if (vadMalfunction) "YAMNet" else "VAD+YAMNet"
-            val displayModeName = if (vadMalfunction) "YAMNet 单独模式" else "VAD+YAMNet 双模型模式"
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段），分析模式=$displayModeName，总耗时 ${formatDurationMs(totalElapsedMs)}")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段，静音 ${segments.count { it.label == "静音" }} 段），分析模式=Silero+YAMNet 折中级联，总耗时 ${formatDurationMs(totalElapsedMs)}")
+            reportProgress(1000, force = true)
+
             return SegmentAnalysisResult(
                 segments = segments,
-                engineName = modeName,
+                engineName = "Silero+YAMNet",
                 processingTimeMs = totalElapsedMs,
                 audioDurationMs = totalDurationMs
             )
@@ -1575,15 +1387,24 @@ object AudioSegmentAnalyzer {
     }
 
     private var yamnetCallCount = 0
-    // v2.4.133: Flag for YAMNet-only mode when VAD malfunctions
-    private var vadMalfunction = false
     // v2.4.130: Store YAMNet input shape from model for correct tensor creation
     private var yamnetInputShape: IntArray = intArrayOf(1, 15600)
 
     private data class YamnetResult(
         val speech: Float,
+        val narration: Float,
+        val singing: Float,
         val music: Float,
+        val instrumental: Float,
+        val popMusic: Float,
+        val jingle: Float,
+        val song: Float,
+        val backgroundMusic: Float,
+        val themeMusic: Float,
         val silence: Float,
+        // v2.4.161: Aggregated scores for cascade decision
+        val voiceSum: Float,
+        val bgMusicSum: Float,
         // v2.4.143: Raw max logit. If all logits are near 0, every sigmoid is ~0.5 and the model
         // is effectively unresponsive. If some other class has a high logit while speech/music/
         // silence are 0.5, the model is still working — just not detecting those categories.
@@ -1596,9 +1417,6 @@ object AudioSegmentAnalyzer {
     ): YamnetResult {
         try {
             // v2.4.130: Use model's actual input shape instead of hardcoded [1, 15600].
-            // The loaded model reports input=[15600] (1D), not [1, 15600] (2D).
-            // Creating a buffer with wrong shape causes TFLite to process data incorrectly,
-            // producing all-zero outputs (sigmoid(0) = 0.5 for all classes).
             val inputBuffer = TensorBuffer.createFixedSize(
                 yamnetInputShape,
                 org.tensorflow.lite.DataType.FLOAT32
@@ -1631,40 +1449,280 @@ object AudioSegmentAnalyzer {
                 if (scores[i] > maxRawScore) maxRawScore = scores[i]
             }
 
-            // v2.4.129: Log raw output scores for first 3 calls
+            // v2.4.161: Log raw output scores for first 3 calls
             if (yamnetCallCount <= 3) {
                 val rawSpeech = scores.getOrElse(YAMNET_IDX_SPEECH) { 0f }
+                val rawNarration = scores.getOrElse(YAMNET_IDX_NARRATION) { 0f }
+                val rawSinging = scores.getOrElse(YAMNET_IDX_SINGING) { 0f }
                 val rawSilence = scores.getOrElse(YAMNET_IDX_SILENCE) { 0f }
                 val rawMusic = scores.getOrElse(YAMNET_IDX_MUSIC) { 0f }
-                val rawSong = scores.getOrElse(YAMNET_IDX_SONG) { 0f }
-                // Find max score and its index
                 var maxIdx = 0
                 var maxScore = -Float.MAX_VALUE
                 for (i in scores.indices) {
                     if (scores[i] > maxScore) { maxScore = scores[i]; maxIdx = i }
                 }
-                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: raw scores: speech[$YAMNET_IDX_SPEECH]=$rawSpeech, silence[$YAMNET_IDX_SILENCE]=$rawSilence, music[$YAMNET_IDX_MUSIC]=$rawMusic, song[$YAMNET_IDX_SONG]=$rawSong")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: raw scores: speech[$YAMNET_IDX_SPEECH]=$rawSpeech, narration[$YAMNET_IDX_NARRATION]=$rawNarration, singing[$YAMNET_IDX_SINGING]=$rawSinging, silence[$YAMNET_IDX_SILENCE]=$rawSilence, music[$YAMNET_IDX_MUSIC]=$rawMusic")
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: max score=$maxScore at idx=$maxIdx, all zeros=${scores.all { it == 0f }}, output size=${scores.size}")
             }
 
-            // Extract key categories (apply sigmoid to raw scores)
+            // v2.4.161: Compute sigmoid probabilities for all relevant classes
             val speechProb = sigmoid(scores.getOrElse(YAMNET_IDX_SPEECH) { 0f })
+            val narrationProb = sigmoid(scores.getOrElse(YAMNET_IDX_NARRATION) { 0f })
+            val singingProb = sigmoid(scores.getOrElse(YAMNET_IDX_SINGING) { 0f })
+            val musicProb = sigmoid(scores.getOrElse(YAMNET_IDX_MUSIC) { 0f })
+            val instrumentalProb = sigmoid(scores.getOrElse(YAMNET_IDX_INSTRUMENTAL) { 0f })
+            val popMusicProb = sigmoid(scores.getOrElse(YAMNET_IDX_POP_MUSIC) { 0f })
+            val songProb = sigmoid(scores.getOrElse(YAMNET_IDX_SONG) { 0f })
+            val bgMusicProb = sigmoid(scores.getOrElse(YAMNET_IDX_BACKGROUND_MUSIC) { 0f })
+            val themeMusicProb = sigmoid(scores.getOrElse(YAMNET_IDX_THEME_MUSIC) { 0f })
+            val jingleProb = sigmoid(scores.getOrElse(YAMNET_IDX_JINGLE) { 0f })
             val silenceProb = sigmoid(scores.getOrElse(YAMNET_IDX_SILENCE) { 0f })
-            val musicProb = maxOf(
-                sigmoid(scores.getOrElse(YAMNET_IDX_MUSIC) { 0f }),
-                sigmoid(scores.getOrElse(YAMNET_IDX_SONG) { 0f })
+
+            val voiceSum = speechProb + narrationProb + singingProb
+            val bgMusicSum = musicProb + instrumentalProb + popMusicProb + jingleProb + songProb + bgMusicProb + themeMusicProb
+
+            return YamnetResult(
+                speech = speechProb,
+                narration = narrationProb,
+                singing = singingProb,
+                music = musicProb,
+                instrumental = instrumentalProb,
+                popMusic = popMusicProb,
+                jingle = jingleProb,
+                song = songProb,
+                backgroundMusic = bgMusicProb,
+                themeMusic = themeMusicProb,
+                silence = silenceProb,
+                voiceSum = voiceSum,
+                bgMusicSum = bgMusicSum,
+                maxRawScore = maxRawScore
             )
-            return YamnetResult(speechProb, musicProb, silenceProb, maxRawScore)
         } catch (e: Exception) {
             Log.e(TAG, "YAMNet classification failed: ${e.message}")
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            return YamnetResult(0f, 0f, 0f, 0f)
+            return YamnetResult(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
         }
     }
 
     private fun sigmoid(x: Float): Float {
         val exp = kotlin.math.exp(-x.toDouble())
         return (1.0 / (1.0 + exp)).toFloat()
+    }
+
+    // v2.4.161: Time range for coarse VAD segmentation
+    private data class TimeRange(val startMs: Long, val endMs: Long) {
+        val durationMs: Long get() = endMs - startMs
+    }
+
+    /**
+     * v2.4.161: Apply new YAMNet decision rules to a single window.
+     */
+    private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
+        // Rule 3: singing force protection
+        if (yamnet.singing > SINGING_FORCE_THRESHOLD) {
+            return FrameType.DRY
+        }
+
+        // Rule 4: ad intercept (has voice but no singing, with high music)
+        if (yamnet.voiceSum >= VOICE_SUM_THRESHOLD && yamnet.singing <= 0.001f && yamnet.music >= MUSIC_AD_THRESHOLD) {
+            return FrameType.WATER
+        }
+
+        // Rule 1: need enough voice to be considered valid voice
+        if (yamnet.voiceSum < VOICE_SUM_THRESHOLD) {
+            // Not valid voice: high background music -> water, otherwise silence
+            return if (yamnet.bgMusicSum > 0.20f || yamnet.music > 0.25f) FrameType.WATER else FrameType.SILENCE
+        }
+
+        // Rule 2: background music threshold
+        return if (yamnet.bgMusicSum < BG_MUSIC_SUM_THRESHOLD) {
+            FrameType.DRY
+        } else {
+            val singingRatio = yamnet.singing / yamnet.voiceSum
+            if (singingRatio >= SINGING_RATIO_THRESHOLD) FrameType.DRY else FrameType.WATER
+        }
+    }
+
+    /**
+     * v2.4.161: Run Silero VAD over the whole audio to produce coarse speech/silence intervals.
+     */
+    private fun runSileroVadIntervals(
+        samples: FloatArray,
+        vadModel: VadModelInfo,
+        onProgress: ((Int) -> Unit)? = null
+    ): Pair<List<TimeRange>, List<TimeRange>> {
+        val chunkDurationMs = VAD_FRAME_SIZE * 1000L / YAMNET_SAMPLE_RATE
+        val minSpeechChunks = (VAD_MIN_SPEECH_DURATION_MS / chunkDurationMs).toInt().coerceAtLeast(1)
+        val minSilenceChunks = (VAD_MIN_SILENCE_DURATION_MS / chunkDurationMs).toInt().coerceAtLeast(1)
+
+        val probs = mutableListOf<Float>()
+        var vadState = FloatBuffer.wrap(FloatArray(vadModel.stateSize))
+        var vadContext = FloatArray(VAD_CONTEXT_SIZE) { 0f }
+        var pos = 0
+        var reportPos = 0
+        val totalSamples = samples.size
+
+        while (pos + VAD_FRAME_SIZE <= totalSamples) {
+            val chunk = samples.copyOfRange(pos, pos + VAD_FRAME_SIZE)
+            val (prob, newState, newContext) = runSileroVad(vadModel, chunk, vadContext, vadState)
+            vadState = newState
+            vadContext = newContext
+            probs.add(prob)
+            pos += VAD_FRAME_SIZE
+
+            if (onProgress != null && pos >= reportPos) {
+                onProgress((pos.toLong() * 1000L / totalSamples).toInt().coerceIn(0, 1000))
+                reportPos += YAMNET_SAMPLE_RATE * 5
+            }
+        }
+
+        // Initial thresholding into speech/silence chunks
+        val rawSegments = mutableListOf<Pair<Boolean, Int>>()
+        for (prob in probs) {
+            val isSpeech = prob >= VAD_THRESHOLD
+            if (rawSegments.isEmpty() || rawSegments.last().first != isSpeech) {
+                rawSegments.add(isSpeech to 1)
+            } else {
+                rawSegments[rawSegments.size - 1] = isSpeech to (rawSegments.last().second + 1)
+            }
+        }
+
+        // Apply min speech/silence duration rules
+        var changed = true
+        while (changed) {
+            changed = false
+            for (i in rawSegments.indices) {
+                val (isSpeech, count) = rawSegments[i]
+                if (isSpeech && count < minSpeechChunks) {
+                    if (rawSegments.size == 1) {
+                        rawSegments[0] = false to count
+                        changed = true
+                        break
+                    }
+                    if (i == 0) {
+                        rawSegments[1] = false to (rawSegments[1].second + count)
+                        rawSegments.removeAt(0)
+                    } else if (i == rawSegments.size - 1) {
+                        rawSegments[i - 1] = false to (rawSegments[i - 1].second + count)
+                        rawSegments.removeAt(i)
+                    } else {
+                        rawSegments[i - 1] = false to (rawSegments[i - 1].second + count)
+                        rawSegments.removeAt(i)
+                    }
+                    changed = true
+                    break
+                } else if (!isSpeech && count < minSilenceChunks) {
+                    if (rawSegments.size == 1) {
+                        rawSegments[0] = true to count
+                        changed = true
+                        break
+                    }
+                    if (i == 0) {
+                        rawSegments[1] = true to (rawSegments[1].second + count)
+                        rawSegments.removeAt(0)
+                    } else if (i == rawSegments.size - 1) {
+                        rawSegments[i - 1] = true to (rawSegments[i - 1].second + count)
+                        rawSegments.removeAt(i)
+                    } else {
+                        rawSegments[i - 1] = true to (rawSegments[i - 1].second + count)
+                        rawSegments.removeAt(i)
+                    }
+                    changed = true
+                    break
+                }
+            }
+        }
+
+        // Build time ranges
+        val speechRanges = mutableListOf<TimeRange>()
+        val silenceRanges = mutableListOf<TimeRange>()
+        var chunkStart = 0
+        for ((isSpeech, count) in rawSegments) {
+            val startMs = chunkStart * chunkDurationMs
+            val endMs = (chunkStart + count) * chunkDurationMs
+            if (isSpeech) {
+                speechRanges.add(TimeRange(startMs, endMs))
+            } else {
+                silenceRanges.add(TimeRange(startMs, endMs))
+            }
+            chunkStart += count
+        }
+
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] VAD coarse segmentation: ${speechRanges.size} speech ranges (${formatDurationMs(speechRanges.sumOf { it.durationMs })}) and ${silenceRanges.size} silence ranges (${formatDurationMs(silenceRanges.sumOf { it.durationMs })})")
+        return speechRanges to silenceRanges
+    }
+
+    /**
+     * v2.4.161: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop).
+     */
+    private fun classifySpeechInterval(
+        samples: FloatArray,
+        range: TimeRange,
+        yamnetInterpreter: Interpreter,
+        frameResults: MutableList<FrameResult>
+    ) {
+        val startSample = (range.startMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
+        val endSample = (range.endMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
+        var pos = startSample.coerceIn(0, samples.size)
+        while (pos + YAMNET_WINDOW_SAMPLES <= endSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+            val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
+            val timestampMs = (pos.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+            val yamnet = classifyWithYamnet(yamnetInterpreter, window)
+            val type = classifyYamnetScores(yamnet)
+            frameResults.add(FrameResult(
+                timestampMs = timestampMs,
+                type = type,
+                vadProb = 1f,
+                yamnetSpeech = yamnet.speech,
+                yamnetMusic = yamnet.music,
+                yamnetSilence = yamnet.silence,
+                yamnetMaxRawScore = yamnet.maxRawScore,
+                rmsEnergy = 0f
+            ))
+            pos += YAMNET_SPEECH_HOP_SAMPLES
+        }
+    }
+
+    /**
+     * v2.4.161: Sparse YAMNet sampling in a silence interval to find missed voice.
+     * @return true if the whole interval should be marked as speech (two consecutive hits).
+     */
+    private fun sampleSilenceInterval(
+        samples: FloatArray,
+        range: TimeRange,
+        yamnetInterpreter: Interpreter,
+        dryRanges: MutableList<TimeRange>
+    ): Boolean {
+        var currentMs = range.startMs
+        var consecutiveHits = 0
+        while (currentMs + SILENCE_SAMPLE_WINDOW_MS <= range.endMs) {
+            val centerMs = currentMs + SILENCE_SAMPLE_WINDOW_MS / 2
+            val centerSample = (centerMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
+            val halfWindow = SILENCE_SAMPLE_WINDOW_SAMPLES / 2
+            val startSample = (centerSample - halfWindow).coerceAtLeast(0)
+            val endSample = (centerSample + halfWindow).coerceAtMost(samples.size)
+            if (endSample - startSample < SILENCE_SAMPLE_WINDOW_SAMPLES) {
+                currentMs += SILENCE_SAMPLE_INTERVAL_MS
+                continue
+            }
+            val window = samples.copyOfRange(startSample, endSample)
+            val yamnet = classifyWithYamnet(yamnetInterpreter, window)
+            if (yamnet.voiceSum >= VOICE_SUM_THRESHOLD) {
+                consecutiveHits++
+                val spreadStartMs = (centerMs - SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtLeast(range.startMs)
+                val spreadEndMs = (centerMs + SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtMost(range.endMs)
+                dryRanges.add(TimeRange(spreadStartMs, spreadEndMs))
+                if (consecutiveHits >= 2) {
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive YAMNet hits -> mark whole as dry")
+                    dryRanges.add(TimeRange(range.startMs, range.endMs))
+                    return true
+                }
+            } else {
+                consecutiveHits = 0
+            }
+            currentMs += SILENCE_SAMPLE_INTERVAL_MS
+        }
+        return false
     }
 
     // ===== Silero VAD (ONNX Runtime via reflection, no SessionOptions) =====
@@ -2139,110 +2197,6 @@ object AudioSegmentAnalyzer {
         return crossings.toFloat() / (samples.size - 1)
     }
 
-    // ===== Dual-model classification =====
-
-    /**
-     * Classify a frame using both YAMNet and Silero VAD outputs.
-     *
-     * Fusion rules:
-     * 1. YAMNet Silence + low VAD → SILENCE (boundary)
-     * 2. YAMNet Music high + VAD low → WATER (music/水货)
-     * 3. YAMNet Speech high + VAD high → DRY (干货)
-     * 4. Disagreement: trust VAD for speech, YAMNet for music
-     */
-    private fun classifyFrameDualModel(
-        yamnetSpeech: Float,
-        yamnetMusic: Float,
-        yamnetSilence: Float,
-        vadProb: Float,
-        rmsEnergy: Float,
-        zcr: Float,
-        maxEnergy: Float
-    ): FrameType {
-        val energyRatio = rmsEnergy / maxEnergy
-
-        // v2.4.128: Removed all fallback classification logic.
-        // When VAD or YAMNet malfunction, analyzePcmFile() throws an exception
-        // and aborts segmentation. This function is only reached when both
-        // models are working correctly.
-
-        // 1. Silence: both models agree on low energy
-        if (energyRatio < ENERGY_SILENCE_RATIO && vadProb < VAD_WATER_THRESHOLD) {
-            return FrameType.SILENCE
-        }
-        if (yamnetSilence > 0.6f && vadProb < 0.2f) {
-            return FrameType.SILENCE
-        }
-
-        // 2. Music: YAMNet says music clearly louder than speech, VAD says no speech
-        if (yamnetMusic > YAMNET_MUSIC_WATER_THRESHOLD && yamnetMusic > yamnetSpeech + 0.1f && vadProb < VAD_DRY_THRESHOLD) {
-            return FrameType.WATER
-        }
-
-        // 3. Speech: YAMNet says speech confidently, VAD confirms
-        if (yamnetSpeech > YAMNET_SPEECH_DRY_THRESHOLD && vadProb > VAD_DRY_THRESHOLD) {
-            return FrameType.DRY
-        }
-
-        // 4. VAD says speech but YAMNet doesn't detect music → trust VAD
-        if (vadProb > VAD_DRY_THRESHOLD && yamnetMusic < 0.35f) {
-            return FrameType.DRY
-        }
-
-        // 5. YAMNet says music clearly louder than speech → trust YAMNet for music
-        if (yamnetMusic > 0.45f && yamnetMusic > yamnetSpeech + 0.1f) {
-            return FrameType.WATER
-        }
-
-        // 6. Low VAD + high energy → water (non-speech content)
-        if (vadProb < VAD_WATER_THRESHOLD && energyRatio > ENERGY_MUSIC_RATIO) {
-            return FrameType.WATER
-        }
-
-        // 7. Default: use VAD as tiebreaker (v2.4.156: lower so normal speech is not forced to water)
-        return if (vadProb > 0.50f) FrameType.DRY else FrameType.WATER
-    }
-
-    // v2.4.133: YAMNet-only classification when VAD malfunctions.
-    // Uses YAMNet speech/music/silence scores + energy features.
-    private fun classifyFrameYamnetOnly(
-        yamnetSpeech: Float,
-        yamnetMusic: Float,
-        yamnetSilence: Float,
-        rmsEnergy: Float,
-        zcr: Float,
-        maxEnergy: Float
-    ): FrameType {
-        val energyRatio = rmsEnergy / maxEnergy
-
-        // 1. Silence: YAMNet says silence + low energy
-        if (yamnetSilence > 0.6f && energyRatio < ENERGY_SILENCE_RATIO) {
-            return FrameType.SILENCE
-        }
-        if (energyRatio < ENERGY_SILENCE_RATIO * 0.5f) {
-            return FrameType.SILENCE
-        }
-
-        // v2.4.147/v2.4.155: Music detection must be confident and clearly louder than speech.
-        // Otherwise speech with background music gets misclassified as water.
-        if (yamnetMusic > YAMNET_MUSIC_WATER_THRESHOLD && yamnetMusic > yamnetSpeech + 0.1f) {
-            return FrameType.WATER
-        }
-
-        // 3. Speech: YAMNet says speech confidently (v2.4.155: raised to reduce false dry)
-        if (yamnetSpeech > YAMNET_SPEECH_DRY_THRESHOLD) {
-            return FrameType.DRY
-        }
-
-        // 4. High energy but no speech → water (non-speech content)
-        if (energyRatio > ENERGY_MUSIC_RATIO) {
-            return FrameType.WATER
-        }
-
-        // 5. Default: use YAMNet speech as tiebreaker (v2.4.156: lower so normal speech is not forced to water)
-        return if (yamnetSpeech > 0.35f) FrameType.DRY else FrameType.WATER
-    }
-
     // ===== Segment merging =====
 
     /**
@@ -2270,19 +2224,16 @@ object AudioSegmentAnalyzer {
     private fun mergeFramesIntoSegments(
         frames: List<FrameResult>,
         durationMs: Long
-    ): List<VoiceSegment> {
-        if (frames.isEmpty()) return emptyList()
+    ): MutableList<VoiceSegment> {
+        if (frames.isEmpty()) return mutableListOf()
 
-        // v2.4.156: Smooth before merging so single-frame flips don't create tiny segments.
+        // v2.4.161: Smooth before merging so single-frame flips don't create tiny segments.
         val smoothed = smoothFrameTypes(frames)
 
         val segments = mutableListOf<VoiceSegment>()
         var segStart = smoothed[0].timestampMs
         var segType = smoothed[0].type
 
-        // v2.4.156: Remove the 30s minimum-length absorption. The old logic swallowed
-        // short dry segments into the previous long water segment, producing "all water"
-        // results for episodes with alternating speech and music.
         for (i in 1 until smoothed.size) {
             val frame = smoothed[i]
             if (frame.type != segType) {
@@ -2294,49 +2245,46 @@ object AudioSegmentAnalyzer {
         }
         val lastEnd = durationMs
         segments.add(createSegment(segStart, lastEnd, segType))
-
-        // Merge silence segments into adjacent segments
-        val merged = mutableListOf<VoiceSegment>()
-        for (seg in segments) {
-            if (seg.label == "静音") {
-                if (merged.isNotEmpty()) merged.last().end = seg.end
-            } else {
-                merged.add(seg)
-            }
-        }
-        if (merged.isEmpty()) {
-            merged.add(VoiceSegment().apply {
-                start = 0L; end = durationMs; hasVoice = true; label = "干货"; isSimulated = false
-            })
-        }
-
-        // v2.4.158: Merge segments shorter than MIN_SEGMENT_DURATION_MS into adjacent segments
-        // to prevent many tiny (few-second) fragments from cluttering the UI.
-        return mergeShortSegments(merged, MIN_SEGMENT_DURATION_MS)
+        return segments
     }
 
     /**
-     * v2.4.158: Post-process segments to enforce a minimum duration.
-     * Short segments are merged into a same-label neighbor when possible;
-     * otherwise they are merged into the longer neighbor to keep the total
-     * number of segments manageable.
+     * v2.4.161: Post-process segments:
+     * 1. Merge same-type overlapping/adjacent segments.
+     * 2. Merge/remove fragments shorter than MIN_FRAGMENT_MS.
+     * 3. Absorb short (<1s) water segments inside/between dry segments into dry.
+     * 4. Merge dry segments separated by less than MAX_DRY_GAP_MS.
      */
-    private fun mergeShortSegments(
-        segments: List<VoiceSegment>,
-        minDurationMs: Long
-    ): List<VoiceSegment> {
-        if (segments.size <= 1) return segments
-        val mutable = segments.map { it.copy() }.toMutableList()
+    private fun postProcessSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
+        if (segments.isEmpty()) return segments
 
+        // Pass 1: merge same-type overlapping/adjacent segments
+        val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
         var changed = true
         while (changed) {
             changed = false
-            for (i in mutable.indices) {
-                val seg = mutable[i]
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                val next = sorted[i + 1]
+                if (curr.label == next.label && next.start <= curr.end + 1) {
+                    curr.end = maxOf(curr.end, next.end)
+                    sorted.removeAt(i + 1)
+                    changed = true
+                    break
+                }
+            }
+        }
+
+        // Pass 2: merge fragments shorter than MIN_FRAGMENT_MS
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in sorted.indices) {
+                val seg = sorted[i]
                 val duration = seg.end - seg.start
-                if (duration < minDurationMs) {
-                    val prev = mutable.getOrNull(i - 1)
-                    val next = mutable.getOrNull(i + 1)
+                if (duration < MIN_FRAGMENT_MS) {
+                    val prev = sorted.getOrNull(i - 1)
+                    val next = sorted.getOrNull(i + 1)
                     val target = when {
                         prev != null && next != null && prev.label == seg.label -> prev
                         prev != null && next != null && next.label == seg.label -> next
@@ -2348,15 +2296,62 @@ object AudioSegmentAnalyzer {
                     if (target != null) {
                         target.start = minOf(target.start, seg.start)
                         target.end = maxOf(target.end, seg.end)
-                        // Preserve the target's label; the short segment is absorbed.
-                        mutable.removeAt(i)
+                        sorted.removeAt(i)
                         changed = true
                         break
                     }
                 }
             }
         }
-        return mutable
+
+        // Pass 3: absorb short pure-music (<1s) gaps inside/between dry segments into dry
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in sorted.indices) {
+                val seg = sorted[i]
+                if (seg.label == "水货" && seg.end - seg.start < MAX_PURE_MUSIC_GAP_MS) {
+                    val prev = sorted.getOrNull(i - 1)
+                    val next = sorted.getOrNull(i + 1)
+                    if (prev?.label == "干货" && next?.label == "干货") {
+                        prev.end = maxOf(prev.end, next.end)
+                        sorted.removeAt(i + 1)
+                        sorted.removeAt(i)
+                        changed = true
+                        break
+                    } else if (prev?.label == "干货") {
+                        prev.end = maxOf(prev.end, seg.end)
+                        sorted.removeAt(i)
+                        changed = true
+                        break
+                    } else if (next?.label == "干货") {
+                        next.start = minOf(next.start, seg.start)
+                        next.end = maxOf(next.end, seg.end)
+                        sorted.removeAt(i)
+                        changed = true
+                        break
+                    }
+                }
+            }
+        }
+
+        // Pass 4: merge dry segments with gap < MAX_DRY_GAP_MS
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                val next = sorted[i + 1]
+                if (curr.label == "干货" && next.label == "干货" && next.start - curr.end < MAX_DRY_GAP_MS) {
+                    curr.end = next.end
+                    sorted.removeAt(i + 1)
+                    changed = true
+                    break
+                }
+            }
+        }
+
+        return sorted
     }
 
     private fun createSegment(start: Long, end: Long, type: FrameType): VoiceSegment {
