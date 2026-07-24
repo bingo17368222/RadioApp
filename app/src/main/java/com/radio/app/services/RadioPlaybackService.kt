@@ -344,7 +344,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                     forceNotificationUpdate = true
                     // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
-                    updateNotification()
+                    // v2.4.157: Actually post the notification so the play/pause button updates.
+                    notifyNotification()
                     return
                 } else {
                     writeServiceLog("audiofocus", " smartResume: focus request FAILED, will retry in ${smartResumePollMs/1000}s")
@@ -823,14 +824,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                         Log.d(TAG, "Playback ended, auto-playing next episode")
                                         autoPlayNextEpisode()
                                     } else {
-                                        forceNotificationUpdate = true
-                                        // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
-                                        updateNotification()
-                                    }
-                                }
-                            }
-                        }
-                        override fun onPlayerError(error: PlaybackException) {
+                        forceNotificationUpdate = true
+                        // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
+                        // v2.4.157: Post the notification so the final paused state is shown.
+                        notifyNotification()
+                    }
+                }
+            }
+        }
+        override fun onPlayerError(error: PlaybackException) {
                             try {
                                 val errMsg = try { error.message ?: "unknown error" } catch (_: Exception) { "unknown error" }
                                 Log.e(TAG, "ExoPlayer error: $errMsg")
@@ -935,8 +937,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             callback?.onStateChanged(effectivePlaying)
                             notificationPlaying = effectivePlaying
                             updateMediaSessionState()
-                            // [v2.0.76] If effective playing state changed, force notification update to sync button state
-                            if (effectivePlaying != (playbackStarted && !userPaused && !pausedByAudioFocus)) {
+                            // [v2.0.76] If effective playing state changed, force notification update to sync button state.
+                            // v2.4.157: Compare against the last notified state so we catch every real transition.
+                            if (effectivePlaying != lastNotifiedPlayingState) {
                                 forceNotificationUpdate = true
                                 // v2.4.117: Don't reset lastNotificationContentHash — force flag is sufficient
                                 notifyNotification()
@@ -4013,7 +4016,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 .setAudioAttributes(AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                .setWillPauseWhenDucked(true)
+                .setWillPauseWhenDucked(false)
                 .setAcceptsDelayedFocusGain(false)
                 .setOnAudioFocusChangeListener(this).build()
             audioFocusRequest = request
@@ -4719,6 +4722,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
         }
+        // v2.4.157: Keep notification dedup state in sync with the direct manager.notify() above,
+        // so progress polling doesn't get stuck thinking the previous (paused) state is still current.
+        val inPauseConfirmWindowPlay = System.currentTimeMillis() < pauseConfirmedUntil
+        val effectivePlayingPlay = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindowPlay
+        lastNotifiedPlayingState = effectivePlayingPlay
+        lastNotificationContentHash = Objects.hash(
+            notificationTitle,
+            notificationDate,
+            notificationTimeRange,
+            buildNotificationSubText(),
+            effectivePlayingPlay,
+            prepared
+        )
+        writeServiceLog("notification", " play(): synced lastNotifiedPlayingState=$effectivePlayingPlay, hash=$lastNotificationContentHash")
     }
     fun pause(userInitiated: Boolean = true) {
         if (userInitiated) {
@@ -4780,6 +4797,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
         }
+        // v2.4.157: Sync notification dedup state after the direct manager.notify() above.
+        val inPauseConfirmWindowPause = System.currentTimeMillis() < pauseConfirmedUntil
+        val effectivePlayingPause = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindowPause
+        lastNotifiedPlayingState = effectivePlayingPause
+        lastNotificationContentHash = Objects.hash(
+            notificationTitle,
+            notificationDate,
+            notificationTimeRange,
+            buildNotificationSubText(),
+            effectivePlayingPause,
+            prepared
+        )
+        writeServiceLog("notification", " pause(): synced lastNotifiedPlayingState=$effectivePlayingPause, hash=$lastNotificationContentHash")
         // v2.4.134: 暂停时强制保存进度。用户反馈"切换节目时，暂停时，用户手动拖动进度时，
         // 都强制保存进度"。forceSaveCurrentPosition 内置脏位置检测（向后 >5s 或向前
         // >elapsed+10s 都会被拒绝），所以即使在 episodeSwitching 期间误调用也是安全的。
