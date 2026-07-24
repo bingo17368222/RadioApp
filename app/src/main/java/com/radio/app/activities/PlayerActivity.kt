@@ -356,8 +356,8 @@ class PlayerActivity : AppCompatActivity() {
                     val newIdx = episodeList.indexOfFirst { it.id == ep.id }
                     if (newIdx >= 0) currentEpisodeIndex = newIdx
                     clearSubtitles()
-                    voiceSegments = generateSimulatedSegments()
-                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                    // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+                    ensureSegmentsForCurrentEpisode()
                     // v2.4.135: Reset UI position state to the new episode's saved position immediately
                     // so that the previous episode's progress is not shown after switching.
                     val savedPos = getSavedPositionForEpisode(context ?: return@onReceive, ep.id ?: "")
@@ -888,12 +888,8 @@ class PlayerActivity : AppCompatActivity() {
             }
             setupPreCacheList()
             updateUI()
-            if (voiceSegments.isEmpty() && currentEpisode != null) {
-                voiceSegments = generateSimulatedSegments()
-                if (voiceSegments.isNotEmpty()) {
-                    updateSegmentsUI()
-                }
-            }
+            // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+            ensureSegmentsForCurrentEpisode()
             restoreBackgroundResults()
             startCacheProgressUpdater()
         }
@@ -1345,8 +1341,8 @@ class PlayerActivity : AppCompatActivity() {
                 val newIdx = episodeList.indexOfFirst { it.id == episode.id }
                 if (newIdx >= 0) currentEpisodeIndex = newIdx
                 saveLastEpisode()
-                voiceSegments = generateSimulatedSegments()
-                if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+                ensureSegmentsForCurrentEpisode()
                 updateUI()
                 setupPreCacheList()
             }
@@ -1614,18 +1610,9 @@ class PlayerActivity : AppCompatActivity() {
         binding.recyclerSegments.adapter = segmentAdapter
         updateSegmentsUI()
 
-        // v2.4.159: Database is the authoritative source for segments. Intent extras may be
-        // stale or empty (e.g., when the Activity is recreated from the notification), so load
-        // persisted segments first. Only fall back to intent/simulated segments when DB has none.
-        val dbSegments = loadSegmentsFromDb()
-        if (dbSegments.isNotEmpty()) {
-            voiceSegments = dbSegments
-            updateSegmentsUI()
-            restoreSegmentModelInfo()
-        } else if (voiceSegments.isEmpty()) {
-            voiceSegments = generateSimulatedSegments()
-            if (voiceSegments.isNotEmpty()) updateSegmentsUI()
-        }
+        // v2.4.160: Database is the authoritative source for segments. Load persisted segments
+        // first; only fall back to intent/simulated segments when DB has none.
+        ensureSegmentsForCurrentEpisode()
 
         // Feature A: subtitle RecyclerView setup
         subtitleAdapter = SubtitleEntryAdapter()
@@ -1712,6 +1699,34 @@ class PlayerActivity : AppCompatActivity() {
         } else if (segmentListDisplayText.isNotEmpty()) {
             binding.tvAiStatus.text = segmentListDisplayText
             binding.tvAiStatus.visibility = View.VISIBLE
+        }
+    }
+
+    /**
+     * v2.4.160: Central helper to load segments for the current episode. DB real segments always
+     * take precedence; only fall back to simulated/fixed segments when DB has none AND there are
+     * no segments currently in memory. This prevents fixed segments from overwriting AI-generated
+     * DB segments when the service reports an episode change.
+     */
+    private fun ensureSegmentsForCurrentEpisode() {
+        if (_binding == null) return
+        val dbSegments = loadSegmentsFromDb()
+        if (dbSegments.isNotEmpty()) {
+            // Update if currently empty/simulated or count changed (avoids flickering when identical).
+            val shouldUpdate = voiceSegments.isEmpty() ||
+                    voiceSegments.all { it.isSimulated } ||
+                    voiceSegments.size != dbSegments.size
+            if (shouldUpdate) {
+                voiceSegments = dbSegments
+                updateSegmentsUI()
+                restoreSegmentModelInfo()
+            }
+        } else if (voiceSegments.isEmpty()) {
+            val simulated = generateSimulatedSegments()
+            if (simulated.isNotEmpty()) {
+                voiceSegments = simulated
+                updateSegmentsUI()
+            }
         }
     }
 
@@ -2953,8 +2968,8 @@ class PlayerActivity : AppCompatActivity() {
             adapter.notifyDataSetChanged()
             writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: refreshed adapter, currentlyPlayingId=${adapter.currentlyPlayingId}")
         }
-        voiceSegments = generateSimulatedSegments()
-        if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+        // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+        ensureSegmentsForCurrentEpisode()
         updateUI()
         setupPreCacheList()
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: DONE, switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
@@ -3520,8 +3535,8 @@ class PlayerActivity : AppCompatActivity() {
                 val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playbackService?.playEpisode(ep, false, startPos)
-                voiceSegments = generateSimulatedSegments()
-                if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+                ensureSegmentsForCurrentEpisode()
                 updateUI()
                 setupPreCacheList()
                 android.util.Log.d("PlayerActivity", "playNextEpisode: switched to ${ep.title}, index=$targetIdx (skipped $skipCount disliked)")
@@ -3569,8 +3584,8 @@ class PlayerActivity : AppCompatActivity() {
                 val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playbackService?.playEpisode(ep, false, startPos)
-                voiceSegments = generateSimulatedSegments()
-                if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+                ensureSegmentsForCurrentEpisode()
                 updateUI()
                 setupPreCacheList()
                 android.util.Log.d("PlayerActivity", "playPrevEpisode: switched to ${ep.title}, index=$targetIdx (skipped $skipCount disliked/no-preprocess)")
@@ -3672,8 +3687,8 @@ class PlayerActivity : AppCompatActivity() {
                     val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                     val startPos = if (savedPos > 0) savedPos else -1L
                     playbackService?.playEpisode(targetEpisode, false, startPos)
-                    voiceSegments = generateSimulatedSegments()
-                    if (voiceSegments.isNotEmpty()) updateSegmentsUI()
+                    // v2.4.160: Load DB segments first; only generate simulated if DB has none.
+                    ensureSegmentsForCurrentEpisode()
                     updateUI()
                     setupPreCacheList()
                     android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: crossed to $targetDate, playing ${targetEpisode.title}, index=$currentEpisodeIndex")
