@@ -1,0 +1,9 @@
+version: 2.4.163
+file: /workspace/radioapp/releases/RadioApp-v2.4.163.apk
+source: GitHub Actions artifact (run 30110996377)
+size_bytes: 35234623
+size_mb: 33.60
+sha256: 2f16f60d1045425c9e35fd2fb3fce8b9f9681ad171438a2df6a45714b73e2130
+download_time_s: 1995.15
+download_speed_mbps: 0.0088
+download_speed_kbps: 8.98

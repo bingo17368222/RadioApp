@@ -147,18 +147,21 @@ object AudioSegmentAnalyzer {
     private const val VAD_MIN_SPEECH_DURATION_MS = 500L
     private const val VAD_MIN_SILENCE_DURATION_MS = 800L
 
-    // v2.4.163: YAMNet decision thresholds
-    // Tightened to reduce false-positive "dry" segments (ads, jingles, background music).
+    // v2.4.164: YAMNet decision thresholds
+    // Raised thresholds to reduce false-positive "dry" segments (ads, jingles, background music).
+    // - VOICE_SUM_THRESHOLD: a frame needs meaningful combined voice activation to be considered dry.
+    // - BG_MUSIC_SUM_THRESHOLD: music must be a sizable fraction of voice before we treat voice+music as water.
+    // - SINGING_FORCE_THRESHOLD: singing must clearly dominate voice activity to force dry protection.
     private const val VOICE_SUM_THRESHOLD = 0.20f
-    private const val BG_MUSIC_SUM_THRESHOLD = 0.20f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.50f
     private const val SINGING_RATIO_THRESHOLD = 0.35f
-    private const val SINGING_FORCE_THRESHOLD = 0.15f
+    private const val SINGING_FORCE_THRESHOLD = 0.35f
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
-    // v2.4.163: Post-processing thresholds
-    // More aggressive merging to cut segment count while keeping real content boundaries.
+    // v2.4.164: Post-processing thresholds
+    // Less aggressive absorption of short water gaps into dry, so ads/jingles stay water.
     private const val MIN_FRAGMENT_MS = 1500L
-    private const val MAX_PURE_MUSIC_GAP_MS = 800L
+    private const val MAX_PURE_MUSIC_GAP_MS = 300L
     private const val MAX_DRY_GAP_MS = 2500L
 
     // Classification results
@@ -1519,32 +1522,66 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.161: Apply new YAMNet decision rules to a single window.
+     * v2.4.164: Apply YAMNet decision rules using calibrated probabilities.
+     *
+     * YAMNet outputs logits; after sigmoid, an inactive class has probability ~0.5.
+     * Using raw sigmoid values directly makes sum-based thresholds meaningless because
+     * every inactive class contributes 0.5. We therefore subtract 0.5 to obtain an
+     * "activation strength" relative to the neutral baseline.
+     *
+     * Strategy to keep dry ratio down:
+     * - Require meaningful combined voice activation before a frame can be dry.
+     * - Keep strong singing as dry (goal: preserve host singing with accompaniment).
+     * - Voice with strong music -> ads / accompanied songs -> water.
+     * - Weak ambiguous frames default to silence, not dry.
      */
     private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
-        // Rule 3: singing force protection
-        if (yamnet.singing > SINGING_FORCE_THRESHOLD) {
+        // Calibrated activation strengths (0.5 = neutral/unactivated)
+        val calSpeech = yamnet.speech - 0.5f
+        val calNarration = yamnet.narration - 0.5f
+        val calSinging = yamnet.singing - 0.5f
+        val calMusic = yamnet.music - 0.5f
+        val calInstrumental = yamnet.instrumental - 0.5f
+        val calPopMusic = yamnet.popMusic - 0.5f
+        val calJingle = yamnet.jingle - 0.5f
+        val calSong = yamnet.song - 0.5f
+        val calBgMusic = yamnet.backgroundMusic - 0.5f
+        val calThemeMusic = yamnet.themeMusic - 0.5f
+        val calSilence = yamnet.silence - 0.5f
+
+        val calVoice = maxOf(0f, calSpeech) + maxOf(0f, calNarration) + maxOf(0f, calSinging)
+        val calMusicSum = maxOf(0f, calMusic) + maxOf(0f, calInstrumental) + maxOf(0f, calPopMusic) +
+                maxOf(0f, calJingle) + maxOf(0f, calSong) + maxOf(0f, calBgMusic) + maxOf(0f, calThemeMusic)
+
+        // Silence first: if nothing meaningful is present, mark silence.
+        if (calVoice < 0.05f && calMusicSum < 0.05f && calSilence > 0.05f) {
+            return FrameType.SILENCE
+        }
+
+        // Strong singing protection: keep clear singing (even with accompaniment) as dry.
+        // Require singing to be strongly activated and to dominate overall voice activity.
+        if (calSinging > 0.10f && calSinging >= calVoice * SINGING_FORCE_THRESHOLD) {
             return FrameType.DRY
         }
 
-        // Rule 4: ad intercept (has voice but no singing, with high music)
-        if (yamnet.voiceSum >= VOICE_SUM_THRESHOLD && yamnet.singing <= 0.001f && yamnet.music >= MUSIC_AD_THRESHOLD) {
+        // Significant voice activity: decide dry vs water based on music presence.
+        if (calVoice >= VOICE_SUM_THRESHOLD) {
+            return if (calMusicSum > 0.05f && calMusicSum >= calVoice * BG_MUSIC_SUM_THRESHOLD) {
+                // Voice with strong music -> ads / accompanied songs -> water
+                FrameType.WATER
+            } else {
+                // Voice dominates -> host speech / dialogue -> dry
+                FrameType.DRY
+            }
+        }
+
+        // Weak voice but clear music: if music clearly outweighs voice, treat as water.
+        if (calMusicSum > 0.05f && calMusicSum > calVoice * 2.0f) {
             return FrameType.WATER
         }
 
-        // Rule 1: need enough voice to be considered valid voice
-        if (yamnet.voiceSum < VOICE_SUM_THRESHOLD) {
-            // Not valid voice: high background music -> water, otherwise silence
-            return if (yamnet.bgMusicSum > 0.20f || yamnet.music > 0.25f) FrameType.WATER else FrameType.SILENCE
-        }
-
-        // Rule 2: background music threshold
-        return if (yamnet.bgMusicSum < BG_MUSIC_SUM_THRESHOLD) {
-            FrameType.DRY
-        } else {
-            val singingRatio = yamnet.singing / yamnet.voiceSum
-            if (singingRatio >= SINGING_RATIO_THRESHOLD) FrameType.DRY else FrameType.WATER
-        }
+        // Weak ambiguous frames default to silence (avoid false-positive dry).
+        return FrameType.SILENCE
     }
 
     /**
@@ -1715,10 +1752,11 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.162: Sparse YAMNet sampling in a silence interval to find missed voice.
+     * v2.4.164: Sparse YAMNet sampling in a silence interval to find missed content.
      * Returns interval-local sub-segments: a default silence segment covering the interval,
-     * split by dry sub-segments around each hit. If two consecutive sampling points both hit,
-     * the entire interval is marked as dry.
+     * split by dry/water sub-segments around each hit. The hit type is determined by the
+     * same calibrated classifier used for speech intervals, so ads/songs in silence are
+     * marked as water rather than dry.
      */
     private fun sampleSilenceInterval(
         samples: FloatArray,
@@ -1726,8 +1764,10 @@ object AudioSegmentAnalyzer {
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
         var currentMs = range.startMs
-        var consecutiveHits = 0
-        val hitRanges = mutableListOf<TimeRange>()
+        var consecutiveDryHits = 0
+        var consecutiveWaterHits = 0
+        val dryHitRanges = mutableListOf<TimeRange>()
+        val waterHitRanges = mutableListOf<TimeRange>()
 
         while (currentMs + SILENCE_SAMPLE_WINDOW_MS <= range.endMs) {
             val centerMs = currentMs + SILENCE_SAMPLE_WINDOW_MS / 2
@@ -1745,41 +1785,59 @@ object AudioSegmentAnalyzer {
 
             val window = samples.copyOfRange(yamnetStartSample, yamnetEndSample)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
-            if (yamnet.voiceSum >= VOICE_SUM_THRESHOLD) {
-                consecutiveHits++
+            val type = classifyYamnetScores(yamnet)
+
+            if (type == FrameType.DRY || type == FrameType.WATER) {
                 val spreadStartMs = (centerMs - SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtLeast(range.startMs)
                 val spreadEndMs = (centerMs + SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtMost(range.endMs)
-                hitRanges.add(TimeRange(spreadStartMs, spreadEndMs))
-                if (consecutiveHits >= 2) {
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive YAMNet hits -> mark whole as dry")
+                if (type == FrameType.DRY) {
+                    consecutiveDryHits++
+                    consecutiveWaterHits = 0
+                    dryHitRanges.add(TimeRange(spreadStartMs, spreadEndMs))
+                } else {
+                    consecutiveWaterHits++
+                    consecutiveDryHits = 0
+                    waterHitRanges.add(TimeRange(spreadStartMs, spreadEndMs))
+                }
+
+                // If we see two consecutive same-type hits, fill the whole gap with that type.
+                if (consecutiveDryHits >= 2) {
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive dry YAMNet hits -> mark whole as dry")
                     return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
                 }
+                if (consecutiveWaterHits >= 2) {
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive water YAMNet hits -> mark whole as water")
+                    return listOf(createSegment(range.startMs, range.endMs, FrameType.WATER))
+                }
             } else {
-                consecutiveHits = 0
+                consecutiveDryHits = 0
+                consecutiveWaterHits = 0
             }
             currentMs += SILENCE_SAMPLE_INTERVAL_MS
         }
 
         // No hits: the whole silence interval remains silent.
-        if (hitRanges.isEmpty()) {
+        if (dryHitRanges.isEmpty() && waterHitRanges.isEmpty()) {
             return listOf(createSegment(range.startMs, range.endMs, FrameType.SILENCE))
         }
 
-        // Build silence/dry sub-segments that fully cover the interval.
+        // Merge dry/water hit ranges and build segments that fully cover the interval.
+        val allHits = (dryHitRanges + waterHitRanges).sortedBy { it.startMs }
         val segments = mutableListOf<VoiceSegment>()
         var cursorMs = range.startMs
-        for (hit in hitRanges) {
+        for (hit in allHits) {
             if (hit.startMs > cursorMs) {
                 segments.add(createSegment(cursorMs, hit.startMs, FrameType.SILENCE))
             }
-            segments.add(createSegment(hit.startMs, hit.endMs, FrameType.DRY))
+            val hitType = if (hit in dryHitRanges) FrameType.DRY else FrameType.WATER
+            segments.add(createSegment(hit.startMs, hit.endMs, hitType))
             cursorMs = maxOf(cursorMs, hit.endMs)
         }
         if (cursorMs < range.endMs) {
             segments.add(createSegment(cursorMs, range.endMs, FrameType.SILENCE))
         }
 
-        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: ${hitRanges.size} sparse hit(s) -> ${segments.size} sub-segment(s)")
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: ${dryHitRanges.size} dry hit(s), ${waterHitRanges.size} water hit(s) -> ${segments.size} sub-segment(s)")
         return segments
     }
 
