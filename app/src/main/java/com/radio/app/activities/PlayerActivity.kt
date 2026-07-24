@@ -423,6 +423,18 @@ class PlayerActivity : AppCompatActivity() {
         // otherwise the UI appears cancelled even though the task is still running.
         subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
         segmentProcessing = prefs.getBoolean("segment_processing", false)
+        // v2.4.156: The saved segment task belongs to a specific episode. If the user has
+        // switched to a different episode (or the task was for a different one), do not
+        // show its progress on the current episode.
+        segmentTaskEpisodeId = if (segmentProcessing && savedEpisodeId == currentId) {
+            currentId
+        } else {
+            null
+        }
+        if (segmentProcessing && savedEpisodeId != currentId) {
+            segmentProcessing = false
+            lastSegmentProgress = 0
+        }
         // v2.4.148: Restore episode-specific progress. If this episode was already marked
         // complete, don't show the progress bar anymore.
         val currentEpisodeId = currentEpisode?.id ?: savedEpisodeId
@@ -438,6 +450,7 @@ class PlayerActivity : AppCompatActivity() {
         if (isFreshStart && savedEpisodeId.isNullOrBlank()) {
             subtitleProcessing = false
             segmentProcessing = false
+            segmentTaskEpisodeId = null
             lastSegmentProgress = 0
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
                 .putInt(segmentProgressKey(currentEpisodeId), 0)
@@ -1999,8 +2012,19 @@ class PlayerActivity : AppCompatActivity() {
 
             // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
             writeJitterLog(" btnAiSegment CLICKED: episodeId=${episode.id}")
+            // v2.4.156: Interrupt any previous analyzer thread and reset stale progress so
+            // the notification does not keep showing 100% from an earlier run.
+            com.radio.app.utils.AudioSegmentAnalyzer.cancelCurrentAnalysis()
+            cancelSegmentNotification()
             // v2.4.155: Tag the segment task with this episode so switching episodes can cancel it.
             segmentTaskEpisodeId = episode.id
+            lastSegmentProgress = 0
+            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                .putInt(segmentProgressKey(episode.id), 0)
+                .putBoolean(segmentCompleteKey(episode.id), false)
+                .remove(segmentElapsedKey(episode.id))
+                .remove(segmentEtaKey(episode.id))
+                .apply()
             startAiProcessing("segment")
             // [v2.4.24] Get duration on main thread BEFORE spawning background thread
             val dur = playbackService?.getDuration()?.toInt() ?: 0
@@ -2795,8 +2819,11 @@ class PlayerActivity : AppCompatActivity() {
         if (segmentProcessing) {
             val oldEpisodeId = segmentTaskEpisodeId
             writeJitterLog(" playEpisodeAtIndex: cancelling segmentProcessing for oldEpisode=$oldEpisodeId before switch")
+            // v2.4.156: Interrupt the analyzer thread so the old task ends quickly.
+            com.radio.app.utils.AudioSegmentAnalyzer.cancelCurrentAnalysis()
             segmentProcessing = false
             segmentTaskEpisodeId = null
+            lastSegmentProgress = 0
             stopSegmentProgressPoller()
             cancelSegmentNotification()
             if (!oldEpisodeId.isNullOrBlank()) {
@@ -3266,6 +3293,11 @@ class PlayerActivity : AppCompatActivity() {
         val runnable = object : Runnable {
             override fun run() {
                 if (!segmentProcessing) return
+                // v2.4.156: Only update UI if the running task belongs to the current episode.
+                if (currentEpisode?.id != segmentTaskEpisodeId) {
+                    stopSegmentProgressPoller()
+                    return
+                }
                 // v2.4.148: Read episode-specific progress; never go backwards.
                 val currentEpisodeId = currentEpisode?.id
                 val progressPrefs = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
@@ -3314,7 +3346,21 @@ class PlayerActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == SEGMENT_CANCEL_ACTION) {
                 writeJitterLog(" Segment notification cancel clicked")
+                // v2.4.156: Interrupt the analyzer thread so the long-running decode/classify stops.
+                com.radio.app.utils.AudioSegmentAnalyzer.cancelCurrentAnalysis()
+                val cancelledEpisodeId = segmentTaskEpisodeId
                 segmentProcessing = false
+                segmentTaskEpisodeId = null
+                stopSegmentProgressPoller()
+                cancelSegmentNotification()
+                if (!cancelledEpisodeId.isNullOrBlank()) {
+                    getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                        .remove(segmentProgressKey(cancelledEpisodeId))
+                        .remove(segmentCompleteKey(cancelledEpisodeId))
+                        .remove(segmentElapsedKey(cancelledEpisodeId))
+                        .remove(segmentEtaKey(cancelledEpisodeId))
+                        .apply()
+                }
                 finishAiProcessing("segment")
                 Toast.makeText(this@PlayerActivity, "AI分段已取消", Toast.LENGTH_SHORT).show()
             }

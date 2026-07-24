@@ -44,6 +44,32 @@ object AudioSegmentAnalyzer {
     @Volatile
     private var vadRunCount: Int = 0
 
+    // v2.4.156: Hold the currently running analysis thread so the notification cancel
+    // action (or a new segment request) can interrupt it, even when PlayerActivity is gone.
+    @Volatile
+    private var currentAnalysisThread: Thread? = null
+
+    /**
+     * Interrupt the currently running audio-segment analysis (decode + classify).
+     * Called from the notification cancel action or when starting a new segment task.
+     */
+    fun cancelCurrentAnalysis(): Boolean {
+        val t = currentAnalysisThread ?: return false
+        return if (!t.isInterrupted) {
+            t.interrupt()
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] AudioSegmentAnalyzer: interrupted analysis thread")
+            true
+        } else {
+            false
+        }
+    }
+
+    private fun checkCancelled() {
+        if (Thread.currentThread().isInterrupted) {
+            throw InterruptedException("音频分段已取消")
+        }
+    }
+
     fun setLogContext(context: Context) {
         logContext = context
         try {
@@ -105,22 +131,23 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.155: Raise VAD thresholds so music/noise is less likely to be classified as speech.
-    private const val VAD_DRY_THRESHOLD = 0.65f
-    private const val VAD_WATER_THRESHOLD = 0.30f
+    // v2.4.156: Rebalance VAD thresholds so normal speech is not forced into "水货".
+    private const val VAD_DRY_THRESHOLD = 0.55f
+    private const val VAD_WATER_THRESHOLD = 0.35f
 
-    // v2.4.155: YAMNet classification thresholds (separate from the VAD malfunction heuristic).
-    private const val YAMNET_SPEECH_DRY_THRESHOLD = 0.55f
-    private const val YAMNET_MUSIC_WATER_THRESHOLD = 0.50f
+    // v2.4.156: Rebalance YAMNet thresholds so speech is recognized as "干货" more easily
+    // while music still needs to be clearly dominant to become "水货".
+    private const val YAMNET_SPEECH_DRY_THRESHOLD = 0.50f
+    private const val YAMNET_MUSIC_WATER_THRESHOLD = 0.55f
 
     // v2.4.150/v2.4.153: VAD malfunction detection now uses a sliding window instead of strict
-    // consecutive frames. v2.4.153 widens the window and raises thresholds so that short intro
-    // music/silence or a few low-prob frames no longer trigger an early switch to YAMNet-only.
+    // consecutive frames. v2.4.156 makes the detector stricter so a few low-prob frames no
+    // longer switch the whole episode to YAMNet-only mode.
     private const val VAD_LOW_CONFIDENCE_WINDOW = 15
-    private const val VAD_LOW_CONFIDENCE_REQUIRED = 10
-    private const val VAD_SUSPICIOUS_THRESHOLD = 0.10f
-    private const val VAD_STRONG_THRESHOLD = 0.01f
-    private const val VAD_YAMNET_SPEECH_THRESHOLD = 0.65f
+    private const val VAD_LOW_CONFIDENCE_REQUIRED = 12
+    private const val VAD_SUSPICIOUS_THRESHOLD = 0.08f
+    private const val VAD_STRONG_THRESHOLD = 0.005f
+    private const val VAD_YAMNET_SPEECH_THRESHOLD = 0.70f
 
     // Energy thresholds (relative to max energy)
     private const val ENERGY_SILENCE_RATIO = 0.05f
@@ -570,7 +597,12 @@ object AudioSegmentAnalyzer {
         // v2.4.115: Initialize file-based logger for VAD diagnostics
         setLogContext(context)
 
-        // v2.4.95: Load native libraries before any ONNX/TFLite usage
+        // v2.4.156: Track this thread so the notification cancel action can interrupt it.
+        currentAnalysisThread = Thread.currentThread()
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: started on thread ${currentAnalysisThread?.name}")
+
+        try {
+            // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime.")
             throw RuntimeException("音频分段运行库未安装，请在离线引擎管理中下载")
@@ -686,6 +718,10 @@ object AudioSegmentAnalyzer {
         }
 
         return analyzePcmFile(context, pcmFile, durationMs, wrappedProgressCallback)
+        } finally {
+            currentAnalysisThread = null
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: cleared analysis thread reference")
+        }
     }
 
     /**
@@ -867,6 +903,7 @@ object AudioSegmentAnalyzer {
             try {
                 var inputEos = false
                 while (true) {
+                    checkCancelled()
                     val inputBufferIndex = decoder.dequeueInputBuffer(10000)
                     if (inputBufferIndex >= 0 && !inputEos) {
                         val inputBuffer = decoder.getInputBuffer(inputBufferIndex) ?: continue
@@ -1067,6 +1104,7 @@ object AudioSegmentAnalyzer {
             try {
                 var inputEos = false
                 while (true) {
+                    checkCancelled()
                     val inputBufferIndex = decoder.dequeueInputBuffer(10000)
                     if (inputBufferIndex >= 0 && !inputEos) {
                         val inputBuffer = decoder.getInputBuffer(inputBufferIndex) ?: continue
@@ -1262,6 +1300,7 @@ object AudioSegmentAnalyzer {
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 开始音频分段分析：总时长 ${formatDurationMs(totalDurationMs)}，共 $totalSamples 样本")
 
             while (pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+                checkCancelled()
                 val progress = (pos.toLong() * 1000L / totalSamples).toInt().coerceIn(0, 1000)
                 val nowMs = System.currentTimeMillis()
                 val processedMs = (pos * 1000L / YAMNET_SAMPLE_RATE)
@@ -1569,6 +1608,7 @@ object AudioSegmentAnalyzer {
             )
 
             interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
+            checkCancelled()
             val scores = outputBuffer.floatArray
 
             // Find max raw logit for every frame (used by malfunction detection)
@@ -1953,6 +1993,7 @@ object AudioSegmentAnalyzer {
             if (vadRunCount <= 5) {
                 vadLog("runSileroVad: session.run() returned successfully!")
             }
+            checkCancelled()
 
             val resultsClass = results.javaClass
             val getMethod = resultsClass.getMethod("get", String::class.java)
@@ -2130,12 +2171,12 @@ object AudioSegmentAnalyzer {
         }
 
         // 4. VAD says speech but YAMNet doesn't detect music → trust VAD
-        if (vadProb > VAD_DRY_THRESHOLD && yamnetMusic < 0.3f) {
+        if (vadProb > VAD_DRY_THRESHOLD && yamnetMusic < 0.35f) {
             return FrameType.DRY
         }
 
         // 5. YAMNet says music clearly louder than speech → trust YAMNet for music
-        if (yamnetMusic > 0.4f && yamnetMusic > yamnetSpeech + 0.1f) {
+        if (yamnetMusic > 0.45f && yamnetMusic > yamnetSpeech + 0.1f) {
             return FrameType.WATER
         }
 
@@ -2144,8 +2185,8 @@ object AudioSegmentAnalyzer {
             return FrameType.WATER
         }
 
-        // 7. Default: use VAD as tiebreaker (v2.4.155: raise to reduce false dry)
-        return if (vadProb > 0.55f) FrameType.DRY else FrameType.WATER
+        // 7. Default: use VAD as tiebreaker (v2.4.156: lower so normal speech is not forced to water)
+        return if (vadProb > 0.50f) FrameType.DRY else FrameType.WATER
     }
 
     // v2.4.133: YAMNet-only classification when VAD malfunctions.
@@ -2184,11 +2225,33 @@ object AudioSegmentAnalyzer {
             return FrameType.WATER
         }
 
-        // 5. Default: use YAMNet speech as tiebreaker (v2.4.155: raised to reduce false dry)
-        return if (yamnetSpeech > 0.4f) FrameType.DRY else FrameType.WATER
+        // 5. Default: use YAMNet speech as tiebreaker (v2.4.156: lower so normal speech is not forced to water)
+        return if (yamnetSpeech > 0.35f) FrameType.DRY else FrameType.WATER
     }
 
     // ===== Segment merging =====
+
+    /**
+     * v2.4.156: Smooth frame-level labels with a small majority-vote window.
+     * This removes isolated 1-frame misclassifications without swallowing
+     * genuine short dry segments into long water segments.
+     */
+    private fun smoothFrameTypes(frames: List<FrameResult>): List<FrameResult> {
+        if (frames.size < 5) return frames
+        val windowSize = 5
+        val half = windowSize / 2
+        return frames.mapIndexed { i, fr ->
+            val start = maxOf(0, i - half)
+            val end = minOf(frames.size, i + half + 1)
+            val window = frames.subList(start, end)
+            val counts = mutableMapOf<FrameType, Int>()
+            for (w in window) {
+                counts[w.type] = counts.getOrDefault(w.type, 0) + 1
+            }
+            val majority = counts.maxByOrNull { it.value }?.key ?: fr.type
+            fr.copy(type = majority)
+        }
+    }
 
     private fun mergeFramesIntoSegments(
         frames: List<FrameResult>,
@@ -2196,34 +2259,27 @@ object AudioSegmentAnalyzer {
     ): List<VoiceSegment> {
         if (frames.isEmpty()) return emptyList()
 
-        val minSegmentMs = 30_000L
-        val segments = mutableListOf<VoiceSegment>()
-        var segStart = frames[0].timestampMs
-        var segType = frames[0].type
+        // v2.4.156: Smooth before merging so single-frame flips don't create tiny segments.
+        val smoothed = smoothFrameTypes(frames)
 
-        for (i in 1 until frames.size) {
-            val frame = frames[i]
+        val segments = mutableListOf<VoiceSegment>()
+        var segStart = smoothed[0].timestampMs
+        var segType = smoothed[0].type
+
+        // v2.4.156: Remove the 30s minimum-length absorption. The old logic swallowed
+        // short dry segments into the previous long water segment, producing "all water"
+        // results for episodes with alternating speech and music.
+        for (i in 1 until smoothed.size) {
+            val frame = smoothed[i]
             if (frame.type != segType) {
                 val segEnd = frame.timestampMs
-                if (segEnd - segStart >= minSegmentMs || segments.isEmpty()) {
-                    segments.add(createSegment(segStart, segEnd, segType))
-                } else {
-                    if (segments.isNotEmpty()) {
-                        segments.last().end = segEnd
-                    } else {
-                        segments.add(createSegment(segStart, segEnd, segType))
-                    }
-                }
+                segments.add(createSegment(segStart, segEnd, segType))
                 segStart = frame.timestampMs
                 segType = frame.type
             }
         }
         val lastEnd = durationMs
-        if (lastEnd - segStart >= minSegmentMs || segments.isEmpty()) {
-            segments.add(createSegment(segStart, lastEnd, segType))
-        } else if (segments.isNotEmpty()) {
-            segments.last().end = lastEnd
-        }
+        segments.add(createSegment(segStart, lastEnd, segType))
 
         // Merge silence segments into adjacent segments
         val merged = mutableListOf<VoiceSegment>()
