@@ -13,7 +13,7 @@ import java.nio.FloatBuffer
 import java.nio.channels.FileChannel
 
 /**
- * v2.4.163: Audio-based AI segment analyzer using Silero + YAMNet cascade.
+ * v2.4.168: Audio-based AI segment analyzer using Silero + YAMNet cascade.
  *
  * Silero VAD (ONNX, ~2.3MB): Coarse speech/silence region segmentation
  * YAMNet (TFLite, ~4.1MB): Audio classification (521 categories: Speech, Narration, Singing, Music, etc.)
@@ -141,14 +141,14 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.166: Silero VAD parameters for coarse region segmentation only
-    // Longer minimum durations to merge breath-pauses, short noises, and micro-pauses,
-    // reducing the total number of coarse intervals.
-    private const val VAD_THRESHOLD = 0.50f
-    private const val VAD_MIN_SPEECH_DURATION_MS = 1000L
-    private const val VAD_MIN_SILENCE_DURATION_MS = 1200L
+    // v2.4.168: Silero VAD parameters for coarse region segmentation only
+    // Much longer minimum durations to produce coarse, topic-level intervals
+    // instead of fragmenting every breath-pause and short background noise.
+    private const val VAD_THRESHOLD = 0.55f
+    private const val VAD_MIN_SPEECH_DURATION_MS = 2000L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 2500L
 
-    // v2.4.166: YAMNet decision thresholds
+    // v2.4.168: YAMNet decision thresholds
     // Host speech is the primary dry signal. Music must be prominent relative to voice
     // before a frame is treated as water (ad / song), so light BGM under talking stays dry.
     private const val VOICE_SUM_THRESHOLD = 0.10f
@@ -157,11 +157,11 @@ object AudioSegmentAnalyzer {
     private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
-    // v2.4.166: Post-processing thresholds
-    // More aggressive merging to cut fragment count while keeping real content boundaries.
-    private const val MIN_FRAGMENT_MS = 2000L
-    private const val MAX_PURE_MUSIC_GAP_MS = 1000L
-    private const val MAX_DRY_GAP_MS = 4000L
+    // v2.4.168: Post-processing thresholds
+    // Strong merging to reach a manageable segment count for long broadcasts.
+    private const val MIN_FRAGMENT_MS = 3000L
+    private const val MAX_PURE_MUSIC_GAP_MS = 2000L
+    private const val MAX_DRY_GAP_MS = 10000L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
