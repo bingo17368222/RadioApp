@@ -1693,12 +1693,13 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.165: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop),
-     * merging consecutive same-type windows into interval-local sub-segments.
+     * v2.4.167: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop)
+     * but return a single segment per interval using majority vote.
      *
-     * To reduce over-segmentation caused by single noisy YAMNet windows, we apply a
-     * small majority-vote smoothing over the last 3 windows before deciding to switch
-     * segment type. This keeps real content boundaries while removing flicker.
+     * Per-hop sub-segmentation produced too many fragments for the user's use case.
+     * Since Silero VAD already provides coarse content boundaries, we classify the
+     * whole interval by the dominant frame type. This keeps the boundary precision
+     * of VAD while avoiding YAMNet flicker inside an interval.
      */
     private fun classifySpeechInterval(
         samples: FloatArray,
@@ -1716,69 +1717,39 @@ object AudioSegmentAnalyzer {
             return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
         }
 
-        val segments = mutableListOf<VoiceSegment>()
-        var currentType: FrameType? = null
-        var currentStartMs = range.startMs
-
-        fun flushSegment(upToMs: Long) {
-            val t = currentType ?: return
-            if (upToMs > currentStartMs) {
-                segments.add(createSegment(currentStartMs, upToMs, t))
-            }
-        }
-
-        // Smoothing buffer: majority vote over recent 5 windows (2.5s) to suppress flicker.
-        val recentTypes = mutableListOf<FrameType>()
+        val typeVotes = mutableMapOf<FrameType, Int>()
 
         var pos = startSample.coerceIn(0, samples.size)
         while (pos + YAMNET_WINDOW_SAMPLES <= intervalEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
-            val windowStartMs = (pos.toLong() * 1000L / YAMNET_SAMPLE_RATE)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
-
-            recentTypes.add(type)
-            if (recentTypes.size > 5) recentTypes.removeAt(0)
-            val stableType = recentTypes.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: type
-
-            if (currentType == null) {
-                currentType = stableType
-                // Anchor the first segment at the interval start to avoid tiny gaps.
-                currentStartMs = range.startMs
-            } else if (stableType != currentType) {
-                flushSegment(windowStartMs)
-                currentType = stableType
-                currentStartMs = windowStartMs
-            }
-
+            typeVotes[type] = typeVotes.getOrDefault(type, 0) + 1
             pos += YAMNET_SPEECH_HOP_SAMPLES
         }
 
-        // Flush final segment up to the interval end so the interval is fully covered.
-        flushSegment(intervalEndMs)
-
-        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: produced ${segments.size} sub-segment(s)")
-        return segments
+        val dominantType = typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
+        val segment = createSegment(range.startMs, intervalEndMs, dominantType)
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: votes=$typeVotes -> $dominantType")
+        return listOf(segment)
     }
 
     /**
-     * v2.4.164: Sparse YAMNet sampling in a silence interval to find missed content.
-     * Returns interval-local sub-segments: a default silence segment covering the interval,
-     * split by dry/water sub-segments around each hit. The hit type is determined by the
-     * same calibrated classifier used for speech intervals, so ads/songs in silence are
-     * marked as water rather than dry.
+     * v2.4.167: Sparse YAMNet sampling in a silence interval to find missed content.
+     * Returns a single segment per interval using majority vote across the sparse samples.
+     *
+     * Like classifySpeechInterval, we avoid per-hit sub-segmentation to keep the segment
+     * count low. If most sparse samples detect content, the whole interval is labeled
+     * according to the dominant type; otherwise it stays silent.
      */
     private fun sampleSilenceInterval(
         samples: FloatArray,
         range: TimeRange,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
-        var currentMs = range.startMs
-        var consecutiveDryHits = 0
-        var consecutiveWaterHits = 0
-        val dryHitRanges = mutableListOf<TimeRange>()
-        val waterHitRanges = mutableListOf<TimeRange>()
+        val typeVotes = mutableMapOf<FrameType, Int>()
 
+        var currentMs = range.startMs
         while (currentMs + SILENCE_SAMPLE_WINDOW_MS <= range.endMs) {
             val centerMs = currentMs + SILENCE_SAMPLE_WINDOW_MS / 2
             val centerSample = (centerMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
@@ -1796,59 +1767,24 @@ object AudioSegmentAnalyzer {
             val window = samples.copyOfRange(yamnetStartSample, yamnetEndSample)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
+            typeVotes[type] = typeVotes.getOrDefault(type, 0) + 1
 
-            if (type == FrameType.DRY || type == FrameType.WATER) {
-                val spreadStartMs = (centerMs - SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtLeast(range.startMs)
-                val spreadEndMs = (centerMs + SILENCE_SAMPLE_HALF_SPREAD_MS).coerceAtMost(range.endMs)
-                if (type == FrameType.DRY) {
-                    consecutiveDryHits++
-                    consecutiveWaterHits = 0
-                    dryHitRanges.add(TimeRange(spreadStartMs, spreadEndMs))
-                } else {
-                    consecutiveWaterHits++
-                    consecutiveDryHits = 0
-                    waterHitRanges.add(TimeRange(spreadStartMs, spreadEndMs))
-                }
-
-                // If we see two consecutive same-type hits, fill the whole gap with that type.
-                if (consecutiveDryHits >= 2) {
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive dry YAMNet hits -> mark whole as dry")
-                    return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
-                }
-                if (consecutiveWaterHits >= 2) {
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: two consecutive water YAMNet hits -> mark whole as water")
-                    return listOf(createSegment(range.startMs, range.endMs, FrameType.WATER))
-                }
-            } else {
-                consecutiveDryHits = 0
-                consecutiveWaterHits = 0
-            }
             currentMs += SILENCE_SAMPLE_INTERVAL_MS
         }
 
-        // No hits: the whole silence interval remains silent.
-        if (dryHitRanges.isEmpty() && waterHitRanges.isEmpty()) {
+        // No samples or all silence: default to silence.
+        if (typeVotes.isEmpty() || (typeVotes.size == 1 && typeVotes.containsKey(FrameType.SILENCE))) {
             return listOf(createSegment(range.startMs, range.endMs, FrameType.SILENCE))
         }
 
-        // Merge dry/water hit ranges and build segments that fully cover the interval.
-        val allHits = (dryHitRanges + waterHitRanges).sortedBy { it.startMs }
-        val segments = mutableListOf<VoiceSegment>()
-        var cursorMs = range.startMs
-        for (hit in allHits) {
-            if (hit.startMs > cursorMs) {
-                segments.add(createSegment(cursorMs, hit.startMs, FrameType.SILENCE))
-            }
-            val hitType = if (hit in dryHitRanges) FrameType.DRY else FrameType.WATER
-            segments.add(createSegment(hit.startMs, hit.endMs, hitType))
-            cursorMs = maxOf(cursorMs, hit.endMs)
-        }
-        if (cursorMs < range.endMs) {
-            segments.add(createSegment(cursorMs, range.endMs, FrameType.SILENCE))
-        }
-
-        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: ${dryHitRanges.size} dry hit(s), ${waterHitRanges.size} water hit(s) -> ${segments.size} sub-segment(s)")
-        return segments
+        // Pick dominant non-silence type, falling back to silence on tie.
+        val dominantType = typeVotes.filter { it.key != FrameType.SILENCE }
+            .maxByOrNull { it.value }
+            ?.key
+            ?: FrameType.SILENCE
+        val segment = createSegment(range.startMs, range.endMs, dominantType)
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Silence interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: votes=$typeVotes -> $dominantType")
+        return listOf(segment)
     }
 
     // ===== Silero VAD (ONNX Runtime via reflection, no SessionOptions) =====
