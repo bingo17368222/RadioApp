@@ -140,6 +140,10 @@ object AudioSegmentAnalyzer {
     private const val YAMNET_SPEECH_DRY_THRESHOLD = 0.50f
     private const val YAMNET_MUSIC_WATER_THRESHOLD = 0.55f
 
+    // v2.4.158: Minimum segment duration. Segments shorter than this are merged into
+    // adjacent segments to avoid many tiny (few-second) fragments.
+    private const val MIN_SEGMENT_DURATION_MS = 30_000L
+
     // v2.4.150/v2.4.153: VAD malfunction detection now uses a sliding window instead of strict
     // consecutive frames. v2.4.156 makes the detector stricter so a few low-prob frames no
     // longer switch the whole episode to YAMNet-only mode.
@@ -2295,7 +2299,54 @@ object AudioSegmentAnalyzer {
                 start = 0L; end = durationMs; hasVoice = true; label = "干货"; isSimulated = false
             })
         }
-        return merged
+
+        // v2.4.158: Merge segments shorter than MIN_SEGMENT_DURATION_MS into adjacent segments
+        // to prevent many tiny (few-second) fragments from cluttering the UI.
+        return mergeShortSegments(merged, MIN_SEGMENT_DURATION_MS)
+    }
+
+    /**
+     * v2.4.158: Post-process segments to enforce a minimum duration.
+     * Short segments are merged into a same-label neighbor when possible;
+     * otherwise they are merged into the longer neighbor to keep the total
+     * number of segments manageable.
+     */
+    private fun mergeShortSegments(
+        segments: List<VoiceSegment>,
+        minDurationMs: Long
+    ): List<VoiceSegment> {
+        if (segments.size <= 1) return segments
+        val mutable = segments.map { it.copy() }.toMutableList()
+
+        var changed = true
+        while (changed) {
+            changed = false
+            for (i in mutable.indices) {
+                val seg = mutable[i]
+                val duration = seg.end - seg.start
+                if (duration < minDurationMs) {
+                    val prev = mutable.getOrNull(i - 1)
+                    val next = mutable.getOrNull(i + 1)
+                    val target = when {
+                        prev != null && next != null && prev.label == seg.label -> prev
+                        prev != null && next != null && next.label == seg.label -> next
+                        prev != null && next != null -> if ((prev.end - prev.start) >= (next.end - next.start)) prev else next
+                        prev != null -> prev
+                        next != null -> next
+                        else -> null
+                    }
+                    if (target != null) {
+                        target.start = minOf(target.start, seg.start)
+                        target.end = maxOf(target.end, seg.end)
+                        // Preserve the target's label; the short segment is absorbed.
+                        mutable.removeAt(i)
+                        changed = true
+                        break
+                    }
+                }
+            }
+        }
+        return mutable
     }
 
     private fun createSegment(start: Long, end: Long, type: FrameType): VoiceSegment {
