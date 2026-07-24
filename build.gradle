@@ -1,9 +1,11 @@
 buildscript {
     repositories {
+        // v2.4.155-fix: 阿里云 mirror 对 analytics-library/shared 返回 502，
+        // 改为优先使用腾讯 mirror，保留阿里云和官方仓库作兜底。
+        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         google()
         mavenCentral()
     }
@@ -14,9 +16,9 @@ buildscript {
 }
 allprojects {
     repositories {
+        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         google()
         mavenCentral()
     }

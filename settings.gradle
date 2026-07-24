@@ -1,18 +1,21 @@
 pluginManagement {
     repositories {
+        // v2.4.155-fix: 优先腾讯 mirror，阿里云/官方 portal 兜底。
+        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
+        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
-        maven { url 'https://mirrors.tencent.com/nexus/repository/maven-public/' }
+        google()
+        mavenCentral()
     }
 }
 rootProject.name = "RadioApp"
