@@ -141,30 +141,27 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.163: Silero VAD parameters for coarse region segmentation only
-    // Raised thresholds to reduce over-segmentation from breath-pauses and short noises.
+    // v2.4.166: Silero VAD parameters for coarse region segmentation only
+    // Longer minimum durations to merge breath-pauses, short noises, and micro-pauses,
+    // reducing the total number of coarse intervals.
     private const val VAD_THRESHOLD = 0.50f
-    private const val VAD_MIN_SPEECH_DURATION_MS = 500L
-    private const val VAD_MIN_SILENCE_DURATION_MS = 800L
+    private const val VAD_MIN_SPEECH_DURATION_MS = 1000L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 1200L
 
-    // v2.4.165: YAMNet decision thresholds
-    // Balanced thresholds: avoid both false-positive dry (ads/jingles) and false-negative dry
-    // (host speech with light background music or weak microphone signal).
-    // - VOICE_SUM_THRESHOLD: a frame needs clear combined voice activation to be considered dry.
-    // - BG_MUSIC_SUM_THRESHOLD: music must be a notable fraction of voice before voice+music becomes water.
-    // - SINGING_FORCE_THRESHOLD: singing must dominate voice activity to force dry protection.
+    // v2.4.166: YAMNet decision thresholds
+    // Host speech is the primary dry signal. Music must be prominent relative to voice
+    // before a frame is treated as water (ad / song), so light BGM under talking stays dry.
     private const val VOICE_SUM_THRESHOLD = 0.10f
-    private const val BG_MUSIC_SUM_THRESHOLD = 0.30f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.80f
     private const val SINGING_RATIO_THRESHOLD = 0.35f
     private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
-    // v2.4.165: Post-processing thresholds
-    // Moderate merging: absorb short water/silence gaps into dry to reduce fragment count,
-    // while keeping obvious ads/jingles longer than the gap threshold as standalone water.
-    private const val MIN_FRAGMENT_MS = 1000L
+    // v2.4.166: Post-processing thresholds
+    // More aggressive merging to cut fragment count while keeping real content boundaries.
+    private const val MIN_FRAGMENT_MS = 2000L
     private const val MAX_PURE_MUSIC_GAP_MS = 1000L
-    private const val MAX_DRY_GAP_MS = 3000L
+    private const val MAX_DRY_GAP_MS = 4000L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
@@ -1524,18 +1521,18 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.165: Apply YAMNet decision rules using calibrated probabilities.
+     * v2.4.166: Apply YAMNet decision rules using calibrated probabilities.
      *
      * YAMNet outputs logits; after sigmoid, an inactive class has probability ~0.5.
      * Using raw sigmoid values directly makes sum-based thresholds meaningless because
      * every inactive class contributes 0.5. We therefore subtract 0.5 to obtain an
      * "activation strength" relative to the neutral baseline.
      *
-     * Balanced strategy:
-     * - Clear voice activity -> dry (host speech / dialogue).
-     * - Voice with notable music -> water (ads / accompanied songs).
-     * - Strong singing -> dry (preserve host singing).
-     * - Weak ambiguous frames default to silence, not dry.
+     * Strategy:
+     * - Clear speech/narration or strong combined voice -> dry (host talking).
+     * - Voice only becomes water when music is prominent (ads / songs).
+     * - Strong singing -> dry (preserve host singing with accompaniment).
+     * - Pure music / weak ambiguous frames -> water / silence.
      */
     private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
         // Calibrated activation strengths (0.5 = neutral/unactivated)
@@ -1561,15 +1558,15 @@ object AudioSegmentAnalyzer {
         }
 
         // Strong singing protection: keep clear singing (even with accompaniment) as dry.
-        // Require singing to be strongly activated and to dominate overall voice activity.
         if (calSinging > 0.10f && calSinging >= calVoice * SINGING_FORCE_THRESHOLD) {
             return FrameType.DRY
         }
 
-        // Significant voice activity: decide dry vs water based on music presence.
-        if (calVoice >= VOICE_SUM_THRESHOLD) {
+        // Clear host speech / narration -> dry, unless music is very prominent.
+        val hasClearSpeech = calSpeech > 0.10f || calNarration > 0.10f || calVoice >= VOICE_SUM_THRESHOLD
+        if (hasClearSpeech) {
             return if (calMusicSum > 0.05f && calMusicSum >= calVoice * BG_MUSIC_SUM_THRESHOLD) {
-                // Voice with strong music -> ads / accompanied songs -> water
+                // Voice with prominent music -> ads / accompanied songs -> water
                 FrameType.WATER
             } else {
                 // Voice dominates -> host speech / dialogue -> dry
@@ -1577,12 +1574,12 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // Weak voice but clear music: if music clearly outweighs voice, treat as water.
+        // Weak voice but prominent music -> water.
         if (calMusicSum > 0.05f && calMusicSum > calVoice * 2.0f) {
             return FrameType.WATER
         }
 
-        // Weak ambiguous frames default to silence (avoid false-positive dry).
+        // Weak ambiguous frames default to silence.
         return FrameType.SILENCE
     }
 
@@ -1730,7 +1727,7 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // Smoothing buffer: majority vote over recent windows to suppress flicker.
+        // Smoothing buffer: majority vote over recent 5 windows (2.5s) to suppress flicker.
         val recentTypes = mutableListOf<FrameType>()
 
         var pos = startSample.coerceIn(0, samples.size)
@@ -1741,7 +1738,7 @@ object AudioSegmentAnalyzer {
             val type = classifyYamnetScores(yamnet)
 
             recentTypes.add(type)
-            if (recentTypes.size > 3) recentTypes.removeAt(0)
+            if (recentTypes.size > 5) recentTypes.removeAt(0)
             val stableType = recentTypes.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: type
 
             if (currentType == null) {
