@@ -13,7 +13,7 @@ import java.nio.FloatBuffer
 import java.nio.channels.FileChannel
 
 /**
- * v2.4.162: Audio-based AI segment analyzer using Silero + YAMNet cascade.
+ * v2.4.163: Audio-based AI segment analyzer using Silero + YAMNet cascade.
  *
  * Silero VAD (ONNX, ~2.3MB): Coarse speech/silence region segmentation
  * YAMNet (TFLite, ~4.1MB): Audio classification (521 categories: Speech, Narration, Singing, Music, etc.)
@@ -26,7 +26,7 @@ import java.nio.channels.FileChannel
  * 4. Silence intervals: default to silence segment, then sparse YAMNet sampling (every 3s,
  *    1.2s window, center 0.975s fed to YAMNet) to recover missed voice; hits split the
  *    interval into dry/silence sub-segments.
- * 5. Post-process: merge fragments (<700ms), absorb short music gaps (<1s), merge close dry segments (<1.3s).
+ * 5. Post-process: merge fragments (<1500ms), absorb short music gaps (<800ms), merge close dry segments (<2.5s).
  *
  * Requires runtime libraries (downloaded from offline engine management):
  * - libonnxruntime.so, libonnxruntime4j_jni.so (for Silero VAD)
@@ -141,22 +141,25 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.161: Silero VAD parameters for coarse region segmentation only
-    private const val VAD_THRESHOLD = 0.47f
-    private const val VAD_MIN_SPEECH_DURATION_MS = 320L
-    private const val VAD_MIN_SILENCE_DURATION_MS = 500L
+    // v2.4.163: Silero VAD parameters for coarse region segmentation only
+    // Raised thresholds to reduce over-segmentation from breath-pauses and short noises.
+    private const val VAD_THRESHOLD = 0.50f
+    private const val VAD_MIN_SPEECH_DURATION_MS = 500L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 800L
 
-    // v2.4.161: YAMNet decision thresholds
-    private const val VOICE_SUM_THRESHOLD = 0.15f
-    private const val BG_MUSIC_SUM_THRESHOLD = 0.26f
-    private const val SINGING_RATIO_THRESHOLD = 0.27f
-    private const val SINGING_FORCE_THRESHOLD = 0.08f
-    private const val MUSIC_AD_THRESHOLD = 0.30f
+    // v2.4.163: YAMNet decision thresholds
+    // Tightened to reduce false-positive "dry" segments (ads, jingles, background music).
+    private const val VOICE_SUM_THRESHOLD = 0.20f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.20f
+    private const val SINGING_RATIO_THRESHOLD = 0.35f
+    private const val SINGING_FORCE_THRESHOLD = 0.15f
+    private const val MUSIC_AD_THRESHOLD = 0.25f
 
-    // v2.4.161: Post-processing thresholds
-    private const val MIN_FRAGMENT_MS = 700L
-    private const val MAX_PURE_MUSIC_GAP_MS = 1000L
-    private const val MAX_DRY_GAP_MS = 1300L
+    // v2.4.163: Post-processing thresholds
+    // More aggressive merging to cut segment count while keeping real content boundaries.
+    private const val MIN_FRAGMENT_MS = 1500L
+    private const val MAX_PURE_MUSIC_GAP_MS = 800L
+    private const val MAX_DRY_GAP_MS = 2500L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
