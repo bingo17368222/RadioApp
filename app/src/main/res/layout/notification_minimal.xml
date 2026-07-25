@@ -121,7 +121,7 @@
         </LinearLayout>
 
         <LinearLayout
-            android:id="@+id/btn_prev_episode"
+            android:id="@+id/btn_prev_segment"
             android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
@@ -133,12 +133,12 @@
             <ImageView
                 android:layout_width="24dp"
                 android:layout_height="24dp"
-                android:src="@drawable/notif_prev"
+                android:src="@drawable/notif_skip"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="上节目"
+                android:text="上一片段"
                 android:textSize="10sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
@@ -169,7 +169,7 @@
         </LinearLayout>
 
         <LinearLayout
-            android:id="@+id/btn_next_episode"
+            android:id="@+id/btn_next_segment"
             android:layout_width="0dp"
             android:layout_height="40dp"
             android:layout_weight="1"
@@ -181,12 +181,12 @@
             <ImageView
                 android:layout_width="24dp"
                 android:layout_height="24dp"
-                android:src="@drawable/notif_next"
+                android:src="@drawable/notif_skip"
                 android:scaleType="centerInside" />
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="下节目"
+                android:text="下一片段"
                 android:textSize="10sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>

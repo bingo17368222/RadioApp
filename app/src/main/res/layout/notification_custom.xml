@@ -205,7 +205,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="上片段"
+                android:text="上一片段"
                 android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>
@@ -299,7 +299,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="下片段"
+                android:text="下一片段"
                 android:textSize="7sp"
                 android:textColor="#FFFFFF" />
         </LinearLayout>

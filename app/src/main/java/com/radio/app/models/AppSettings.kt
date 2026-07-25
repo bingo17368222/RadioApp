@@ -151,7 +151,7 @@ class AppSettings private constructor() {
         forceVoskUntil = prefs.getLong("force_vosk_until", 0)  // [v2.2.8]
         uiTheme = prefs.getString("ui_theme", THEME_DARK) ?: THEME_DARK
         preloadCache = prefs.getBoolean("preload_cache", false)
-        preloadCacheCount = prefs.getInt("preload_cache_count", 1)
+        preloadCacheCount = prefs.getInt("preload_cache_count", 10)
         autoCache = prefs.getBoolean("auto_cache", false)
         enablePreprocessing = prefs.getBoolean("enable_preprocessing", false)  // v2.4.96: Default off
         enablePreGenerateSubtitles = prefs.getBoolean("enable_pre_generate_subtitles", false)  // v2.4.96: Default off

@@ -591,10 +591,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 pause()
             }
             override fun onSkipToNext() {
-                notifyNextEpisode()
+                jumpToNextSegment()
             }
             override fun onSkipToPrevious() {
-                notifyPrevEpisode()
+                jumpToPrevSegment()
             }
             override fun onStop() {
                 pause()
@@ -611,8 +611,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                             if (isPlaying()) pause() else play()
                         }
-                        KeyEvent.KEYCODE_MEDIA_NEXT -> notifyNextEpisode()
-                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> notifyPrevEpisode()
+                        KeyEvent.KEYCODE_MEDIA_NEXT -> jumpToNextSegment()
+                        KeyEvent.KEYCODE_MEDIA_PREVIOUS -> jumpToPrevSegment()
                         KeyEvent.KEYCODE_MEDIA_STOP -> pause()
                     }
                 }
@@ -1109,6 +1109,53 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (_: Exception) {}
     }
 
+    /**
+     * v2.4.174: 限制当前节目之后已缓存的节目不超过 targetCount 个。
+     * 如果超出，则删除最远期（broadcastAt 最晚）的缓存文件，避免设置调小后旧缓存仍累积。
+     */
+    private fun cleanupExcessFutureCache(
+        targetCount: Int,
+        preCacheList: List<Episode>,
+        currentIdx: Int,
+        episodesDir: java.io.File
+    ): Int {
+        if (currentIdx < 0 || targetCount <= 0) return 0
+        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: return 0
+        val cachedNames = cachedFiles.map { it.name }.toSet()
+        val futureCached = mutableListOf<Pair<Int, Episode>>()
+        for (i in (currentIdx + 1) until preCacheList.size) {
+            val ep = preCacheList[i]
+            if (ep.audioUrl.isBlank()) continue
+            val fileName = extractCacheFileName(ep.audioUrl)
+            if (fileName in cachedNames) {
+                futureCached.add(i to ep)
+            }
+        }
+        if (futureCached.size <= targetCount) return 0
+        // 按播出日期升序排列，保留最近的 targetCount 个，删除其余
+        val sorted = futureCached.sortedBy { it.second.broadcastAt ?: "" }
+        val toDelete = sorted.drop(targetCount)
+        var deleted = 0
+        for ((_, ep) in toDelete) {
+            val fileName = extractCacheFileName(ep.audioUrl)
+            val file = java.io.File(episodesDir, fileName)
+            if (file.exists()) {
+                try {
+                    if (file.delete()) {
+                        deleted++
+                        writeServiceLog("notification", "cleanupExcessFutureCache: deleted excess cache $fileName (${ep.title})")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "cleanupExcessFutureCache: failed to delete $fileName: ${e.message}")
+                }
+            }
+        }
+        if (deleted > 0) {
+            Log.d(TAG, "Pre-cache: cleanupExcessFutureCache deleted $deleted files (target=$targetCount)")
+        }
+        return deleted
+    }
+
     private fun triggerPreCache() {
         val now = System.currentTimeMillis()
         if (now - lastPreCacheCheckTime < 120_000) {
@@ -1117,7 +1164,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         lastPreCacheCheckTime = now
         val settings = AppSettings.getInstance(this)
-        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=${settings.preloadCacheCount}, currentCount=$precacheCompletedCount")
+        val targetCount = settings.preloadCacheCount
+        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=$targetCount, currentCount=$precacheCompletedCount")
         if (!settings.autoCache) {
             Log.d(TAG, "Pre-cache: disabled")
             return
@@ -1151,8 +1199,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.1.0] Use centralized cache dir
         val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
-        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
-        val cachedNames = cachedFiles.map { it.name }.toSet()
 
         var preCacheList = loadPreCacheList()
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
@@ -1169,6 +1215,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             currentIdx = 0
             savePreCacheList(preCacheList)
         }
+
+        // v2.4.174: Enforce preloadCacheCount by deleting excess future cached episodes.
+        // This prevents old cache files from accumulating when the user lowers the setting.
+        cleanupExcessFutureCache(targetCount, preCacheList, currentIdx, episodesDir)
+
+        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
+        val cachedNames = cachedFiles.map { it.name }.toSet()
 
         writeServiceLog("notification", "triggerPreCache: preCacheList.size=${preCacheList.size}, currentIdx=$currentIdx, cachedFiles.size=${cachedFiles.size}")
         writeServiceLog("notification", "triggerPreCache: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(10)}")
@@ -1190,7 +1243,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
 
-        val targetCount = settings.preloadCacheCount
         writeServiceLog("notification", "triggerPreCache: START isPrecaching=$isPrecaching targetCount=$targetCount")
         Log.d(TAG, "Pre-cache: futureCached=$futureCachedCount, target=$targetCount")
 
@@ -3762,14 +3814,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setShowActionsInCompactView(0, 2, 4)
                 .setMediaSession(mediaSession?.sessionToken))
-            // 5个按钮：后退 | 上一节目 | 播放/暂停 | 下一节目 | 前进
+            // 5个按钮：后退 | 上一片段 | 播放/暂停 | 下一片段 | 前进
             .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退${skipSeconds}s", 10))
-            .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
+            .addAction(createNotificationAction(ACTION_PREV_SEGMENT, R.drawable.notif_prev, "上一片段", 11))
             .addAction(createNotificationAction(
                 if (playing) ACTION_PAUSE else ACTION_PLAY,
                 if (playing) R.drawable.notif_pause else R.drawable.notif_play,
                 if (playing) "暂停" else "播放", 12))
-            .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
+            .addAction(createNotificationAction(ACTION_NEXT_SEGMENT, R.drawable.notif_next, "下一片段", 13))
             .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进${skipSeconds}s", 14))
             // 展开状态使用自定义布局（含进度条和seek区）
             .setCustomBigContentView(expandedView)
@@ -3810,12 +3862,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     .setShowActionsInCompactView(0, 2, 4)
                     .setMediaSession(mediaSession?.sessionToken))
                 .addAction(createNotificationAction(ACTION_REWIND, R.drawable.notif_rewind, "后退${skipSeconds}s", 10))
-                .addAction(createNotificationAction(ACTION_PREV_EPISODE, R.drawable.notif_prev, "上一节目", 11))
+                .addAction(createNotificationAction(ACTION_PREV_SEGMENT, R.drawable.notif_prev, "上一片段", 11))
                 .addAction(createNotificationAction(
                     if (playing) ACTION_PAUSE else ACTION_PLAY,
                     if (playing) R.drawable.notif_pause else R.drawable.notif_play,
                     if (playing) "暂停" else "播放", 12))
-                .addAction(createNotificationAction(ACTION_NEXT_EPISODE, R.drawable.notif_next, "下一节目", 13))
+                .addAction(createNotificationAction(ACTION_NEXT_SEGMENT, R.drawable.notif_next, "下一片段", 13))
                 .addAction(createNotificationAction(ACTION_FORWARD, R.drawable.notif_forward, "前进${skipSeconds}s", 14))
                 .build()
         }
