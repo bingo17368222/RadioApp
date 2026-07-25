@@ -1,9 +1,9 @@
-version: 2.4.174
-file: /workspace/radioapp/releases/RadioApp-v2.4.174.apk
-source: GitHub Release v2.4.174
-size_bytes: 35238815
+version: 2.4.175
+file: /workspace/radioapp/releases/RadioApp-v2.4.175.apk
+source: GitHub Release v2.4.175
+size_bytes: 35238979
 size_mb: 33.61
-sha256: c59a7d65290768e14eaa6fa9e4a3e23cad33ab63cb66655afb1a0f54f5227302
-download_time_s: 533.00
-download_speed_mbps: 0.5286
-download_speed_kbps: 528.60
+sha256: 0291a281325f8587f4562d5289b4887e82751869016bff7ba1b7be384d0d1bcf
+download_time_s: 2257.00
+download_speed_mbps: 0.1249
+download_speed_kbps: 124.91
