@@ -2288,6 +2288,12 @@ object AudioSegmentAnalyzer {
     private fun readPcmAsFloats(pcmFile: File): FloatArray {
         // v2.4.131: Use streaming read to avoid OOM on large PCM files (>400MB).
         // Previously used pcmFile.readBytes() which loaded entire file into memory.
+        // v2.4.177: Refuse to load PCM that would require an unreasonably large FloatArray.
+        // FloatArray is 4 bytes/sample, i.e. 2x PCM size; guard before allocation to prevent OOM.
+        val maxSafePcmBytes = 120L * 1024 * 1024
+        if (pcmFile.length() > maxSafePcmBytes) {
+            throw RuntimeException("PCM文件过大，无法完整加载到内存: ${pcmFile.length()} bytes (上限 ${maxSafePcmBytes} bytes)。请使用更短的音频或分段处理。")
+        }
         val numSamples = (pcmFile.length() / 2).toInt()
         val samples = FloatArray(numSamples)
         val byteBuffer = ByteBuffer.allocate(8192 * 2).order(ByteOrder.LITTLE_ENDIAN)
