@@ -5,11 +5,14 @@ import android.util.Log
 import com.radio.app.models.VoiceSegment
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
+import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.ShortBuffer
 import java.nio.channels.FileChannel
 
 /**
@@ -1298,97 +1301,99 @@ object AudioSegmentAnalyzer {
         val vadModel = loadSileroVad(File(modelDir, "silero_vad.onnx"))
 
         try {
-            val samples = readPcmAsFloats(pcmFile)
-            if (samples.size < YAMNET_WINDOW_SAMPLES) {
-                Log.w(TAG, "PCM too short: ${samples.size} samples")
-                throw RuntimeException("PCM数据太短: ${samples.size} 样本 (需要至少 $YAMNET_WINDOW_SAMPLES)")
-            }
-
-            val totalSamples = samples.size
-            val totalDurationMs = (totalSamples * 1000L / YAMNET_SAMPLE_RATE)
-            val outputDurationMs = if (durationMs > 0) durationMs else totalDurationMs
-            val analysisStartTimeMs = System.currentTimeMillis()
-            var lastReportedProgress = -1
-            var lastCallbackTimeMs = 0L
-            var lastFriendlyLogTimeMs = 0L
-
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 开始音频分段分析：总时长 ${formatDurationMs(totalDurationMs)}，共 $totalSamples 样本")
-
-            fun reportProgress(mapped: Int, force: Boolean = false) {
-                val nowMs = System.currentTimeMillis()
-                if (mapped != lastReportedProgress || force || nowMs - lastCallbackTimeMs >= 1000) {
-                    lastReportedProgress = mapped
-                    lastCallbackTimeMs = nowMs
-                    val elapsedMs = nowMs - analysisStartTimeMs
-                    val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
-                    try { progressCallback?.invoke(mapped, elapsedMs, etaMs) } catch (_: Exception) { }
+            // v2.4.178: Memory-map the PCM file so huge files do not require a heap-sized FloatArray.
+            openPcmSamples(pcmFile).use { samples ->
+                if (samples.size < YAMNET_WINDOW_SAMPLES) {
+                    Log.w(TAG, "PCM too short: ${samples.size} samples")
+                    throw RuntimeException("PCM数据太短: ${samples.size} 样本 (需要至少 $YAMNET_WINDOW_SAMPLES)")
                 }
-                if ((mapped > 0 && mapped % 50 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
-                    || (nowMs - lastFriendlyLogTimeMs > 30_000)) {
-                    lastFriendlyLogTimeMs = nowMs
-                    val processedMs = (mapped * totalDurationMs / 1000L).coerceAtMost(totalDurationMs)
-                    val elapsedMs = nowMs - analysisStartTimeMs
-                    val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
-                    val progressPercent = String.format(java.util.Locale.US, "%.1f", mapped / 10f)
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progressPercent}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
+
+                val totalSamples = samples.size
+                val totalDurationMs = (totalSamples * 1000L / YAMNET_SAMPLE_RATE)
+                val outputDurationMs = if (durationMs > 0) durationMs else totalDurationMs
+                val analysisStartTimeMs = System.currentTimeMillis()
+                var lastReportedProgress = -1
+                var lastCallbackTimeMs = 0L
+                var lastFriendlyLogTimeMs = 0L
+
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 开始音频分段分析：总时长 ${formatDurationMs(totalDurationMs)}，共 $totalSamples 样本")
+
+                fun reportProgress(mapped: Int, force: Boolean = false) {
+                    val nowMs = System.currentTimeMillis()
+                    if (mapped != lastReportedProgress || force || nowMs - lastCallbackTimeMs >= 1000) {
+                        lastReportedProgress = mapped
+                        lastCallbackTimeMs = nowMs
+                        val elapsedMs = nowMs - analysisStartTimeMs
+                        val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
+                        try { progressCallback?.invoke(mapped, elapsedMs, etaMs) } catch (_: Exception) { }
+                    }
+                    if ((mapped > 0 && mapped % 50 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
+                        || (nowMs - lastFriendlyLogTimeMs > 30_000)) {
+                        lastFriendlyLogTimeMs = nowMs
+                        val processedMs = (mapped * totalDurationMs / 1000L).coerceAtMost(totalDurationMs)
+                        val elapsedMs = nowMs - analysisStartTimeMs
+                        val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
+                        val progressPercent = String.format(java.util.Locale.US, "%.1f", mapped / 10f)
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progressPercent}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
+                    }
                 }
+
+                // ===== Phase 1: Silero VAD coarse segmentation (0-300‰) =====
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 1/3: Silero VAD coarse segmentation")
+                val (speechRanges, silenceRanges) = runSileroVadIntervals(samples, vadModel) { progressPermille ->
+                    reportProgress((progressPermille * 300 / 1000).coerceIn(0, 300))
+                }
+
+                // ===== Phase 2: YAMNet classification of speech intervals (300-900‰) =====
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 2/3: YAMNet classification of ${speechRanges.size} speech intervals")
+                val intervalSegments = mutableListOf<VoiceSegment>()
+                val totalSpeechDurationMs = speechRanges.sumOf { it.durationMs }
+                var processedSpeechMs = 0L
+
+                for (range in speechRanges) {
+                    checkCancelled()
+                    val subSegments = classifySpeechInterval(samples, range, yamnetInterpreter)
+                    intervalSegments.addAll(subSegments)
+                    processedSpeechMs += range.durationMs
+                    val mapped = if (totalSpeechDurationMs > 0) {
+                        300 + (processedSpeechMs * 600 / totalSpeechDurationMs).toInt()
+                    } else 300
+                    reportProgress(mapped.coerceIn(300, 900))
+                }
+
+                // ===== Phase 3: Sparse YAMNet sampling in silence intervals (900-1000‰) =====
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 3/3: sparse YAMNet sampling of ${silenceRanges.size} silence intervals")
+                for ((index, range) in silenceRanges.withIndex()) {
+                    checkCancelled()
+                    val subSegments = sampleSilenceInterval(samples, range, yamnetInterpreter)
+                    intervalSegments.addAll(subSegments)
+                    val mapped = 900 + ((index + 1) * 100 / silenceRanges.size.coerceAtLeast(1)).coerceIn(0, 100)
+                    reportProgress(mapped.coerceIn(900, 1000))
+                }
+
+                // Sort and merge adjacent same-type segments, then post-process
+                intervalSegments.sortBy { it.start }
+                var segments = mergeAdjacentSameTypeSegments(intervalSegments).toMutableList()
+                segments = postProcessSegments(segments).toMutableList()
+
+                // Ensure the full duration is covered
+                if (segments.isEmpty()) {
+                    segments = mutableListOf(VoiceSegment().apply {
+                        start = 0L; end = outputDurationMs; hasVoice = true; label = "干货"; isSimulated = false
+                    })
+                }
+
+                val totalElapsedMs = System.currentTimeMillis() - analysisStartTimeMs
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段，静音 ${segments.count { it.label == "静音" }} 段），分析模式=Silero+YAMNet 折中级联，总耗时 ${formatDurationMs(totalElapsedMs)}")
+                reportProgress(1000, force = true)
+
+                return SegmentAnalysisResult(
+                    segments = segments,
+                    engineName = "Silero+YAMNet",
+                    processingTimeMs = totalElapsedMs,
+                    audioDurationMs = totalDurationMs
+                )
             }
-
-            // ===== Phase 1: Silero VAD coarse segmentation (0-300‰) =====
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 1/3: Silero VAD coarse segmentation")
-            val (speechRanges, silenceRanges) = runSileroVadIntervals(samples, vadModel) { progressPermille ->
-                reportProgress((progressPermille * 300 / 1000).coerceIn(0, 300))
-            }
-
-            // ===== Phase 2: YAMNet classification of speech intervals (300-900‰) =====
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 2/3: YAMNet classification of ${speechRanges.size} speech intervals")
-            val intervalSegments = mutableListOf<VoiceSegment>()
-            val totalSpeechDurationMs = speechRanges.sumOf { it.durationMs }
-            var processedSpeechMs = 0L
-
-            for (range in speechRanges) {
-                checkCancelled()
-                val subSegments = classifySpeechInterval(samples, range, yamnetInterpreter)
-                intervalSegments.addAll(subSegments)
-                processedSpeechMs += range.durationMs
-                val mapped = if (totalSpeechDurationMs > 0) {
-                    300 + (processedSpeechMs * 600 / totalSpeechDurationMs).toInt()
-                } else 300
-                reportProgress(mapped.coerceIn(300, 900))
-            }
-
-            // ===== Phase 3: Sparse YAMNet sampling in silence intervals (900-1000‰) =====
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 3/3: sparse YAMNet sampling of ${silenceRanges.size} silence intervals")
-            for ((index, range) in silenceRanges.withIndex()) {
-                checkCancelled()
-                val subSegments = sampleSilenceInterval(samples, range, yamnetInterpreter)
-                intervalSegments.addAll(subSegments)
-                val mapped = 900 + ((index + 1) * 100 / silenceRanges.size.coerceAtLeast(1)).coerceIn(0, 100)
-                reportProgress(mapped.coerceIn(900, 1000))
-            }
-
-            // Sort and merge adjacent same-type segments, then post-process
-            intervalSegments.sortBy { it.start }
-            var segments = mergeAdjacentSameTypeSegments(intervalSegments).toMutableList()
-            segments = postProcessSegments(segments).toMutableList()
-
-            // Ensure the full duration is covered
-            if (segments.isEmpty()) {
-                segments = mutableListOf(VoiceSegment().apply {
-                    start = 0L; end = outputDurationMs; hasVoice = true; label = "干货"; isSimulated = false
-                })
-            }
-
-            val totalElapsedMs = System.currentTimeMillis() - analysisStartTimeMs
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段分析完成：共 ${segments.size} 段（干货 ${segments.count { it.label == "干货" }} 段，水货 ${segments.count { it.label == "水货" }} 段，静音 ${segments.count { it.label == "静音" }} 段），分析模式=Silero+YAMNet 折中级联，总耗时 ${formatDurationMs(totalElapsedMs)}")
-            reportProgress(1000, force = true)
-
-            return SegmentAnalysisResult(
-                segments = segments,
-                engineName = "Silero+YAMNet",
-                processingTimeMs = totalElapsedMs,
-                audioDurationMs = totalDurationMs
-            )
 
         } finally {
             yamnetInterpreter.close()
@@ -1626,7 +1631,7 @@ object AudioSegmentAnalyzer {
      * v2.4.161: Run Silero VAD over the whole audio to produce coarse speech/silence intervals.
      */
     private fun runSileroVadIntervals(
-        samples: FloatArray,
+        samples: SampleProvider,
         vadModel: VadModelInfo,
         onProgress: ((Int) -> Unit)? = null
     ): Pair<List<TimeRange>, List<TimeRange>> {
@@ -1747,7 +1752,7 @@ object AudioSegmentAnalyzer {
      * and to keep analysis fast.
      */
     private fun classifySpeechInterval(
-        samples: FloatArray,
+        samples: SampleProvider,
         range: TimeRange,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
@@ -1805,7 +1810,7 @@ object AudioSegmentAnalyzer {
      * according to the dominant type; otherwise it stays silent.
      */
     private fun sampleSilenceInterval(
-        samples: FloatArray,
+        samples: SampleProvider,
         range: TimeRange,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
@@ -2285,31 +2290,59 @@ object AudioSegmentAnalyzer {
 
     // ===== Feature computation =====
 
-    private fun readPcmAsFloats(pcmFile: File): FloatArray {
-        // v2.4.131: Use streaming read to avoid OOM on large PCM files (>400MB).
-        // Previously used pcmFile.readBytes() which loaded entire file into memory.
-        // v2.4.177: Refuse to load PCM that would require an unreasonably large FloatArray.
-        // FloatArray is 4 bytes/sample, i.e. 2x PCM size; guard before allocation to prevent OOM.
-        val maxSafePcmBytes = 120L * 1024 * 1024
-        if (pcmFile.length() > maxSafePcmBytes) {
-            throw RuntimeException("PCM文件过大，无法完整加载到内存: ${pcmFile.length()} bytes (上限 ${maxSafePcmBytes} bytes)。请使用更短的音频或分段处理。")
+    /**
+     * v2.4.178: Abstract sample access so large PCM files can be analyzed without loading the
+     * whole FloatArray into the Java heap. The default implementation memory-maps the PCM file
+     * and converts 16-bit little-endian samples to floats on demand.
+     */
+    private interface SampleProvider : Closeable {
+        val size: Int
+        fun copyOfRange(start: Int, end: Int): FloatArray
+    }
+
+    /**
+     * v2.4.178: Memory-mapped PCM sample provider. The PCM file is mapped into off-heap memory
+     * via NIO, so files much larger than the Java heap limit can be analyzed. Each call to
+     * copyOfRange allocates only the requested small window on the Java heap.
+     */
+    private class MappedPcmSampleProvider(pcmFile: File) : SampleProvider {
+        private val raf = RandomAccessFile(pcmFile, "r")
+        private val channel = raf.channel
+        private val mapped: java.nio.MappedByteBuffer = try {
+            channel.map(FileChannel.MapMode.READ_ONLY, 0, pcmFile.length())
+        } catch (e: Exception) {
+            try { channel.close() } catch (_: Exception) {}
+            try { raf.close() } catch (_: Exception) {}
+            throw e
         }
-        val numSamples = (pcmFile.length() / 2).toInt()
-        val samples = FloatArray(numSamples)
-        val byteBuffer = ByteBuffer.allocate(8192 * 2).order(ByteOrder.LITTLE_ENDIAN)
-        var sampleIdx = 0
-        java.io.FileInputStream(pcmFile).use { fis ->
-            while (true) {
-                val read = fis.read(byteBuffer.array())
-                if (read <= 0) break
-                byteBuffer.clear()
-                byteBuffer.limit(read)
-                while (byteBuffer.remaining() >= 2 && sampleIdx < numSamples) {
-                    samples[sampleIdx++] = byteBuffer.short.toFloat() / 32768.0f
+        private val shortBuffer: ShortBuffer = mapped.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        override val size: Int = shortBuffer.remaining()
+
+        override fun copyOfRange(start: Int, end: Int): FloatArray {
+            val from = start.coerceIn(0, size)
+            val to = end.coerceIn(from, size)
+            val count = to - from
+            val result = FloatArray(count)
+            if (count > 0) {
+                shortBuffer.position(from)
+                val temp = ShortArray(count)
+                shortBuffer.get(temp)
+                for (i in temp.indices) {
+                    result[i] = temp[i].toFloat() / 32768.0f
                 }
             }
+            return result
         }
-        return samples
+
+        override fun close() {
+            try { channel.close() } catch (_: Exception) {}
+            try { raf.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun openPcmSamples(pcmFile: File): SampleProvider {
+        // v2.4.178: Use memory-mapped sample provider to support large PCM files without OOM.
+        return MappedPcmSampleProvider(pcmFile)
     }
 
     private fun computeRmsEnergy(samples: FloatArray, offset: Int, length: Int): Float {

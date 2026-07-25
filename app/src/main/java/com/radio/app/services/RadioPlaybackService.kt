@@ -5209,7 +5209,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val episode = currentEpisode
         val segments = episode?.voiceSegments
         // v2.4.175: If we already have real (non-simulated) AI segments, use them.
-        if (segments != null && segments.isNotEmpty() && !segments.all { it.isSimulated }) return segments
+        if (segments != null && segments.isNotEmpty() && !segments.all { it.isSimulated }) {
+            return segments.sortedBy { it.start }
+        }
         // v2.4.175: Otherwise try loading AI segments from the database.
         val episodeId = episode?.id
         if (!episodeId.isNullOrBlank()) {
@@ -5217,7 +5219,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId)
                 if (dbSegments.isNotEmpty() && !dbSegments.all { it.isSimulated }) {
                     episode.voiceSegments = dbSegments
-                    return dbSegments
+                    return dbSegments.sortedBy { it.start }
                 }
             } catch (_: Exception) {}
         }
@@ -5236,7 +5238,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun jumpToNextSegment() {
-        val segments = getSegmentList()
+        // v2.4.178: Sort segments by start time for reliable navigation.
+        val segments = getSegmentList().sortedBy { it.start }
         writeServiceLog("notification", "jumpToNextSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
         if (segments.isNotEmpty()) {
             val currentPos = getCurrentPosition()
@@ -5856,40 +5859,52 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
     fun jumpToPrevSegment() {
-        val segments = getSegmentList()
+        // v2.4.178: Always work with segments sorted by start time so boundary/gap logic is reliable.
+        val segments = getSegmentList().sortedBy { it.start }
         writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
-        if (segments.isNotEmpty()) {
-            val currentPos = getCurrentPosition()
-            // [v2.1.6] Find the current segment
-            var currentSegmentIdx = -1
-            for (i in segments.indices) {
-                if (currentPos >= segments[i].start && currentPos < segments[i].end) {
-                    currentSegmentIdx = i
-                    break
-                }
-                if (segments[i].start > currentPos) {
-                    currentSegmentIdx = i
-                    break
-                }
-            }
-            writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx, currentPos=$currentPos")
-            // [v2.1.6] If we found a previous segment in current episode, jump to it
-            if (currentSegmentIdx > 0) {
-                val targetPos = segments[currentSegmentIdx - 1].start
-                writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev segment start)")
-                seekTo(targetPos)
-                return
-            }
-            // [v2.1.6] If in first segment or before first segment, cross to previous episode
-            if (currentSegmentIdx <= 0) {
-                writeServiceLog("notification", "jumpToPrevSegment: at first segment, crossing to previous episode")
-                crossToPrevEpisodeLastSegment()
-                return
+        if (segments.isEmpty()) {
+            // Fallback: skip backward 30 seconds
+            val pos = getCurrentPosition() - 30000
+            seekTo(maxOf(0L, pos))
+            return
+        }
+
+        val currentPos = getCurrentPosition()
+        // v2.4.178: Find the segment that contains currentPos. On exact boundaries
+        // (currentPos == some segment's end == next segment's start) we prefer the later
+        // segment, because the user is logically "in" the next segment at that point.
+        var currentSegmentIdx = -1
+        for (i in segments.indices) {
+            if (currentPos >= segments[i].start && currentPos < segments[i].end) {
+                currentSegmentIdx = i
+                break
             }
         }
-        // Fallback: skip backward 30 seconds
-        val pos = getCurrentPosition() - 30000
-        seekTo(maxOf(0L, pos))
+        if (currentSegmentIdx < 0) {
+            // Not inside any segment (e.g., in a gap). Pick the last segment that starts
+            // at or before currentPos so "previous" means the one before it.
+            for (i in segments.indices.reversed()) {
+                if (segments[i].start <= currentPos) {
+                    currentSegmentIdx = i
+                    break
+                }
+            }
+        }
+
+        writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx, currentPos=$currentPos")
+
+        // v2.4.178: If we are already at or before the first segment, cross to the previous episode.
+        if (currentSegmentIdx <= 0) {
+            writeServiceLog("notification", "jumpToPrevSegment: at first segment, crossing to previous episode")
+            crossToPrevEpisodeLastSegment()
+            return
+        }
+
+        // v2.4.178: Jump to the PREVIOUS segment's start, never to the current segment's start.
+        // This prevents the "multiple clicks always land at current segment start" loop.
+        val targetPos = segments[currentSegmentIdx - 1].start
+        writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev segment start)")
+        seekTo(targetPos)
     }
 
     fun markSegment(index: Int, isDry: Boolean) {
