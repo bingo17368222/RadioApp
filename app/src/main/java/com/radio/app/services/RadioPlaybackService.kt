@@ -172,20 +172,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun writeServiceLog(category: String, msg: String) {
         try {
-            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), category)
-            if (!logDir.exists()) logDir.mkdirs()
-            val logFile = java.io.File(logDir, "${category}.log")
-            // Add version header on first write
-            if (!logFile.exists()) {
-                logFile.appendText("=== RadioApp $appVersion ===\n")
-            }
-            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-            java.io.FileWriter(logFile, true).use { it.append("[$ts][$appVersion] $msg\n") }
-            // Limit file size to 500KB
-            if (logFile.length() > 500_000) {
-                val lines = logFile.readLines()
-                val keep = lines.takeLast(500)
-                logFile.writeText(keep.joinToString("\n") + "\n")
+            // v2.4.182: Queue log writes on a background thread. Synchronous file I/O here was
+            // blocking the main thread when segment buttons or notification updates fired rapidly.
+            logExecutor.execute {
+                try {
+                    val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), category)
+                    if (!logDir.exists()) logDir.mkdirs()
+                    val logFile = java.io.File(logDir, "${category}.log")
+                    // Add version header on first write
+                    if (!logFile.exists()) {
+                        logFile.appendText("=== RadioApp $appVersion ===\n")
+                    }
+                    val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+                    java.io.FileWriter(logFile, true).use { it.append("[$ts][$appVersion] $msg\n") }
+                    // Limit file size to 500KB
+                    if (logFile.length() > 500_000) {
+                        val lines = logFile.readLines()
+                        val keep = lines.takeLast(500)
+                        logFile.writeText(keep.joinToString("\n") + "\n")
+                    }
+                } catch (_: Exception) {}
             }
         } catch (_: Exception) {}
     }
@@ -193,12 +199,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // Issue 3 & 4: Dedicated notification detail logging for diagnosing notification date/update issues
     private fun writeNotifDetailLog(message: String) {
         try {
-            // v2.4.37: Use unified log directory
-            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "notif_detail")
-            if (!logDir.exists()) logDir.mkdirs()
-            val logFile = java.io.File(logDir, "notif_detail.log")
-            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
-            logFile.appendText("[$timestamp][$appVersion] $message\n")
+            // v2.4.182: Queue log writes on a background thread to avoid blocking the main thread.
+            logExecutor.execute {
+                try {
+                    // v2.4.37: Use unified log directory
+                    val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "notif_detail")
+                    if (!logDir.exists()) logDir.mkdirs()
+                    val logFile = java.io.File(logDir, "notif_detail.log")
+                    val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+                    logFile.appendText("[$timestamp][$appVersion] $message\n")
+                } catch (_: Exception) {}
+            }
         } catch (_: Exception) {}
     }
 
@@ -244,6 +255,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var stuckAtEndPos = 0L
     private var positionSaveHandler: Handler? = null
     private var positionSaveRunnable: Runnable? = null
+    // v2.4.182: Offload log writes to a background thread so notification/segment buttons
+    // don't block the main thread with synchronous file I/O.
+    private val logExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var skipSeconds = 15
     private var errorRetryCount = 0
     private var isRetrying = false
@@ -1109,14 +1123,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun writePreCacheLog(msg: String) {
         try {
-            // v2.4.80: Use getLogDir() instead of getExternalFilesDir("logs")
-            // so precache logs are included in the collected log zip
-            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "precache")
-            if (!logDir.exists()) logDir.mkdirs()
-            val logFile = File(logDir, "precache.log")
-            val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-            FileWriter(logFile, true).use { it.append("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] $msg\n") }
-            Log.d(TAG, "[PreCache] $msg")
+            // v2.4.182: Queue log writes on a background thread to avoid blocking the caller.
+            logExecutor.execute {
+                try {
+                    // v2.4.80: Use getLogDir() instead of getExternalFilesDir("logs")
+                    // so precache logs are included in the collected log zip
+                    val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "precache")
+                    if (!logDir.exists()) logDir.mkdirs()
+                    val logFile = File(logDir, "precache.log")
+                    val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                    FileWriter(logFile, true).use { it.append("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] $msg\n") }
+                    Log.d(TAG, "[PreCache] $msg")
+                } catch (_: Exception) {}
+            }
         } catch (_: Exception) {}
     }
 
@@ -3072,9 +3091,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // same program, causing position to be overwritten when switching between dates.
         val episodeKey = ep.id ?: ""
         if (episodeKey.isBlank()) return
-        // [v2.4.31] Fix: use commit() (synchronous) instead of apply() (asynchronous).
+        // v2.4.182: Use apply() (asynchronous) instead of commit() to avoid blocking the main
+        // thread with synchronous disk I/O during periodic position saves.
         getSharedPreferences("playback_positions", MODE_PRIVATE)
-            .edit().putLong(episodeKey, pos).commit()
+            .edit().putLong(episodeKey, pos).apply()
         writeServiceLog("playback", " saveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
     }
 
@@ -3151,8 +3171,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         val episodeKey = ep.id ?: ""
         if (episodeKey.isBlank()) return
+        // v2.4.182: Use apply() instead of commit() to avoid blocking the main thread.
         getSharedPreferences("playback_positions", MODE_PRIVATE)
-            .edit().putLong(episodeKey, pos).commit()
+            .edit().putLong(episodeKey, pos).apply()
         writeServiceLog("playback", " forceSaveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
     }
 
@@ -3172,7 +3193,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             putString("broadcast_at", episode.broadcastAt)
             putString("program_name", episode.programName)
             putLong("saved_at", System.currentTimeMillis())
-        }.commit()  // v2.4.63: Use commit() for synchronous save
+        }.apply()  // v2.4.182: Use apply() to avoid blocking the main thread.
         writeServiceLog("playback", " forceSaveLastEpisode: SAVED episode=${episode.title}, id=${episode.id}")
     }
 
@@ -4400,7 +4421,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Keep existing saved position — don't overwrite with leaked value
                 } else {
                     getSharedPreferences("playback_positions", MODE_PRIVATE)
-                        .edit().putLong(oldEp.id!!, oldPos).commit()
+                        .edit().putLong(oldEp.id!!, oldPos).apply()
                     writeServiceLog("playback", " playEpisode: force-saved pos=$oldPos for oldEpId=${oldEp.id} before switching to ${episode.id}")
                 }
             }
@@ -4978,7 +4999,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val episodeKey = ep.id ?: ""
                 if (episodeKey.isNotBlank()) {
                     getSharedPreferences("playback_positions", MODE_PRIVATE)
-                        .edit().putLong(episodeKey, pos).commit()  // commit() = synchronous write
+                        .edit().putLong(episodeKey, pos).apply()  // apply() = asynchronous write
                     writeServiceLog("playback", " seekTo: saved position=$pos for episodeId=$episodeKey")
                 }
             }
