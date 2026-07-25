@@ -115,6 +115,13 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
     }
 
+    // v2.4.183: Enable WAL so readers (segment button navigation on the main thread) are not
+    // blocked by writers (pre-segmentation saving segments in the background).
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        try { db.enableWriteAheadLogging() } catch (_: Exception) {}
+    }
+
     // ===== Play Progress =====
 
     fun savePlayProgress(progress: PlayProgress) {
@@ -446,7 +453,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     fun saveVoiceSegments(episodeId: String, segments: List<VoiceSegment>) {
         val db = writableDatabase
-        db.beginTransaction()
+        // v2.4.183: Use non-exclusive transaction so concurrent reads on the main thread
+        // (e.g. segment button navigation) are not blocked while segments are being saved.
+        db.beginTransactionNonExclusive()
         try {
             // 先清除旧数据
             db.delete(TABLE_VOICE_SEGMENTS_AI, "episode_id = ?", arrayOf(episodeId))

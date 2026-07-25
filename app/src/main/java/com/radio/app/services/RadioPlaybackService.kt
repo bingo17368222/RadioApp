@@ -2248,6 +2248,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     ep.audioUrl
                                 )
                                 if (segmented) {
+                                    // v2.4.183: Refresh the in-memory segment list for the current
+                                    // episode so segment-button navigation reads from memory instead
+                                    // of competing with the DB writer.
+                                    try {
+                                        val freshSegments = dbHelper.getVoiceSegments(ep.id)
+                                        synchronized(this@RadioPlaybackService) {
+                                            if (currentEpisode?.id == ep.id) {
+                                                currentEpisode?.voiceSegments = freshSegments
+                                            }
+                                        }
+                                    } catch (_: Exception) {}
                                     LocalBroadcastManager.getInstance(this@RadioPlaybackService)
                                         .sendBroadcast(Intent(ACTION_SEGMENTS_UPDATED))
                                 }
