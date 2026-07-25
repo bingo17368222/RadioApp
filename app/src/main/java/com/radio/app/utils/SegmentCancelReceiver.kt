@@ -17,6 +17,10 @@ class SegmentCancelReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != SegmentNotificationHelper.SEGMENT_CANCEL_ACTION) return
 
+        // v2.4.170: Lock out any stale progress callback that could re-post the notification
+        // while the analyzer thread is winding down.
+        SegmentNotificationHelper.setCancelled(true)
+
         // Interrupt the running decode/classify thread.
         AudioSegmentAnalyzer.cancelCurrentAnalysis()
 

@@ -24,6 +24,21 @@ object SegmentNotificationHelper {
     private const val SEGMENT_CHANNEL_ID = "segment_processing"
     const val SEGMENT_CANCEL_ACTION = "com.radio.app.CANCEL_SEGMENT"
 
+    // v2.4.170: Guard against stale progress callbacks re-posting the notification
+    // after the user has cancelled it. Reset at the start of each new analysis.
+    @Volatile
+    private var cancelled = false
+
+    @JvmStatic
+    fun setCancelled(cancelled: Boolean) {
+        this.cancelled = cancelled
+    }
+
+    @JvmStatic
+    fun reset() {
+        cancelled = false
+    }
+
     @JvmStatic
     fun update(
         context: Context,
@@ -32,6 +47,8 @@ object SegmentNotificationHelper {
         elapsedText: String = "",
         etaText: String = ""
     ) {
+        // v2.4.170: Drop any stale update that races in after the user cancelled.
+        if (cancelled) return
         try {
             val appCtx = context.applicationContext
             val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
