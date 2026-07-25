@@ -188,6 +188,8 @@ object AudioSegmentAnalyzer {
     private const val MIN_FRAGMENT_MS = 5000L
     private const val MAX_PURE_MUSIC_GAP_MS = 2000L
     private const val MAX_DRY_GAP_MS = 10000L
+    // v2.4.172: Merge consecutive/nearby water segments separated by short silence.
+    private const val MAX_WATER_GAP_MS = 5000L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
@@ -2391,11 +2393,13 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.161: Post-process segments:
+     * v2.4.161/v2.4.172: Post-process segments:
      * 1. Merge same-type overlapping/adjacent segments.
      * 2. Merge/remove fragments shorter than MIN_FRAGMENT_MS.
      * 3. Absorb short (<1s) water segments inside/between dry segments into dry.
      * 4. Merge dry segments separated by less than MAX_DRY_GAP_MS.
+     * 5. Merge dry segments separated by short pure-silence gaps.
+     * 6. Merge consecutive/nearby water segments separated by short pure-silence gaps.
      */
     private fun postProcessSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
         if (segments.isEmpty()) return segments
@@ -2514,6 +2518,37 @@ object AudioSegmentAnalyzer {
                     if (j + 1 < sorted.size && sorted[j + 1].label == "干货") {
                         val nextDry = sorted[j + 1]
                         curr.end = nextDry.end
+                        repeat(j - i + 1) { sorted.removeAt(i + 1) }
+                        changed = true
+                        break
+                    }
+                    j++
+                }
+                if (changed) break
+            }
+        }
+
+        // Pass 6: v2.4.172 merge consecutive/nearby water segments separated by short
+        // pure-silence gaps. Ad breaks and song blocks are often split by a few seconds
+        // of silence/jingle; keeping them as separate "水货" segments makes the list noisy.
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                if (curr.label != "水货") continue
+                val gapSegments = mutableListOf<VoiceSegment>()
+                var j = i + 1
+                while (j < sorted.size) {
+                    val mid = sorted[j]
+                    if (mid.label == "水货") break
+                    gapSegments.add(mid)
+                    val gapMs = gapSegments.sumOf { it.end - it.start }
+                    // Only bridge gaps made entirely of silence and not longer than the threshold.
+                    if (gapMs > MAX_WATER_GAP_MS || !gapSegments.all { it.label == "静音" }) break
+                    if (j + 1 < sorted.size && sorted[j + 1].label == "水货") {
+                        val nextWater = sorted[j + 1]
+                        curr.end = nextWater.end
                         repeat(j - i + 1) { sorted.removeAt(i + 1) }
                         changed = true
                         break
