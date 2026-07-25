@@ -882,6 +882,41 @@
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:background="?attr/appDivider" />
+            <!-- v2.4.176: 预分段开关 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="预分段"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_pre_segment"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="后台巡逻对已生成完整PCM的节目使用音频模型预先分段"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider" />
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

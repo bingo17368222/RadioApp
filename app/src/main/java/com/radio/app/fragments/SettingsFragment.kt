@@ -271,6 +271,12 @@ class SettingsFragment : Fragment() {
             settings.patrolGenerateFullPcm = isChecked
             save()
         }
+        // v2.4.176: Pre-segment toggle
+        binding.switchPreSegment.setOnCheckedChangeListener { _, isChecked ->
+            if (suppressListeners) return@setOnCheckedChangeListener
+            settings.enablePreSegment = isChecked
+            save()
+        }
         // v2.4.149: PCM cache max size input
         binding.etPcmCacheMaxGb.setOnFocusChangeListener { _, hasFocus ->
             if (!hasFocus) {
@@ -534,6 +540,7 @@ class SettingsFragment : Fragment() {
         binding.switchPreGenerateSubtitles.isChecked = settings.enablePreGenerateSubtitles  // v2.4.96
         binding.switchPatrolFullPcm.isChecked = settings.patrolGenerateFullPcm  // v2.4.149
         binding.etPcmCacheMaxGb.setText(String.format("%.1f", settings.pcmCacheMaxSizeGb))  // v2.4.149
+        binding.switchPreSegment.isChecked = settings.enablePreSegment  // v2.4.176
         binding.etPrecacheCacheMaxGb.setText(String.format("%.1f", settings.precacheCacheMaxSizeGb))  // v2.4.175
         val notificationStyle = settings.notificationStyle
         val notificationIndex = when (notificationStyle) {
