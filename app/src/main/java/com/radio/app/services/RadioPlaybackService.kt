@@ -432,9 +432,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastSegmentNavTarget = -1L
     private val SEGMENT_NAV_CHAIN_WINDOW_MS = 1200L
     private val SEGMENT_NAV_DEBOUNCE_MS = 250L
-    // v2.4.180: After the user presses 上一片段/下一片段, suppress auto-skip for a few seconds
-    // so a water segment they intentionally navigated to is not immediately skipped forward.
-    private val SEGMENT_NAV_AUTO_SKIP_GRACE_MS = 4000L
     // [v2.0.86] Skip storm protection redesigned per user feedback:
     // - Post-resume blackout: blocks ALL skips for 3s after app resumes
     // - During blackout: count ALL requests (including blocked ones). If >=5 requests in blackout,
@@ -5267,7 +5264,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.179: Sort segments by start time for reliable navigation.
+        // v2.4.181: Sort segments by start time for reliable navigation.
         val segments = getSegmentList().sortedBy { it.start }
 
         // v2.4.179: Use the last navigation target as the reference while we are still within
@@ -5278,7 +5275,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } else {
             getCurrentPosition()
         }
-        writeServiceLog("notification", "jumpToNextSegment: segments=${segments.size}, referencePos=$referencePos (chain=${chainElapsed}ms)")
+        val autoSkipWater = AppSettings.getInstance(this).autoSkipWater
+        writeServiceLog("notification", "jumpToNextSegment: segments=${segments.size}, referencePos=$referencePos, autoSkipWater=$autoSkipWater (chain=${chainElapsed}ms)")
 
         if (segments.isEmpty()) {
             lastSegmentNavTarget = -1L
@@ -5289,7 +5287,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.179: Find the segment containing referencePos using [start, end) intervals.
+        // v2.4.181: Find the segment containing referencePos using [start, end) intervals.
         var currentSegmentIdx = -1
         for (i in segments.indices) {
             if (referencePos >= segments[i].start && referencePos < segments[i].end) {
@@ -5299,11 +5297,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         if (currentSegmentIdx < 0) {
             // In a gap (or before the first segment): jump to the first segment that starts
-            // strictly after referencePos.
+            // strictly after referencePos. When auto-skip water is enabled, prefer the next dry segment.
             for (i in segments.indices) {
                 if (segments[i].start > referencePos) {
-                    val targetPos = segments[i].start
-                    writeServiceLog("notification", "jumpToNextSegment: in gap, seeking to $targetPos (next segment start)")
+                    val targetPos = if (autoSkipWater) {
+                        segments.subList(i, segments.size).firstOrNull { it.isEffectiveDry() }?.start ?: segments[i].start
+                    } else {
+                        segments[i].start
+                    }
+                    writeServiceLog("notification", "jumpToNextSegment: in gap, seeking to $targetPos (next ${if (autoSkipWater) "dry " else ""}segment start)")
                     lastSegmentNavTarget = targetPos
                     lastSegmentNavTime = now
                     seekTo(targetPos)
@@ -5324,8 +5326,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        val targetPos = segments[currentSegmentIdx + 1].start
-        writeServiceLog("notification", "jumpToNextSegment: seeking to $targetPos (next segment start)")
+        // v2.4.181: When auto-skip water is enabled, "next segment" means the next dry segment,
+        // so we never land on a water segment only to be immediately skipped forward again.
+        // When disabled, navigate to the literal next segment.
+        val targetPos = if (autoSkipWater) {
+            var targetIdx = -1
+            for (i in currentSegmentIdx + 1 until segments.size) {
+                if (segments[i].isEffectiveDry()) {
+                    targetIdx = i
+                    break
+                }
+            }
+            if (targetIdx < 0) {
+                writeServiceLog("notification", "jumpToNextSegment: no later dry segment, crossing to next episode")
+                lastSegmentNavTarget = -1L
+                crossToNextEpisodeFirstSegment()
+                return
+            }
+            segments[targetIdx].start
+        } else {
+            segments[currentSegmentIdx + 1].start
+        }
+        writeServiceLog("notification", "jumpToNextSegment: seeking to $targetPos (next ${if (autoSkipWater) "dry " else ""}segment start)")
         lastSegmentNavTarget = targetPos
         lastSegmentNavTime = now
         seekTo(targetPos)
@@ -5355,9 +5377,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             lastSegmentNavTarget = -1L
             val segments = getSegmentList()
             if (segments.isNotEmpty()) {
-                val targetIdx = if (seekLast) segments.size - 1 else 0
-                val targetPos = segments[targetIdx].start
-                writeServiceLog("notification", "onCrossEpisodeSwitchComplete: seeking to segment $targetIdx pos=$targetPos (seekLast=$seekLast)")
+                val autoSkipWater = AppSettings.getInstance(this).autoSkipWater
+                // v2.4.181: When auto-skip water is enabled, cross-episode segment navigation should
+                // land on a dry segment so the user isn't immediately auto-skipped forward again.
+                val targetPos = if (autoSkipWater) {
+                    if (seekLast) {
+                        segments.lastOrNull { it.isEffectiveDry() }?.start ?: segments.last().start
+                    } else {
+                        segments.firstOrNull { it.isEffectiveDry() }?.start ?: segments.first().start
+                    }
+                } else {
+                    val targetIdx = if (seekLast) segments.size - 1 else 0
+                    segments[targetIdx].start
+                }
+                writeServiceLog("notification", "onCrossEpisodeSwitchComplete: seeking to pos=$targetPos (seekLast=$seekLast, autoSkipWater=$autoSkipWater)")
                 seekTo(targetPos)
             }
             crossEpisodeTargetSegment = null
@@ -5938,7 +5971,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.179: Always work with segments sorted by start time so boundary/gap logic is reliable.
+        // v2.4.181: Always work with segments sorted by start time so boundary/gap logic is reliable.
         val segments = getSegmentList().sortedBy { it.start }
 
         // v2.4.179: Use the last navigation target as the reference while we are still within
@@ -5950,7 +5983,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } else {
             getCurrentPosition()
         }
-        writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, referencePos=$referencePos (chain=${chainElapsed}ms)")
+        val autoSkipWater = AppSettings.getInstance(this).autoSkipWater
+        writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, referencePos=$referencePos, autoSkipWater=$autoSkipWater (chain=${chainElapsed}ms)")
 
         if (segments.isEmpty()) {
             lastSegmentNavTarget = -1L
@@ -5960,7 +5994,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.179: Find the segment that contains referencePos. On exact boundaries
+        // v2.4.181: Find the segment that contains referencePos. On exact boundaries
         // (referencePos == some segment's end == next segment's start) we prefer the later
         // segment, because the user is logically "in" the next segment at that point.
         var currentSegmentIdx = -1
@@ -5983,10 +6017,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx, referencePos=$referencePos")
 
-        // v2.4.179: If referencePos is before the first segment, jump to the first segment start
-        // instead of crossing episodes. This avoids surprising cross-episode jumps near the start.
+        // v2.4.181: If referencePos is before the first segment, jump to the first segment start
+        // (or first dry segment when auto-skip is enabled) instead of crossing episodes.
         if (currentSegmentIdx < 0) {
-            val targetPos = segments.first().start
+            val targetPos = if (autoSkipWater) {
+                segments.firstOrNull { it.isEffectiveDry() }?.start ?: segments.first().start
+            } else {
+                segments.first().start
+            }
             writeServiceLog("notification", "jumpToPrevSegment: referencePos before first segment, seeking to $targetPos")
             lastSegmentNavTarget = targetPos
             lastSegmentNavTime = now
@@ -5994,7 +6032,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.179: If we are already at the first segment, cross to the previous episode.
+        // v2.4.181: If we are already at the first segment, cross to the previous episode.
         if (currentSegmentIdx == 0) {
             writeServiceLog("notification", "jumpToPrevSegment: at first segment, crossing to previous episode")
             lastSegmentNavTarget = -1L
@@ -6002,10 +6040,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // v2.4.179: Jump to the PREVIOUS segment's start, never to the current segment's start.
-        // This prevents the "multiple clicks always land at current segment start" loop.
-        val targetPos = segments[currentSegmentIdx - 1].start
-        writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev segment start)")
+        // v2.4.181: When auto-skip water is enabled, "previous segment" means the previous
+        // dry segment, so we never land on a water segment only to be immediately skipped
+        // forward again. When disabled, navigate to the literal previous segment.
+        val targetPos = if (autoSkipWater) {
+            var targetIdx = -1
+            for (i in currentSegmentIdx - 1 downTo 0) {
+                if (segments[i].isEffectiveDry()) {
+                    targetIdx = i
+                    break
+                }
+            }
+            if (targetIdx < 0) {
+                writeServiceLog("notification", "jumpToPrevSegment: no earlier dry segment, crossing to previous episode")
+                lastSegmentNavTarget = -1L
+                crossToPrevEpisodeLastSegment()
+                return
+            }
+            segments[targetIdx].start
+        } else {
+            segments[currentSegmentIdx - 1].start
+        }
+        writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev ${if (autoSkipWater) "dry " else ""}segment start)")
         lastSegmentNavTarget = targetPos
         lastSegmentNavTime = now
         seekTo(targetPos)
@@ -6032,11 +6088,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         autoSkipRunnable = Runnable {
             player?.let { p ->
                 if (p.isPlaying && !isLive) {
-                    // v2.4.180: Suppress auto-skip for a few seconds after manual segment navigation
-                    // so the user can review the segment they just jumped to instead of being
-                    // immediately pulled forward to the next dry segment.
-                    if (System.currentTimeMillis() - lastSegmentNavTime < SEGMENT_NAV_AUTO_SKIP_GRACE_MS) {
-                        writeServiceLog("playback", "autoSkipCheck: suppressed (within ${SEGMENT_NAV_AUTO_SKIP_GRACE_MS}ms of segment nav)")
+                    // v2.4.181: Only auto-skip water segments when the user has enabled the setting.
+                    // Without this check the switch was effectively ignored.
+                    if (!AppSettings.getInstance(this@RadioPlaybackService).autoSkipWater) {
+                        writeServiceLog("playback", "autoSkipCheck: skipped (autoSkipWater=false)")
                         autoSkipHandler?.postDelayed(autoSkipRunnable!!, 1000)
                         return@let
                     }
