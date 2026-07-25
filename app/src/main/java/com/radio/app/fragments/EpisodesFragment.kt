@@ -1,7 +1,10 @@
 package com.radio.app.fragments
 
 import android.app.DatePickerDialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
@@ -17,6 +20,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
@@ -27,6 +31,7 @@ import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
 import com.radio.app.network.EpisodeApiService
 import com.radio.app.database.RadioDatabaseHelper
+import com.radio.app.services.RadioPlaybackService
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -41,6 +46,12 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     private var adapter: EpisodeAdapter? = null
     private val episodes = mutableListOf<Episode>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    // v2.4.176: Refresh the episode list when patrol pre-segmentation updates segments.
+    private val segmentsUpdatedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            adapter?.notifyDataSetChanged()
+        }
+    }
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     private val dayFormat = SimpleDateFormat("M/d EEE", Locale.CHINA)
     private val selectedDate: Calendar = Calendar.getInstance()
@@ -128,6 +139,21 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         } catch (_: Exception) {}
         // 刷新列表以更新缓存状态标记（从播放页返回后缓存可能已变化）
         adapter?.notifyDataSetChanged()
+        // v2.4.176: Listen for patrol pre-segmentation updates.
+        try {
+            LocalBroadcastManager.getInstance(requireContext()).registerReceiver(
+                segmentsUpdatedReceiver,
+                IntentFilter(RadioPlaybackService.ACTION_SEGMENTS_UPDATED)
+            )
+        } catch (_: Exception) {}
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // v2.4.176: Stop listening for segment updates.
+        try {
+            LocalBroadcastManager.getInstance(requireContext()).unregisterReceiver(segmentsUpdatedReceiver)
+        } catch (_: Exception) {}
     }
 
     private fun restoreLastSelection() {

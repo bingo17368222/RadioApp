@@ -88,6 +88,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val ACTION_NEXT_EPISODE = "com.radio.app.NEXT_EPISODE"
         const val ACTION_SEEK_PCT = "com.radio.app.SEEK_PCT"
         const val ACTION_SEEK_SEC = "com.radio.app.SEEK_SEC"
+        // v2.4.176: Notify UI that episode segments have been updated.
+        const val ACTION_SEGMENTS_UPDATED = "com.radio.app.SEGMENTS_UPDATED"
 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
@@ -2199,6 +2201,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     if (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title)) {
                         writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked by title: ${ep.title}")
                         continue
+                    }
+
+                    // v2.4.176: Pre-segment episodes that already have a full PCM file and no real segments yet.
+                    if (settings.enablePreSegment && preprocessingEnabled) {
+                        val fullPcmFile = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
+                        if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+                            val existingSegs = dbHelper.getVoiceSegments(ep.id)
+                            val hasRealSegs = existingSegs.any { !it.isSimulated }
+                            if (!hasRealSegs) {
+                                val epDuration = ep.duration.let { if (it in 60..100000) it * 1000L else 0L }
+                                val durMs = if (epDuration > 60000L) epDuration else 7200_000L
+                                writePreCacheLog("patrolSubtitle:  full PCM exists and no real segments, pre-segmenting ${ep.id}")
+                                val segmented = com.radio.app.utils.SegmentGenerator.preSegmentAudio(
+                                    this@RadioPlaybackService,
+                                    ep.id,
+                                    durMs,
+                                    ep.audioUrl
+                                )
+                                if (segmented) {
+                                    LocalBroadcastManager.getInstance(this@RadioPlaybackService)
+                                        .sendBroadcast(Intent(ACTION_SEGMENTS_UPDATED))
+                                }
+                                // Process one episode per patrol; next patrol will continue.
+                                return@launch
+                            }
+                        }
                     }
 
                     // [v2.4.18] Check if subtitles are COMPLETE (not just existing)

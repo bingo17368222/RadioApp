@@ -90,6 +90,8 @@ class AppSettings private constructor() {
     var enablePreGenerateSubtitles: Boolean = false  // v2.4.96: Independent toggle for pre-generating subtitles (default off)
     // v2.4.149: Whether patrol should generate full PCM files (default true to preserve existing behavior).
     var patrolGenerateFullPcm: Boolean = true
+    // v2.4.176: Whether patrol should pre-segment episodes that already have full PCM (default true).
+    var enablePreSegment: Boolean = true
     // v2.4.149: Max total PCM cache size in GB before automatic cleanup (default 5GB).
     var pcmCacheMaxSizeGb: Float = 5.0f
     // v2.4.175: Max total pre-cache audio cache size in GB before automatic cleanup (default 10GB).
@@ -158,6 +160,7 @@ class AppSettings private constructor() {
         enablePreprocessing = prefs.getBoolean("enable_preprocessing", false)  // v2.4.96: Default off
         enablePreGenerateSubtitles = prefs.getBoolean("enable_pre_generate_subtitles", false)  // v2.4.96: Default off
         patrolGenerateFullPcm = prefs.getBoolean("patrol_generate_full_pcm", true)  // v2.4.149
+        enablePreSegment = prefs.getBoolean("enable_pre_segment", true)  // v2.4.176
         pcmCacheMaxSizeGb = prefs.getFloat("pcm_cache_max_size_gb", 5.0f)  // v2.4.149
         precacheCacheMaxSizeGb = prefs.getFloat("precache_cache_max_size_gb", 10.0f)  // v2.4.175
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
@@ -313,6 +316,7 @@ class AppSettings private constructor() {
             putBoolean("enable_preprocessing", enablePreprocessing)
             putBoolean("enable_pre_generate_subtitles", enablePreGenerateSubtitles)  // v2.4.96
             putBoolean("patrol_generate_full_pcm", patrolGenerateFullPcm)  // v2.4.149
+            putBoolean("enable_pre_segment", enablePreSegment)  // v2.4.176
             putFloat("pcm_cache_max_size_gb", pcmCacheMaxSizeGb)  // v2.4.149
             putFloat("precache_cache_max_size_gb", precacheCacheMaxSizeGb)  // v2.4.175
             putInt("preprocessing_count", preprocessingCount)

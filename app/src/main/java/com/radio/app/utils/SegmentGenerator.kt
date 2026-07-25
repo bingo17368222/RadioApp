@@ -289,6 +289,71 @@ object SegmentGenerator {
     }
 
     /**
+     * v2.4.176: Pre-segment an episode using the audio segmentation model (Silero VAD + YAMNet).
+     * Called by preprocessing patrol when a full PCM file already exists and no real segments
+     * have been generated yet. Saves segments, engine info and timing to the database and
+     * updates the episode segment count for the episode list.
+     *
+     * @return true if segments were generated and saved, false otherwise.
+     */
+    fun preSegmentAudio(
+        context: Context,
+        episodeId: String,
+        durationMs: Long,
+        audioUrl: String? = null
+    ): Boolean {
+        try {
+            val dbHelper = RadioDatabaseHelper.getInstance(context)
+            val existing = dbHelper.getVoiceSegments(episodeId)
+            if (existing.any { !it.isSimulated }) {
+                Log.i(TAG, "preSegmentAudio: episode=$episodeId already has real segments, skipping")
+                return false
+            }
+
+            val modelDir = AudioSegmentAnalyzer.getModelDir(context)
+            if (!AudioSegmentAnalyzer.isModelInstalled(modelDir)) {
+                Log.i(TAG, "preSegmentAudio: audio segmentation models not installed, skipping")
+                return false
+            }
+
+            Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
+            val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
+            val segments = result?.segments ?: emptyList()
+            if (segments.isEmpty()) {
+                Log.w(TAG, "preSegmentAudio: no segments generated for episode=$episodeId")
+                return false
+            }
+
+            dbHelper.saveVoiceSegments(episodeId, segments)
+            dbHelper.updateEpisodeSegmentCount(episodeId, segments.size)
+
+            val dryCount = segments.count { it.hasVoice }
+            try {
+                dbHelper.saveSegmentAnalysisInfo(
+                    com.radio.app.database.SegmentAnalysisInfo(
+                        episodeId = episodeId,
+                        engineName = result.engineName,
+                        generatedAt = System.currentTimeMillis(),
+                        processingTimeMs = result.processingTimeMs,
+                        audioDurationMs = result.audioDurationMs,
+                        segmentCount = segments.size,
+                        dryCount = dryCount,
+                        waterCount = segments.size - dryCount
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "preSegmentAudio: failed to save segment analysis info: ${e.message}")
+            }
+
+            Log.i(TAG, "preSegmentAudio: saved ${segments.size} segments for episode=$episodeId (engine=${result.engineName}, time=${result.processingTimeMs}ms)")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "preSegmentAudio failed: ${e.message}")
+            return false
+        }
+    }
+
+    /**
      * v2.4.96: Try to generate segments using audio analysis (Silero VAD + YAMNet).
      * v2.4.151: Returns the full SegmentAnalysisResult so callers can persist engine & timing.
      */
