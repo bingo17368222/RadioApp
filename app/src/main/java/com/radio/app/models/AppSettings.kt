@@ -92,6 +92,8 @@ class AppSettings private constructor() {
     var patrolGenerateFullPcm: Boolean = true
     // v2.4.149: Max total PCM cache size in GB before automatic cleanup (default 5GB).
     var pcmCacheMaxSizeGb: Float = 5.0f
+    // v2.4.175: Max total pre-cache audio cache size in GB before automatic cleanup (default 10GB).
+    var precacheCacheMaxSizeGb: Float = 10.0f
     var preprocessingCount: Int = 1
     var audioFocus: Boolean = true
     var continuousPlay: Boolean = true
@@ -157,6 +159,7 @@ class AppSettings private constructor() {
         enablePreGenerateSubtitles = prefs.getBoolean("enable_pre_generate_subtitles", false)  // v2.4.96: Default off
         patrolGenerateFullPcm = prefs.getBoolean("patrol_generate_full_pcm", true)  // v2.4.149
         pcmCacheMaxSizeGb = prefs.getFloat("pcm_cache_max_size_gb", 5.0f)  // v2.4.149
+        precacheCacheMaxSizeGb = prefs.getFloat("precache_cache_max_size_gb", 10.0f)  // v2.4.175
         preprocessingCount = prefs.getInt("preprocessing_count", 1)
         audioFocus = prefs.getBoolean("audio_focus", true)
         continuousPlay = prefs.getBoolean("continuous_play", true)
@@ -311,6 +314,7 @@ class AppSettings private constructor() {
             putBoolean("enable_pre_generate_subtitles", enablePreGenerateSubtitles)  // v2.4.96
             putBoolean("patrol_generate_full_pcm", patrolGenerateFullPcm)  // v2.4.149
             putFloat("pcm_cache_max_size_gb", pcmCacheMaxSizeGb)  // v2.4.149
+            putFloat("precache_cache_max_size_gb", precacheCacheMaxSizeGb)  // v2.4.175
             putInt("preprocessing_count", preprocessingCount)
             putBoolean("audio_focus", audioFocus)
             putBoolean("continuous_play", continuousPlay)

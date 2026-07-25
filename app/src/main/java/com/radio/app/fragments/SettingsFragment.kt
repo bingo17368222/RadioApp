@@ -212,6 +212,19 @@ class SettingsFragment : Fragment() {
                 binding.etPreloadCacheCount.setText(settings.preloadCacheCount.toString())
             }
         }
+        // v2.4.175: Pre-cache audio cache max size input
+        binding.etPrecacheCacheMaxGb.setOnFocusChangeListener { _, hasFocus ->
+            if (suppressListeners || hasFocus) return@setOnFocusChangeListener
+            val value = binding.etPrecacheCacheMaxGb.text.toString().toFloatOrNull()
+            settings.precacheCacheMaxSizeGb = when {
+                value == null -> 10.0f
+                value < 1f -> 1f
+                value > 50f -> 50f
+                else -> value
+            }
+            updateUI()
+            save()
+        }
         binding.switchAudioFocus.setOnCheckedChangeListener { _, isChecked ->
             if (suppressListeners) return@setOnCheckedChangeListener
             settings.audioFocus = isChecked
@@ -521,6 +534,7 @@ class SettingsFragment : Fragment() {
         binding.switchPreGenerateSubtitles.isChecked = settings.enablePreGenerateSubtitles  // v2.4.96
         binding.switchPatrolFullPcm.isChecked = settings.patrolGenerateFullPcm  // v2.4.149
         binding.etPcmCacheMaxGb.setText(String.format("%.1f", settings.pcmCacheMaxSizeGb))  // v2.4.149
+        binding.etPrecacheCacheMaxGb.setText(String.format("%.1f", settings.precacheCacheMaxSizeGb))  // v2.4.175
         val notificationStyle = settings.notificationStyle
         val notificationIndex = when (notificationStyle) {
             "compact" -> 1
@@ -1622,6 +1636,7 @@ class SettingsFragment : Fragment() {
                 .putBoolean("auto_cache", settings.autoCache)
                 .putBoolean("enable_preprocessing", settings.enablePreprocessing)
                 .putInt("preload_cache_count", settings.preloadCacheCount)
+                .putFloat("precache_cache_max_size_gb", settings.precacheCacheMaxSizeGb)  // v2.4.175
                 .putBoolean("continuous_play", settings.continuousPlay)
                 .putBoolean("wifi_only_precache", settings.wifiOnlyPreCache)
                 // [v2.0.89] Issue 4 Fix: Sync asr_provider and vosk_model_dir to radio_app_settings.

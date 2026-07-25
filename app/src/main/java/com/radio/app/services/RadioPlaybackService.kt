@@ -1110,50 +1110,40 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * v2.4.174: 限制当前节目之后已缓存的节目不超过 targetCount 个。
-     * 如果超出，则删除最远期（broadcastAt 最晚）的缓存文件，避免设置调小后旧缓存仍累积。
+     * v2.4.175: 按总容量自动清理预缓存音频文件（类似 PCM 缓存清理）。
+     * 当 episodes 缓存目录总大小超过设置上限时，删除最旧的文件，直到容量达标。
+     * 始终保留当前正在播放的节目文件，以及 10 分钟内刚写入的文件。
      */
-    private fun cleanupExcessFutureCache(
-        targetCount: Int,
-        preCacheList: List<Episode>,
-        currentIdx: Int,
-        episodesDir: java.io.File
-    ): Int {
-        if (currentIdx < 0 || targetCount <= 0) return 0
-        val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: return 0
-        val cachedNames = cachedFiles.map { it.name }.toSet()
-        val futureCached = mutableListOf<Pair<Int, Episode>>()
-        for (i in (currentIdx + 1) until preCacheList.size) {
-            val ep = preCacheList[i]
-            if (ep.audioUrl.isBlank()) continue
-            val fileName = extractCacheFileName(ep.audioUrl)
-            if (fileName in cachedNames) {
-                futureCached.add(i to ep)
-            }
-        }
-        if (futureCached.size <= targetCount) return 0
-        // 按播出日期升序排列，保留最近的 targetCount 个，删除其余
-        val sorted = futureCached.sortedBy { it.second.broadcastAt ?: "" }
-        val toDelete = sorted.drop(targetCount)
-        var deleted = 0
-        for ((_, ep) in toDelete) {
-            val fileName = extractCacheFileName(ep.audioUrl)
-            val file = java.io.File(episodesDir, fileName)
-            if (file.exists()) {
-                try {
-                    if (file.delete()) {
-                        deleted++
-                        writeServiceLog("notification", "cleanupExcessFutureCache: deleted excess cache $fileName (${ep.title})")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "cleanupExcessFutureCache: failed to delete $fileName: ${e.message}")
+    private fun cleanupPrecacheAudioCache() {
+        try {
+            val settings = AppSettings.getInstance(this)
+            val maxBytes = (settings.precacheCacheMaxSizeGb * 1024L * 1024L * 1024L).toLong()
+            if (maxBytes <= 0) return
+            val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+            val files = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: return
+            if (files.isEmpty()) return
+            val totalBytes = files.sumOf { it.length() }
+            if (totalBytes <= maxBytes) return
+            val now = System.currentTimeMillis()
+            val currentFileName = currentEpisode?.audioUrl?.let { extractCacheFileName(it) }
+            val sorted = files.sortedBy { it.lastModified() }
+            var deleted = 0L
+            var deletedCount = 0
+            for (f in sorted) {
+                if (totalBytes - deleted <= maxBytes) break
+                if (f.name == currentFileName) continue
+                if (now - f.lastModified() < 10 * 60 * 1000) continue
+                val len = f.length()
+                if (f.delete()) {
+                    deleted += len
+                    deletedCount++
                 }
             }
-        }
-        if (deleted > 0) {
-            Log.d(TAG, "Pre-cache: cleanupExcessFutureCache deleted $deleted files (target=$targetCount)")
-        }
-        return deleted
+            if (deletedCount > 0) {
+                writeServiceLog("notification", "cleanupPrecacheAudioCache: deleted $deletedCount files, freed ${deleted / 1024 / 1024}MB (remaining ${(totalBytes - deleted) / 1024 / 1024}MB, limit ${maxBytes / 1024 / 1024}MB)")
+                Log.d(TAG, "Pre-cache: cleanupPrecacheAudioCache deleted $deletedCount files")
+            }
+        } catch (_: Exception) {}
     }
 
     private fun triggerPreCache() {
@@ -1216,9 +1206,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             savePreCacheList(preCacheList)
         }
 
-        // v2.4.174: Enforce preloadCacheCount by deleting excess future cached episodes.
-        // This prevents old cache files from accumulating when the user lowers the setting.
-        cleanupExcessFutureCache(targetCount, preCacheList, currentIdx, episodesDir)
+        // v2.4.175: 不再按个数删除预缓存文件；改由 cleanupPrecacheAudioCache() 按总容量清理。
+        // 数量设置 targetCount 仍决定本次要下载多少个未来节目。
+        cleanupPrecacheAudioCache()
 
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedNames = cachedFiles.map { it.name }.toSet()
@@ -1735,6 +1725,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     precacheCompletedFileNames.add(fileName)
                 }
                 writeServiceLog("notification", "downloadPreCacheEpisode: SUCCESS, file=$fileName, count=$precacheCompletedCount")
+                // v2.4.175: 每次成功下载后按总容量清理，避免预缓存无限增长。
+                cleanupPrecacheAudioCache()
                 // Save cache file -> episode mapping for dislike filtering
                 try {
                     val cacheMappingPrefs = getSharedPreferences("cache_episode_mapping", MODE_PRIVATE)
@@ -5186,9 +5178,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun isDownloading(): Boolean = downloadActive.get()
 
     private fun getSegmentList(): List<VoiceSegment> {
-        val segments = currentEpisode?.voiceSegments
-        if (segments != null && segments.isNotEmpty()) return segments
-        // Generate simulated 15-minute segments
+        val episode = currentEpisode
+        val segments = episode?.voiceSegments
+        // v2.4.175: If we already have real (non-simulated) AI segments, use them.
+        if (segments != null && segments.isNotEmpty() && !segments.all { it.isSimulated }) return segments
+        // v2.4.175: Otherwise try loading AI segments from the database.
+        val episodeId = episode?.id
+        if (!episodeId.isNullOrBlank()) {
+            try {
+                val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId)
+                if (dbSegments.isNotEmpty() && !dbSegments.all { it.isSimulated }) {
+                    episode.voiceSegments = dbSegments
+                    return dbSegments
+                }
+            } catch (_: Exception) {}
+        }
+        // Generate simulated 15-minute segments as last resort
         val dur = player?.duration ?: 0L
         if (dur <= 0) return emptyList()
         val segmentSize = 15 * 60 * 1000L  // 15 minutes
