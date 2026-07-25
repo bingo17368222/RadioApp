@@ -50,23 +50,46 @@ object AudioSegmentAnalyzer {
     @Volatile
     private var currentAnalysisThread: Thread? = null
 
+    // v2.4.171: A dedicated cancel flag is more reliable than Thread.interrupt() alone.
+    // Some loops/Native calls may swallow or delay interrupts, so we check this flag
+    // explicitly in every heavy loop to stop work immediately after the user clicks cancel.
+    @Volatile
+    private var analysisCancelled = false
+
     /**
      * Interrupt the currently running audio-segment analysis (decode + classify).
      * Called from the notification cancel action or when starting a new segment task.
      */
     fun cancelCurrentAnalysis(): Boolean {
+        analysisCancelled = true
         val t = currentAnalysisThread ?: return false
         return if (!t.isInterrupted) {
             t.interrupt()
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] AudioSegmentAnalyzer: interrupted analysis thread")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] AudioSegmentAnalyzer: cancelled analysis thread (flag + interrupt)")
             true
         } else {
-            false
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] AudioSegmentAnalyzer: cancel flag set, thread already interrupted")
+            true
         }
     }
 
+    /**
+     * v2.4.171: Reset the cancel flag at the beginning of a new analysis.
+     * Without this a subsequent run would exit immediately if the previous run was cancelled.
+     */
+    fun resetCancellation() {
+        analysisCancelled = false
+    }
+
+    /**
+     * v2.4.171: Expose the cancel state so UI can distinguish a user cancellation from
+     * a genuine analysis error.
+     */
+    @JvmStatic
+    fun isAnalysisCancelled(): Boolean = analysisCancelled
+
     private fun checkCancelled() {
-        if (Thread.currentThread().isInterrupted) {
+        if (analysisCancelled || Thread.currentThread().isInterrupted) {
             throw InterruptedException("音频分段已取消")
         }
     }
@@ -142,12 +165,12 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.168: Silero VAD parameters for coarse region segmentation only
-    // Much longer minimum durations to produce coarse, topic-level intervals
-    // instead of fragmenting every breath-pause and short background noise.
+    // v2.4.171: Coarsen Silero VAD even more to reduce the total segment count.
+    // 3s speech / 3.5s silence keeps host monologues as one block and ignores
+    // breath-pauses, short jingles, and background noise bursts.
     private const val VAD_THRESHOLD = 0.55f
-    private const val VAD_MIN_SPEECH_DURATION_MS = 2000L
-    private const val VAD_MIN_SILENCE_DURATION_MS = 2500L
+    private const val VAD_MIN_SPEECH_DURATION_MS = 3000L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 3500L
 
     // v2.4.168: YAMNet decision thresholds
     // Host speech is the primary dry signal. Music must be prominent relative to voice
@@ -158,9 +181,11 @@ object AudioSegmentAnalyzer {
     private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
-    // v2.4.168: Post-processing thresholds
+    // v2.4.171: Post-processing thresholds
     // Strong merging to reach a manageable segment count for long broadcasts.
-    private const val MIN_FRAGMENT_MS = 3000L
+    // MIN_FRAGMENT_MS raised to 5s so short pauses / noise bursts are folded into
+    // the surrounding host speech instead of becoming their own segments.
+    private const val MIN_FRAGMENT_MS = 5000L
     private const val MAX_PURE_MUSIC_GAP_MS = 2000L
     private const val MAX_DRY_GAP_MS = 10000L
 
@@ -607,6 +632,11 @@ object AudioSegmentAnalyzer {
     ): SegmentAnalysisResult {
         // v2.4.115: Initialize file-based logger for VAD diagnostics
         setLogContext(context)
+
+        // v2.4.171: Reset cancellation state and notification lock so a fresh analysis
+        // is not killed by the previous run's cancel flag.
+        resetCancellation()
+        SegmentNotificationHelper.reset()
 
         // v2.4.156: Track this thread so the notification cancel action can interrupt it.
         currentAnalysisThread = Thread.currentThread()
@@ -1607,6 +1637,7 @@ object AudioSegmentAnalyzer {
         val totalSamples = samples.size
 
         while (pos + VAD_FRAME_SIZE <= totalSamples) {
+            checkCancelled()
             val chunk = samples.copyOfRange(pos, pos + VAD_FRAME_SIZE)
             val (prob, newState, newContext) = runSileroVad(vadModel, chunk, vadContext, vadState)
             vadState = newState
@@ -1738,6 +1769,7 @@ object AudioSegmentAnalyzer {
 
         var pos = startSample.coerceIn(0, samples.size)
         while (pos + YAMNET_WINDOW_SAMPLES <= intervalEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+            checkCancelled()
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
@@ -1776,6 +1808,7 @@ object AudioSegmentAnalyzer {
 
         var currentMs = range.startMs
         while (currentMs + SILENCE_SAMPLE_WINDOW_MS <= range.endMs) {
+            checkCancelled()
             val centerMs = currentMs + SILENCE_SAMPLE_WINDOW_MS / 2
             val centerSample = (centerMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
             val halfWindow = SILENCE_SAMPLE_WINDOW_SAMPLES / 2
@@ -2457,6 +2490,37 @@ object AudioSegmentAnalyzer {
                     changed = true
                     break
                 }
+            }
+        }
+
+        // Pass 5: v2.4.171 merge dry segments separated by short pure-silence gaps.
+        // Radio broadcasts often contain 3-10s pauses between host sentences; keeping
+        // those as separate "静音" segments bloats the segment count without adding value.
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                if (curr.label != "干货") continue
+                val gapSegments = mutableListOf<VoiceSegment>()
+                var j = i + 1
+                while (j < sorted.size) {
+                    val mid = sorted[j]
+                    if (mid.label == "干货") break
+                    gapSegments.add(mid)
+                    val gapMs = gapSegments.sumOf { it.end - it.start }
+                    // Stop scanning once the gap is too long or contains non-silence.
+                    if (gapMs > MAX_DRY_GAP_MS || !gapSegments.all { it.label == "静音" }) break
+                    if (j + 1 < sorted.size && sorted[j + 1].label == "干货") {
+                        val nextDry = sorted[j + 1]
+                        curr.end = nextDry.end
+                        repeat(j - i + 1) { sorted.removeAt(i + 1) }
+                        changed = true
+                        break
+                    }
+                    j++
+                }
+                if (changed) break
             }
         }
 

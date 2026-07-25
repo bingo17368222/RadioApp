@@ -2221,14 +2221,22 @@ class PlayerActivity : AppCompatActivity() {
                             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
                             // and NoClassDefFoundError which extend Error, not Exception.
                             writeJitterLog(" btnAiSegment: audio-vad error: ${e.javaClass.simpleName}: ${e.message}")
-                            val elapsed = System.currentTimeMillis() - segStartTime
-                            runOnUiThread {
-                                if (_binding != null) {
-                                    // v2.4.144: Show engine + elapsed time even on failure so the user sees it finished
-                                    binding.tvAiStatus.text = "AI分段失败：$segEngineName (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsed)}) — ${e.javaClass.simpleName}"
-                                    binding.tvAiStatus.visibility = View.VISIBLE
+                            // v2.4.171: If the user cancelled, don't show an error; finish gracefully.
+                            if (com.radio.app.utils.AudioSegmentAnalyzer.isAnalysisCancelled()) {
+                                runOnUiThread {
+                                    finishAiProcessing("segment")
+                                    Toast.makeText(this, "AI分段已取消", Toast.LENGTH_SHORT).show()
                                 }
-                                Toast.makeText(this, "音频分段失败: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
+                            } else {
+                                val elapsed = System.currentTimeMillis() - segStartTime
+                                runOnUiThread {
+                                    if (_binding != null) {
+                                        // v2.4.144: Show engine + elapsed time even on failure so the user sees it finished
+                                        binding.tvAiStatus.text = "AI分段失败：$segEngineName (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsed)}) — ${e.javaClass.simpleName}"
+                                        binding.tvAiStatus.visibility = View.VISIBLE
+                                    }
+                                    Toast.makeText(this, "音频分段失败: ${e.javaClass.simpleName}: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
                             }
                         }
                     } else if (aiModel == AppSettings.AI_MODEL_MNN_LLM) {
