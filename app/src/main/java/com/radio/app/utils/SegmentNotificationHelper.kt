@@ -22,7 +22,7 @@ import com.radio.app.R
 object SegmentNotificationHelper {
     private const val SEGMENT_NOTIFICATION_ID = 20001
     private const val SEGMENT_CHANNEL_ID = "segment_processing"
-    private const val SEGMENT_CANCEL_ACTION = "com.radio.app.CANCEL_SEGMENT"
+    const val SEGMENT_CANCEL_ACTION = "com.radio.app.CANCEL_SEGMENT"
 
     @JvmStatic
     fun update(
@@ -55,7 +55,7 @@ object SegmentNotificationHelper {
                 }
             }
 
-            val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setPackage(appCtx.packageName)
+            val cancelIntent = Intent(SEGMENT_CANCEL_ACTION).setClass(appCtx, com.radio.app.utils.SegmentCancelReceiver::class.java)
             val cancelPending = PendingIntent.getBroadcast(
                 appCtx, 20001, cancelIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

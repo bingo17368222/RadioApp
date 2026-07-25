@@ -1693,13 +1693,17 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.167: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop)
+     * v2.4.169: Classify a speech interval densely with YAMNet (0.975s window, 0.5s hop)
      * but return a single segment per interval using majority vote.
      *
      * Per-hop sub-segmentation produced too many fragments for the user's use case.
      * Since Silero VAD already provides coarse content boundaries, we classify the
      * whole interval by the dominant frame type. This keeps the boundary precision
      * of VAD while avoiding YAMNet flicker inside an interval.
+     *
+     * Bias: speech intervals are assumed to be host speech unless music is clearly
+     * dominant. Short intervals default to dry to avoid splitting continuous host
+     * talking with a few seconds of water fragment.
      */
     private fun classifySpeechInterval(
         samples: FloatArray,
@@ -1710,6 +1714,7 @@ object AudioSegmentAnalyzer {
         val endSample = (range.endMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
         val intervalEndSample = endSample.coerceAtMost(samples.size)
         val intervalEndMs = (intervalEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+        val intervalDurationMs = intervalEndMs - range.startMs
 
         // Interval too short for a full YAMNet window: VAD already marked it as speech, default to dry.
         if (intervalEndSample - startSample < YAMNET_WINDOW_SAMPLES) {
@@ -1728,7 +1733,15 @@ object AudioSegmentAnalyzer {
             pos += YAMNET_SPEECH_HOP_SAMPLES
         }
 
-        val dominantType = typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
+        val dryVotes = typeVotes.getOrDefault(FrameType.DRY, 0)
+        val waterVotes = typeVotes.getOrDefault(FrameType.WATER, 0)
+        val dominantType = when {
+            // Very short speech intervals are almost certainly host speech; avoid tiny water fragments.
+            intervalDurationMs < 5000 -> FrameType.DRY
+            // Tie or dry lead keeps host talking continuous; water must clearly win.
+            dryVotes >= waterVotes -> FrameType.DRY
+            else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
+        }
         val segment = createSegment(range.startMs, intervalEndMs, dominantType)
         vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: votes=$typeVotes -> $dominantType")
         return listOf(segment)

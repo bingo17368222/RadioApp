@@ -66,5 +66,13 @@
             android:exported="false"
             android:process=":subtitle"
             android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".utils.SegmentCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.radio.app.CANCEL_SEGMENT" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
