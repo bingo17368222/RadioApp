@@ -320,7 +320,21 @@ object SegmentGenerator {
             // AudioSegmentAnalyzer, so the artificial 120MB limit is removed. Pre-segmentation
             // can run on any episode whose full PCM has already been decoded.
             Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
-            val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
+
+            // v2.4.179: Show the same progress notification as manual segmentation so the user
+            // can see pre-segmentation progress in the background.
+            val episodeTitle = dbHelper.getEpisodeInfo(episodeId)?.title ?: "未知节目"
+            SegmentNotificationHelper.reset()
+            SegmentNotificationHelper.update(context, episodeTitle, 0, "", "")
+            val result = tryGenerateAudioSegments(
+                context, episodeId, durationMs, audioUrl,
+                progressCallback = { permille, elapsedMs, etaMs ->
+                    val elapsedText = AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
+                    val etaText = AudioSegmentAnalyzer.formatDurationMs(etaMs)
+                    SegmentNotificationHelper.update(context, episodeTitle, permille, elapsedText, etaText)
+                }
+            )
+            SegmentNotificationHelper.cancel(context)
             val segments = result?.segments ?: emptyList()
             if (result == null || segments.isEmpty()) {
                 Log.w(TAG, "preSegmentAudio: no segments generated for episode=$episodeId")
@@ -359,15 +373,20 @@ object SegmentGenerator {
     /**
      * v2.4.96: Try to generate segments using audio analysis (Silero VAD + YAMNet).
      * v2.4.151: Returns the full SegmentAnalysisResult so callers can persist engine & timing.
+     * v2.4.179: Accepts an optional progress callback so background pre-segmentation can
+     * post the same progress notification as manual segmentation.
      */
     private fun tryGenerateAudioSegments(
         context: Context,
         episodeId: String,
         durationMs: Long,
-        audioUrl: String? = null
+        audioUrl: String? = null,
+        progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): AudioSegmentAnalyzer.SegmentAnalysisResult? {
         try {
-            val result = AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl)
+            val result = AudioSegmentAnalyzer.analyzeEpisode(
+                context, episodeId, durationMs, audioUrl, progressCallback = progressCallback
+            )
             Log.i(TAG, "tryGenerateAudioSegments: got ${result.segments.size} segments from audio analysis (engine=${result.engineName}, time=${result.processingTimeMs}ms)")
             return result
         } catch (e: Exception) {

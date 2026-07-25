@@ -425,6 +425,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastSeekCallTime = 0L
     private var lastSeekTargetPos = -1L
     private var lastSkipDirectionTime = 0L  // for skipForward/skipBackward debounce
+    // v2.4.179: Segment-navigation chaining state. Rapid clicks on 上一片段/下一片段 use the
+    // last navigation target as the reference position so they chain reliably instead of reading
+    // getCurrentPosition() while ExoPlayer is still settling from the previous seek.
+    private var lastSegmentNavTime = 0L
+    private var lastSegmentNavTarget = -1L
+    private val SEGMENT_NAV_CHAIN_WINDOW_MS = 1200L
+    private val SEGMENT_NAV_DEBOUNCE_MS = 250L
     // [v2.0.86] Skip storm protection redesigned per user feedback:
     // - Post-resume blackout: blocks ALL skips for 3s after app resumes
     // - During blackout: count ALL requests (including blocked ones). If >=5 requests in blackout,
@@ -602,6 +609,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 pause()
             }
             override fun onSeekTo(pos: Long) {
+                // v2.4.179: External seek breaks the segment-button chain.
+                lastSegmentNavTarget = -1L
                 seekTo(pos)
             }
             override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean {
@@ -4071,12 +4080,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isLive || !prepared) return
         val dur = player?.duration ?: 0L
         if (dur <= 0) return
+        // v2.4.179: Manual seek breaks the segment-button chain.
+        lastSegmentNavTarget = -1L
         player?.seekTo((dur * pct).toLong())
         notifyNotification()
     }
 
     private fun seekToSec(sec: Int) {
         if (isLive || !prepared) return
+        // v2.4.179: Manual seek breaks the segment-button chain.
+        lastSegmentNavTarget = -1L
         player?.seekTo((sec * 1000L).coerceAtLeast(0))
         notifyNotification()
     }
@@ -5015,6 +5028,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // [v2.0.91] Reset backward skip counter when user skips forward (active user control)
         consecutiveBackwardSkips = 0
         firstBackwardSkipWindowStart = now
+        // v2.4.179: Manual skip breaks the segment-button chain so the next segment click uses
+        // the real current position.
+        lastSegmentNavTarget = -1L
         seekTo(targetPos)
     }
     fun skipBackward() {
@@ -5070,6 +5086,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         lastSkipDirectionTime = now
         writeServiceLog("playback", " skipBackward: curPos=$curPos -> targetPos=$targetPos (consecutive=$consecutiveBackwardSkips)")
+        // v2.4.179: Manual skip breaks the segment-button chain so the next segment click uses
+        // the real current position.
+        lastSegmentNavTarget = -1L
         seekTo(targetPos)
     }
     fun isPlaying(): Boolean = player?.isPlaying ?: false
@@ -5238,28 +5257,75 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun jumpToNextSegment() {
-        // v2.4.178: Sort segments by start time for reliable navigation.
+        val now = System.currentTimeMillis()
+        // v2.4.179: Debounce rapid clicks to avoid seek storms.
+        if (now - lastSegmentNavTime < SEGMENT_NAV_DEBOUNCE_MS && lastSegmentNavTime > 0) {
+            writeServiceLog("notification", "jumpToNextSegment: DROPPED (debounced, ${now - lastSegmentNavTime}ms)")
+            return
+        }
+
+        // v2.4.179: Sort segments by start time for reliable navigation.
         val segments = getSegmentList().sortedBy { it.start }
-        writeServiceLog("notification", "jumpToNextSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
-        if (segments.isNotEmpty()) {
-            val currentPos = getCurrentPosition()
-            // [v2.1.4] Find the next segment after current position
+
+        // v2.4.179: Use the last navigation target as the reference while we are still within
+        // the chain window. This avoids reading getCurrentPosition() during an active seek.
+        val chainElapsed = now - lastSegmentNavTime
+        val referencePos = if (lastSegmentNavTarget >= 0 && chainElapsed < SEGMENT_NAV_CHAIN_WINDOW_MS) {
+            lastSegmentNavTarget
+        } else {
+            getCurrentPosition()
+        }
+        writeServiceLog("notification", "jumpToNextSegment: segments=${segments.size}, referencePos=$referencePos (chain=${chainElapsed}ms)")
+
+        if (segments.isEmpty()) {
+            lastSegmentNavTarget = -1L
+            // Fallback: skip forward 30 seconds
+            val pos = referencePos + 30000
+            val dur = player?.duration ?: 0L
+            if (dur > 0 && pos < dur) seekTo(pos)
+            return
+        }
+
+        // v2.4.179: Find the segment containing referencePos using [start, end) intervals.
+        var currentSegmentIdx = -1
+        for (i in segments.indices) {
+            if (referencePos >= segments[i].start && referencePos < segments[i].end) {
+                currentSegmentIdx = i
+                break
+            }
+        }
+        if (currentSegmentIdx < 0) {
+            // In a gap (or before the first segment): jump to the first segment that starts
+            // strictly after referencePos.
             for (i in segments.indices) {
-                if (segments[i].start > currentPos) {
-                    writeServiceLog("notification", "jumpToNextSegment: seeking to ${segments[i].start} (next segment)")
-                    seekTo(segments[i].start)
+                if (segments[i].start > referencePos) {
+                    val targetPos = segments[i].start
+                    writeServiceLog("notification", "jumpToNextSegment: in gap, seeking to $targetPos (next segment start)")
+                    lastSegmentNavTarget = targetPos
+                    lastSegmentNavTime = now
+                    seekTo(targetPos)
                     return
                 }
             }
-            // [v2.1.4] No more segments in current episode, cross to next episode
-            writeServiceLog("notification", "jumpToNextSegment: at last segment, crossing to next episode")
+            // referencePos is after the last segment.
+            writeServiceLog("notification", "jumpToNextSegment: referencePos after last segment, crossing to next episode")
+            lastSegmentNavTarget = -1L
             crossToNextEpisodeFirstSegment()
             return
         }
-        // Fallback: skip forward 30 seconds
-        val pos = getCurrentPosition() + 30000
-        val dur = player?.duration ?: 0L
-        if (dur > 0 && pos < dur) seekTo(pos)
+
+        if (currentSegmentIdx >= segments.size - 1) {
+            writeServiceLog("notification", "jumpToNextSegment: at last segment, crossing to next episode")
+            lastSegmentNavTarget = -1L
+            crossToNextEpisodeFirstSegment()
+            return
+        }
+
+        val targetPos = segments[currentSegmentIdx + 1].start
+        writeServiceLog("notification", "jumpToNextSegment: seeking to $targetPos (next segment start)")
+        lastSegmentNavTarget = targetPos
+        lastSegmentNavTime = now
+        seekTo(targetPos)
     }
 
     // [v2.1.4] Cross to previous episode and jump to its last segment
@@ -5281,6 +5347,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var crossEpisodeTargetSegment: Pair<Boolean, Boolean>? = null  // (isNext, seekLastSegment)
     fun onCrossEpisodeSwitchComplete() {
         crossEpisodeTargetSegment?.let { (_, seekLast) ->
+            // v2.4.179: Reset segment-nav chain when crossing episodes so the next segment-button
+            // click uses the new episode's current position rather than a stale target.
+            lastSegmentNavTarget = -1L
             val segments = getSegmentList()
             if (segments.isNotEmpty()) {
                 val targetIdx = if (seekLast) segments.size - 1 else 0
@@ -5859,51 +5928,83 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
     fun jumpToPrevSegment() {
-        // v2.4.178: Always work with segments sorted by start time so boundary/gap logic is reliable.
+        val now = System.currentTimeMillis()
+        // v2.4.179: Debounce rapid clicks to avoid seek storms.
+        if (now - lastSegmentNavTime < SEGMENT_NAV_DEBOUNCE_MS && lastSegmentNavTime > 0) {
+            writeServiceLog("notification", "jumpToPrevSegment: DROPPED (debounced, ${now - lastSegmentNavTime}ms)")
+            return
+        }
+
+        // v2.4.179: Always work with segments sorted by start time so boundary/gap logic is reliable.
         val segments = getSegmentList().sortedBy { it.start }
-        writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, currentPos=${getCurrentPosition()}")
+
+        // v2.4.179: Use the last navigation target as the reference while we are still within
+        // the chain window. This avoids reading getCurrentPosition() during an active seek,
+        // which was causing erratic jumps on rapid clicks.
+        val chainElapsed = now - lastSegmentNavTime
+        val referencePos = if (lastSegmentNavTarget >= 0 && chainElapsed < SEGMENT_NAV_CHAIN_WINDOW_MS) {
+            lastSegmentNavTarget
+        } else {
+            getCurrentPosition()
+        }
+        writeServiceLog("notification", "jumpToPrevSegment: segments=${segments.size}, referencePos=$referencePos (chain=${chainElapsed}ms)")
+
         if (segments.isEmpty()) {
+            lastSegmentNavTarget = -1L
             // Fallback: skip backward 30 seconds
-            val pos = getCurrentPosition() - 30000
+            val pos = referencePos - 30000
             seekTo(maxOf(0L, pos))
             return
         }
 
-        val currentPos = getCurrentPosition()
-        // v2.4.178: Find the segment that contains currentPos. On exact boundaries
-        // (currentPos == some segment's end == next segment's start) we prefer the later
+        // v2.4.179: Find the segment that contains referencePos. On exact boundaries
+        // (referencePos == some segment's end == next segment's start) we prefer the later
         // segment, because the user is logically "in" the next segment at that point.
         var currentSegmentIdx = -1
         for (i in segments.indices) {
-            if (currentPos >= segments[i].start && currentPos < segments[i].end) {
+            if (referencePos >= segments[i].start && referencePos < segments[i].end) {
                 currentSegmentIdx = i
                 break
             }
         }
         if (currentSegmentIdx < 0) {
             // Not inside any segment (e.g., in a gap). Pick the last segment that starts
-            // at or before currentPos so "previous" means the one before it.
+            // at or before referencePos so "previous" means the one before it.
             for (i in segments.indices.reversed()) {
-                if (segments[i].start <= currentPos) {
+                if (segments[i].start <= referencePos) {
                     currentSegmentIdx = i
                     break
                 }
             }
         }
 
-        writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx, currentPos=$currentPos")
+        writeServiceLog("notification", "jumpToPrevSegment: currentSegmentIdx=$currentSegmentIdx, referencePos=$referencePos")
 
-        // v2.4.178: If we are already at or before the first segment, cross to the previous episode.
-        if (currentSegmentIdx <= 0) {
+        // v2.4.179: If referencePos is before the first segment, jump to the first segment start
+        // instead of crossing episodes. This avoids surprising cross-episode jumps near the start.
+        if (currentSegmentIdx < 0) {
+            val targetPos = segments.first().start
+            writeServiceLog("notification", "jumpToPrevSegment: referencePos before first segment, seeking to $targetPos")
+            lastSegmentNavTarget = targetPos
+            lastSegmentNavTime = now
+            seekTo(targetPos)
+            return
+        }
+
+        // v2.4.179: If we are already at the first segment, cross to the previous episode.
+        if (currentSegmentIdx == 0) {
             writeServiceLog("notification", "jumpToPrevSegment: at first segment, crossing to previous episode")
+            lastSegmentNavTarget = -1L
             crossToPrevEpisodeLastSegment()
             return
         }
 
-        // v2.4.178: Jump to the PREVIOUS segment's start, never to the current segment's start.
+        // v2.4.179: Jump to the PREVIOUS segment's start, never to the current segment's start.
         // This prevents the "multiple clicks always land at current segment start" loop.
         val targetPos = segments[currentSegmentIdx - 1].start
         writeServiceLog("notification", "jumpToPrevSegment: seeking to $targetPos (prev segment start)")
+        lastSegmentNavTarget = targetPos
+        lastSegmentNavTime = now
         seekTo(targetPos)
     }
 
