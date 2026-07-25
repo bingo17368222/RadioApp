@@ -432,6 +432,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var lastSegmentNavTarget = -1L
     private val SEGMENT_NAV_CHAIN_WINDOW_MS = 1200L
     private val SEGMENT_NAV_DEBOUNCE_MS = 250L
+    // v2.4.180: After the user presses 上一片段/下一片段, suppress auto-skip for a few seconds
+    // so a water segment they intentionally navigated to is not immediately skipped forward.
+    private val SEGMENT_NAV_AUTO_SKIP_GRACE_MS = 4000L
     // [v2.0.86] Skip storm protection redesigned per user feedback:
     // - Post-resume blackout: blocks ALL skips for 3s after app resumes
     // - During blackout: count ALL requests (including blocked ones). If >=5 requests in blackout,
@@ -6029,6 +6032,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         autoSkipRunnable = Runnable {
             player?.let { p ->
                 if (p.isPlaying && !isLive) {
+                    // v2.4.180: Suppress auto-skip for a few seconds after manual segment navigation
+                    // so the user can review the segment they just jumped to instead of being
+                    // immediately pulled forward to the next dry segment.
+                    if (System.currentTimeMillis() - lastSegmentNavTime < SEGMENT_NAV_AUTO_SKIP_GRACE_MS) {
+                        writeServiceLog("playback", "autoSkipCheck: suppressed (within ${SEGMENT_NAV_AUTO_SKIP_GRACE_MS}ms of segment nav)")
+                        autoSkipHandler?.postDelayed(autoSkipRunnable!!, 1000)
+                        return@let
+                    }
                     val segments = currentEpisode?.voiceSegments ?: return@Runnable
                     val currentPos = p.currentPosition
                     for (seg in segments) {

@@ -321,9 +321,11 @@ object SegmentGenerator {
             // can run on any episode whose full PCM has already been decoded.
             Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
 
-            // v2.4.179: Show the same progress notification as manual segmentation so the user
-            // can see pre-segmentation progress in the background.
-            val episodeTitle = dbHelper.getEpisodeInfo(episodeId)?.title ?: "未知节目"
+            // v2.4.180: Show the same progress notification as manual segmentation so the user
+            // can see pre-segmentation progress in the background. Include the broadcast date in
+            // the title so it matches the style used for manual segmentation.
+            val episodeInfo = dbHelper.getEpisodeInfo(episodeId)
+            val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
             SegmentNotificationHelper.reset()
             SegmentNotificationHelper.update(context, episodeTitle, 0, "", "")
             val result = tryGenerateAudioSegments(
@@ -368,6 +370,17 @@ object SegmentGenerator {
             Log.e(TAG, "preSegmentAudio failed: ${e.message}")
             return false
         }
+    }
+
+    /**
+     * v2.4.180: Build a segment-notification title that includes the broadcast date, matching
+     * the style used in PlayerActivity for manual segmentation.
+     */
+    private fun buildSegmentNotificationTitle(episodeId: String?, title: String?): String {
+        val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(episodeId ?: "")
+        val dateStr = dateMatch?.value ?: ""
+        val baseTitle = title ?: episodeId ?: "未知节目"
+        return if (dateStr.isNotEmpty()) "$dateStr $baseTitle" else baseTitle
     }
 
     /**
