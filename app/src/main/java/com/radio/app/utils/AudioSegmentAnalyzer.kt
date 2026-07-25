@@ -172,11 +172,11 @@ object AudioSegmentAnalyzer {
     private const val VAD_MIN_SPEECH_DURATION_MS = 3000L
     private const val VAD_MIN_SILENCE_DURATION_MS = 3500L
 
-    // v2.4.168: YAMNet decision thresholds
+    // v2.4.168/v2.4.173: YAMNet decision thresholds
     // Host speech is the primary dry signal. Music must be prominent relative to voice
     // before a frame is treated as water (ad / song), so light BGM under talking stays dry.
     private const val VOICE_SUM_THRESHOLD = 0.10f
-    private const val BG_MUSIC_SUM_THRESHOLD = 0.80f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.90f
     private const val SINGING_RATIO_THRESHOLD = 0.35f
     private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f
@@ -188,8 +188,9 @@ object AudioSegmentAnalyzer {
     private const val MIN_FRAGMENT_MS = 5000L
     private const val MAX_PURE_MUSIC_GAP_MS = 2000L
     private const val MAX_DRY_GAP_MS = 10000L
-    // v2.4.172: Merge consecutive/nearby water segments separated by short silence.
-    private const val MAX_WATER_GAP_MS = 5000L
+    // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
+    // Ad breaks and song blocks often have 5-10s pauses between them.
+    private const val MAX_WATER_GAP_MS = 10000L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }
@@ -1601,7 +1602,9 @@ object AudioSegmentAnalyzer {
         // Clear host speech / narration -> dry, unless music is very prominent.
         val hasClearSpeech = calSpeech > 0.10f || calNarration > 0.10f || calVoice >= VOICE_SUM_THRESHOLD
         if (hasClearSpeech) {
-            return if (calMusicSum > 0.05f && calMusicSum >= calVoice * BG_MUSIC_SUM_THRESHOLD) {
+            // v2.4.173: require stronger music presence (absolute and relative to voice)
+            // so host speech with only light background music stays dry.
+            return if (calMusicSum > 0.10f && calMusicSum >= calVoice * BG_MUSIC_SUM_THRESHOLD) {
                 // Voice with prominent music -> ads / accompanied songs -> water
                 FrameType.WATER
             } else {
@@ -2393,13 +2396,14 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.161/v2.4.172: Post-process segments:
+     * v2.4.161/v2.4.173: Post-process segments:
      * 1. Merge same-type overlapping/adjacent segments.
      * 2. Merge/remove fragments shorter than MIN_FRAGMENT_MS.
      * 3. Absorb short (<1s) water segments inside/between dry segments into dry.
      * 4. Merge dry segments separated by less than MAX_DRY_GAP_MS.
      * 5. Merge dry segments separated by short pure-silence gaps.
      * 6. Merge consecutive/nearby water segments separated by short pure-silence gaps.
+     * 7. Final merge of adjacent same-type segments created by earlier absorption passes.
      */
     private fun postProcessSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
         if (segments.isEmpty()) return segments
@@ -2528,7 +2532,7 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // Pass 6: v2.4.172 merge consecutive/nearby water segments separated by short
+        // Pass 6: v2.4.173 merge consecutive/nearby water segments separated by short
         // pure-silence gaps. Ad breaks and song blocks are often split by a few seconds
         // of silence/jingle; keeping them as separate "水货" segments makes the list noisy.
         changed = true
@@ -2556,6 +2560,24 @@ object AudioSegmentAnalyzer {
                     j++
                 }
                 if (changed) break
+            }
+        }
+
+        // Pass 7: v2.4.173 final merge of any adjacent same-type segments created by
+        // earlier absorption passes (e.g. a short silence fragment absorbed into one of
+        // two neighboring water segments, leaving two adjacent "水货" segments).
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                val next = sorted[i + 1]
+                if (curr.label == next.label && next.start <= curr.end + 1) {
+                    curr.end = maxOf(curr.end, next.end)
+                    sorted.removeAt(i + 1)
+                    changed = true
+                    break
+                }
             }
         }
 
