@@ -319,7 +319,7 @@ object SegmentGenerator {
             Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
             val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
             val segments = result?.segments ?: emptyList()
-            if (segments.isEmpty()) {
+            if (result == null || segments.isEmpty()) {
                 Log.w(TAG, "preSegmentAudio: no segments generated for episode=$episodeId")
                 return false
             }
