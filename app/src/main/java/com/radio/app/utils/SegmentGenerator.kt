@@ -316,6 +316,17 @@ object SegmentGenerator {
                 return false
             }
 
+            // v2.4.177: Skip pre-segmentation for very large full PCM files to avoid OOM.
+            // Patrol runs in the background; analyzing a huge PCM can allocate 2x its size
+            // in a FloatArray and crash the app.
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+            val fullPcmFile = java.io.File(pcmCacheDir, "${episodeId}_full.pcm")
+            val maxPcmBytesForPreSegment = 120L * 1024 * 1024
+            if (fullPcmFile.exists() && fullPcmFile.length() > maxPcmBytesForPreSegment) {
+                Log.i(TAG, "preSegmentAudio: full PCM too large (${fullPcmFile.length()} bytes > ${maxPcmBytesForPreSegment}), skipping to avoid OOM")
+                return false
+            }
+
             Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
             val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
             val segments = result?.segments ?: emptyList()
