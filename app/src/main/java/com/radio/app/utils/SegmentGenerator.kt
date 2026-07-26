@@ -5,6 +5,8 @@ import android.util.Log
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.models.VoiceSegment
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * v2.4.91: Shared segment generation utility.
@@ -16,6 +18,11 @@ import com.radio.app.models.VoiceSegment
  */
 object SegmentGenerator {
     private const val TAG = "SegmentGenerator"
+
+    // v2.4.185: Track episodes currently being pre-segmented so that slow patrols or rapid
+    // re-triggers do not start a second analysis while the first one is still running.
+    // Without this, the shared segment notification flips between two progress values.
+    private val segmentingEpisodes = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     // Default keywords for content-based classification (就AI听 scheme)
     private val DEFAULT_DRY_KEYWORDS = listOf(
@@ -302,6 +309,12 @@ object SegmentGenerator {
         durationMs: Long,
         audioUrl: String? = null
     ): Boolean {
+        // v2.4.185: Prevent concurrent analyses for the same episode. The shared segment
+        // notification flips between two progress values when two tasks run at once.
+        if (!segmentingEpisodes.add(episodeId)) {
+            Log.i(TAG, "preSegmentAudio: episode=$episodeId already being segmented, skipping")
+            return false
+        }
         try {
             val dbHelper = RadioDatabaseHelper.getInstance(context)
             val existing = dbHelper.getVoiceSegments(episodeId)
@@ -369,6 +382,8 @@ object SegmentGenerator {
         } catch (e: Exception) {
             Log.e(TAG, "preSegmentAudio failed: ${e.message}")
             return false
+        } finally {
+            segmentingEpisodes.remove(episodeId)
         }
     }
 
