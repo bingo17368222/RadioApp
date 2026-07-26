@@ -1836,10 +1836,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * v2.4.188: Validate a cached audio file. Returns true if MediaExtractor can read
-     * a positive audio duration and the duration is not drastically shorter than expected.
+     * v2.4.189: Validate a cached audio file. Returns true if MediaExtractor can read
+     * a positive audio duration and the duration is not even slightly shorter than expected.
      * Truncated downloads (e.g. a 20MB file for a 2-hour programme) will fail this check
      * and be re-downloaded instead of poisoning the PCM decoder.
+     *
+     * Threshold: if actual duration is shorter than 98% of expected duration, treat as invalid.
      */
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
         if (!audioFile.exists() || audioFile.length() <= 1024 * 100) return false
@@ -1857,7 +1859,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
             if (actualDurationMs <= 0) return false
-            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.5) return false
+            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) return false
             return true
         } catch (e: Exception) {
             Log.w(TAG, "validateCachedAudioFile failed for ${audioFile.name}: ${e.message}")
