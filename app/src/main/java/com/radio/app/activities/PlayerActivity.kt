@@ -2181,9 +2181,11 @@ class PlayerActivity : AppCompatActivity() {
 
                                     // v2.4.150: Update notification directly on the analyzer thread
                                     // so it keeps refreshing even when the user leaves PlayerActivity.
+                                    // v2.4.186: Pass the episode ID so the helper can ignore stale
+                                    // callbacks when a newer segment session has started.
                                     val elapsedText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
                                     val etaText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(etaMs)
-                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, notifTitle, pct, elapsedText, etaText)
+                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct, elapsedText, etaText)
 
                                     runOnUiThread {
                                         if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId) {
@@ -3320,7 +3322,19 @@ class PlayerActivity : AppCompatActivity() {
         }
         saveProcessingState()
         // v2.4.44: Show notification for AI segmentation (like subtitle generation)
+        // v2.4.186: Start an explicit notification session so concurrent segment tasks
+        // (manual + background pre-segment) don't flip the same notification between
+        // two different percentages.
         if (taskType == "segment") {
+            val sessionEpisodeId = segmentTaskEpisodeId ?: currentEpisode?.id
+            if (!sessionEpisodeId.isNullOrBlank()) {
+                com.radio.app.utils.SegmentNotificationHelper.startSession(
+                    this,
+                    sessionEpisodeId,
+                    buildSegmentNotificationTitle(currentEpisode),
+                    com.radio.app.utils.SegmentNotificationHelper.PRIORITY_MANUAL
+                )
+            }
             showSegmentNotification(0)
         }
         if (_binding == null) return
@@ -3466,8 +3480,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun showSegmentNotification(progress: Int, elapsedText: String = "", etaText: String = "") {
         // v2.4.150: Delegate to the independent helper so the same code runs from both
         // PlayerActivity and the analyzer background thread.
+        // v2.4.186: Tag updates with the episode ID so stale sessions cannot take over
+        // the shared notification while a newer task is running.
+        val episodeId = segmentTaskEpisodeId ?: currentEpisode?.id ?: return
         com.radio.app.utils.SegmentNotificationHelper.update(
-            this, buildSegmentNotificationTitle(currentEpisode), progress, elapsedText, etaText
+            this, episodeId, buildSegmentNotificationTitle(currentEpisode), progress, elapsedText, etaText
         )
     }
 
@@ -3476,6 +3493,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun cancelSegmentNotification() {
+        // v2.4.186: Force-cancel the active notification regardless of which episode owns it.
         com.radio.app.utils.SegmentNotificationHelper.cancel(this)
     }
 

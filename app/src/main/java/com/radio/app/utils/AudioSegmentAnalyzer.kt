@@ -14,6 +14,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.ShortBuffer
 import java.nio.channels.FileChannel
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * v2.4.168: Audio-based AI segment analyzer using Silero + YAMNet cascade.
@@ -58,6 +59,11 @@ object AudioSegmentAnalyzer {
     // explicitly in every heavy loop to stop work immediately after the user clicks cancel.
     @Volatile
     private var analysisCancelled = false
+
+    // v2.4.186: Global lock so only one heavy analyzeEpisode runs at a time. Pre-segmentation
+    // patrols use tryLock to skip when another analysis is already in progress; manual
+    // segmentation from PlayerActivity blocks briefly after cancelling the previous run.
+    private val analysisLock = ReentrantLock()
 
     /**
      * Interrupt the currently running audio-segment analysis (decode + classify).
@@ -615,6 +621,9 @@ object AudioSegmentAnalyzer {
     /**
      * v2.4.96: Analyze an episode by finding its PCM file and running dual-model segmentation.
      * v2.4.99: Added audioUrl parameter for finding cached audio file.
+     * v2.4.186: Added [blocking] parameter. Background pre-segmentation uses non-blocking
+     * mode and skips when another analysis is already running, so patrols don't pile up.
+     * Manual segmentation uses blocking mode and cancels any running analysis first.
      *
      * PCM file search order:
      * 1. Pre-decoded full PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_full.pcm
@@ -627,6 +636,7 @@ object AudioSegmentAnalyzer {
      * @param durationMs Duration in milliseconds
      * @param audioUrl Audio URL (for finding cached audio file)
      * @param progressCallback (progressPermille 0-1000, elapsedMs, etaMs)
+     * @param blocking true to wait for the global analysis lock, false to fail immediately if busy
      * @return SegmentAnalysisResult containing segments, engine name and timing
      */
     fun analyzeEpisode(
@@ -634,22 +644,37 @@ object AudioSegmentAnalyzer {
         episodeId: String,
         durationMs: Long,
         audioUrl: String? = null,
-        progressCallback: ((Int, Long, Long) -> Unit)? = null
+        progressCallback: ((Int, Long, Long) -> Unit)? = null,
+        blocking: Boolean = true
     ): SegmentAnalysisResult {
-        // v2.4.115: Initialize file-based logger for VAD diagnostics
-        setLogContext(context)
-
-        // v2.4.171: Reset cancellation state and notification lock so a fresh analysis
-        // is not killed by the previous run's cancel flag.
-        resetCancellation()
-        SegmentNotificationHelper.reset()
-
-        // v2.4.156: Track this thread so the notification cancel action can interrupt it.
-        currentAnalysisThread = Thread.currentThread()
-        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: started on thread ${currentAnalysisThread?.name}")
+        // v2.4.186: Serialize heavy audio analyses. Only one analyzeEpisode may run at a time
+        // to prevent concurrent segmentation tasks from fighting over CPU/memory and from
+        // cycling the shared segment notification.
+        val lockAcquired = if (blocking) {
+            analysisLock.lock()
+            true
+        } else {
+            analysisLock.tryLock()
+        }
+        if (!lockAcquired) {
+            throw IllegalStateException("Another audio analysis is already running; skipping episode=$episodeId")
+        }
 
         try {
-            // v2.4.95: Load native libraries before any ONNX/TFLite usage
+            // v2.4.115: Initialize file-based logger for VAD diagnostics
+            setLogContext(context)
+
+            // v2.4.171: Reset cancellation state and notification lock so a fresh analysis
+            // is not killed by the previous run's cancel flag.
+            resetCancellation()
+            SegmentNotificationHelper.reset()
+
+            // v2.4.156: Track this thread so the notification cancel action can interrupt it.
+            currentAnalysisThread = Thread.currentThread()
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: started on thread ${currentAnalysisThread?.name}")
+
+            try {
+                // v2.4.95: Load native libraries before any ONNX/TFLite usage
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded. Please download audio segmentation runtime.")
             throw RuntimeException("音频分段运行库未安装，请在离线引擎管理中下载")
@@ -765,9 +790,12 @@ object AudioSegmentAnalyzer {
         }
 
         return analyzePcmFile(context, pcmFile, durationMs, wrappedProgressCallback)
+            } finally {
+                currentAnalysisThread = null
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: cleared analysis thread reference")
+            }
         } finally {
-            currentAnalysisThread = null
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: cleared analysis thread reference")
+            analysisLock.unlock()
         }
     }
 
