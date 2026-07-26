@@ -1800,6 +1800,92 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
+     * v2.4.188: Compute expected audio duration in milliseconds for an episode.
+     * Uses episode metadata first, then falls back to parsing the URL time range
+     * (e.g. sijiache_20240917_1730_1930.mp4 -> 2 hours), then start/end times.
+     */
+    private fun getExpectedAudioDurationMs(episode: Episode): Long {
+        // 1. Episode metadata duration (seconds)
+        val metaDuration = episode.duration?.let { if (it in 60..100000) it * 1000L else 0L } ?: 0L
+        if (metaDuration > 0) return metaDuration
+
+        // 2. Parse URL path for HHMM_HHMM pattern
+        val audioUrl = episode.audioUrl
+        if (!audioUrl.isNullOrBlank()) {
+            val path = audioUrl.substringBeforeLast("?").substringAfterLast("/")
+            val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
+            val match = regex.find(path)
+            if (match != null) {
+                val (_, startHour, startMin, endHour, endMin) = match.groupValues
+                try {
+                    var start = startHour.toInt() * 3600000L + startMin.toInt() * 60000L
+                    var end = endHour.toInt() * 3600000L + endMin.toInt() * 60000L
+                    if (end < start) end += 24 * 3600000L
+                    val duration = end - start
+                    if (duration > 0) return duration
+                } catch (_: Exception) {}
+            }
+        }
+
+        // 3. Start/end time if available
+        if (episode.startTime > 0 && episode.endTime > episode.startTime) {
+            return episode.endTime - episode.startTime
+        }
+
+        return 0L
+    }
+
+    /**
+     * v2.4.188: Validate a cached audio file. Returns true if MediaExtractor can read
+     * a positive audio duration and the duration is not drastically shorter than expected.
+     * Truncated downloads (e.g. a 20MB file for a 2-hour programme) will fail this check
+     * and be re-downloaded instead of poisoning the PCM decoder.
+     */
+    private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
+        if (!audioFile.exists() || audioFile.length() <= 1024 * 100) return false
+        var extractor: MediaExtractor? = null
+        try {
+            extractor = MediaExtractor()
+            extractor.setDataSource(audioFile.absolutePath)
+            var actualDurationMs = 0L
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/") && format.containsKey(MediaFormat.KEY_DURATION)) {
+                    actualDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
+                    break
+                }
+            }
+            if (actualDurationMs <= 0) return false
+            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.5) return false
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "validateCachedAudioFile failed for ${audioFile.name}: ${e.message}")
+            return false
+        } finally {
+            extractor?.release()
+        }
+    }
+
+    /**
+     * v2.4.188: Delete cached PCM and .info files for an episode so they are regenerated
+     * after the audio file is re-downloaded.
+     */
+    private fun cleanupPcmFilesForEpisode(episodeId: String) {
+        try {
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
+            listOf(
+                "${episodeId}_5min.pcm",
+                "${episodeId}_full.pcm",
+                "${episodeId}_5min.info",
+                "${episodeId}_full.info"
+            ).forEach { name ->
+                File(pcmCacheDir, name).takeIf { it.exists() }?.delete()
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
      * 预缓存下载完成后，后台解码前30分钟音频为PCM并缓存
      * 后续字幕生成时可直接使用预解码的PCM文件，跳过下载和解码阶段
      */
@@ -2214,6 +2300,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (expected: $fileName)")
                         continue
                     }
+
+                    // v2.4.188: Validate cached audio file integrity. Truncated or corrupted
+                    // downloads (e.g. a 20MB file for a 2-hour programme) are seen as "cached"
+                    // by the simple length>1024 check above, but they poison the PCM decoder
+                    // and cause an endless loop of failed PCM generation. Detect these files
+                    // and delete them so the pre-cache flow re-downloads a valid copy.
+                    val audioFile = File(episodesDir, fileName)
+                    val expectedDurationMs = getExpectedAudioDurationMs(ep)
+                    if (!validateCachedAudioFile(audioFile, expectedDurationMs)) {
+                        withoutAudio++
+                        writePreCacheLog("patrolSubtitle:  INVALID audio cache for ep=${ep.id}, file=$fileName, size=${audioFile.length()}, expected=${expectedDurationMs}ms, deleting and re-downloading")
+                        writeServiceLog("notification", "DELETING invalid audio cache: ${audioFile.absolutePath}, size=${audioFile.length()}, expected=${expectedDurationMs}ms")
+                        try { audioFile.delete() } catch (_: Exception) {}
+                        cleanupPcmFilesForEpisode(ep.id)
+                        if (!isPrecaching) {
+                            try {
+                                serviceScope.launch { triggerPreCache() }
+                            } catch (_: Exception) {}
+                        }
+                        continue
+                    }
+
                     withAudio++
                     writePreCacheLog("patrolSubtitle:  ep=${ep.id}, audio cached ($fileName), checking subtitles...")
 

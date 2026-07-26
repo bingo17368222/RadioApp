@@ -344,9 +344,15 @@ object AudioSegmentAnalyzer {
 
     /**
      * v2.4.138: Locate the cached audio file for an episode by URL or episode ID.
+     *
+     * v2.4.188: Use the centralized episodes cache dir from RadioApplication so the
+     * analyzer looks in the same directory that RadioPlaybackService downloads into
+     * (/sdcard/RadioApp/episodes/). Previously it hard-coded getExternalFilesDir(null)/
+     * RadioApp/episodes, which could be a different path and caused "audio file may not
+     * be cached" failures even though the patrol saw the file as cached.
      */
     private fun getCachedAudioFile(context: Context, episodeId: String, audioUrl: String?): java.io.File? {
-        val episodesDir = java.io.File(context.getExternalFilesDir(null), "RadioApp/episodes")
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
         if (!episodesDir.exists()) return null
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac")) } ?: emptyList()
         return if (audioUrl != null) {
