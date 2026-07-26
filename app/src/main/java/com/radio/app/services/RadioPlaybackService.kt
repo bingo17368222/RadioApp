@@ -6124,19 +6124,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Without this check the switch was effectively ignored.
                     if (!AppSettings.getInstance(this@RadioPlaybackService).autoSkipWater) {
                         writeServiceLog("playback", "autoSkipCheck: skipped (autoSkipWater=false)")
-                        autoSkipHandler?.postDelayed(autoSkipRunnable!!, 1000)
-                        return@let
-                    }
-                    val segments = currentEpisode?.voiceSegments ?: return@Runnable
-                    val currentPos = p.currentPosition
-                    for (seg in segments) {
-                        if (currentPos >= seg.start && currentPos < seg.end) {
-                            if (seg.shouldAutoSkip()) jumpToNextDrySegment(seg)
-                            break
+                    } else {
+                        val segments = currentEpisode?.voiceSegments
+                        if (segments != null) {
+                            val currentPos = p.currentPosition
+                            for (seg in segments) {
+                                if (currentPos >= seg.start && currentPos < seg.end) {
+                                    if (seg.shouldAutoSkip()) jumpToNextDrySegment(seg)
+                                    break
+                                }
+                            }
                         }
                     }
                 }
             }
+            // v2.4.184: Always schedule the next check exactly once per iteration.
+            // Previously the skipped branch also scheduled a runnable, causing the
+            // runnable count to double every second and eventually ANR the main thread.
             autoSkipHandler?.postDelayed(autoSkipRunnable!!, 1000)
         }
         autoSkipRunnable?.let { autoSkipHandler?.postDelayed(it, 1000) }
