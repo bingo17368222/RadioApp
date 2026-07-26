@@ -24,6 +24,11 @@ import com.radio.app.R
  * and a manual segment request) would otherwise flip the same notification
  * between two percentages. Only the most recently started session may update
  * or cancel the notification; older sessions continue silently in the background.
+ *
+ * v2.4.187: Tightens session ownership. Background sessions (same priority) can
+ * no longer steal the notification from an already-running background session,
+ * preventing patrols that arrive while another pre-segment task is running from
+ * making the progress text cycle or flicker.
  */
 object SegmentNotificationHelper {
     private const val SEGMENT_NOTIFICATION_ID = 20001
@@ -51,6 +56,12 @@ object SegmentNotificationHelper {
     @Volatile
     private var activeStartTime: Long = 0
 
+    // v2.4.187: Whether the active session is still running. Used to stop
+    // same-priority background sessions from repeatedly stealing the notification
+    // while another background pre-segment task is already in progress.
+    @Volatile
+    private var activeSessionRunning: Boolean = false
+
     /**
      * v2.4.186: Begin a new notification session for [episodeId].
      * This becomes the active owner of the shared segment notification;
@@ -67,13 +78,18 @@ object SegmentNotificationHelper {
         title: String,
         priority: Int = PRIORITY_BACKGROUND
     ) {
-        // A lower-priority session must not steal the notification from a higher-priority one.
-        if (activeEpisodeId != null && priority < activePriority) {
-            return
+        // v2.4.187: A lower-priority session must not steal the notification from a
+        // higher-priority one. Sessions with the same priority are also rejected while
+        // the current session is still running, so two background pre-segment tasks
+        // cannot fight over the same notification.
+        if (activeEpisodeId != null) {
+            if (priority < activePriority) return
+            if (priority == activePriority && activeSessionRunning) return
         }
         activeEpisodeId = episodeId
         activePriority = priority
         activeStartTime = System.currentTimeMillis()
+        activeSessionRunning = true
         cancelled = false
         // Dismiss any stale notification so the new session starts clean.
         cancelNotification(context)
@@ -95,6 +111,7 @@ object SegmentNotificationHelper {
             activeEpisodeId = null
             activePriority = 0
             activeStartTime = 0
+            activeSessionRunning = false
             cancelNotification(context)
         }
     }
@@ -190,6 +207,7 @@ object SegmentNotificationHelper {
             activeEpisodeId = null
             activePriority = 0
             activeStartTime = 0
+            activeSessionRunning = false
         }
         cancelNotification(context)
     }
