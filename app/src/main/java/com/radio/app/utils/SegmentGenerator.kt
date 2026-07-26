@@ -315,8 +315,10 @@ object SegmentGenerator {
             Log.i(TAG, "preSegmentAudio: episode=$episodeId already being segmented, skipping")
             return false
         }
+
+        val dbHelper = RadioDatabaseHelper.getInstance(context)
+
         try {
-            val dbHelper = RadioDatabaseHelper.getInstance(context)
             val existing = dbHelper.getVoiceSegments(episodeId)
             if (existing.any { !it.isSimulated }) {
                 Log.i(TAG, "preSegmentAudio: episode=$episodeId already has real segments, skipping")
@@ -329,27 +331,33 @@ object SegmentGenerator {
                 return false
             }
 
+            val episodeInfo = dbHelper.getEpisodeInfo(episodeId)
+            val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
+
+            // v2.4.186: Start a notification session for this episode only when we are actually
+            // going to run analysis. Because the helper uses a single notification ID, a later
+            // manual segment request will take over the session, and stale pre-segment progress
+            // callbacks will be dropped. Background sessions use the lower priority.
+            SegmentNotificationHelper.startSession(
+                context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_BACKGROUND
+            )
+
             // v2.4.178: Large PCM files are now handled by memory-mapped sample access in
             // AudioSegmentAnalyzer, so the artificial 120MB limit is removed. Pre-segmentation
             // can run on any episode whose full PCM has already been decoded.
             Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
 
-            // v2.4.180: Show the same progress notification as manual segmentation so the user
-            // can see pre-segmentation progress in the background. Include the broadcast date in
-            // the title so it matches the style used for manual segmentation.
-            val episodeInfo = dbHelper.getEpisodeInfo(episodeId)
-            val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
-            SegmentNotificationHelper.reset()
-            SegmentNotificationHelper.update(context, episodeTitle, 0, "", "")
+            // v2.4.186: Use non-blocking mode so background pre-segmentation skips when
+            // another audio analysis (manual or another pre-segment task) is already running.
             val result = tryGenerateAudioSegments(
                 context, episodeId, durationMs, audioUrl,
                 progressCallback = { permille, elapsedMs, etaMs ->
                     val elapsedText = AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
                     val etaText = AudioSegmentAnalyzer.formatDurationMs(etaMs)
-                    SegmentNotificationHelper.update(context, episodeTitle, permille, elapsedText, etaText)
-                }
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, elapsedText, etaText)
+                },
+                blocking = false
             )
-            SegmentNotificationHelper.cancel(context)
             val segments = result?.segments ?: emptyList()
             if (result == null || segments.isEmpty()) {
                 Log.w(TAG, "preSegmentAudio: no segments generated for episode=$episodeId")
@@ -383,6 +391,9 @@ object SegmentGenerator {
             Log.e(TAG, "preSegmentAudio failed: ${e.message}")
             return false
         } finally {
+            // v2.4.186: Always end the notification session for this episode, but only
+            // dismiss the notification if this episode still owns the active session.
+            SegmentNotificationHelper.endSession(context, episodeId)
             segmentingEpisodes.remove(episodeId)
         }
     }
@@ -403,17 +414,21 @@ object SegmentGenerator {
      * v2.4.151: Returns the full SegmentAnalysisResult so callers can persist engine & timing.
      * v2.4.179: Accepts an optional progress callback so background pre-segmentation can
      * post the same progress notification as manual segmentation.
+     * v2.4.186: Background callers set [blocking] to false so they skip when another audio
+     * analysis is already running, instead of piling up behind the lock.
      */
     private fun tryGenerateAudioSegments(
         context: Context,
         episodeId: String,
         durationMs: Long,
         audioUrl: String? = null,
-        progressCallback: ((Int, Long, Long) -> Unit)? = null
+        progressCallback: ((Int, Long, Long) -> Unit)? = null,
+        blocking: Boolean = true
     ): AudioSegmentAnalyzer.SegmentAnalysisResult? {
         try {
             val result = AudioSegmentAnalyzer.analyzeEpisode(
-                context, episodeId, durationMs, audioUrl, progressCallback = progressCallback
+                context, episodeId, durationMs, audioUrl,
+                progressCallback = progressCallback, blocking = blocking
             )
             Log.i(TAG, "tryGenerateAudioSegments: got ${result.segments.size} segments from audio analysis (engine=${result.engineName}, time=${result.processingTimeMs}ms)")
             return result
