@@ -37,9 +37,17 @@ jobs:
           ref: v130
           path: chromaprint/src/3rdparty/kissfft
 
+      - name: Verify KissFFT checkout
+        run: |
+          echo "=== chromaprint/src/3rdparty/kissfft contents ==="
+          ls -la chromaprint/src/3rdparty/kissfft || true
+          echo "=== tools dir ==="
+          ls -la chromaprint/src/3rdparty/kissfft/tools || true
+
       - name: Configure CMake
         run: |
           cmake -S chromaprint -B build_${{ matrix.abi }} \
+            -DKISSFFT_ROOT=$PWD/chromaprint/src/3rdparty/kissfft \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=${{ matrix.abi }} \
             -DANDROID_PLATFORM=android-21 \
