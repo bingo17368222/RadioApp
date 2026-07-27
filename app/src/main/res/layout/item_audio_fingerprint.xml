@@ -51,6 +51,15 @@
         android:textSize="13sp" />
 
     <Button
+        android:id="@+id/btn_test_fingerprint"
+        style="?attr/borderlessButtonStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="测试"
+        android:textColor="?attr/appAccent"
+        android:textSize="13sp" />
+
+    <Button
         android:id="@+id/btn_refresh_fingerprint"
         style="?attr/borderlessButtonStyle"
         android:layout_width="wrap_content"

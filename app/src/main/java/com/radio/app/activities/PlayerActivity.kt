@@ -31,6 +31,7 @@ import com.radio.app.models.VoiceSegment
 import com.radio.app.models.Transcript
 import com.radio.app.services.RadioPlaybackService
 import com.radio.app.adapters.VoiceSegmentAdapter
+import com.radio.app.services.AudioFingerprintService
 import com.radio.app.services.SubtitleGeneratorService
 import com.radio.app.models.AppSettings
 import com.radio.app.database.RadioDatabaseHelper
@@ -45,6 +46,10 @@ import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
+import android.content.pm.PackageManager
+import android.Manifest
+import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Color
 
 class PlayerActivity : AppCompatActivity() {
@@ -78,6 +83,37 @@ class PlayerActivity : AppCompatActivity() {
     // v2.4.145: Remember the last reported AI segment progress so we can restore the UI
     // and notification when the user returns to the Activity.
     private var lastSegmentProgress = 0
+
+    // v3.0.4: 通知权限请求与待处理的水分指纹参数
+    private data class FingerprintParams(val episodeId: String, val startMs: Long, val endMs: Long, val title: String?)
+    private var pendingFingerprintParams: FingerprintParams? = null
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        pendingFingerprintParams?.let { params ->
+            if (isGranted) {
+                startAddFingerprintInternal(params)
+            } else {
+                Toast.makeText(this, "需要通知权限才能生成水分指纹", Toast.LENGTH_SHORT).show()
+            }
+        }
+        pendingFingerprintParams = null
+    }
+
+    // v3.0.5: 接收指纹服务结果广播，即使管理页未打开也能提示用户
+    private val fingerprintResultReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent?) {
+            when (intent?.action) {
+                AudioFingerprintService.ACTION_FINGERPRINT_ADDED -> {
+                    Toast.makeText(this@PlayerActivity, "水分指纹已添加", Toast.LENGTH_SHORT).show()
+                }
+                AudioFingerprintService.ACTION_FINGERPRINT_ERROR -> {
+                    val msg = intent.getStringExtra(AudioFingerprintService.EXTRA_FINGERPRINT_MESSAGE) ?: "添加指纹失败"
+                    Toast.makeText(this@PlayerActivity, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
     // v2.4.146: Persist progress across Activity recreation.
     // v2.4.148: Use episode-specific keys to prevent the "19% -> 0% -> complete" bug where an
     // old Activity instance finishing a different episode cleared the global progress key.
@@ -1387,6 +1423,19 @@ class PlayerActivity : AppCompatActivity() {
         _binding = ActivityPlayerBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // v3.0.5: 注册指纹服务结果广播
+        try {
+            LocalBroadcastManager.getInstance(this).registerReceiver(
+                fingerprintResultReceiver,
+                IntentFilter().apply {
+                    addAction(AudioFingerprintService.ACTION_FINGERPRINT_ADDED)
+                    addAction(AudioFingerprintService.ACTION_FINGERPRINT_ERROR)
+                }
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "register fingerprintResultReceiver failed: ${e.message}")
+        }
+
         // 使用时间戳判断是否为真正的新鲜启动
         // 系统重建Activity时，intent会保留旧数据，但fresh_launch_ts仍然为旧值
         // 通过对比lastHandledTs来判断是否已经处理过这个启动
@@ -1766,19 +1815,17 @@ class PlayerActivity : AppCompatActivity() {
                         ).show()
                     }
                     2 -> {
-                        // v3.0.2: 添加为水分指纹，启动后台服务处理
+                        // v3.0.4: 添加为水分指纹，先检查通知权限
                         val episodeId = currentEpisode?.id
                         if (episodeId.isNullOrBlank()) {
                             Toast.makeText(this, "无法获取节目ID", Toast.LENGTH_SHORT).show()
                         } else {
-                            com.radio.app.services.AudioFingerprintService.startAddFingerprint(
-                                this,
-                                episodeId = episodeId,
-                                startMs = segment.start,
-                                endMs = segment.end,
-                                episodeTitle = currentEpisode?.title
+                            checkNotificationPermissionAndStartFingerprint(
+                                episodeId,
+                                segment.start,
+                                segment.end,
+                                currentEpisode?.title
                             )
-                            Toast.makeText(this, "已开始生成水分指纹，请查看通知栏进度", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -1786,6 +1833,51 @@ class PlayerActivity : AppCompatActivity() {
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    // v3.0.4: 检查通知权限后启动水分指纹服务
+    private fun checkNotificationPermissionAndStartFingerprint(
+        episodeId: String,
+        startMs: Long,
+        endMs: Long,
+        title: String?
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            when {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                        PackageManager.PERMISSION_GRANTED -> {
+                    startAddFingerprintInternal(FingerprintParams(episodeId, startMs, endMs, title))
+                }
+                ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.POST_NOTIFICATIONS) -> {
+                    androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("需要通知权限")
+                        .setMessage("生成水分指纹时需要通过通知栏展示进度，请授予通知权限。")
+                        .setPositiveButton("去授权") { _, _ ->
+                            pendingFingerprintParams = FingerprintParams(episodeId, startMs, endMs, title)
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+                else -> {
+                    pendingFingerprintParams = FingerprintParams(episodeId, startMs, endMs, title)
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        } else {
+            startAddFingerprintInternal(FingerprintParams(episodeId, startMs, endMs, title))
+        }
+    }
+
+    private fun startAddFingerprintInternal(params: FingerprintParams) {
+        com.radio.app.services.AudioFingerprintService.startAddFingerprint(
+            this,
+            episodeId = params.episodeId,
+            startMs = params.startMs,
+            endMs = params.endMs,
+            episodeTitle = params.title
+        )
+        Toast.makeText(this, "已开始生成水分指纹，请查看通知栏进度", Toast.LENGTH_SHORT).show()
     }
 
     // [功能2] 长按字幕弹出对话框，将字幕文本提取为干货/水货关键词。
@@ -4445,6 +4537,9 @@ class PlayerActivity : AppCompatActivity() {
         // (memory pressure / config change); isFinishing=true means the app/user finished it.
         writeJitterLog("onDestroy: isFinishing=$isFinishing")
         setPlaybackInProgress(this, null)
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(fingerprintResultReceiver)
+        } catch (_: Exception) {}
         try {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(episodeActionReceiver)
         } catch (_: Exception) {}

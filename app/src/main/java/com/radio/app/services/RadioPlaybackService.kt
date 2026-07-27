@@ -993,7 +993,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             downloadTotalBytes = targetFile.length()
             sendCacheUpdateBroadcast(targetFile.length(), targetFile.absolutePath)
             if (!isPrecaching) {
-                Handler(Looper.getMainLooper()).post { triggerPreCache() }
+                Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             }
             // [v2.4.61] 不再自动生成5分钟PCM文件
             // startPcmPreDecodeIfNeeded()
@@ -1072,7 +1072,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 // 预缓存下一节目
                 if (!isPrecaching) {
-                    Handler(Looper.getMainLooper()).post { triggerPreCache() }
+                    Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
                 }
                 // [v2.4.61] 不再自动生成5分钟PCM文件
                 // startPcmPreDecodeIfNeeded()
@@ -1177,16 +1177,68 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (_: Exception) {}
     }
 
-    private fun triggerPreCache() {
+    /**
+     * v3.0.5-fix: 在预缓存列表中，按顺序查找当前节目之后第一个需要下载的目标。
+     * 只检查前 targetCount 个“有效”未来节目（非不喜欢、非无需预处理、URL 有效），
+     * 避免因为更后面已有足够缓存而过早停止，导致中间的周四/周五等节目被跳过。
+     * 返回：下一个待下载节目，以及前 targetCount 个有效节目中已缓存的数量。
+     */
+    private fun findPreCacheTarget(
+        preCacheList: List<Episode>,
+        currentIdx: Int,
+        targetCount: Int,
+        cachedNames: Set<String>
+    ): Pair<Episode?, Int> {
+        val settings = AppSettings.getInstance(this)
+        var futureCachedCount = 0
+        var neededCount = 0
+        var nextToDownload: Episode? = null
+        for (i in (currentIdx + 1) until preCacheList.size) {
+            val ep = preCacheList[i]
+            val fileName = extractCacheFileName(ep.audioUrl)
+            val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+            val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
+            if (isDisliked) {
+                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=disliked")
+                continue
+            }
+            if (isNoPreprocess) {
+                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=no-preprocess")
+                continue
+            }
+            if (ep.audioUrl.isBlank() || !ep.audioUrl.startsWith("http")) {
+                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=invalid url")
+                continue
+            }
+            neededCount++
+            if (fileName in cachedNames) {
+                futureCachedCount++
+            } else if (nextToDownload == null) {
+                nextToDownload = ep
+                writePreCacheLog("findPreCacheTarget: NEXT ep=${ep.id}, file=$fileName (index=$i)")
+            }
+            if (neededCount >= targetCount) break
+        }
+        writePreCacheLog("findPreCacheTarget: neededCount=$neededCount, futureCachedCount=$futureCachedCount, targetCount=$targetCount")
+        return nextToDownload to futureCachedCount
+    }
+
+    /**
+     * v3.0.5: 触发预缓存。
+     * @param continueChain 为 true 时表示是下载完成后的链式继续，跳过节流限制。
+     */
+    private fun triggerPreCache(continueChain: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (now - lastPreCacheCheckTime < 120_000) {
+        if (!continueChain && now - lastPreCacheCheckTime < 120_000) {
             // [v2.2.6] Throttle: don't re-check within 2 minutes (was 30s, too frequent)
             return
         }
-        lastPreCacheCheckTime = now
+        if (!continueChain) {
+            lastPreCacheCheckTime = now
+        }
         val settings = AppSettings.getInstance(this)
         val targetCount = settings.preloadCacheCount
-        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=$targetCount, currentCount=$precacheCompletedCount")
+        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=$targetCount, currentCount=$precacheCompletedCount, continueChain=$continueChain")
         if (!settings.autoCache) {
             Log.d(TAG, "Pre-cache: disabled")
             return
@@ -1270,24 +1322,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "triggerPreCache: preCacheList.size=${preCacheList.size}, currentIdx=$currentIdx, cachedFiles.size=${cachedFiles.size}")
         writeServiceLog("notification", "triggerPreCache: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(10)}")
 
-        // Count future episodes that are already cached (after current index)
-        var futureCachedCount = 0
-        var nextToDownload: Episode? = null
-        for (i in (currentIdx + 1) until preCacheList.size) {
-            val ep = preCacheList[i]
-            val fileName = extractCacheFileName(ep.audioUrl)
-            val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
-            // v2.4.90: Skip episodes marked as "no preprocessing needed" for pre-cache
-            val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
-            if (fileName in cachedNames) {
-                futureCachedCount++
-            } else if (!isDisliked && !isNoPreprocess && ep.audioUrl.isNotBlank() && nextToDownload == null) {
-                nextToDownload = ep
-                Log.d(TAG, "Pre-cache: next to download: ${ep.title} (index=$i)")
-            }
-        }
+        // v3.0.5-fix: 按顺序填充当前节目之后前 targetCount 个有效节目中的空缺，
+        // 避免因为更后面已有足够缓存而过早停止，导致中间的节目（如周四/周五）被跳过。
+        var targetResult = findPreCacheTarget(preCacheList, currentIdx, targetCount, cachedNames)
+        var nextToDownload = targetResult.first
+        var futureCachedCount = targetResult.second
 
-        writeServiceLog("notification", "triggerPreCache: START isPrecaching=$isPrecaching targetCount=$targetCount")
+        writeServiceLog("notification", "triggerPreCache: START isPrecaching=$isPrecaching targetCount=$targetCount, futureCachedCount=$futureCachedCount, nextToDownload=${nextToDownload?.id}")
         Log.d(TAG, "Pre-cache: futureCached=$futureCachedCount, target=$targetCount")
 
         if (futureCachedCount >= targetCount) {
@@ -1299,7 +1340,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // Issue 14: If no next episode to download in current list, keep fetching more days
         // until a downloadable episode is found or the max days limit is reached.
-        // This prevents marking pre-cache as "complete" when only 7 out of 10 target files are cached.
         if (nextToDownload == null) {
             Log.d(TAG, "Pre-cache: no more future episodes in list, fetching more days (forward)")
             var fetchAttempts = 0
@@ -1317,31 +1357,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Update cachedNames to include any newly cached files
                 val updatedCachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
                 val updatedCachedNames = updatedCachedFiles.map { it.name }.toSet()
-                // Re-find current index and look for next to download
+                // Re-find current index and next target within the first targetCount valid slots
                 currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl }
-                for (i in (currentIdx + 1) until preCacheList.size) {
-                    val ep = preCacheList[i]
-                    val fileName = extractCacheFileName(ep.audioUrl)
-                    val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
-                    // v2.4.90: Skip episodes marked as "no preprocessing needed" for pre-cache
-                    val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
-                    if (fileName !in updatedCachedNames && !isDisliked && !isNoPreprocess && ep.audioUrl.isNotBlank()) {
-                        nextToDownload = ep
-                        break
-                    }
-                }
+                targetResult = findPreCacheTarget(preCacheList, currentIdx, targetCount, updatedCachedNames)
+                nextToDownload = targetResult.first
+                futureCachedCount = targetResult.second
                 fetchAttempts++
             }
-            // After fetching more days, re-count future cached episodes against targetCount
             if (nextToDownload == null) {
-                futureCachedCount = 0
-                for (i in (currentIdx + 1) until preCacheList.size) {
-                    val ep = preCacheList[i]
-                    val fileName = extractCacheFileName(ep.audioUrl)
-                    if (fileName in cachedNames) {
-                        futureCachedCount++
-                    }
-                }
                 if (futureCachedCount >= targetCount) {
                     Log.d(TAG, "Pre-cache: target reached after fetching more days ($futureCachedCount >= $targetCount)")
                     writeServiceLog("notification", "triggerPreCache: target reached after expanding list, futureCached=$futureCachedCount, target=$targetCount")
@@ -1359,25 +1382,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
 
-        if (nextToDownload != null) {
-            Log.d(TAG, "Pre-cache: downloading: ${nextToDownload!!.title}")
-            downloadPreCacheEpisode(nextToDownload!!)
-            // isPrecaching stays true during the async download;
-            // downloadPreCacheEpisode will set isPrecaching=false and post triggerPreCache()
-            // on the main looper when done (success/failure/skip), which continues the chain
-        } else {
-            Log.d(TAG, "Pre-cache: no more future episodes available to download (futureCached=$futureCachedCount, target=$targetCount)")
-            writeServiceLog("notification", "triggerPreCache: END, no more episodes to download, futureCached=$futureCachedCount, target=$targetCount")
-            isPrecaching = false
-            // Issue 8 Fix: Only show complete notification if we actually have enough
-            // FUTURE cached files. When futureCachedCount < targetCount, return silently
-            // (no Toast) - the pre-cache will retry on the next episode change.
-            if (futureCachedCount >= targetCount) {
-                showPrecacheCompleteNotification()
-            } else {
-                writeServiceLog("notification", "triggerPreCache: NOT showing complete notification, futureCached=$futureCachedCount < target=$targetCount, will retry silently")
-            }
-        }
+        // 此时 nextToDownload 一定不为 null；前面的分支已经处理了目标已达成或列表不足的情况。
+        Log.d(TAG, "Pre-cache: downloading: ${nextToDownload.title}")
+        downloadPreCacheEpisode(nextToDownload)
+        // isPrecaching stays true during the async download;
+        // downloadPreCacheEpisode will set isPrecaching=false and post triggerPreCache()
+        // on the main looper when done (success/failure/skip), which continues the chain
     }
 
     /**
@@ -1577,7 +1587,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Previously, `extractCacheFileName(ep.audioUrl) !in cachedNames` filtered them out,
                 // which meant cached episodes were never added to the preCacheList, so the subtitle
                 // patrol could never find them for subtitle generation. Now we only filter by URL
-                // duplicates and disliked status — the download logic already skips cached files.
+                // duplicates, disliked status and no-preprocess status — the download logic already skips cached files.
+                // v3.0.5-fix: 恢复“无需预处理”节目的预缓存跳过设置。
                 val validNewEpisodes = newEpisodes.filter { ep ->
                     ep.audioUrl.isNotBlank() &&
                     ep.audioUrl !in existingUrls &&
@@ -1786,7 +1797,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (url == null || url.isBlank() || !url.startsWith("http")) {
             Log.w(TAG, "Pre-cache: invalid URL for ${episode.title}, skipping: $url")
             isPrecaching = false
-            Handler(Looper.getMainLooper()).post { triggerPreCache() }
+            Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             return
         }
         val fileName = extractCacheFileName(url)
@@ -1798,7 +1809,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.d(TAG, "Pre-cache: already exists: ${episode.title} ($fileName)")
             // Already cached, release guard and schedule next pre-cache check
             isPrecaching = false
-            Handler(Looper.getMainLooper()).post { triggerPreCache() }
+            Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             return
         }
         Log.d(TAG, "Pre-cache: downloading ${episode.title} from $url")
@@ -1815,7 +1826,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
                     // Download failed, release guard and schedule next pre-cache check
                     isPrecaching = false
-                    Handler(Looper.getMainLooper()).post { triggerPreCache() }
+                    Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
                     return@launch
                 }
                 val expectedSize = connection.contentLengthLong
@@ -1873,7 +1884,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 startPreCacheSubtitleGeneration(episode)
                 // Download complete, release guard and schedule next pre-cache check
                 isPrecaching = false
-                Handler(Looper.getMainLooper()).post { triggerPreCache() }
+                Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             } catch (e: Exception) {
                 Log.e(TAG, "Pre-cache download error: ${e.message}")
                 // 删除不完整的文件
@@ -1883,7 +1894,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 // Download error, release guard and schedule next pre-cache check
                 isPrecaching = false
-                Handler(Looper.getMainLooper()).post { triggerPreCache() }
+                Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             }
         }
     }

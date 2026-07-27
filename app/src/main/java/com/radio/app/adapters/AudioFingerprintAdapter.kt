@@ -21,6 +21,7 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
     private var onDeleteListener: ((AudioFingerprint) -> Unit)? = null
     private var onRefreshListener: ((AudioFingerprint) -> Unit)? = null
     private var onPlayListener: ((AudioFingerprint) -> Unit)? = null
+    private var onTestListener: ((AudioFingerprint) -> Unit)? = null
 
     fun setItems(items: List<AudioFingerprint>) {
         this.items = items
@@ -39,6 +40,10 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         onPlayListener = listener
     }
 
+    fun setOnTestListener(listener: (AudioFingerprint) -> Unit) {
+        onTestListener = listener
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_audio_fingerprint, parent, false)
@@ -54,6 +59,7 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         holder.tvMeta.text = "时长 ${durationSec}s · $dateStr"
 
         holder.btnPlay.setOnClickListener { onPlayListener?.invoke(fp) }
+        holder.btnTest.setOnClickListener { onTestListener?.invoke(fp) }
         holder.btnRefresh.setOnClickListener { onRefreshListener?.invoke(fp) }
         holder.btnDelete.setOnClickListener { onDeleteListener?.invoke(fp) }
     }
@@ -70,6 +76,7 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         val tvEpisode: TextView = view.findViewById(R.id.tv_fingerprint_episode)
         val tvMeta: TextView = view.findViewById(R.id.tv_fingerprint_meta)
         val btnPlay: Button = view.findViewById(R.id.btn_play_fingerprint)
+        val btnTest: Button = view.findViewById(R.id.btn_test_fingerprint)
         val btnRefresh: Button = view.findViewById(R.id.btn_refresh_fingerprint)
         val btnDelete: Button = view.findViewById(R.id.btn_delete_fingerprint)
     }
