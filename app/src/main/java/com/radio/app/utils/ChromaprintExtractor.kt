@@ -77,11 +77,42 @@ object ChromaprintExtractor {
     }
 
     /**
-     * 将指纹字符串解析为整数列表。
+     * v3.0.9: 将指纹字符串解析为整数列表。
+     * 优先尝试逗号分隔的 raw fingerprint（支持无符号 32 位整数）；失败时尝试将旧版 base64 编码解码为 raw fingerprint。
      */
     fun parseFingerprint(fingerprint: String?): List<Int> {
         if (fingerprint.isNullOrBlank()) return emptyList()
-        return fingerprint.split(",").mapNotNull { it.trim().toIntOrNull() }
+        val list = parseRawFingerprintString(fingerprint)
+        if (list.isNotEmpty()) return list
+        // 兼容旧版 base64 编码指纹
+        return decodeFingerprintToRaw(fingerprint)
+    }
+
+    /**
+     * v3.0.9: 解析逗号分隔的 raw fingerprint 字符串，支持 uint32（大于 Int.MAX_VALUE 的值按位转为 Int）。
+     */
+    private fun parseRawFingerprintString(raw: String): List<Int> {
+        return raw.split(",").mapNotNull { part ->
+            val trimmed = part.trim()
+            if (trimmed.isEmpty()) return@mapNotNull null
+            val longValue = trimmed.toLongOrNull() ?: return@mapNotNull null
+            // Chromaprint raw fingerprint 是 32 位无符号整数，以 Int 的位模式保存
+            (longValue and 0xFFFFFFFFL).toInt()
+        }
+    }
+
+    /**
+     * v3.0.9: 将 base64 编码的 fingerprint 解码为逗号分隔的 raw fingerprint 整数列表。
+     */
+    fun decodeFingerprintToRaw(encoded: String?): List<Int> {
+        if (encoded.isNullOrBlank()) return emptyList()
+        return try {
+            val raw = nativeDecodeFingerprint(encoded)
+            if (raw.isNullOrBlank()) emptyList() else parseRawFingerprintString(raw)
+        } catch (e: Exception) {
+            Log.e(TAG, "decodeFingerprintToRaw failed: ${e.message}")
+            emptyList()
+        }
     }
 
     /**
@@ -137,4 +168,7 @@ object ChromaprintExtractor {
 
     @JvmStatic
     private external fun nativeSetLibraryPath(libPath: String)
+
+    @JvmStatic
+    private external fun nativeDecodeFingerprint(encodedFp: String): String?
 }

@@ -17,6 +17,8 @@ typedef int (*fp_chromaprint_start)(ChromaprintContext* ctx, int sample_rate, in
 typedef int (*fp_chromaprint_feed)(ChromaprintContext* ctx, const int16_t* data, int size);
 typedef int (*fp_chromaprint_finish)(ChromaprintContext* ctx);
 typedef int (*fp_chromaprint_get_fingerprint)(ChromaprintContext* ctx, char** fingerprint);
+typedef int (*fp_chromaprint_get_raw_fingerprint)(ChromaprintContext* ctx, uint32_t** fingerprint, int* size);
+typedef int (*fp_chromaprint_decode_fingerprint)(const char* encoded_fp, int encoded_size, uint32_t** fingerprint, int* size, int* algorithm, int base64);
 typedef void (*fp_chromaprint_dealloc)(void* ptr);
 
 static struct {
@@ -27,6 +29,8 @@ static struct {
     fp_chromaprint_feed chromaprint_feed;
     fp_chromaprint_finish chromaprint_finish;
     fp_chromaprint_get_fingerprint chromaprint_get_fingerprint;
+    fp_chromaprint_get_raw_fingerprint chromaprint_get_raw_fingerprint;
+    fp_chromaprint_decode_fingerprint chromaprint_decode_fingerprint;
     fp_chromaprint_dealloc chromaprint_dealloc;
     bool loaded;
 } g_lib;
@@ -54,10 +58,13 @@ static bool load_chromaprint() {
     g_lib.chromaprint_feed = (fp_chromaprint_feed)dlsym(g_lib.handle, "chromaprint_feed");
     g_lib.chromaprint_finish = (fp_chromaprint_finish)dlsym(g_lib.handle, "chromaprint_finish");
     g_lib.chromaprint_get_fingerprint = (fp_chromaprint_get_fingerprint)dlsym(g_lib.handle, "chromaprint_get_fingerprint");
+    g_lib.chromaprint_get_raw_fingerprint = (fp_chromaprint_get_raw_fingerprint)dlsym(g_lib.handle, "chromaprint_get_raw_fingerprint");
+    g_lib.chromaprint_decode_fingerprint = (fp_chromaprint_decode_fingerprint)dlsym(g_lib.handle, "chromaprint_decode_fingerprint");
     g_lib.chromaprint_dealloc = (fp_chromaprint_dealloc)dlsym(g_lib.handle, "chromaprint_dealloc");
 
     if (!g_lib.chromaprint_new || !g_lib.chromaprint_free || !g_lib.chromaprint_start ||
-        !g_lib.chromaprint_feed || !g_lib.chromaprint_finish || !g_lib.chromaprint_get_fingerprint) {
+        !g_lib.chromaprint_feed || !g_lib.chromaprint_finish || !g_lib.chromaprint_get_fingerprint ||
+        !g_lib.chromaprint_get_raw_fingerprint) {
         LOGE("dlsym chromaprint functions failed");
         dlclose(g_lib.handle);
         g_lib.handle = nullptr;
@@ -86,16 +93,24 @@ static jstring extractFingerprint(JNIEnv* env, const int16_t* samples, int sampl
     if (g_lib.chromaprint_start(ctx, sample_rate, channels) == 1) {
         if (g_lib.chromaprint_feed(ctx, samples, sample_count) == 1) {
             if (g_lib.chromaprint_finish(ctx) == 1) {
-                char* fp = nullptr;
-                if (g_lib.chromaprint_get_fingerprint(ctx, &fp) == 1 && fp) {
-                    result = env->NewStringUTF(fp);
+                // v3.0.8: 返回逗号分隔的 raw fingerprint 整数，便于本地比较
+                uint32_t* raw_fp = nullptr;
+                int raw_size = 0;
+                if (g_lib.chromaprint_get_raw_fingerprint(ctx, &raw_fp, &raw_size) == 1 && raw_fp && raw_size > 0) {
+                    std::string out;
+                    out.reserve(raw_size * 12);
+                    for (int i = 0; i < raw_size; i++) {
+                        if (i > 0) out += ",";
+                        out += std::to_string(raw_fp[i]);
+                    }
+                    result = env->NewStringUTF(out.c_str());
                     if (g_lib.chromaprint_dealloc) {
-                        g_lib.chromaprint_dealloc(fp);
+                        g_lib.chromaprint_dealloc(raw_fp);
                     } else {
-                        free(fp);
+                        free(raw_fp);
                     }
                 } else {
-                    LOGE("chromaprint_get_fingerprint failed, fp=%p", fp);
+                    LOGE("chromaprint_get_raw_fingerprint failed");
                 }
             } else {
                 LOGE("chromaprint_finish failed");
@@ -176,4 +191,48 @@ Java_com_radio_app_utils_ChromaprintExtractor_nativeSetLibraryPath(
         LOGI("set chromaprint library path: %s", g_chromaprint_lib_path.c_str());
         env->ReleaseStringUTFChars(libPath, path);
     }
+}
+
+// v3.0.8: 将 base64 编码的 fingerprint 解码为逗号分隔的 raw fingerprint 整数
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_radio_app_utils_ChromaprintExtractor_nativeDecodeFingerprint(
+        JNIEnv* env,
+        jclass /*clazz*/,
+        jstring encodedFp) {
+    if (!load_chromaprint()) {
+        LOGE("load_chromaprint failed");
+        return nullptr;
+    }
+    if (!g_lib.chromaprint_decode_fingerprint) {
+        LOGE("chromaprint_decode_fingerprint not available");
+        return nullptr;
+    }
+
+    const char* input = env->GetStringUTFChars(encodedFp, nullptr);
+    if (!input) return nullptr;
+
+    uint32_t* raw = nullptr;
+    int size = 0;
+    int algorithm = 0;
+    jstring result = nullptr;
+
+    if (g_lib.chromaprint_decode_fingerprint(input, strlen(input), &raw, &size, &algorithm, 1) == 1 && raw && size > 0) {
+        std::string out;
+        out.reserve(size * 12);
+        for (int i = 0; i < size; i++) {
+            if (i > 0) out += ",";
+            out += std::to_string(raw[i]);
+        }
+        result = env->NewStringUTF(out.c_str());
+        if (g_lib.chromaprint_dealloc) {
+            g_lib.chromaprint_dealloc(raw);
+        } else {
+            free(raw);
+        }
+    } else {
+        LOGE("chromaprint_decode_fingerprint failed");
+    }
+
+    env->ReleaseStringUTFChars(encodedFp, input);
+    return result;
 }

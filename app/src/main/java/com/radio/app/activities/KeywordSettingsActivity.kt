@@ -187,6 +187,18 @@ class KeywordSettingsActivity : AppCompatActivity() {
             playFingerprintPcm(fp)
         }
 
+        // v3.0.9: 绑定停止播放逻辑，播放按钮点击“停止”时真正停止
+        fingerprintAdapter.setOnStopListener {
+            releaseAudioTrack()
+            fingerprintAdapter.stopPlaying()
+        }
+
+        // v3.0.9: 点击条目可高亮选中，方便用户确认当前操作对象
+        fingerprintAdapter.setOnItemClickListener { fp, _ ->
+            val fpSize = ChromaprintExtractor.parseFingerprint(fp.fingerprint).size
+            Toast.makeText(this, "已选中：${fp.episodeId}\n指纹点数：$fpSize", Toast.LENGTH_SHORT).show()
+        }
+
         fingerprintAdapter.setOnTestListener { fp ->
             showFingerprintTestDialog(fp)
         }
@@ -279,6 +291,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
                     } catch (_: Exception) {
                     }
                     audioTrack = null
+                    // v3.0.9: 播放结束或被打断后，回到“播放”按钮状态
+                    uiHandler.post { fingerprintAdapter.stopPlaying() }
                 }
             }.apply { start() }
         } catch (e: Exception) {
