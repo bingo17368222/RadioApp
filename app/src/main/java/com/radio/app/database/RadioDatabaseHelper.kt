@@ -775,6 +775,16 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return db.delete(TABLE_AUDIO_FINGERPRINTS, "episode_id = ?", arrayOf(episodeId))
     }
 
+    // v3.0.9: 删除指定 episode 在指定时间范围内的指纹，用于修正时避免重复入库
+    fun deleteAudioFingerprintsByRange(episodeId: String, startMs: Long, endMs: Long): Int {
+        val db = writableDatabase
+        return db.delete(
+            TABLE_AUDIO_FINGERPRINTS,
+            "episode_id = ? AND start_ms = ? AND end_ms = ?",
+            arrayOf(episodeId, startMs.toString(), endMs.toString())
+        )
+    }
+
     fun getAudioFingerprintsByEpisode(episodeId: String): List<AudioFingerprint> {
         val list = mutableListOf<AudioFingerprint>()
         try {

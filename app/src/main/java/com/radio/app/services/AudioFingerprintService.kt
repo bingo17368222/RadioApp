@@ -231,14 +231,14 @@ class AudioFingerprintService : Service() {
                 return
             }
 
-            // 4. 存入数据库（先查询是否已有同一片段，有则更新）
+            // 4. 存入数据库（先删除同一片段旧记录，再插入新记录，避免 replace 歧义导致重复）
             updateNotification(notificationId, title, 90, "保存指纹...")
             val dbHelper = RadioDatabaseHelper.getInstance(this)
-            val existing = dbHelper.getAudioFingerprintsByEpisode(episodeId).find {
-                it.startMs == startMs && it.endMs == endMs
-            }
+            // v3.0.9: 强制删除同 episode + 同起止时间的旧记录，确保修正不会新增重复项
+            val deletedOld = dbHelper.deleteAudioFingerprintsByRange(episodeId, startMs, endMs)
+            writeFingerprintLog("runAddFingerprint: deletedOld=$deletedOld for $episodeId [$startMs, $endMs]")
             val audioFingerprint = AudioFingerprint(
-                id = existing?.id ?: 0,
+                id = 0,
                 episodeId = episodeId,
                 startMs = startMs,
                 endMs = endMs,
