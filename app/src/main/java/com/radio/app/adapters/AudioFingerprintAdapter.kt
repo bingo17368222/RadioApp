@@ -1,5 +1,6 @@
 package com.radio.app.adapters
 
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -16,9 +17,11 @@ import java.util.Locale
  * v3.0.2: 音频指纹列表适配器。
  * v3.0.8: 支持播放/停止状态切换。
  * v3.0.9: 支持条目选中高亮与点击选中。
+ * v3.1.0: 增加绑定日志便于排查文字不显示问题。
  */
 class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.ViewHolder>() {
 
+    private val TAG = "AudioFingerprintAdapter"
     private var items: List<AudioFingerprint> = emptyList()
     private var playingPosition: Int = -1
     private var selectedPosition: Int = -1
@@ -86,11 +89,15 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val fp = items[position]
-        holder.tvTime.text = "${formatTime(fp.startMs)} - ${formatTime(fp.endMs)}"
-        holder.tvEpisode.text = fp.episodeId
+        val timeText = "${formatTime(fp.startMs)} - ${formatTime(fp.endMs)}"
+        val episodeText = fp.episodeId
         val durationSec = fp.durationMs / 1000
         val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(fp.createdAt))
-        holder.tvMeta.text = "时长 ${durationSec}s · $dateStr"
+        val metaText = "时长 ${durationSec}s · $dateStr"
+        holder.tvTime.text = timeText
+        holder.tvEpisode.text = episodeText
+        holder.tvMeta.text = metaText
+        Log.d(TAG, "onBindViewHolder pos=$position time='$timeText' episode='$episodeText' meta='$metaText'")
 
         val isPlaying = position == playingPosition
         holder.btnPlay.text = if (isPlaying) "停止" else "播放"
