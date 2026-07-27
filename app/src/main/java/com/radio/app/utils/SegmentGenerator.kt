@@ -2,9 +2,13 @@ package com.radio.app.utils
 
 import android.content.Context
 import android.util.Log
+import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.models.VoiceSegment
+import com.radio.app.utils.ChromaprintExtractor
+import com.radio.app.utils.PcmSegmentExtractor
+import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -38,6 +42,10 @@ object SegmentGenerator {
         "早安", "晚安", "再见", "拜拜",
         "片花", "预告", "下周", "明天同一时间"
     )
+
+    // v3.0.2: 音频指纹二次判定参数
+    private const val FINGERPRINT_MATCH_THRESHOLD = 0.75f
+    private const val MIN_SEGMENT_MS_FOR_FINGERPRINT = 3000L
 
     /**
      * Generate fixed 15-minute segments for an episode.
@@ -118,20 +126,21 @@ object SegmentGenerator {
             }
 
             // Merge consecutive segments of the same type
-            val merged = mutableListOf<VoiceSegment>()
-            for (seg in segments) {
-                val last = merged.lastOrNull()
-                if (last != null && last.hasVoice == seg.hasVoice) {
-                    last.end = seg.end
-                } else {
-                    merged.add(VoiceSegment().apply {
-                        this.start = seg.start
-                        this.end = seg.end
-                        this.hasVoice = seg.hasVoice
-                        this.label = seg.label
-                        this.isSimulated = false
-                    })
-                }
+            var merged = mergeAdjacentSegments(segments)
+
+            // v3.0.2: 就AI听方案升级为基于音频指纹的二次判定。
+            // 对 keyword 初判后的干货片段，提取音频指纹并与已保存的水分指纹比对；
+            // 若匹配则改为水货，最后再次合并相邻水货。
+            val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
+            if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                val fingerprintChecked = applyAudioFingerprintSecondaryCheck(
+                    context, episodeId, merged, waterFingerprints
+                )
+                merged = mergeAdjacentSegments(fingerprintChecked)
+                val flippedCount = merged.count { !it.hasVoice } - segments.count { !it.hasVoice }
+                Log.i(TAG, "generateKeywordSegments: fingerprint secondary check flipped $flippedCount dry segments to water")
+            } else {
+                Log.i(TAG, "generateKeywordSegments: skip fingerprint secondary check (fingerprints=${waterFingerprints.size}, chromaprintLoaded=${ChromaprintExtractor.ensureLibraryLoaded(context)})")
             }
 
             Log.i(TAG, "generateKeywordSegments: ${merged.size} segments (merged from ${segments.size}) for episode=$episodeId")
@@ -181,6 +190,97 @@ object SegmentGenerator {
             return charsPerMin > 50
         }
         return dryScore > waterScore
+    }
+
+    /**
+     * v3.0.2: 合并相邻同类型分段。
+     */
+    private fun mergeAdjacentSegments(segments: List<VoiceSegment>): MutableList<VoiceSegment> {
+        val merged = mutableListOf<VoiceSegment>()
+        for (seg in segments) {
+            val last = merged.lastOrNull()
+            if (last != null && last.hasVoice == seg.hasVoice) {
+                last.end = seg.end
+            } else {
+                merged.add(VoiceSegment().apply {
+                    this.start = seg.start
+                    this.end = seg.end
+                    this.hasVoice = seg.hasVoice
+                    this.label = seg.label
+                    this.isSimulated = false
+                })
+            }
+        }
+        return merged
+    }
+
+    /**
+     * v3.0.2: 对干货分段进行音频指纹二次判定。
+     * 若某干货片段的指纹与已保存的水分指纹匹配，则将其改为水货。
+     * 返回新的分段列表（原始列表不会被修改）。
+     */
+    private fun applyAudioFingerprintSecondaryCheck(
+        context: Context,
+        episodeId: String,
+        segments: List<VoiceSegment>,
+        waterFingerprints: List<AudioFingerprint>
+    ): List<VoiceSegment> {
+        if (segments.isEmpty() || waterFingerprints.isEmpty()) return segments
+
+        val appContext = context.applicationContext
+        var libraryChecked = false
+        var libraryOk = false
+        val result = segments.map { it.copy() }.toMutableList()
+
+        for (i in result.indices) {
+            val seg = result[i]
+            if (!seg.hasVoice) continue
+            if (seg.end - seg.start < MIN_SEGMENT_MS_FOR_FINGERPRINT) continue
+
+            if (!libraryChecked) {
+                libraryOk = try { ChromaprintExtractor.ensureLibraryLoaded(appContext) } catch (_: Exception) { false }
+                libraryChecked = true
+            }
+            if (!libraryOk) break
+
+            var tempPcmFile: File? = null
+            try {
+                tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
+                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) {
+                    Log.w(TAG, "applyAudioFingerprintSecondaryCheck: no PCM for segment ${seg.start}-${seg.end}")
+                    continue
+                }
+
+                val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                if (fingerprint.isNullOrBlank()) {
+                    Log.w(TAG, "applyAudioFingerprintSecondaryCheck: empty fingerprint for segment ${seg.start}-${seg.end}")
+                    continue
+                }
+
+                val matched = waterFingerprints.any { waterFp ->
+                    val durationRatio = minOf(seg.end - seg.start, waterFp.durationMs).toFloat() /
+                            maxOf(seg.end - seg.start, waterFp.durationMs).toFloat()
+                    if (durationRatio < 0.4f) {
+                        // 时长差异过大，跳过细致比对，避免误判
+                        false
+                    } else {
+                        ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, FINGERPRINT_MATCH_THRESHOLD)
+                    }
+                }
+
+                if (matched) {
+                    seg.hasVoice = false
+                    seg.label = "水货"
+                    Log.i(TAG, "applyAudioFingerprintSecondaryCheck: flipped segment ${seg.start}-${seg.end} to water by fingerprint")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "applyAudioFingerprintSecondaryCheck: failed for segment ${seg.start}-${seg.end}: ${e.message}")
+            } finally {
+                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+        }
+
+        return result
     }
 
     /**

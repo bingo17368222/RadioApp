@@ -1,91 +1,171 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="?attr/appBackground">
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="?attr/appBackground">
+
     <include layout="@layout/view_title_bar" />
-    <ScrollView android:layout_width="match_parent" android:layout_height="match_parent">
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
 
-            <!-- [就AI听] 干货关键词管理（Chip 风格，可添加/删除） -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="干货关键词管理" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="点击右侧 × 图标删除关键词。用于识别干货内容片段。" android:textColor="?attr/appTextSecondary" android:textSize="12sp" android:layout_marginBottom="8dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                    <EditText android:id="@+id/et_dry_keyword_input" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="输入干货关键词" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" android:singleLine="true" android:imeOptions="actionDone" />
-                    <Button android:id="@+id/btn_add_dry_keyword" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="添加" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginStart="8dp" />
-                </LinearLayout>
-                <com.google.android.material.chip.ChipGroup android:id="@+id/chip_group_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:singleSelection="false" app:chipSpacingHorizontal="8dp" app:chipSpacingVertical="8dp" />
-                <TextView android:id="@+id/tv_dry_keywords_empty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无关键词，请在上方输入并添加" android:textColor="?attr/appTextMuted" android:textSize="13sp" android:layout_marginTop="4dp" android:visibility="gone" />
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- v3.0.2: 音频指纹管理说明 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="水分音频指纹素材"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="16dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="在播放器中长按某个片段，选择“添加为水分指纹”，即可将该片段的音频指纹保存到素材库。就AI听方案会使用这些指纹对干货片段进行二次判定。"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="13sp"
+                    android:lineSpacingMultiplier="1.2" />
+
+                <TextView
+                    android:id="@+id/tv_fingerprint_count"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="已保存 0 条指纹"
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="14sp" />
             </LinearLayout>
 
-            <!-- [就AI听] 水货关键词管理（Chip 风格，可添加/删除） -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="水货关键词管理" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="点击右侧 × 图标删除关键词。用于识别水货（广告/音乐等）片段。" android:textColor="?attr/appTextSecondary" android:textSize="12sp" android:layout_marginBottom="8dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                    <EditText android:id="@+id/et_water_keyword_input" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="输入水货关键词" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" android:singleLine="true" android:imeOptions="actionDone" />
-                    <Button android:id="@+id/btn_add_water_keyword" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="添加" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginStart="8dp" />
+            <!-- 指纹列表 -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recycler_audio_fingerprints"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_card"
+                android:padding="8dp"
+                android:layout_marginBottom="16dp"
+                android:nestedScrollingEnabled="false" />
+
+            <TextView
+                android:id="@+id/tv_fingerprints_empty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginBottom="24dp"
+                android:text="暂无音频指纹素材"
+                android:textColor="?attr/appTextMuted"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <!-- 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用） -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="水货分段开头/结尾组合管理"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="16dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="当分段的字幕文本以『开头』开始且以『结尾』结束时，判定为水货。点击右侧 × 图标删除组合。"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginBottom="8dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <EditText
+                        android:id="@+id/et_combination_start"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:hint="开头文字"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textColorHint="?attr/appTextSecondary"
+                        android:background="@drawable/bg_card"
+                        android:padding="12dp"
+                        android:textSize="14sp"
+                        android:singleLine="true"
+                        android:imeOptions="actionNext" />
+
+                    <EditText
+                        android:id="@+id/et_combination_end"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:hint="结尾文字"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textColorHint="?attr/appTextSecondary"
+                        android:background="@drawable/bg_card"
+                        android:padding="12dp"
+                        android:textSize="14sp"
+                        android:layout_marginStart="8dp"
+                        android:singleLine="true"
+                        android:imeOptions="actionDone" />
                 </LinearLayout>
-                <com.google.android.material.chip.ChipGroup android:id="@+id/chip_group_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:singleSelection="false" app:chipSpacingHorizontal="8dp" app:chipSpacingVertical="8dp" />
-                <TextView android:id="@+id/tv_water_keywords_empty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无关键词，请在上方输入并添加" android:textColor="?attr/appTextMuted" android:textSize="13sp" android:layout_marginTop="4dp" android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/btn_add_combination"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="添加组合"
+                    android:textColor="@color/white"
+                    android:backgroundTint="?attr/appAccent"
+                    android:layout_marginTop="8dp" />
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chip_group_combinations"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    app:singleSelection="false"
+                    app:chipSpacingHorizontal="8dp"
+                    app:chipSpacingVertical="8dp" />
+
+                <TextView
+                    android:id="@+id/tv_combinations_empty"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="暂无组合，请在上方输入并添加"
+                    android:textColor="?attr/appTextMuted"
+                    android:textSize="13sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone" />
             </LinearLayout>
 
-            <!-- [就AI听] 水货分段开头/结尾组合管理 -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="水货分段开头/结尾组合管理" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="当分段的字幕文本以『开头』开始且以『结尾』结束时，判定为水货。点击右侧 × 图标删除组合。" android:textColor="?attr/appTextSecondary" android:textSize="12sp" android:layout_marginBottom="8dp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
-                    <EditText android:id="@+id/et_combination_start" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="开头文字" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" android:singleLine="true" android:imeOptions="actionNext" />
-                    <EditText android:id="@+id/et_combination_end" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:hint="结尾文字" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" android:layout_marginStart="8dp" android:singleLine="true" android:imeOptions="actionDone" />
-                </LinearLayout>
-                <Button android:id="@+id/btn_add_combination" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="添加组合" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginTop="8dp" />
-                <com.google.android.material.chip.ChipGroup android:id="@+id/chip_group_combinations" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" app:singleSelection="false" app:chipSpacingHorizontal="8dp" app:chipSpacingVertical="8dp" />
-                <TextView android:id="@+id/tv_combinations_empty" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="暂无组合，请在上方输入并添加" android:textColor="?attr/appTextMuted" android:textSize="13sp" android:layout_marginTop="4dp" android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- 干货关键词 -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="干货关键词" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <EditText android:id="@+id/et_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔，如：新闻,资讯,报道" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="?attr/appTextSecondary" android:textSize="14sp" />
-                    <Spinner android:id="@+id/spinner_dry_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-                </LinearLayout>
-                <Button android:id="@+id/btn_ai_extract_dry" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginTop="8dp" />
-            </LinearLayout>
-
-            <!-- 水分关键词 -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="水分关键词" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <EditText android:id="@+id/et_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔，如：广告,音乐,歌曲" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="?attr/appTextSecondary" android:textSize="14sp" />
-                    <Spinner android:id="@+id/spinner_water_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-                </LinearLayout>
-                <Button android:id="@+id/btn_ai_extract_water" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginTop="8dp" />
-            </LinearLayout>
-
-            <!-- 内容干货关键词 -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="内容干货关键词" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <EditText android:id="@+id/et_content_dry_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="?attr/appTextSecondary" android:textSize="14sp" />
-                    <Spinner android:id="@+id/spinner_content_dry_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-                </LinearLayout>
-                <Button android:id="@+id/btn_ai_extract_content_dry" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginTop="8dp" />
-            </LinearLayout>
-
-            <!-- 内容水分关键词 -->
-            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="内容水分关键词" android:textColor="?attr/appTextPrimary" android:textSize="16sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:background="@drawable/bg_card" android:padding="16dp" android:layout_marginBottom="16dp">
-                <EditText android:id="@+id/et_content_water_keywords" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="用逗号分隔" android:textColor="?attr/appTextPrimary" android:textColorHint="?attr/appTextSecondary" android:background="@drawable/bg_card" android:padding="12dp" android:textSize="14sp" />
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="匹配逻辑" android:textColor="?attr/appTextSecondary" android:textSize="14sp" />
-                    <Spinner android:id="@+id/spinner_content_water_logic" android:layout_width="wrap_content" android:layout_height="wrap_content" />
-                </LinearLayout>
-                <Button android:id="@+id/btn_ai_extract_content_water" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AI提取关键词" android:textColor="@color/white" android:backgroundTint="?attr/appAccent" android:layout_marginTop="8dp" />
-            </LinearLayout>
-
-            <Button android:id="@+id/btn_save" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="保存设置" android:textColor="@color/white" android:backgroundTint="?attr/appSuccess" android:padding="16dp" android:textSize="16sp" />
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

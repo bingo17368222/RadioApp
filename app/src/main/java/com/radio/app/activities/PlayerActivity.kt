@@ -1741,27 +1741,47 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // [功能1] 长按分段弹出对话框，手动标记该分段为干货/水货。
+    // [功能1] 长按分段弹出对话框，手动标记该分段为干货/水货，或添加为水分指纹。
     // 标记后更新 VoiceSegment.hasVoice 字段并通知 adapter 刷新。
     private fun showSegmentMarkDialog(position: Int, segment: VoiceSegment) {
-        val options = arrayOf("标记为干货", "标记为水货")
+        val options = arrayOf("标记为干货", "标记为水货", "添加为水分指纹")
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("手动标记分段")
             .setItems(options) { dialog, which ->
-                val isDry = (which == 0)
-                // 更新该分段的 hasVoice 字段（干货=true，水货=false）
-                segment.isManuallyMarked = true
-                segment.hasVoice = isDry
-                segment.label = if (isDry) "手动标记:干货" else "手动标记:水分"
-                // 同步到播放服务并持久化到数据库
-                playbackService?.markSegment(position, isDry)
-                // 通知 adapter 刷新该项
-                segmentAdapter?.notifyItemChanged(position)
-                Toast.makeText(
-                    this,
-                    if (isDry) "已标记为干货" else "已标记为水货",
-                    Toast.LENGTH_SHORT
-                ).show()
+                when (which) {
+                    0, 1 -> {
+                        val isDry = (which == 0)
+                        // 更新该分段的 hasVoice 字段（干货=true，水货=false）
+                        segment.isManuallyMarked = true
+                        segment.hasVoice = isDry
+                        segment.label = if (isDry) "手动标记:干货" else "手动标记:水分"
+                        // 同步到播放服务并持久化到数据库
+                        playbackService?.markSegment(position, isDry)
+                        // 通知 adapter 刷新该项
+                        segmentAdapter?.notifyItemChanged(position)
+                        Toast.makeText(
+                            this,
+                            if (isDry) "已标记为干货" else "已标记为水货",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    2 -> {
+                        // v3.0.2: 添加为水分指纹，启动后台服务处理
+                        val episodeId = currentEpisode?.id
+                        if (episodeId.isNullOrBlank()) {
+                            Toast.makeText(this, "无法获取节目ID", Toast.LENGTH_SHORT).show()
+                        } else {
+                            com.radio.app.services.AudioFingerprintService.startAddFingerprint(
+                                this,
+                                episodeId = episodeId,
+                                startMs = segment.start,
+                                endMs = segment.end,
+                                episodeTitle = currentEpisode?.title
+                            )
+                            Toast.makeText(this, "已开始生成水分指纹，请查看通知栏进度", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
                 dialog.dismiss()
             }
             .setNegativeButton("取消", null)

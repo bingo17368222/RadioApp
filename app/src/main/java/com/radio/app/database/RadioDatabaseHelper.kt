@@ -40,7 +40,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 10
+        private const val DATABASE_VERSION = 11
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -48,6 +48,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         private const val TABLE_VOICE_SEGMENTS_AI = "voice_segments_ai"
         private const val TABLE_SEGMENT_ANALYSIS_INFO = "segment_analysis_info"
         private const val TABLE_EPISODE_INFO = "episode_info"
+        // v3.0.2: 音频指纹表，用于存储用户标记的水分片段指纹素材
+        private const val TABLE_AUDIO_FINGERPRINTS = "audio_fingerprints"
 
         private var instance: RadioDatabaseHelper? = null
 
@@ -73,6 +75,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v2.4.148: Added start_time/end_time for offline notification time range display.
         db.execSQL("CREATE TABLE $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, start_time INTEGER DEFAULT 0, end_time INTEGER DEFAULT 0, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
+        // v3.0.2: 音频指纹表
+        db.execSQL("CREATE TABLE $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -112,6 +117,11 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v2.4.150: Add segment_analysis_info table for audio segmentation engine & timing persistence.
         if (oldVersion < 10) {
             db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_SEGMENT_ANALYSIS_INFO (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, generated_at INTEGER NOT NULL, processing_time_ms INTEGER DEFAULT 0, audio_duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0, dry_count INTEGER DEFAULT 0, water_count INTEGER DEFAULT 0)")
+        }
+        // v3.0.2: Add audio_fingerprints table for water segment fingerprint management.
+        if (oldVersion < 11) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
         }
     }
 
@@ -724,4 +734,118 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         stationId = c.getString(c.getColumnIndexOrThrow("station_id"))
         stationName = c.getString(c.getColumnIndexOrThrow("station_name"))
     }
+
+    // ===== Audio Fingerprints (v3.0.2) =====
+
+    fun saveAudioFingerprint(fingerprint: AudioFingerprint): Long {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("episode_id", fingerprint.episodeId)
+            put("start_ms", fingerprint.startMs)
+            put("end_ms", fingerprint.endMs)
+            put("fingerprint", fingerprint.fingerprint)
+            put("duration_ms", fingerprint.durationMs)
+            put("created_at", fingerprint.createdAt.takeIf { it > 0 } ?: now)
+            put("updated_at", now)
+        }
+        return db.replace(TABLE_AUDIO_FINGERPRINTS, null, values)
+    }
+
+    fun updateAudioFingerprint(id: Long, episodeId: String, startMs: Long, endMs: Long, fingerprint: String, durationMs: Long): Int {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("episode_id", episodeId)
+            put("start_ms", startMs)
+            put("end_ms", endMs)
+            put("fingerprint", fingerprint)
+            put("duration_ms", durationMs)
+            put("updated_at", System.currentTimeMillis())
+        }
+        return db.update(TABLE_AUDIO_FINGERPRINTS, values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun deleteAudioFingerprint(id: Long): Int {
+        val db = writableDatabase
+        return db.delete(TABLE_AUDIO_FINGERPRINTS, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun deleteAudioFingerprintsByEpisode(episodeId: String): Int {
+        val db = writableDatabase
+        return db.delete(TABLE_AUDIO_FINGERPRINTS, "episode_id = ?", arrayOf(episodeId))
+    }
+
+    fun getAudioFingerprintsByEpisode(episodeId: String): List<AudioFingerprint> {
+        val list = mutableListOf<AudioFingerprint>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_AUDIO_FINGERPRINTS,
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at"),
+                "episode_id = ?",
+                arrayOf(episodeId),
+                null, null,
+                "created_at DESC"
+            )
+            while (cursor.moveToNext()) {
+                list.add(cursorToAudioFingerprint(cursor))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    fun getAllAudioFingerprints(): List<AudioFingerprint> {
+        val list = mutableListOf<AudioFingerprint>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_AUDIO_FINGERPRINTS,
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at"),
+                null, null, null, null,
+                "created_at DESC"
+            )
+            while (cursor.moveToNext()) {
+                list.add(cursorToAudioFingerprint(cursor))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    fun getAudioFingerprintCount(): Int {
+        var count = 0
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT COUNT(*) FROM $TABLE_AUDIO_FINGERPRINTS", null)
+            if (cursor.moveToFirst()) count = cursor.getInt(0)
+            cursor.close()
+        } catch (_: Exception) {}
+        return count
+    }
+
+    private fun cursorToAudioFingerprint(c: Cursor): AudioFingerprint {
+        return AudioFingerprint(
+            id = c.getLong(c.getColumnIndexOrThrow("id")),
+            episodeId = c.getString(c.getColumnIndexOrThrow("episode_id")),
+            startMs = c.getLong(c.getColumnIndexOrThrow("start_ms")),
+            endMs = c.getLong(c.getColumnIndexOrThrow("end_ms")),
+            fingerprint = c.getString(c.getColumnIndexOrThrow("fingerprint")),
+            durationMs = c.getLong(c.getColumnIndexOrThrow("duration_ms")),
+            createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
+            updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
+        )
+    }
 }
+
+// v3.0.2: 音频指纹数据类
+data class AudioFingerprint(
+    val id: Long = 0,
+    val episodeId: String,
+    val startMs: Long,
+    val endMs: Long,
+    val fingerprint: String,
+    val durationMs: Long,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)

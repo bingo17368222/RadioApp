@@ -860,7 +860,7 @@
                     android:id="@+id/tv_keyword_settings"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="关键词设置"
+                    android:text="音频指纹管理"
                     android:textColor="?attr/appAccent"
                     android:textSize="16sp"
                     android:padding="12dp"
@@ -870,7 +870,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="设置自动跳过水分时的关键词匹配规则"
+                    android:text="管理水分片段的音频指纹素材，用于就AI听方案的二次判定"
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:paddingStart="12dp"

@@ -19,3 +19,7 @@ target_link_libraries(whisper_jni ${log-lib} dl)
 # No need to link against libMNN.so/libllm.so at build time
 add_library(mnn_llm_jni SHARED mnn_llm_jni.cpp)
 target_link_libraries(mnn_llm_jni ${log-lib} dl)
+
+# v3.0.2: Chromaprint JNI bridge - uses dlopen/dlsym to load libchromaprint.so at runtime
+add_library(chromaprint_jni SHARED chromaprint_jni.cpp)
+target_link_libraries(chromaprint_jni ${log-lib} dl)

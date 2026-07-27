@@ -1,12 +1,10 @@
-version: 3.0.1
-file: /workspace/radioapp/releases/RadioApp-v3.0.1.apk
-source: GitHub Release v3.0.1 (ghfast.top mirror)
-download_url: https://github.com/bingo17368222/RadioApp/releases/download/v3.0.1/RadioApp-v3.0.1.apk
-download_url_mirror: https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v3.0.1/RadioApp-v3.0.1.apk
-local_url: http://localhost:8765/releases/RadioApp-v3.0.1.apk
-size_bytes: 35251483
-size_mb: 33.61
-sha256: 0824d5000689c5f82e0ea4fa47deb3a6bcf012d3bd71392758efd5976cc41816
-download_time_s: 9.0
-download_speed_mbps: 3.73
-download_speed_kbps: 3730.0
+version: 3.0.2
+file: /workspace/radioapp/releases/RadioApp-v3.0.2.apk
+source: Local Build v3.0.2
+download_url: https://github.com/bingo17368222/RadioApp/releases/download/v3.0.2/RadioApp-v3.0.2.apk
+download_url_mirror: https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v3.0.2/RadioApp-v3.0.2.apk
+local_url: http://localhost:8765/releases/RadioApp-v3.0.2.apk
+size_bytes: 35280023
+size_mb: 33.65
+sha256: 7b878de67c659468b207d710a0d2452a53973c0a974e845f5d03a69bb3ef47af
+build_time: 2026-07-27 11:39:56 UTC

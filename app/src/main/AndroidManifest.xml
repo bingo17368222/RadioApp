@@ -67,6 +67,11 @@
             android:process=":subtitle"
             android:foregroundServiceType="dataSync" />
 
+        <service
+            android:name=".services.AudioFingerprintService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <receiver
             android:name=".utils.SegmentCancelReceiver"
             android:exported="false">
