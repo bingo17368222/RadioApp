@@ -65,8 +65,8 @@ class AppSettings private constructor() {
         }
     }
 
-    var aiModel: String = AI_MODEL_WENXIN
-    var asrProvider: String = ASR_BAIDU
+    var aiModel: String = AI_MODEL_JIU_AI_TING
+    var asrProvider: String = ASR_VOSK
     var voskModelDir: String = ""  // [v2.0.61] Issue 6 Fix: Save selected Vosk model directory name
     var whisperModelDir: String = ""  // [v2.2.9] Save selected Whisper model directory name (whisper-tiny, whisper-base, etc.)
     // [v2.0.50] Issue 3 Fix: Track Whisper crash count to permanently disable after 2 crashes
@@ -121,8 +121,8 @@ class AppSettings private constructor() {
     fun safeSubtitleLanguage(): String = subtitleLanguage ?: LANG_CN
     fun safeVoiceLanguage(): String = voiceLanguage ?: LANG_CN
     fun safeUiTheme(): String = uiTheme ?: THEME_DARK
-    fun safeAiModel(): String = aiModel ?: AI_MODEL_WENXIN
-    fun safeAsrProvider(): String = asrProvider ?: ASR_BAIDU
+    fun safeAiModel(): String = aiModel ?: AI_MODEL_JIU_AI_TING
+    fun safeAsrProvider(): String = asrProvider ?: ASR_VOSK
     fun safeSplitMode(): String = splitMode ?: SPLIT_MODE_NONE
 
     /**
@@ -138,7 +138,7 @@ class AppSettings private constructor() {
         // to this process's prefs, but if the broadcast wasn't received, we need to force-read.
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS)
         prefs.all  // Force access to trigger reload
-        asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
+        asrProvider = prefs.getString("asr_provider", ASR_VOSK) ?: ASR_VOSK
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""
         whisperModelDir = prefs.getString("whisper_model_dir", "") ?: ""  // [v2.2.9]
         // [v2.1.2] Also reload pinduoduo detection interval for RadioPlaybackService
@@ -147,8 +147,8 @@ class AppSettings private constructor() {
 
     private fun load(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_MULTI_PROCESS)
-        aiModel = prefs.getString("ai_model", AI_MODEL_WENXIN) ?: AI_MODEL_WENXIN
-        asrProvider = prefs.getString("asr_provider", ASR_BAIDU) ?: ASR_BAIDU
+        aiModel = prefs.getString("ai_model", AI_MODEL_JIU_AI_TING) ?: AI_MODEL_JIU_AI_TING
+        asrProvider = prefs.getString("asr_provider", ASR_VOSK) ?: ASR_VOSK
         voskModelDir = prefs.getString("vosk_model_dir", "") ?: ""  // [v2.0.61] Issue 6
         whisperModelDir = prefs.getString("whisper_model_dir", "") ?: ""  // [v2.2.9]
         whisperCrashCount = prefs.getInt("whisper_crash_count", 0)  // [v2.0.50]

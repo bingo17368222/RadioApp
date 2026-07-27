@@ -98,21 +98,6 @@ class OfflineEngineActivity : AppCompatActivity() {
             "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
             "whisper-small"
         ),
-        EngineInfo(
-            "Whisper Medium",
-            "OpenAI Whisper medium模型\n大小: 约1.5GB | 识别率: ~95% | 速度: 较慢(约4x实时)\n适用: 专业级字幕，对准确率要求极高\n支持: 中文、英文及99种语言",
-            "约1.5GB",
-            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-            "whisper-medium"
-        ),
-        EngineInfo(
-            "Whisper Large-v3",
-            "OpenAI Whisper large-v3模型\n大小: 约2.9GB | 识别率: ~97% | 速度: 慢(约8x实时)\n适用: 最高精度，专业转录场景\n支持: 中文、英文及99种语言",
-            "约2.9GB",
-            "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-            "whisper-large"
-        ),
-
         // ===== 阿里 MNN-LLM 离线引擎 =====
         // v2.4.89: Switched to Qwen2.5-Coder-1.5B-Instruct-MNN (updated May 2026)
         // because old Qwen2-1.5B-Instruct-MNN (Jan 2025) is incompatible with MNN 3.6.0 libllm.so.
@@ -153,35 +138,6 @@ class OfflineEngineActivity : AppCompatActivity() {
             "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip",
             "vosk-model-small-cn-0.22"
         ),
-        EngineInfo(
-            "Vosk 大模型 (中文)",
-            "Vosk cn 中文大模型\n大小: 约1.3GB | 识别率: ~95% | 速度: 中等\n适用: 高精度中文语音识别",
-            "约1.3GB",
-            "https://alphacephei.com/vosk/models/vosk-model-cn-0.22.zip",
-            "vosk-model-cn-0.22"
-        ),
-        EngineInfo(
-            "Vosk 小模型 (英文)",
-            "Vosk small-en 英文模型\n大小: 约42MB | 识别率: ~90% | 速度: 快(实时)\n适用: 英文语音识别，低资源消耗",
-            "约42MB",
-            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
-            "vosk-model-small-en-us-0.15"
-        ),
-        EngineInfo(
-            "Vosk 中模型 (英文)",
-            "Vosk en-us-0.22-lgraph 英文中模型(动态图)\n大小: 约128MB | 识别率: ~92% | 速度: 中等\n适用: 高精度英文语音识别",
-            "约128MB",
-            "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip",
-            "vosk-model-en-us-0.22-lgraph"
-        ),
-        EngineInfo(
-            "Vosk 大模型 (英文)",
-            "Vosk large-en 英文大模型\n大小: 约1.8GB | 识别率: ~96% | 速度: 较慢\n适用: 最高精度英文语音识别",
-            "约1.8GB",
-            "https://ghfast.top/https://github.com/alphacep/vosk-space/releases/download/v0.3.47/vosk-model-en-us-daanzu-0.22.zip",
-            "vosk-model-en-us-daanzu-0.22"
-        ),
-
         // ===== v2.4.95: 音频分段模型 + 运行库（Silero VAD + YAMNet 双模型） =====
         EngineInfo(
             "音频分段运行库",

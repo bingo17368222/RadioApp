@@ -85,12 +85,12 @@ class SettingsFragment : Fragment() {
         binding.spinnerSubtitleLang.adapter = langAdapter
         binding.spinnerVoiceLang.adapter = langAdapter
 
-        val aiModelLabels = arrayOf("文心一言", "DeepSeek", "通义千问", "FunASR", "Whisper", "就AI听", "阿里MNN-LLM", "音频分段(VAD+YAMNet)")
+        val aiModelLabels = arrayOf("就AI听", "阿里MNN-LLM", "音频分段(VAD+YAMNet)")
         val aiModelAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, aiModelLabels)
         aiModelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAiModel.adapter = aiModelAdapter
 
-        val asrProviderLabels = mutableListOf("百度语音", "FunASR", "Whisper在线")
+        val asrProviderLabels = mutableListOf<String>()
         val asrProviderAdapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, asrProviderLabels)
         asrProviderAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerAsrProvider.adapter = asrProviderAdapter
@@ -107,12 +107,11 @@ class SettingsFragment : Fragment() {
             val modelsDir = requireContext().getExternalFilesDir("models")
             if (modelsDir == null || !modelsDir.exists()) return
 
+            // v3.0.0: 仅保留适合手机使用的 Whisper Tiny/Base/Small
             val whisperModels = arrayOf(
                 "whisper-tiny" to "本地Whisper Tiny",
                 "whisper-base" to "本地Whisper Base",
-                "whisper-small" to "本地Whisper Small",
-                "whisper-medium" to "本地Whisper Medium",
-                "whisper-large" to "本地Whisper Large"
+                "whisper-small" to "本地Whisper Small"
             )
             for ((dir, label) in whisperModels) {
                 val modelDir = File(modelsDir, dir)
@@ -405,10 +404,9 @@ class SettingsFragment : Fragment() {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (suppressListeners) return
                 val models = arrayOf(
-                    AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK,
-                    AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR,
-                    AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING,
-                    AppSettings.AI_MODEL_MNN_LLM, AppSettings.AI_MODEL_AUDIO_VAD
+                    AppSettings.AI_MODEL_JIU_AI_TING,
+                    AppSettings.AI_MODEL_MNN_LLM,
+                    AppSettings.AI_MODEL_AUDIO_VAD
                 )
                 settings.aiModel = models[position]
                 save()
@@ -424,7 +422,6 @@ class SettingsFragment : Fragment() {
                 // [v2.0.61] Issue 6 Fix: Correct label → provider mapping
                 // IMPORTANT: Check "Whisper在线" BEFORE "本地Whisper" (both start with "Whisper")
                 val providerId = when {
-                    selected.startsWith("Whisper在线") -> AppSettings.ASR_WHISPER  // Online Whisper = "whisper"
                     selected.startsWith("本地Whisper") -> {
                         // [v2.2.9] Save the specific Whisper model directory
                         val dirName = whisperModelDirs[selected] ?: ""
@@ -440,10 +437,8 @@ class SettingsFragment : Fragment() {
                         settings.voskModelDir = dirName
                         "vosk-local"
                     }
-                    selected.startsWith("百度") -> AppSettings.ASR_BAIDU
-                    selected.startsWith("FunASR") -> AppSettings.ASR_FUNASR
                     else -> {
-                        val providers = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
+                        val providers = arrayOf(AppSettings.ASR_VOSK)
                         if (position < providers.size) providers[position] else selected
                     }
                 }
@@ -599,13 +594,13 @@ class SettingsFragment : Fragment() {
 
         val aiModelListener = binding.spinnerAiModel.onItemSelectedListener
         binding.spinnerAiModel.onItemSelectedListener = null
-        val aiModels = arrayOf(AppSettings.AI_MODEL_WENXIN, AppSettings.AI_MODEL_DEEPSEEK, AppSettings.AI_MODEL_QWEN, AppSettings.AI_MODEL_FUNASR, AppSettings.AI_MODEL_WHISPER, AppSettings.AI_MODEL_JIU_AI_TING, AppSettings.AI_MODEL_MNN_LLM, AppSettings.AI_MODEL_AUDIO_VAD)
+        val aiModels = arrayOf(AppSettings.AI_MODEL_JIU_AI_TING, AppSettings.AI_MODEL_MNN_LLM, AppSettings.AI_MODEL_AUDIO_VAD)
         aiModels.indexOfFirst { it == settings.aiModel }.takeIf { it >= 0 }?.let { binding.spinnerAiModel.setSelection(it) }
         binding.spinnerAiModel.onItemSelectedListener = aiModelListener
 
         val asrProviderListener = binding.spinnerAsrProvider.onItemSelectedListener
         binding.spinnerAsrProvider.onItemSelectedListener = null
-        val asrProviders = arrayOf(AppSettings.ASR_BAIDU, AppSettings.ASR_FUNASR, AppSettings.ASR_WHISPER, AppSettings.ASR_VOSK)
+        val asrProviders = arrayOf(AppSettings.ASR_VOSK)
         val savedProvider = settings.asrProvider
         val savedVoskDir = settings.voskModelDir  // [v2.0.61] Issue 6: Use saved Vosk model dir
         val savedWhisperDir = settings.whisperModelDir  // [v2.2.9] Use saved Whisper model dir
