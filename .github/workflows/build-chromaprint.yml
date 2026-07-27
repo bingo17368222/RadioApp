@@ -30,6 +30,13 @@ jobs:
           ndk-version: r25c
           add-to-path: false
 
+      - name: Checkout KissFFT source
+        uses: actions/checkout@v4
+        with:
+          repository: mborgerding/kissfft
+          ref: v130
+          path: chromaprint/src/3rdparty/kissfft
+
       - name: Configure CMake
         run: |
           cmake -S chromaprint -B build_${{ matrix.abi }} \
