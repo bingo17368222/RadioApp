@@ -68,10 +68,10 @@ jobs:
       - name: Verify dependencies
         run: |
           echo "=== libchromaprint.so dependencies ==="
-          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -d build_${{ matrix.abi }}/libchromaprint.so || true
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-readelf -d build_${{ matrix.abi }}/src/libchromaprint.so || true
 
       - name: Rename artifact
-        run: cp build_${{ matrix.abi }}/libchromaprint.so libchromaprint-${{ matrix.abi }}.so
+        run: cp build_${{ matrix.abi }}/src/libchromaprint.so libchromaprint-${{ matrix.abi }}.so
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
