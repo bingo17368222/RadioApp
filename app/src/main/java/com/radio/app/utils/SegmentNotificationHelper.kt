@@ -17,10 +17,7 @@ import com.radio.app.R
  *
  * v2.4.154: Reverted to the standard notification template so the original
  * system color scheme is used (better visibility). Keeps the cancel action
- * and shows progress / elapsed / ETA in the content text.
- *
- * v2.4.190: Also shows a real notification progress bar so both manual and
- * automatic segmentation tasks provide the same visual progress feedback.
+ * and shows progress / elapsed / ETA in the content text instead of a progress bar.
  *
  * v2.4.186: Adds per-episode session ownership. Because the helper uses a single
  * notification ID, concurrent segmentation tasks (e.g. background pre-segment
@@ -189,8 +186,6 @@ object SegmentNotificationHelper {
                         .setBigContentTitle(episodeTitle)
                         .bigText(infoText)
                 )
-                // v2.4.190: Show a real progress bar (0-1000 permille -> 0-100%).
-                .setProgress(100, progress / 10, false)
                 .setOngoing(true)
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setOnlyAlertOnce(true)

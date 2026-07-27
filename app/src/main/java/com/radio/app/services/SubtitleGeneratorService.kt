@@ -564,7 +564,7 @@ class SubtitleGeneratorService : Service() {
                         "total" to total
                     )
                 )
-                updateProgressNotification(progress, "字幕生成")
+                updateProgressNotification(progress, "字幕生成", ctx)
                 ctx.lastReportedProgress = progress
             }
             override fun onError(error: String) {
@@ -834,7 +834,7 @@ class SubtitleGeneratorService : Service() {
             }
             override fun onProgressUpdate(progress: Int, total: Int) {
                 callback.onProgressUpdate(progress, total)
-                updateProgressNotification(progress, "AI分段")
+                updateProgressNotification(progress, "AI分段", ctx)
                 ctx.lastReportedProgress = progress
             }
             override fun onComplete(segments: List<VoiceSegment>) {
@@ -4239,13 +4239,26 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
-    private fun createProgressNotification(progress: Int, taskLabel: String, overrideTitle: String? = null): Notification {
+    private fun createProgressNotification(
+        progress: Int,
+        taskLabel: String,
+        overrideTitle: String? = null,
+        elapsedText: String = "",
+        etaText: String = ""
+    ): Notification {
         // [v2.4.19] Split date+title into title and content for better display
         // v2.4.54: Allow override title for initial notification before task is in activeTasks
         val currentTitle = overrideTitle ?: activeTasks.values.firstOrNull()?.displayTitle ?: ""
         // [v2.4.19] Use short title for collapsed view, full info in expanded view
         val notifTitle = if (currentTitle.isNotBlank()) currentTitle else "正在处理音频"
-        val notifContent = "$taskLabel: ${progress}%"
+        val notifContent = buildString {
+            append("$taskLabel: ${progress}%")
+            if (elapsedText.isNotEmpty()) {
+                append(" (已用 $elapsedText")
+                if (etaText.isNotEmpty()) append("，预计剩余 $etaText")
+                append(")")
+            }
+        }
         val contentIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, PlayerActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
@@ -4264,7 +4277,7 @@ class SubtitleGeneratorService : Service() {
             .setStyle(NotificationCompat.BigTextStyle()
                 .bigText("$notifTitle\n$notifContent")
                 .setSummaryText("正在处理音频"))
-            .setProgress(100, progress, false)
+            // v2.4.191: Use text-only progress display to match the segment notification style.
             .setOngoing(true)
             .setContentIntent(contentIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPending)
@@ -4273,11 +4286,30 @@ class SubtitleGeneratorService : Service() {
             .build()
     }
 
-    private fun updateProgressNotification(progress: Int, taskLabel: String) {
+    private fun updateProgressNotification(progress: Int, taskLabel: String, ctx: TaskContext? = null) {
         try {
             val nm = getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIFICATION_ID, createProgressNotification(progress, taskLabel))
+            val elapsedMs = ctx?.let { System.currentTimeMillis() - it.startTime } ?: 0L
+            val elapsedText = if (elapsedMs > 0) formatDurationMs(elapsedMs) else ""
+            val etaText = if (progress > 0 && elapsedMs > 0) {
+                val etaMs = (elapsedMs * (100 - progress) / progress.toDouble()).toLong()
+                formatDurationMs(etaMs)
+            } else ""
+            nm.notify(NOTIFICATION_ID, createProgressNotification(progress, taskLabel, elapsedText = elapsedText, etaText = etaText))
         } catch (_: Exception) {}
+    }
+
+    // v2.4.191: Format milliseconds as mm:ss or hh:mm:ss for notification elapsed/ETA text.
+    private fun formatDurationMs(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) {
+            String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.US, "%02d:%02d", minutes, seconds)
+        }
     }
 
     /**
