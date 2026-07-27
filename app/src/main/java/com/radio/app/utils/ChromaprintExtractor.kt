@@ -59,6 +59,17 @@ object ChromaprintExtractor {
     }
 
     /**
+     * v3.0.6: 设置原生库绝对路径，供 JNI dlopen 回退使用。
+     */
+    fun setNativeLibraryPath(path: String) {
+        try {
+            nativeSetLibraryPath(path)
+        } catch (e: Exception) {
+            Log.e(TAG, "setNativeLibraryPath failed: ${e.message}")
+        }
+    }
+
+    /**
      * 检查库是否已下载。
      */
     fun isLibraryAvailable(context: Context): Boolean {
@@ -123,4 +134,7 @@ object ChromaprintExtractor {
 
     @JvmStatic
     private external fun nativeExtractFingerprintFromFile(filePath: String, sampleRate: Int, channels: Int): String?
+
+    @JvmStatic
+    private external fun nativeSetLibraryPath(libPath: String)
 }

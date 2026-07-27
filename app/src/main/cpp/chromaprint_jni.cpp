@@ -31,11 +31,18 @@ static struct {
     bool loaded;
 } g_lib;
 
+// v3.0.6: 外部下载的 libchromaprint.so 绝对路径，用于绕过 Android linker 命名空间限制
+static std::string g_chromaprint_lib_path;
+
 static bool load_chromaprint() {
     if (g_lib.loaded) return true;
 
-    // 尝试通过 dlopen 加载已加载到进程中的 libchromaprint.so
+    // v3.0.6: 优先尝试短名称加载（APK 内置或系统已加载）
     g_lib.handle = dlopen("libchromaprint.so", RTLD_NOW);
+    if (!g_lib.handle && !g_chromaprint_lib_path.empty()) {
+        LOGI("dlopen short name failed, trying absolute path: %s", g_chromaprint_lib_path.c_str());
+        g_lib.handle = dlopen(g_chromaprint_lib_path.c_str(), RTLD_NOW);
+    }
     if (!g_lib.handle) {
         LOGE("dlopen libchromaprint.so failed: %s", dlerror());
         return false;
@@ -152,4 +159,18 @@ Java_com_radio_app_utils_ChromaprintExtractor_nativeExtractFingerprintFromFile(
     fclose(f);
     env->ReleaseStringUTFChars(filePath, path);
     return result;
+}
+
+// v3.0.6: 设置外部 libchromaprint.so 的绝对路径，供 dlopen 回退使用
+extern "C" JNIEXPORT void JNICALL
+Java_com_radio_app_utils_ChromaprintExtractor_nativeSetLibraryPath(
+        JNIEnv* env,
+        jclass /*clazz*/,
+        jstring libPath) {
+    const char* path = env->GetStringUTFChars(libPath, nullptr);
+    if (path) {
+        g_chromaprint_lib_path = path;
+        LOGI("set chromaprint library path: %s", g_chromaprint_lib_path.c_str());
+        env->ReleaseStringUTFChars(libPath, path);
+    }
 }

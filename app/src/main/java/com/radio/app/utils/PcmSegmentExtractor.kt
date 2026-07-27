@@ -16,11 +16,23 @@ object PcmSegmentExtractor {
     private const val BYTES_PER_MS = 32L // 16000 samples/sec * 2 bytes/sample / 1000 ms
 
     /**
+     * v3.0.6: 将毫秒格式化为用户友好的 "xMxSxMS" 字符串。
+     * 例如 288960 -> "4M48S960MS"
+     */
+    fun formatMsToFriendly(ms: Long): String {
+        val minutes = ms / 60000
+        val seconds = (ms % 60000) / 1000
+        val millis = ms % 1000
+        return "${minutes}M${seconds}S${millis}MS"
+    }
+
+    /**
      * 获取水印指纹 PCM 的固定保存文件。
+     * v3.0.6: 文件名使用 "xMxSxMS" 格式，便于用户识别片段位置。
      */
     fun getWatermarkPcmFile(context: Context, episodeId: String, startMs: Long, endMs: Long): File {
         val dir = RadioApplication.getWatermarkPcmDir(context)
-        return File(dir, "${episodeId}_${startMs}_${endMs}.pcm")
+        return File(dir, "${episodeId}_${formatMsToFriendly(startMs)}_${formatMsToFriendly(endMs)}.pcm")
     }
 
     /**

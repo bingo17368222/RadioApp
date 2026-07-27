@@ -73,6 +73,8 @@ object ChromaprintLoader {
             System.load(internalSo.absolutePath)
             loaded = true
             Log.i(TAG, "ensureLoaded: loaded libchromaprint.so from external storage")
+            // v3.0.6: 将绝对路径传给 JNI，解决 dlopen 短名称在 Android linker 命名空间下找不到的问题
+            ChromaprintExtractor.setNativeLibraryPath(internalSo.absolutePath)
             return true
         } catch (e: UnsatisfiedLinkError) {
             if (e.message?.contains("already loaded") == true) {

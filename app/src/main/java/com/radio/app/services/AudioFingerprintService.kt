@@ -224,7 +224,7 @@ class AudioFingerprintService : Service() {
             Log.i(TAG, "runAddFingerprint: fingerprint empty=${fingerprint.isNullOrBlank()}, length=${fingerprint?.length}")
             writeFingerprintLog("runAddFingerprint: fingerprint empty=${fingerprint.isNullOrBlank()}, length=${fingerprint?.length}")
             if (fingerprint.isNullOrBlank()) {
-                val msg = "指纹提取失败"
+                val msg = "指纹提取失败，请尝试在离线引擎管理中重新下载 Chromaprint 指纹库"
                 showErrorNotification(notificationId, title, msg)
                 sendErrorBroadcast(episodeId, startMs, endMs, msg)
                 writeFingerprintLog("runAddFingerprint: fingerprint extraction returned empty, aborting")
