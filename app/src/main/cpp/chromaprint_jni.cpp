@@ -82,17 +82,20 @@ static jstring extractFingerprint(JNIEnv* env, const int16_t* samples, int sampl
     }
 
     jstring result = nullptr;
-    if (g_lib.chromaprint_start(ctx, sample_rate, channels) == 0) {
-        if (g_lib.chromaprint_feed(ctx, samples, sample_count) == 0) {
-            if (g_lib.chromaprint_finish(ctx) == 0) {
+    // v3.0.7: Chromaprint API 返回 1 表示成功，0 表示失败
+    if (g_lib.chromaprint_start(ctx, sample_rate, channels) == 1) {
+        if (g_lib.chromaprint_feed(ctx, samples, sample_count) == 1) {
+            if (g_lib.chromaprint_finish(ctx) == 1) {
                 char* fp = nullptr;
-                if (g_lib.chromaprint_get_fingerprint(ctx, &fp) == 0 && fp) {
+                if (g_lib.chromaprint_get_fingerprint(ctx, &fp) == 1 && fp) {
                     result = env->NewStringUTF(fp);
                     if (g_lib.chromaprint_dealloc) {
                         g_lib.chromaprint_dealloc(fp);
                     } else {
                         free(fp);
                     }
+                } else {
+                    LOGE("chromaprint_get_fingerprint failed, fp=%p", fp);
                 }
             } else {
                 LOGE("chromaprint_finish failed");
