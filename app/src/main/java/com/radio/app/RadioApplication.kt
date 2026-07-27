@@ -57,6 +57,15 @@ class RadioApplication : Application() {
         }
 
         /**
+         * v3.0.4: 水印指纹 PCM 保存目录：/sdcard/RadioApp/watermark_pcm/
+         */
+        fun getWatermarkPcmDir(context: android.content.Context): File {
+            val dir = File(getCacheRootDir(context), "watermark_pcm")
+            if (!dir.exists()) dir.mkdirs()
+            return dir
+        }
+
+        /**
          * v2.1.0: Episodes cache dir: /sdcard/RadioApp/episodes/
          */
         fun getEpisodesCacheDir(context: android.content.Context): File {

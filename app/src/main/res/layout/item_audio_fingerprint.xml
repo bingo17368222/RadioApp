@@ -42,6 +42,15 @@
     </LinearLayout>
 
     <Button
+        android:id="@+id/btn_play_fingerprint"
+        style="?attr/borderlessButtonStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="播放"
+        android:textColor="?attr/appAccent"
+        android:textSize="13sp" />
+
+    <Button
         android:id="@+id/btn_refresh_fingerprint"
         style="?attr/borderlessButtonStyle"
         android:layout_width="wrap_content"

@@ -28,7 +28,8 @@ import java.io.File
 
 /**
  * v3.0.2: 音频指纹后台服务。
- * 处理「添加为水分指纹」任务：截取片段 PCM -> 提取 Chromaprint 指纹 -> 存入数据库 -> 删除临时 PCM。
+ * 处理「添加为水分指纹」任务：截取片段 PCM -> 提取 Chromaprint 指纹 -> 存入数据库。
+ * v3.0.4: 保留水印指纹片段 PCM，不再自动删除，供音频指纹管理页播放。
  * 全程通过前台通知展示进度，类似字幕生成服务。
  */
 class AudioFingerprintService : Service() {
@@ -126,7 +127,7 @@ class AudioFingerprintService : Service() {
             wakeLock?.acquire(5 * 60 * 1000L)
         } catch (_: Exception) {}
 
-        var tempPcmFile: File? = null
+        var watermarkPcmFile: File? = null
         try {
             // 1. 检查 Chromaprint 库
             updateNotification(title, 10, "检查指纹库...")
@@ -135,12 +136,13 @@ class AudioFingerprintService : Service() {
                 return
             }
 
-            // 2. 截取 PCM 片段
+            // 2. 截取 PCM 片段到固定水印路径（保留不删）
             updateNotification(title, 30, "截取音频片段...")
-            tempPcmFile = withContext(Dispatchers.IO) {
-                PcmSegmentExtractor.extractSegmentPcm(this@AudioFingerprintService, episodeId, startMs, endMs)
+            watermarkPcmFile = withContext(Dispatchers.IO) {
+                // 修正/添加时强制重新截取，确保 PCM 与指纹同步
+                PcmSegmentExtractor.extractWatermarkPcm(this@AudioFingerprintService, episodeId, startMs, endMs, force = true)
             }
-            if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) {
+            if (watermarkPcmFile == null || !watermarkPcmFile.exists() || watermarkPcmFile.length() <= 0) {
                 showErrorNotification(title, "无法截取音频片段（缺少 PCM 缓存）")
                 return
             }
@@ -148,7 +150,7 @@ class AudioFingerprintService : Service() {
             // 3. 提取指纹
             updateNotification(title, 60, "提取音频指纹...")
             val fingerprint = withContext(Dispatchers.IO) {
-                ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                ChromaprintExtractor.extractFingerprintFromFile(watermarkPcmFile)
             }
             if (fingerprint.isNullOrBlank()) {
                 showErrorNotification(title, "指纹提取失败")
@@ -171,8 +173,7 @@ class AudioFingerprintService : Service() {
             )
             dbHelper.saveAudioFingerprint(audioFingerprint)
 
-            // 5. 删除临时 PCM
-            tempPcmFile.delete()
+            // 5. 保留水印 PCM，不删除
 
             updateNotification(title, 100, "完成")
             showCompleteNotification(title, "已添加为水分指纹")
@@ -182,9 +183,7 @@ class AudioFingerprintService : Service() {
             Log.e(TAG, "runAddFingerprint failed: ${e.message}", e)
             showErrorNotification(title, "添加指纹失败: ${e.message}")
         } finally {
-            try {
-                tempPcmFile?.delete()
-            } catch (_: Exception) {}
+            // 保留水印 PCM，不自动删除；仅释放唤醒锁
             try {
                 wakeLock?.release()
             } catch (_: Exception) {}

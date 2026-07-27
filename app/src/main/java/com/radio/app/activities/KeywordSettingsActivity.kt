@@ -1,8 +1,13 @@
 package com.radio.app.activities
 
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.LayoutInflater
 import android.widget.Button
 import android.widget.EditText
@@ -11,20 +16,28 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.radio.app.R
 import com.radio.app.adapters.AudioFingerprintAdapter
+import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.services.AudioFingerprintService
+import com.radio.app.utils.PcmSegmentExtractor
 import com.radio.app.utils.PreferenceManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * v3.0.2: 音频指纹管理页。
  * 展示用户通过“添加为水分指纹”保存的音频指纹素材，支持删除和修正（重新提取）。
+ * v3.0.4: 支持播放水印指纹片段 PCM；PCM 缺失时可从缓存重新生成。
  */
 class KeywordSettingsActivity : AppCompatActivity() {
 
@@ -46,6 +59,15 @@ class KeywordSettingsActivity : AppCompatActivity() {
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private var reloadRunnable: Runnable? = null
+
+    // v3.0.4: PCM 播放
+    private var audioTrack: AudioTrack? = null
+    private var playbackThread: Thread? = null
+
+    companion object {
+        private const val TAG = "KeywordSettingsActivity"
+        private const val SAMPLE_RATE = 16000
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +93,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         reloadRunnable?.let { uiHandler.removeCallbacks(it) }
+        releaseAudioTrack()
     }
 
     // ==================== 音频指纹管理 ====================
@@ -91,6 +114,9 @@ class KeywordSettingsActivity : AppCompatActivity() {
                 .setPositiveButton("删除") { _, _ ->
                     try {
                         RadioDatabaseHelper.getInstance(this).deleteAudioFingerprint(fp.id)
+                        // 同步删除对应的水印 PCM 文件
+                        PcmSegmentExtractor.getWatermarkPcmFile(this, fp.episodeId, fp.startMs, fp.endMs)
+                            .delete()
                         Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
                         loadFingerprints()
                     } catch (e: Exception) {
@@ -116,6 +142,10 @@ class KeywordSettingsActivity : AppCompatActivity() {
             reloadRunnable = Runnable { loadFingerprints() }
             uiHandler.postDelayed(reloadRunnable!!, 3000)
         }
+
+        fingerprintAdapter.setOnPlayListener { fp ->
+            playFingerprintPcm(fp)
+        }
     }
 
     private fun loadFingerprints() {
@@ -133,6 +163,102 @@ class KeywordSettingsActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Toast.makeText(this, "加载指纹失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // ==================== 水印指纹 PCM 播放 ====================
+
+    private fun playFingerprintPcm(fp: AudioFingerprint) {
+        val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(this, fp.episodeId, fp.startMs, fp.endMs)
+        if (pcmFile.exists() && pcmFile.length() > 0) {
+            playPcmFile(pcmFile)
+            return
+        }
+
+        // PCM 不存在，尝试从完整 PCM 缓存重新生成
+        Toast.makeText(this, "PCM 已删除，正在重新生成...", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val regenerated = withContext(Dispatchers.IO) {
+                PcmSegmentExtractor.extractWatermarkPcm(this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs)
+            }
+            if (regenerated != null && regenerated.exists() && regenerated.length() > 0) {
+                playPcmFile(regenerated)
+            } else {
+                Toast.makeText(this@KeywordSettingsActivity, "重新生成 PCM 失败（缺少原始缓存）", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun playPcmFile(pcmFile: File) {
+        releaseAudioTrack()
+        try {
+            val minBufferSize = AudioTrack.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val bufferSize = (minBufferSize * 2).coerceAtLeast(8192)
+            audioTrack = AudioTrack(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+                AudioFormat.Builder()
+                    .setSampleRate(SAMPLE_RATE)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+                bufferSize,
+                AudioTrack.MODE_STREAM,
+                AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+            audioTrack?.play()
+
+            playbackThread = Thread {
+                try {
+                    pcmFile.inputStream().use { fis ->
+                        val buffer = ByteArray(8192)
+                        while (!Thread.currentThread().isInterrupted) {
+                            val read = fis.read(buffer)
+                            if (read <= 0) break
+                            audioTrack?.write(buffer, 0, read)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "PCM playback error: ${e.message}")
+                } finally {
+                    try {
+                        audioTrack?.stop()
+                    } catch (_: Exception) {
+                    }
+                    try {
+                        audioTrack?.release()
+                    } catch (_: Exception) {
+                    }
+                    audioTrack = null
+                }
+            }.apply { start() }
+        } catch (e: Exception) {
+            Log.e(TAG, "playPcmFile failed: ${e.message}", e)
+            Toast.makeText(this, "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            releaseAudioTrack()
+        }
+    }
+
+    private fun releaseAudioTrack() {
+        try {
+            playbackThread?.interrupt()
+        } catch (_: Exception) {
+        }
+        playbackThread = null
+        try {
+            audioTrack?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            audioTrack?.release()
+        } catch (_: Exception) {
+        }
+        audioTrack = null
     }
 
     // ==================== 水货分段开头/结尾组合管理 ====================
