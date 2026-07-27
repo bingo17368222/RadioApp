@@ -716,6 +716,8 @@ class SettingsFragment : Fragment() {
             return
         }
 
+        // v3.0.1: 按文件名称排序
+        allFiles.sortBy { it.name }
         val files = allFiles.toTypedArray()
         val radioAppPath = com.radio.app.RadioApplication.getCacheRootDir(requireContext()).absolutePath
         val cachePath = requireContext().cacheDir.absolutePath
@@ -1392,6 +1394,8 @@ class SettingsFragment : Fragment() {
             return
         }
 
+        // v3.0.1: 按文件名称排序
+        allFiles.sortBy { it.name }
         val files = allFiles.toTypedArray()
         val pcmPath = pcmCacheDir?.absolutePath ?: ""
         val fileNames = Array(files.size) { i ->

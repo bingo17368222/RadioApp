@@ -168,7 +168,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="缓存完成后自动使用Whisper模型预先生成完整字幕，无需手动点击"
+                    android:text="缓存完成后自动使用Whisper模型预先生成完整字幕，无需手动点击。注意：该功能会显著增加耗电，长时间运行可能引起手机发烫，建议在充电或电量充足时开启。"
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:layout_marginTop="2dp" />
@@ -353,6 +353,119 @@
                 android:layout_height="1dp"
                 android:background="?attr/appDivider"
                 android:layout_marginVertical="12dp" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="巡逻预生成完整版PCM"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_patrol_full_pcm"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="开启后台巡逻时会生成完整PCM（关闭则只生成5分钟预览）"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider" />
+            <!-- v2.4.176: 预分段开关 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="预分段"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <Switch
+                        android:id="@+id/switch_pre_segment"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="后台巡逻对已生成完整PCM的节目使用音频模型预先分段"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="PCM缓存上限"
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="16sp" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+                    <EditText
+                        android:id="@+id/et_pcm_cache_max_gb"
+                        android:layout_width="80dp"
+                        android:layout_height="wrap_content"
+                        android:inputType="numberDecimal"
+                        android:text="5"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textSize="16sp" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="GB"
+                        android:textColor="?attr/appTextSecondary"
+                        android:textSize="14sp"
+                        android:layout_marginStart="4dp" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="总PCM缓存超过上限时自动清理最旧的文件（1-10GB）"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:paddingBottom="4dp" />
+            </LinearLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="?attr/appDivider" />
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -842,118 +955,6 @@
                     android:textColor="?attr/appTextSecondary"
                     android:textSize="12sp"
                     android:paddingStart="12dp"
-                    android:paddingBottom="4dp" />
-            </LinearLayout>
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="?attr/appDivider" />
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="巡逻预生成完整版PCM"
-                        android:textColor="?attr/appTextPrimary"
-                        android:textSize="16sp" />
-                    <Switch
-                        android:id="@+id/switch_patrol_full_pcm"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="true" />
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="开启后台巡逻时会生成完整PCM（关闭则只生成5分钟预览）"
-                    android:textColor="?attr/appTextSecondary"
-                    android:textSize="12sp"
-                    android:paddingBottom="4dp" />
-            </LinearLayout>
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="?attr/appDivider" />
-            <!-- v2.4.176: 预分段开关 -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="预分段"
-                        android:textColor="?attr/appTextPrimary"
-                        android:textSize="16sp" />
-                    <Switch
-                        android:id="@+id/switch_pre_segment"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:checked="true" />
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="后台巡逻对已生成完整PCM的节目使用音频模型预先分段"
-                    android:textColor="?attr/appTextSecondary"
-                    android:textSize="12sp"
-                    android:paddingBottom="4dp" />
-            </LinearLayout>
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="?attr/appDivider" />
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="PCM缓存上限"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="16sp" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
-                    <EditText
-                        android:id="@+id/et_pcm_cache_max_gb"
-                        android:layout_width="80dp"
-                        android:layout_height="wrap_content"
-                        android:inputType="numberDecimal"
-                        android:text="5"
-                        android:textColor="?attr/appTextPrimary"
-                        android:textSize="16sp" />
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="GB"
-                        android:textColor="?attr/appTextSecondary"
-                        android:textSize="14sp"
-                        android:layout_marginStart="4dp" />
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="总PCM缓存超过上限时自动清理最旧的文件（1-10GB）"
-                    android:textColor="?attr/appTextSecondary"
-                    android:textSize="12sp"
                     android:paddingBottom="4dp" />
             </LinearLayout>
             <View
