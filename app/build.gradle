@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 405
-        versionName "3.0.5"
+        versionCode 406
+        versionName "3.0.6"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -42,6 +42,8 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // v3.0.6: 使用 debug 签名构建 release 包，避免 APK 未签名导致无法安装
+            signingConfig signingConfigs.debug
         }
         debug {
             signingConfig signingConfigs.debug
