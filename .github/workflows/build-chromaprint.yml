@@ -44,6 +44,11 @@ jobs:
           echo "=== tools dir ==="
           ls -la chromaprint/src/3rdparty/kissfft/tools || true
 
+      - name: Patch FindKissFFT for cross-compilation
+        run: |
+          sed -i 's/NO_DEFAULT_PATH/NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH/' chromaprint/cmake/modules/FindKissFFT.cmake
+          grep -A3 'find_path(KISSFFT_SOURCE_DIR' chromaprint/cmake/modules/FindKissFFT.cmake
+
       - name: Configure CMake
         run: |
           cmake -S chromaprint -B build_${{ matrix.abi }} \
