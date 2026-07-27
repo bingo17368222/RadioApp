@@ -203,6 +203,15 @@ class OfflineEngineActivity : AppCompatActivity() {
             "约4.1MB",
             "https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.94-audio-models/yamnet.tflite",
             "audio-models"
+        ),
+
+        // ===== Chromaprint 音频指纹库（KissFFT 静态内置、无 FFmpeg 依赖）=====
+        EngineInfo(
+            "Chromaprint 指纹库",
+            "Chromaprint 音频指纹原生库\n大小: 约200KB | 用途: 音频指纹识别\n状态: 支持下载\n说明: 基于 KissFFT 静态编译，无 FFmpeg 依赖，输入 16kHz 单声道 16bit PCM\n文件: libchromaprint-arm64-v8a.so",
+            "约200KB",
+            "https://github.com/bingo17368222/RadioApp/releases/download/chromaprint-latest/libchromaprint-arm64-v8a.so",
+            "chromaprint-engine"
         )
     )
 
@@ -373,6 +382,13 @@ class OfflineEngineActivity : AppCompatActivity() {
                     engine.name.contains("Silero") -> File(modelDir, "silero_vad.onnx").exists() && File(modelDir, "silero_vad.onnx").length() > 50_000
                     engine.name.contains("YAMNet") -> File(modelDir, "yamnet.tflite").exists() && File(modelDir, "yamnet.tflite").length() > 1_000_000
                     else -> false
+                }
+                engine.modelDir.contains("chromaprint") -> {
+                    // v2.4.192: Chromaprint .so downloaded as a single file
+                    val soFile = File(modelDir, "libchromaprint-arm64-v8a.so")
+                    val exists = soFile.exists() && soFile.length() > 50_000
+                    writeEngineLog("setupEngineCard: chromaprint check: exists=$exists, size=${soFile.length()}")
+                    exists
                 }
                 else -> getDirTotalSize(modelDir) >= MIN_INSTALL_SIZE
             })
