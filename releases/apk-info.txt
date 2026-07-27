@@ -1,11 +1,11 @@
-version: 2.4.191
-file: /workspace/radioapp/releases/RadioApp-v2.4.191.apk
-source: GitHub Release v2.4.191 (ghfast.top mirror)
-download_url: https://github.com/bingo17368222/RadioApp/releases/download/v2.4.191/RadioApp-v2.4.191.apk
-download_url_mirror: https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.191/RadioApp-v2.4.191.apk
+version: 2.4.192
+file: /workspace/radioapp/releases/RadioApp-v2.4.192.apk
+source: GitHub Release v2.4.192 (ghfast.top mirror)
+download_url: https://github.com/bingo17368222/RadioApp/releases/download/v2.4.192/RadioApp-v2.4.192.apk
+download_url_mirror: https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v2.4.192/RadioApp-v2.4.192.apk
 size_bytes: 35251411
 size_mb: 33.61
-sha256: 43ea8f0859b4eed01d0f8c157cc93b72ae21731df625885fb33153ec1eb23937
-download_time_s: 7.64
-download_speed_mbps: 35.21
-download_speed_kbps: 35210.0
+sha256: b1af36509f506afbd08f39395c7e46c199ae1d9a66ca61dc2b204358d609d067
+download_time_s: 8.0
+download_speed_mbps: 4.2
+download_speed_kbps: 4200.0
