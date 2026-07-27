@@ -25,7 +25,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="00:00 - 00:00"
-            android:textColor="?attr/appTextPrimary"
+            android:textColor="#212121"
             android:textSize="15sp"
             android:textStyle="bold"
             android:maxLines="1"
@@ -37,7 +37,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="节目ID"
-            android:textColor="?attr/appTextSecondary"
+            android:textColor="#616161"
             android:textSize="12sp"
             android:maxLines="1"
             android:ellipsize="end" />
@@ -48,7 +48,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
             android:text="时长 0s · 2026-01-01"
-            android:textColor="?attr/appTextMuted"
+            android:textColor="#9E9E9E"
             android:textSize="12sp"
             android:maxLines="1"
             android:ellipsize="end" />

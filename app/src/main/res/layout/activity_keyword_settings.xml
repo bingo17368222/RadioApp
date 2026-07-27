@@ -58,7 +58,8 @@
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/recycler_audio_fingerprints"
                 android:layout_width="match_parent"
-                android:layout_height="320dp"
+                android:layout_height="wrap_content"
+                android:minHeight="120dp"
                 android:background="@drawable/bg_card"
                 android:padding="8dp"
                 android:layout_marginBottom="8dp"
