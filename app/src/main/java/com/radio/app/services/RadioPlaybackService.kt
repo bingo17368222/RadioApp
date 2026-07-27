@@ -43,6 +43,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.PlaybackException
@@ -1208,6 +1209,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
+        // v3.0.3: 预缓存前检测当前电台日期的节目单是否完整。
+        // 若本地数据库节目数量不足，则同步刷新节目单；刷新失败时跳过本轮预缓存，等待下次触发重试。
+        val currentStationId = currentEp.stationId
+        val currentDateStr = currentEp.broadcastAt?.take(10) ?: ""
+        if (currentStationId.isNotBlank() && currentDateStr.isNotBlank()) {
+            val scheduleOk = try {
+                if (Looper.myLooper() == Looper.getMainLooper()) {
+                    runBlocking(Dispatchers.IO) { ensureScheduleComplete(currentStationId, currentDateStr) }
+                } else {
+                    ensureScheduleComplete(currentStationId, currentDateStr)
+                }
+            } catch (e: Exception) {
+                writePreCacheLog("triggerPreCache: schedule check failed: ${e.message}")
+                false
+            }
+            if (!scheduleOk) {
+                writeServiceLog("notification", "triggerPreCache: schedule incomplete/refresh failed for $currentStationId $currentDateStr, will retry later")
+                return
+            }
+        }
+
         // 标记预缓存开始，通知栏进度轮询将跳过更新
         precacheCompletedCount = 0
         isPrecaching = true
@@ -1221,6 +1243,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodesDir.exists()) episodesDir.mkdirs()
 
         var preCacheList = loadPreCacheList()
+        // v3.0.3: 对预缓存列表中的周末节目补标记为无需预处理
+        markWeekendEpisodesNoPreprocess(preCacheList)
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
 
         // Find current episode index in the list
@@ -1353,6 +1377,71 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } else {
                 writeServiceLog("notification", "triggerPreCache: NOT showing complete notification, futureCached=$futureCachedCount < target=$targetCount, will retry silently")
             }
+        }
+    }
+
+    /**
+     * v3.0.3: 预缓存前检测指定电台日期的节目单是否完整。
+     * 若本地数据库中该日期节目数量不足，则同步调用 API 刷新并保存到数据库。
+     * fetchEpisodesByDateSync 内部会自动将周末节目标记为无需预处理。
+     * 返回 true 表示节目单已可用（本来完整或刷新成功）。
+     */
+    private fun ensureScheduleComplete(stationId: String, dateStr: String): Boolean {
+        if (stationId.isBlank() || dateStr.isBlank()) return false
+        return try {
+            val dbHelper = RadioDatabaseHelper.getInstance(this)
+            val cached = dbHelper.getEpisodesByDateAndStation(stationId, dateStr)
+            // 认为至少 3 个节目才算完整（可根据电台实际节目密度调整）
+            if (cached.size >= 3) {
+                Log.d(TAG, "ensureScheduleComplete: schedule already complete for $stationId $dateStr (${cached.size} episodes)")
+                return true
+            }
+            writePreCacheLog("ensureScheduleComplete: schedule incomplete for $stationId $dateStr (cached=${cached.size}), refreshing...")
+            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+            val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
+            if (!freshEpisodes.isNullOrEmpty()) {
+                dbHelper.saveEpisodeInfos(freshEpisodes)
+                writePreCacheLog("ensureScheduleComplete: refreshed ${freshEpisodes.size} episodes for $stationId $dateStr")
+                true
+            } else {
+                writePreCacheLog("ensureScheduleComplete: refresh returned empty for $stationId $dateStr")
+                false
+            }
+        } catch (e: Exception) {
+            writePreCacheLog("ensureScheduleComplete: error: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * v3.0.3: 对预缓存列表中的周末节目自动标记为无需预处理。
+     * 用于覆盖列表中历史保存、尚未被标记的周末节目。
+     */
+    private fun markWeekendEpisodesNoPreprocess(episodes: List<Episode>) {
+        try {
+            val settings = AppSettings.getInstance(this)
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+            var markedCount = 0
+            for (ep in episodes) {
+                val dateStr = ep.broadcastAt?.take(10) ?: continue
+                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                cal.time = dateFormat.parse(dateStr) ?: continue
+                val dayOfWeek = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                if (dayOfWeek == java.util.Calendar.SATURDAY || dayOfWeek == java.util.Calendar.SUNDAY) {
+                    ep.id?.let { episodeId ->
+                        if (!settings.isNoPreprocess(episodeId)) {
+                            settings.markNoPreprocess(this, episodeId)
+                            markedCount++
+                        }
+                    }
+                }
+            }
+            if (markedCount > 0) {
+                writePreCacheLog("markWeekendEpisodesNoPreprocess: marked $markedCount weekend episodes as no-preprocess")
+            }
+        } catch (e: Exception) {
+            writePreCacheLog("markWeekendEpisodesNoPreprocess: error: ${e.message}")
         }
     }
 
