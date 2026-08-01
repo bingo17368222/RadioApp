@@ -39,6 +39,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * v3.0.2: 音频指纹管理页。
@@ -203,6 +206,16 @@ class KeywordSettingsActivity : AppCompatActivity() {
             showFingerprintTestDialog(fp)
         }
 
+        // v3.1.3: 备注失焦自动保存
+        fingerprintAdapter.setOnNoteUpdateListener { fp, note ->
+            try {
+                RadioDatabaseHelper.getInstance(this).updateFingerprintNote(fp.id, note)
+                Toast.makeText(this, "备注已保存", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "备注保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         // v3.1.2: 批量测试按钮
         findViewById<android.widget.Button>(R.id.btn_test_all_fingerprints)?.setOnClickListener {
             runAllFingerprintsVsAllPcmTest()
@@ -327,7 +340,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
     // ==================== 水印指纹自匹配测试 ====================
 
     private fun showFingerprintTestDialog(fp: AudioFingerprint) {
-        val options = arrayOf("指纹 vs 自身 PCM", "指纹 vs 完整节目 PCM", "指纹 vs 所有完整 PCM", "所有指纹 vs 所有完整 PCM")
+        val options = arrayOf("指纹 vs 自身 PCM", "指纹 vs 完整节目 PCM", "指纹 vs 所有完整 PCM", "所有指纹 vs 所有完整 PCM", "跨节目指纹直接对比")
         AlertDialog.Builder(this)
             .setTitle("音频指纹匹配测试")
             .setItems(options) { _, which ->
@@ -336,6 +349,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
                     1 -> runFingerprintFullEpisodeTest(fp)
                     2 -> runFingerprintVsAllPcmTest(fp)
                     3 -> runAllFingerprintsVsAllPcmTest()
+                    4 -> runCrossEpisodeFingerprintTest(fp)
                 }
             }
             .setNegativeButton("取消", null)
@@ -356,12 +370,12 @@ class KeywordSettingsActivity : AppCompatActivity() {
                     }
                     val refingerprint = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
                         ?: return@withContext "从自身 PCM 提取指纹失败"
-                    val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, refingerprint)
-                    val match = ChromaprintExtractor.isMatch(fp.fingerprint, refingerprint)
-                    "自身 PCM 重提指纹相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\n重提指纹长度: %d".format(
-                        similarity * 100, if (match) "是" else "否",
-                        ChromaprintExtractor.parseFingerprint(fp.fingerprint).size,
-                        ChromaprintExtractor.parseFingerprint(refingerprint).size
+                    val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, refingerprint)
+                    val match = detail.similarity >= 0.70f
+                    "自身 PCM 重提指纹相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\n重提指纹长度: %d\n最佳偏移: %d\n原始相似度(不含长度惩罚): %.2f%%\n位误差: %d/%d bits\n长度惩罚: %.2f".format(
+                        detail.similarity * 100, if (match) "是" else "否",
+                        detail.len1, detail.len2, detail.bestOffset,
+                        detail.rawSimilarity * 100, detail.minErrors, detail.totalBits, detail.lengthPenalty
                     )
                 }.getOrElse { "测试异常: ${it.message}" }
             }
@@ -393,13 +407,13 @@ class KeywordSettingsActivity : AppCompatActivity() {
                     val refingerprint = ChromaprintExtractor.extractFingerprintFromFile(segmentPcm)
                         ?: return@withContext "从完整节目 PCM 提取指纹失败"
                     segmentPcm.delete()
-                    val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, refingerprint)
-                    val match = ChromaprintExtractor.isMatch(fp.fingerprint, refingerprint)
-                    "完整节目 PCM 同片段相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\n重提指纹长度: %d\n源文件: %s".format(
-                        similarity * 100, if (match) "是" else "否",
-                        ChromaprintExtractor.parseFingerprint(fp.fingerprint).size,
-                        ChromaprintExtractor.parseFingerprint(refingerprint).size,
-                        sourceFile.name
+                    val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, refingerprint)
+                    val match = detail.similarity >= 0.70f
+                    "完整节目 PCM 同片段相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\n重提指纹长度: %d\n最佳偏移: %d\n原始相似度: %.2f%%\n位误差: %d/%d\n长度惩罚: %.2f\n源文件: %s".format(
+                        detail.similarity * 100, if (match) "是" else "否",
+                        detail.len1, detail.len2, detail.bestOffset,
+                        detail.rawSimilarity * 100, detail.minErrors, detail.totalBits,
+                        detail.lengthPenalty, sourceFile.name
                     )
                 }.getOrElse { "测试异常: ${it.message}" }
             }
@@ -451,11 +465,12 @@ class KeywordSettingsActivity : AppCompatActivity() {
                                 sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: 提取指纹失败\n")
                                 continue
                             }
-                            val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, refingerprint)
-                            val match = ChromaprintExtractor.isMatch(fp.fingerprint, refingerprint)
+                            val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, refingerprint)
+                            val match = detail.similarity >= 0.70f
                             if (match) matchCount++
-                            sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: %.1f%% %s\n".format(
-                                similarity * 100, if (match) "★匹配" else ""
+                            sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: %.1f%% (偏移:%d, 原始:%.1f%%) %s\n".format(
+                                detail.similarity * 100, detail.bestOffset, detail.rawSimilarity * 100,
+                                if (match) "★匹配" else ""
                             ))
                         } catch (e: Exception) {
                             sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: 异常 ${e.message}\n")
@@ -516,13 +531,13 @@ class KeywordSettingsActivity : AppCompatActivity() {
                                 val refingerprint = ChromaprintExtractor.extractFingerprintFromFile(segmentPcm)
                                 segmentPcm.delete()
                                 if (refingerprint == null) continue
-                                val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, refingerprint)
-                                val match = ChromaprintExtractor.isMatch(fp.fingerprint, refingerprint)
+                                val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, refingerprint)
+                                val match = detail.similarity >= 0.70f
                                 if (match) {
                                     totalMatch++
-                                    sb.append("  ★ $episodeIdFromName: %.1f%%\n".format(similarity * 100))
-                                } else if (similarity > 0.5f) {
-                                    sb.append("  ~ $episodeIdFromName: %.1f%%\n".format(similarity * 100))
+                                    sb.append("  ★ $episodeIdFromName: %.1f%% (偏移:%d)\n".format(detail.similarity * 100, detail.bestOffset))
+                                } else if (detail.similarity > 0.5f) {
+                                    sb.append("  ~ $episodeIdFromName: %.1f%% (偏移:%d)\n".format(detail.similarity * 100, detail.bestOffset))
                                 }
                             } catch (_: Exception) {}
                         }
@@ -540,7 +555,76 @@ class KeywordSettingsActivity : AppCompatActivity() {
         }
     }
 
-    // ==================== 水货分段开头/结尾组合管理 ====================
+    /**
+     * v3.1.3: 跨节目指纹直接对比。
+     * 将选中指纹与数据库中所有其他指纹直接比较（不经过 PCM 重新提取），
+     * 用于诊断"人耳听不出差别但无法跨节目匹配"的问题。
+     * 如果直接对比也不匹配，说明指纹提取阶段就产生了差异（PCM 数据不同或提取参数不一致）。
+     * 如果直接对比匹配但 PCM 重提不匹配，说明是 PCM 截取存在时间偏移。
+     */
+    private fun runCrossEpisodeFingerprintTest(fp: AudioFingerprint) {
+        val allFps = RadioDatabaseHelper.getInstance(this).getAllAudioFingerprints()
+        val others = allFps.filter { it.id != fp.id }
+        if (others.isEmpty()) {
+            Toast.makeText(this, "数据库中只有这一条指纹，无法跨节目对比", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val sb = StringBuilder()
+                    val dateStr = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(fp.createdAt))
+                    sb.append("基准指纹: ${fp.episodeId}\n")
+                    sb.append("  时间: ${formatMs(fp.startMs)}-${formatMs(fp.endMs)} (${fp.durationMs / 1000}s)\n")
+                    sb.append("  创建: $dateStr\n")
+                    sb.append("  指纹点数: ${ChromaprintExtractor.parseFingerprint(fp.fingerprint).size}\n")
+                    sb.append("  备注: ${fp.note.ifEmpty { "(无)" }}\n")
+                    sb.append("\n对比 ${others.size} 条其他指纹:\n\n")
+
+                    var matchCount = 0
+                    // 同时长优先（durationMs 相近）
+                    val sorted = others.sortedBy { kotlin.math.abs(it.durationMs - fp.durationMs) }
+
+                    for (other in sorted) {
+                        val otherDate = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(other.createdAt))
+                        val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, other.fingerprint)
+                        val match = detail.similarity >= 0.70f
+                        val sameDuration = kotlin.math.abs(other.durationMs - fp.durationMs) < 1000
+                        if (match) matchCount++
+
+                        val marker = when {
+                            match -> "★匹配"
+                            detail.similarity > 0.5f -> "~接近"
+                            else -> ""
+                        }
+                        val durMark = if (sameDuration) "[同时长]" else ""
+                        sb.append("${other.episodeId} $durMark $marker\n")
+                        sb.append("  时间: ${formatMs(other.startMs)}-${formatMs(other.endMs)} (${other.durationMs / 1000}s)\n")
+                        sb.append("  创建: $otherDate\n")
+                        sb.append("  相似度: %.2f%% (原始: %.2f%%)\n".format(detail.similarity * 100, detail.rawSimilarity * 100))
+                        sb.append("  指纹长度: ${detail.len1} vs ${detail.len2}, 最佳偏移: ${detail.bestOffset}\n")
+                        sb.append("  位误差: ${detail.minErrors}/${detail.totalBits} bits, 长度惩罚: ${detail.lengthPenalty}\n")
+                        if (other.note.isNotEmpty()) {
+                            sb.append("  备注: ${other.note}\n")
+                        }
+                        sb.append("\n")
+                    }
+                    sb.append("匹配数: $matchCount / ${others.size}")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(this@KeywordSettingsActivity)
+                .setTitle("跨节目指纹直接对比")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    private fun formatMs(ms: Long): String {
+        val s = (ms / 1000).toInt()
+        return String.format("%02d:%02d", s / 60, s % 60)
+    }
 
     private fun initWaterCombinationManagement() {
         etCombinationStart = findViewById(R.id.et_combination_start)

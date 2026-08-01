@@ -116,47 +116,136 @@ object ChromaprintExtractor {
     }
 
     /**
-     * 计算两段指纹的相似度（0.0 - 1.0）。
-     * 使用位误差率（bit error rate）：Chromaprint 指纹每个整数按位比较。
-     * 对不等长的指纹，按较短长度对齐，允许首尾各 10% 的偏移窗口取最大相似度。
+     * v3.1.3: 计算两段指纹的相似度（0.0 - 1.0）。
+     * 使用全滑动窗口位误差率（bit error rate）比较：
+     * 将较短指纹在较长指纹上完全滑动，找到最佳对齐位置。
+     * 仅在长度差异显著（>20%）时施加惩罚，避免同时长音频因微小指纹长度差异被误判。
      */
     fun compareFingerprints(fp1: String, fp2: String): Float {
+        return compareFingerprintsDetailed(fp1, fp2).similarity
+    }
+
+    /**
+     * v3.1.3: 详细比较结果，包含相似度、最佳偏移、指纹长度等诊断信息。
+     */
+    data class CompareResult(
+        val similarity: Float,
+        val bestOffset: Int,
+        val minErrors: Int,
+        val totalBits: Int,
+        val len1: Int,
+        val len2: Int,
+        val rawSimilarity: Float,
+        val lengthPenalty: Float
+    )
+
+    /**
+     * v3.1.3: 全滑动窗口指纹比较，返回详细诊断信息。
+     * 核心改进：
+     * 1. 全滑动窗口：短指纹在长指纹上完整滑动，找到最佳对齐（而非仅 10% 窗口）
+     * 2. 长度惩罚仅在差异 >20% 时生效，同时长音频几乎不受影响
+     * 3. 返回最佳偏移位置，便于诊断跨节目匹配问题
+     */
+    fun compareFingerprintsDetailed(fp1: String, fp2: String): CompareResult {
         val a = parseFingerprint(fp1)
         val b = parseFingerprint(fp2)
-        if (a.isEmpty() || b.isEmpty()) return 0f
-        if (a.size == b.size && a == b) return 1f
+        if (a.isEmpty() || b.isEmpty()) {
+            return CompareResult(0f, 0, 0, 0, a.size, b.size, 0f, 0f)
+        }
+        if (a.size == b.size && a == b) {
+            return CompareResult(1f, 0, 0, a.size * 32, a.size, b.size, 1f, 1f)
+        }
 
         val minLen = minOf(a.size, b.size)
         val maxLen = maxOf(a.size, b.size)
-        if (minLen <= 0) return 0f
-
-        // 对不等长指纹，截断到相同长度比较（允许首尾轻微偏移）
-        val shiftWindow = (minLen * 0.1).toInt().coerceAtLeast(0).coerceAtMost(minLen / 2)
-        var minErrors = Int.MAX_VALUE
-        var totalBits = minLen * 32
+        if (minLen <= 0) {
+            return CompareResult(0f, 0, 0, 0, a.size, b.size, 0f, 0f)
+        }
 
         val short = if (a.size <= b.size) a else b
         val long = if (a.size <= b.size) b else a
 
-        for (offset in 0..shiftWindow.coerceAtMost(long.size - minLen)) {
+        // v3.1.3: 全滑动窗口 — 短指纹在长指纹上完整滑动
+        val maxOffset = long.size - minLen
+        var minErrors = Int.MAX_VALUE
+        var bestOffset = 0
+        val totalBits = minLen * 32
+
+        for (offset in 0..maxOffset) {
             var errors = 0
             for (i in 0 until minLen) {
                 errors += Integer.bitCount(short[i] xor long[offset + i])
             }
-            if (errors < minErrors) minErrors = errors
+            if (errors < minErrors) {
+                minErrors = errors
+                bestOffset = offset
+            }
         }
 
-        val similarity = 1f - (minErrors.toFloat() / totalBits.toFloat())
-        // 长度差异惩罚：长度差异越大，相似度越低
-        val lengthPenalty = 1f - (minLen.toFloat() / maxLen.toFloat()) * 0.3f
-        return (similarity * lengthPenalty).coerceIn(0f, 1f)
+        val rawSimilarity = 1f - (minErrors.toFloat() / totalBits.toFloat())
+
+        // v3.1.3: 长度惩罚 — 仅在长度差异 >20% 时逐步施加
+        val lengthRatio = minLen.toFloat() / maxLen.toFloat()
+        val lengthPenalty = if (lengthRatio >= 0.8f) {
+            1f  // 长度差异 ≤20%，不惩罚（同时长音频微小的指纹长度差异不扣分）
+        } else {
+            // 差异 >20% 时，线性惩罚最多 30%
+            1f - (1f - lengthRatio) * 0.3f
+        }
+
+        val similarity = (rawSimilarity * lengthPenalty).coerceIn(0f, 1f)
+        return CompareResult(similarity, bestOffset, minErrors, totalBits, a.size, b.size, rawSimilarity, lengthPenalty)
+    }
+
+    /**
+     * v3.1.3: 直接比较两个已解析的指纹整数列表（避免重复解析）。
+     */
+    fun compareFingerprintArrays(a: List<Int>, b: List<Int>): CompareResult {
+        if (a.isEmpty() || b.isEmpty()) {
+            return CompareResult(0f, 0, 0, 0, a.size, b.size, 0f, 0f)
+        }
+        if (a.size == b.size && a == b) {
+            return CompareResult(1f, 0, 0, a.size * 32, a.size, b.size, 1f, 1f)
+        }
+
+        val minLen = minOf(a.size, b.size)
+        val maxLen = maxOf(a.size, b.size)
+        if (minLen <= 0) {
+            return CompareResult(0f, 0, 0, 0, a.size, b.size, 0f, 0f)
+        }
+
+        val short = if (a.size <= b.size) a else b
+        val long = if (a.size <= b.size) b else a
+
+        val maxOffset = long.size - minLen
+        var minErrors = Int.MAX_VALUE
+        var bestOffset = 0
+        val totalBits = minLen * 32
+
+        for (offset in 0..maxOffset) {
+            var errors = 0
+            for (i in 0 until minLen) {
+                errors += Integer.bitCount(short[i] xor long[offset + i])
+            }
+            if (errors < minErrors) {
+                minErrors = errors
+                bestOffset = offset
+            }
+        }
+
+        val rawSimilarity = 1f - (minErrors.toFloat() / totalBits.toFloat())
+        val lengthRatio = minLen.toFloat() / maxLen.toFloat()
+        val lengthPenalty = if (lengthRatio >= 0.8f) 1f else 1f - (1f - lengthRatio) * 0.3f
+        val similarity = (rawSimilarity * lengthPenalty).coerceIn(0f, 1f)
+        return CompareResult(similarity, bestOffset, minErrors, totalBits, a.size, b.size, rawSimilarity, lengthPenalty)
     }
 
     /**
      * 判断两段指纹是否匹配。
-     * @param threshold 相似度阈值，默认 0.75
+     * v3.1.3: 默认阈值从 0.75 降至 0.70，适应跨节目匹配的轻微差异。
+     * @param threshold 相似度阈值，默认 0.70
      */
-    fun isMatch(fp1: String, fp2: String, threshold: Float = 0.75f): Boolean {
+    fun isMatch(fp1: String, fp2: String, threshold: Float = 0.70f): Boolean {
         return compareFingerprints(fp1, fp2) >= threshold
     }
 

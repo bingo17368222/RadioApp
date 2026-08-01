@@ -1,10 +1,13 @@
 package com.radio.app.adapters
 
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
@@ -18,6 +21,7 @@ import java.util.Locale
  * v3.0.8: 支持播放/停止状态切换。
  * v3.0.9: 支持条目选中高亮与点击选中。
  * v3.1.0: 增加绑定日志便于排查文字不显示问题。
+ * v3.1.3: 支持备注显示与编辑，失焦自动保存。
  */
 class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.ViewHolder>() {
 
@@ -31,6 +35,7 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
     private var onStopListener: (() -> Unit)? = null
     private var onTestListener: ((AudioFingerprint) -> Unit)? = null
     private var onItemClickListener: ((AudioFingerprint, Int) -> Unit)? = null
+    private var onNoteUpdateListener: ((AudioFingerprint, String) -> Unit)? = null
 
     fun setItems(items: List<AudioFingerprint>) {
         this.items = items
@@ -81,6 +86,11 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         onItemClickListener = listener
     }
 
+    // v3.1.3: 设置备注更新回调
+    fun setOnNoteUpdateListener(listener: (AudioFingerprint, String) -> Unit) {
+        onNoteUpdateListener = listener
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_audio_fingerprint, parent, false)
@@ -98,6 +108,11 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         holder.tvEpisode.text = episodeText
         holder.tvMeta.text = metaText
         Log.d(TAG, "onBindViewHolder pos=$position time='$timeText' episode='$episodeText' meta='$metaText'")
+
+        // v3.1.3: 绑定备注，避免滚动时 TextWatcher 触发
+        holder.bindNote(fp)
+        // 将备注回调通过 tag 传递给 ViewHolder 的失焦监听器
+        holder.itemView.tag = onNoteUpdateListener
 
         val isPlaying = position == playingPosition
         holder.btnPlay.text = if (isPlaying) "停止" else "播放"
@@ -136,5 +151,45 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         val btnTest: Button = view.findViewById(R.id.btn_test_fingerprint)
         val btnRefresh: Button = view.findViewById(R.id.btn_refresh_fingerprint)
         val btnDelete: Button = view.findViewById(R.id.btn_delete_fingerprint)
+        val etNote: EditText = view.findViewById(R.id.et_fingerprint_note)
+
+        // v3.1.3: 当前绑定的指纹 ID，用于失焦时回调
+        private var currentFp: AudioFingerprint? = null
+        private var isBinding = false
+
+        private val noteWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                // 仅在非绑定阶段记录变更，失焦时统一保存
+            }
+        }
+
+        init {
+            etNote.setOnFocusChangeListener { _, hasFocus ->
+                if (!hasFocus && !isBinding) {
+                    val fp = currentFp
+                    val newText = etNote.text?.toString()?.trim() ?: ""
+                    if (fp != null && newText != fp.note) {
+                        Log.d("AudioFingerprintAdapter", "备注失焦保存: fpId=${fp.id} note='$newText'")
+                        // 通过 tag 传递回调
+                        val callback = itemView.tag as? ((AudioFingerprint, String) -> Unit)
+                        callback?.invoke(fp, newText)
+                    }
+                }
+            }
+            etNote.setOnEditorActionListener { _, _, _ ->
+                etNote.clearFocus()
+                true
+            }
+        }
+
+        fun bindNote(fp: AudioFingerprint) {
+            isBinding = true
+            currentFp = fp
+            etNote.setText(fp.note)
+            etNote.setSelection(fp.note.length)
+            isBinding = false
+        }
     }
 }
