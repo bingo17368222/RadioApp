@@ -2,6 +2,7 @@ package com.radio.app.models
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import org.json.JSONArray
 
 class AppSettings private constructor() {
@@ -116,6 +117,8 @@ class AppSettings private constructor() {
     var subtitleScrollPauseSeconds: Int = 10  // [v2.4.9] seconds, default 10
     // [v2.4.14] Episodes marked as "no preprocessing needed" (skip subtitle pre-generation)
     var noPreprocessEpisodes: MutableSet<String> = mutableSetOf()
+    // v3.1.2: 用户手动取消"无需预处理"的节目集合，自动标记时跳过这些节目
+    var manuallyUnmarkedNoPreprocess: MutableSet<String> = mutableSetOf()
 
     /** Gson 安全访问：确保字段不为 null */
     fun safeSubtitleSize(): String = subtitleSize ?: SUBTITLE_MEDIUM
@@ -197,6 +200,17 @@ class AppSettings private constructor() {
             noPreprocessEpisodes.clear()
             for (i in 0 until npArr.length()) {
                 noPreprocessEpisodes.add(npArr.getString(i))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        // v3.1.2: Load manually unmarked no-preprocess episodes
+        try {
+            val muJson = prefs.getString("manually_unmarked_no_preprocess", "[]") ?: "[]"
+            val muArr = JSONArray(muJson)
+            manuallyUnmarkedNoPreprocess.clear()
+            for (i in 0 until muArr.length()) {
+                manuallyUnmarkedNoPreprocess.add(muArr.getString(i))
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -343,6 +357,10 @@ class AppSettings private constructor() {
             val npArr = JSONArray()
             for (ep in noPreprocessEpisodes) npArr.put(ep)
             putString("no_preprocess_episodes", npArr.toString())
+            // v3.1.2: Save manually unmarked no-preprocess episodes
+            val muArr = JSONArray()
+            for (ep in manuallyUnmarkedNoPreprocess) muArr.put(ep)
+            putString("manually_unmarked_no_preprocess", muArr.toString())
             apply()
         }
     }
@@ -351,26 +369,48 @@ class AppSettings private constructor() {
     fun toggleNoPreprocess(context: Context, episodeId: String): Boolean {
         val nowMarked = if (noPreprocessEpisodes.contains(episodeId)) {
             noPreprocessEpisodes.remove(episodeId)
+            // v3.1.2: 用户手动取消"无需预处理"，记录到手动取消集合，防止自动重新标记
+            manuallyUnmarkedNoPreprocess.add(episodeId)
             false
         } else {
             noPreprocessEpisodes.add(episodeId)
+            // v3.1.2: 用户手动标记"无需预处理"，从手动取消集合中移除
+            manuallyUnmarkedNoPreprocess.remove(episodeId)
             true
         }
         val npArr = JSONArray()
         for (ep in noPreprocessEpisodes) npArr.put(ep)
+        val muArr = JSONArray()
+        for (ep in manuallyUnmarkedNoPreprocess) muArr.put(ep)
         val prefs = context.getSharedPreferences("radio_app_settings", Context.MODE_PRIVATE)
-        prefs.edit().putString("no_preprocess_episodes", npArr.toString()).apply()
+        prefs.edit()
+            .putString("no_preprocess_episodes", npArr.toString())
+            .putString("manually_unmarked_no_preprocess", muArr.toString())
+            .apply()
         return nowMarked
     }
 
     fun isNoPreprocess(episodeId: String): Boolean = noPreprocessEpisodes.contains(episodeId)
 
     /**
+     * v3.1.2: 检查节目是否被用户手动取消了"无需预处理"标记。
+     * 自动标记（如周末节目）应跳过这些节目。
+     */
+    fun isManuallyUnmarkedNoPreprocess(episodeId: String): Boolean =
+        manuallyUnmarkedNoPreprocess.contains(episodeId)
+
+    /**
      * v2.4.138: Mark an episode as "no preprocessing needed" without toggling.
      * Used for automatic weekday/weekend rules.
+     * v3.1.2: 如果用户已手动取消该节目的"无需预处理"标记，则跳过自动标记。
      */
     fun markNoPreprocess(context: Context, episodeId: String) {
         if (noPreprocessEpisodes.contains(episodeId)) return
+        // v3.1.2: 尊重用户的手动取消，不再自动标记
+        if (manuallyUnmarkedNoPreprocess.contains(episodeId)) {
+            Log.d("AppSettings", "markNoPreprocess: SKIP $episodeId — user manually unmarked")
+            return
+        }
         noPreprocessEpisodes.add(episodeId)
         val npArr = org.json.JSONArray()
         for (ep in noPreprocessEpisodes) npArr.put(ep)

@@ -2276,6 +2276,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.125: Previously this started SubtitleGeneratorService with task_type="segment",
         // which triggered AI ASR segmentation (Whisper/Vosk) that could fail with
         // "分段失败" errors. Now we directly decode PCM without AI segmentation.
+        // v3.1.2: 添加进度通知，类似预分段。
         Thread {
             try {
                 writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
@@ -2284,15 +2285,57 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // in .info files).
                 val expectedDurationMs = episode.duration?.let { if (it > 0) it * 1000L else 0L } ?: 0L
                 val success = com.radio.app.utils.AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    this, episodeId, audioUrl, expectedDurationMs, generateFullPcm
+                    this, episodeId, audioUrl, expectedDurationMs, generateFullPcm,
+                    progressCallback = { pct ->
+                        try {
+                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                if (nm.getNotificationChannel("pcm_pregen_channel") == null) {
+                                    nm.createNotificationChannel(NotificationChannel("pcm_pregen_channel", "PCM预生成", NotificationManager.IMPORTANCE_LOW))
+                                }
+                            }
+                            val title = "预生成PCM [${episode.title ?: episodeId}]"
+                            val epDateStr = when {
+                                episode.startTime > 0 && episode.endTime > episode.startTime -> {
+                                    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                                    fmt.format(java.util.Date(episode.startTime))
+                                }
+                                episode.broadcastAt.length >= 10 -> episode.broadcastAt.substring(0, 10)
+                                else -> ""
+                            }
+                            val contentText = if (pct >= 100) {
+                                "$epDateStr · PCM生成完成"
+                            } else {
+                                "$epDateStr · 正在解码... ${pct}%"
+                            }
+                            val notif = NotificationCompat.Builder(this@RadioPlaybackService, "pcm_pregen_channel")
+                                .setSmallIcon(android.R.drawable.ic_media_ff)
+                                .setContentTitle(title)
+                                .setContentText(contentText)
+                                .setProgress(100, pct, pct <= 0)
+                                .setOngoing(pct in 1..99)
+                                .setAutoCancel(true)
+                                .build()
+                            nm.notify(2002, notif)
+                        } catch (_: Exception) {}
+                    }
                 )
                 if (success) {
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation SUCCESS for $episodeId")
                 } else {
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation FAILED for $episodeId (audio file may not be cached)")
                 }
+                // 完成后取消进度通知
+                try {
+                    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(2002)
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 writePreCacheLog("startPreCachePcmGeneration:  PCM generation exception: ${e.message}")
+                try {
+                    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                    nm.cancel(2002)
+                } catch (_: Exception) {}
             }
         }.start()
     }
@@ -2369,6 +2412,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     ?.filter { it.isFile && it.length() > 1024 }
                     ?.map { it.name }?.toSet() ?: emptySet()
                 val settings = AppSettings.getInstance(this@RadioPlaybackService)
+                val targetCount = settings.preloadCacheCount
 
                 // v2.4.93: Only scan episodes AFTER the current one.
                 // Previously also scanned episodes before current — this wasted resources
@@ -2387,6 +2431,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 var withoutAudio = 0
 
                 // [v2.4.19] Also check for leftover _full.pcm (interrupted generation) - prioritize these
+                // v3.1.2: 优先补全最近的节目——遇到未缓存的近期节目时停止巡逻并触发预缓存，
+                // 避免跳过临近节目去处理更远的节目。
+                var validEpisodeCounter = 0
                 for (i in scanOrder) {
                     var ep = preCacheList[i]
                     if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
@@ -2395,11 +2442,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     ep = enrichEpisodeFromDbIfNeeded(ep)
                     totalScanned++
 
+                    // v3.1.2: 跳过不喜欢和无需预处理的节目，不计入有效节目计数
+                    if (settings.isNoPreprocess(ep.id)) {
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, noPreprocess")
+                        continue
+                    }
+                    if (settings.isDisliked(ep.id) || (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title))) {
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked")
+                        continue
+                    }
+
+                    validEpisodeCounter++
+
                     // Check if audio is cached
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) {
                         withoutAudio++
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (expected: $fileName)")
+                        // v3.1.2: 如果该未缓存节目在预缓存目标范围内，停止巡逻并触发预缓存，
+                        // 避免跳过临近节目去处理更远的已缓存节目。
+                        if (validEpisodeCounter <= targetCount) {
+                            writePreCacheLog("patrolSubtitle:  STOP — ep=${ep.id} ( #$validEpisodeCounter <= target $targetCount) audio NOT cached, triggering pre-cache to fill nearest gap first")
+                            if (!isPrecaching) {
+                                try { serviceScope.launch { triggerPreCache() } } catch (_: Exception) {}
+                            }
+                            return@launch
+                        }
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target range #$validEpisodeCounter > $targetCount)")
                         continue
                     }
 
@@ -2427,19 +2495,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     withAudio++
                     writePreCacheLog("patrolSubtitle:  ep=${ep.id}, audio cached ($fileName), checking subtitles...")
 
-                    // [v2.4.14] Skip episodes marked as "no preprocessing needed"
-                    if (settings.isNoPreprocess(ep.id)) continue
-
-                    // v2.4.83: Skip episodes that are disliked
-                    if (settings.isDisliked(ep.id)) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked by ID")
-                        continue
-                    }
-                    // v2.4.83: Also check by title (stationId + title)
-                    if (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked by title: ${ep.title}")
-                        continue
-                    }
+                    // v3.1.2: noPreprocess/disliked checks moved earlier (before audio cache check)
+                    // to ensure valid episode counting is accurate.
 
                     // v2.4.176: Pre-segment episodes that already have a full PCM file and no real segments yet.
                     if (settings.enablePreSegment && preprocessingEnabled) {
@@ -3756,7 +3813,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val rawPlayerDur = player?.duration ?: 0L
         // [v2.0.78] Include pauseConfirmedUntil to prevent flicker
         val inPauseConfirmWindow = System.currentTimeMillis() < pauseConfirmedUntil
-        val playing = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
+        var playing = playbackStarted && !userPaused && !pausedByAudioFocus && !inPauseConfirmWindow
+        // v3.1.2: 通知栏状态与实际播放不同步修复。
+        // 当 ExoPlayer 实际在播放但标志位显示暂停时，自动修正标志位并强制刷新通知。
+        val actualPlaying = prepared && player?.isPlaying == true
+        if (actualPlaying && !playing && !episodeSwitching) {
+            writeServiceLog("notification", "[v3.1.2-PROGRESS-POLL] STATE MISMATCH: player.isPlaying=true but computed playing=false (userPaused=$userPaused, pausedByAudioFocus=$pausedByAudioFocus, inPauseConfirmWindow=$inPauseConfirmWindow). Resetting flags.")
+            userPaused = false
+            pausedByAudioFocus = false
+            pauseConfirmedUntil = 0L
+            playing = true
+            forceNotificationUpdate = true
+        }
         val epId = currentEpisode?.id ?: "null"
         val epTitle = currentEpisode?.title ?: "null"
         // [v2.0.75] Issue 5: 详细日志 - 进度条状态、总时长、播放进度、关键标志
@@ -5230,6 +5298,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             positionRestoreRequested = true
             writeServiceLog("playback", " seekTo: queued seek to $pos (prepared=$prepared, will apply on STATE_READY)")
         }
+        // v3.1.2: seekTo 后刷新通知，修复跳转片段后通知栏状态/进度不更新
+        forceNotificationUpdate = true
+        notifyNotification()
     }
     fun skipForward() {
         if (isLive) return

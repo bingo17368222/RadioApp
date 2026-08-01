@@ -414,7 +414,8 @@ object AudioSegmentAnalyzer {
         episodeId: String,
         audioUrl: String?,
         expectedDurationMs: Long = 0,
-        generateFullPcm: Boolean = true
+        generateFullPcm: Boolean = true,
+        progressCallback: ((Int) -> Unit)? = null
     ): Boolean {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
@@ -466,7 +467,8 @@ object AudioSegmentAnalyzer {
             if (min5InfoFile.exists()) min5InfoFile.delete()
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] generating 5-min PCM only for $episodeId\n")
             val fiveMinMs = 5 * 60 * 1000L
-            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, maxDecodeDurationMs = fiveMinMs)
+            val scaledCb5 = progressCallback?.let { orig -> { pct: Int -> orig((pct * 5).coerceAtMost(90)) } }
+            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, maxDecodeDurationMs = fiveMinMs, progressCallback = scaledCb5)
             if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
                 precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode 5-min PCM for $episodeId\n")
                 return false
@@ -506,8 +508,10 @@ object AudioSegmentAnalyzer {
 
         // Decode full PCM from scratch.
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
-        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs)
+        val scaledCbFull = progressCallback?.let { orig -> { pct: Int -> orig((pct * 5).coerceAtMost(90)) } }
+        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, progressCallback = scaledCbFull)
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
+            progressCallback?.invoke(100)
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode full PCM for $episodeId\n")
             return false
         }
@@ -559,6 +563,7 @@ object AudioSegmentAnalyzer {
         val maxBytes = (settings.pcmCacheMaxSizeGb * 1024L * 1024L * 1024L).toLong()
         cleanupPcmCache(context, maxSizeBytes = maxBytes)
 
+        progressCallback?.invoke(100)
         return fullPcmFile.exists() && fullPcmFile.length() > 16000
     }
 

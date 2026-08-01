@@ -70,11 +70,22 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center_horizontal"
-                android:layout_marginBottom="24dp"
+                android:layout_marginBottom="8dp"
                 android:text="暂无音频指纹素材"
                 android:textColor="?attr/appTextMuted"
                 android:textSize="14sp"
                 android:visibility="gone" />
+
+            <!-- v3.1.2: 批量测试按钮 -->
+            <Button
+                android:id="@+id/btn_test_all_fingerprints"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="批量测试：所有指纹 vs 所有完整PCM"
+                android:textColor="@color/white"
+                android:backgroundTint="?attr/appAccent"
+                android:layout_marginBottom="16dp"
+                android:textSize="13sp" />
 
             <!-- 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用） -->
             <TextView

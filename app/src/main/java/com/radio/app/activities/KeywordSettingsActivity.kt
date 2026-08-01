@@ -202,6 +202,11 @@ class KeywordSettingsActivity : AppCompatActivity() {
         fingerprintAdapter.setOnTestListener { fp ->
             showFingerprintTestDialog(fp)
         }
+
+        // v3.1.2: 批量测试按钮
+        findViewById<android.widget.Button>(R.id.btn_test_all_fingerprints)?.setOnClickListener {
+            runAllFingerprintsVsAllPcmTest()
+        }
     }
 
     private fun loadFingerprints() {
@@ -322,13 +327,15 @@ class KeywordSettingsActivity : AppCompatActivity() {
     // ==================== 水印指纹自匹配测试 ====================
 
     private fun showFingerprintTestDialog(fp: AudioFingerprint) {
-        val options = arrayOf("指纹 vs 自身 PCM", "指纹 vs 完整节目 PCM")
+        val options = arrayOf("指纹 vs 自身 PCM", "指纹 vs 完整节目 PCM", "指纹 vs 所有完整 PCM", "所有指纹 vs 所有完整 PCM")
         AlertDialog.Builder(this)
             .setTitle("音频指纹匹配测试")
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> runFingerprintSelfTest(fp)
                     1 -> runFingerprintFullEpisodeTest(fp)
+                    2 -> runFingerprintVsAllPcmTest(fp)
+                    3 -> runAllFingerprintsVsAllPcmTest()
                 }
             }
             .setNegativeButton("取消", null)
@@ -398,6 +405,135 @@ class KeywordSettingsActivity : AppCompatActivity() {
             }
             AlertDialog.Builder(this@KeywordSettingsActivity)
                 .setTitle("指纹 vs 完整节目 PCM")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    /**
+     * v3.1.2: 单指纹 vs 所有完整 PCM。
+     * 扫描 PCM 缓存目录中所有 *_full.pcm 文件，对每个文件截取指纹对应时间段并比对。
+     */
+    private fun runFingerprintVsAllPcmTest(fp: AudioFingerprint) {
+        lifecycleScope.launch {
+            val progressDialog = android.app.ProgressDialog(this@KeywordSettingsActivity).apply {
+                setMessage("正在测试指纹 vs 所有完整 PCM...")
+                setCancelable(false)
+                show()
+            }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(this@KeywordSettingsActivity)) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
+                    val allPcmFiles = pcmCacheDir.listFiles { f -> f.name.endsWith("_full.pcm") && f.length() > 0 }
+                        ?.sortedByDescending { it.lastModified() } ?: emptyList()
+                    if (allPcmFiles.isEmpty()) return@withContext "未找到任何完整 PCM 缓存文件"
+
+                    val sb = StringBuilder()
+                    sb.append("指纹: ${fp.episodeId} [${fp.startMs}-${fp.endMs}]\n")
+                    sb.append("共 ${allPcmFiles.size} 个完整 PCM 文件\n\n")
+
+                    var matchCount = 0
+                    for ((idx, pcmFile) in allPcmFiles.withIndex()) {
+                        val episodeIdFromName = pcmFile.name.removeSuffix("_full.pcm")
+                        try {
+                            val segmentPcm = PcmSegmentExtractor.extractSegmentFromFile(pcmFile, fp.startMs, fp.endMs)
+                            if (segmentPcm == null) {
+                                sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: 截取片段失败\n")
+                                continue
+                            }
+                            val refingerprint = ChromaprintExtractor.extractFingerprintFromFile(segmentPcm)
+                            segmentPcm.delete()
+                            if (refingerprint == null) {
+                                sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: 提取指纹失败\n")
+                                continue
+                            }
+                            val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, refingerprint)
+                            val match = ChromaprintExtractor.isMatch(fp.fingerprint, refingerprint)
+                            if (match) matchCount++
+                            sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: %.1f%% %s\n".format(
+                                similarity * 100, if (match) "★匹配" else ""
+                            ))
+                        } catch (e: Exception) {
+                            sb.append("[${idx + 1}/${allPcmFiles.size}] $episodeIdFromName: 异常 ${e.message}\n")
+                        }
+                    }
+                    sb.append("\n匹配数: $matchCount / ${allPcmFiles.size}")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            progressDialog.dismiss()
+            AlertDialog.Builder(this@KeywordSettingsActivity)
+                .setTitle("指纹 vs 所有完整 PCM")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    /**
+     * v3.1.2: 所有指纹 vs 所有完整 PCM。
+     * 对每条指纹，与所有完整 PCM 文件进行比对，输出匹配矩阵。
+     */
+    private fun runAllFingerprintsVsAllPcmTest() {
+        val allFps = RadioDatabaseHelper.getInstance(this).getAllAudioFingerprints()
+        if (allFps.isEmpty()) {
+            Toast.makeText(this, "暂无指纹", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch {
+            val progressDialog = android.app.ProgressDialog(this@KeywordSettingsActivity).apply {
+                setMessage("正在测试所有指纹 vs 所有完整 PCM...")
+                setCancelable(false)
+                show()
+            }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(this@KeywordSettingsActivity)) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
+                    val allPcmFiles = pcmCacheDir.listFiles { f -> f.name.endsWith("_full.pcm") && f.length() > 0 }
+                        ?.sortedByDescending { it.lastModified() } ?: emptyList()
+                    if (allPcmFiles.isEmpty()) return@withContext "未找到任何完整 PCM 缓存文件"
+
+                    val sb = StringBuilder()
+                    sb.append("指纹数: ${allFps.size}, PCM 文件数: ${allPcmFiles.size}\n\n")
+
+                    var totalMatch = 0
+                    var totalTest = 0
+                    for ((fpIdx, fp) in allFps.withIndex()) {
+                        sb.append("--- 指纹 ${fpIdx + 1}: ${fp.episodeId} [${fp.startMs}-${fp.endMs}] ---\n")
+                        for (pcmFile in allPcmFiles) {
+                            val episodeIdFromName = pcmFile.name.removeSuffix("_full.pcm")
+                            totalTest++
+                            try {
+                                val segmentPcm = PcmSegmentExtractor.extractSegmentFromFile(pcmFile, fp.startMs, fp.endMs)
+                                if (segmentPcm == null) continue
+                                val refingerprint = ChromaprintExtractor.extractFingerprintFromFile(segmentPcm)
+                                segmentPcm.delete()
+                                if (refingerprint == null) continue
+                                val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, refingerprint)
+                                val match = ChromaprintExtractor.isMatch(fp.fingerprint, refingerprint)
+                                if (match) {
+                                    totalMatch++
+                                    sb.append("  ★ $episodeIdFromName: %.1f%%\n".format(similarity * 100))
+                                } else if (similarity > 0.5f) {
+                                    sb.append("  ~ $episodeIdFromName: %.1f%%\n".format(similarity * 100))
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    sb.append("\n总测试: $totalTest, 匹配: $totalMatch")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            progressDialog.dismiss()
+            AlertDialog.Builder(this@KeywordSettingsActivity)
+                .setTitle("所有指纹 vs 所有完整 PCM")
                 .setMessage(result)
                 .setPositiveButton("确定", null)
                 .show()
