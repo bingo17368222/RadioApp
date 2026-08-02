@@ -3883,6 +3883,7 @@ class PlayerActivity : AppCompatActivity() {
                 dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
                 val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
                 cal.time = dateFormat.parse(currentDateStr) ?: return@Thread
+
                 cal.add(java.util.Calendar.DAY_OF_YEAR, direction)
                 val targetDate = dateFormat.format(cal.time)
 

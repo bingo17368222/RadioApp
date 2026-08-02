@@ -47,6 +47,19 @@ object SegmentGenerator {
     private const val FINGERPRINT_MATCH_THRESHOLD = 0.75f
     private const val MIN_SEGMENT_MS_FOR_FINGERPRINT = 3000L
 
+    // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
+    private fun writeFingerprintLog(context: Context, message: String) {
+        try {
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "fingerprint")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "fingerprint_segment.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            java.io.FileWriter(logFile, true).use { it.append("[$ts] $message\n") }
+        } catch (e: Exception) {
+            Log.e(TAG, "writeFingerprintLog failed: ${e.message}")
+        }
+    }
+
     /**
      * Generate fixed 15-minute segments for an episode.
      * Used before subtitles are available as placeholder segments.
@@ -139,12 +152,18 @@ object SegmentGenerator {
                 merged = mergeAdjacentSegments(fingerprintChecked)
                 val flippedCount = merged.count { !it.hasVoice } - segments.count { !it.hasVoice }
                 if (flippedCount > 0) {
-                    Log.i(TAG, "关键词方案指纹审核: 在${merged.size}个片段中，发现${flippedCount}个干货片段匹配水分指纹，已转为水货")
+                    val fpMsg = "关键词方案指纹审核: 在${merged.size}个片段中，发现${flippedCount}个干货片段匹配水分指纹，已转为水货"
+                    Log.i(TAG, fpMsg)
+                    writeFingerprintLog(context, fpMsg)
                 } else {
-                    Log.i(TAG, "关键词方案指纹审核: 所有干货片段均未匹配水分指纹，保持原分类")
+                    val fpMsg = "关键词方案指纹审核: 所有干货片段均未匹配水分指纹，保持原分类"
+                    Log.i(TAG, fpMsg)
+                    writeFingerprintLog(context, fpMsg)
                 }
             } else {
-                Log.i(TAG, "关键词方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）")
+                val fpMsg = "关键词方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）"
+                Log.i(TAG, fpMsg)
+                writeFingerprintLog(context, fpMsg)
             }
 
             Log.i(TAG, "generateKeywordSegments: ${merged.size} segments (merged from ${segments.size}) for episode=$episodeId")
@@ -244,7 +263,9 @@ object SegmentGenerator {
         groups.forEach { group -> group.memberIndices.forEach { idx -> fpIndexToGroupId[idx] = group.groupId } }
         // 组ID → 组信息 的快速查找
         val groupIdToGroup = groups.associateBy { it.groupId }
-        Log.i(TAG, "指纹二次审核: 水分指纹库共${waterFingerprints.size}条，已分组为${groups.size}组")
+        val fpMsg0 = "指纹二次审核: 水分指纹库共${waterFingerprints.size}条，已分组为${groups.size}组"
+        Log.i(TAG, fpMsg0)
+        writeFingerprintLog(context, fpMsg0)
 
         for (i in result.indices) {
             val seg = result[i]
@@ -261,13 +282,17 @@ object SegmentGenerator {
             try {
                 tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
                 if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) {
-                    Log.w(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒无PCM数据，跳过")
+                    val fpMsg1 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒无PCM数据，跳过"
+                    Log.w(TAG, fpMsg1)
+                    writeFingerprintLog(context, fpMsg1)
                     continue
                 }
 
                 val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
                 if (fingerprint.isNullOrBlank()) {
-                    Log.w(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒无法提取指纹，跳过")
+                    val fpMsg2 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒无法提取指纹，跳过"
+                    Log.w(TAG, fpMsg2)
+                    writeFingerprintLog(context, fpMsg2)
                     continue
                 }
 
@@ -285,7 +310,9 @@ object SegmentGenerator {
                     if (detail) {
                         matched = true
                         matchedGroupId = fpIndexToGroupId[j]
-                        Log.i(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒直接匹配指纹 #${j}（来源: ${waterFp.episodeId}）")
+                        val fpMsg3 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒直接匹配指纹 #${j}（来源: ${waterFp.episodeId}）"
+                        Log.i(TAG, fpMsg3)
+                        writeFingerprintLog(context, fpMsg3)
                         break
                     }
 
@@ -294,7 +321,9 @@ object SegmentGenerator {
                     if (stretchDetail.similarity >= FINGERPRINT_MATCH_THRESHOLD) {
                         matched = true
                         matchedGroupId = fpIndexToGroupId[j]
-                        Log.i(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒伸缩匹配指纹 #${j}（来源: ${waterFp.episodeId}，相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）")
+                        val fpMsg4 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒伸缩匹配指纹 #${j}（来源: ${waterFp.episodeId}，相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）"
+                        Log.i(TAG, fpMsg4)
+                        writeFingerprintLog(context, fpMsg4)
                         break
                     }
 
@@ -313,7 +342,9 @@ object SegmentGenerator {
                             if (memberDetail.similarity >= FINGERPRINT_MATCH_THRESHOLD) {
                                 matched = true
                                 matchedGroupId = groupId
-                                Log.i(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒同组匹配指纹 #${memberIdx}（来源: ${memberFp.episodeId}，相似度: ${"%.0f".format(memberDetail.similarity * 100)}%）")
+                                val fpMsg5 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒同组匹配指纹 #${memberIdx}（来源: ${memberFp.episodeId}，相似度: ${"%.0f".format(memberDetail.similarity * 100)}%）"
+                                Log.i(TAG, fpMsg5)
+                                writeFingerprintLog(context, fpMsg5)
                                 break
                             }
                         }
@@ -324,10 +355,14 @@ object SegmentGenerator {
                 if (matched) {
                     seg.hasVoice = false
                     seg.label = "水货"
-                    Log.i(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒被判定为水货（匹配指纹组 #${matchedGroupId}）")
+                    val fpMsg6 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒被判定为水货（匹配指纹组 #${matchedGroupId}）"
+                    Log.i(TAG, fpMsg6)
+                    writeFingerprintLog(context, fpMsg6)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒处理异常: ${e.message}")
+                val fpMsg7 = "指纹二次审核: 片段${seg.start/1000}秒-${seg.end/1000}秒处理异常: ${e.message}"
+                Log.e(TAG, fpMsg7)
+                writeFingerprintLog(context, fpMsg7)
             } finally {
                 try { tempPcmFile?.delete() } catch (_: Exception) {}
             }
@@ -414,7 +449,9 @@ object SegmentGenerator {
                 // 2. 如不存在，调用双模型音频分段生成音频分段结果
                 // 3. 对干货片段用水分指纹二次审核，匹配则改为指纹水货片段
                 // 4. 合并相邻水货片段，标记为指纹水货片段
-                Log.i(TAG, "postSegmentKeyword: 就AI听 音频+指纹方案 for episode=$episodeId")
+                val fpMsgScheme = "postSegmentKeyword: 就AI听 音频+指纹方案 for episode=$episodeId"
+                Log.i(TAG, fpMsgScheme)
+                writeFingerprintLog(context, fpMsgScheme)
 
                 // 检查数据库是否已有音频分段结果
                 val existingSegments = dbHelper.getVoiceSegments(episodeId)
@@ -462,6 +499,7 @@ object SegmentGenerator {
                     var matchedCount = 0
 
                     Log.i(TAG, "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}")
+                    writeFingerprintLog(context, "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}")
                     if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
                         val fingerprintChecked = applyAudioFingerprintSecondaryCheck(
                             context, episodeId, baseSegments, waterFingerprints
@@ -491,18 +529,28 @@ object SegmentGenerator {
                             val mergedWaterCount = merged.count { !it.hasVoice }
                             val dryPct = if (totalDrySegments > 0) 
                                 "%.1f%%".format(matchedCount.toFloat() / totalDrySegments * 100) else "0%"
-                            Log.i(TAG, "就AI听方案指纹审核: 匹配${matchedCount}个干货片段 [$matchedDetails]")
-                            Log.i(TAG, "就AI听方案指纹审核: 合并后${mergedWaterCount}段指纹水货，原干货匹配率$dryPct")
+                            val fpMsg1 = "就AI听方案指纹审核: 匹配${matchedCount}个干货片段 [$matchedDetails]"
+                            Log.i(TAG, fpMsg1)
+                            writeFingerprintLog(context, fpMsg1)
+                            val fpMsg2 = "就AI听方案指纹审核: 合并后${mergedWaterCount}段指纹水货，原干货匹配率$dryPct"
+                            Log.i(TAG, fpMsg2)
+                            writeFingerprintLog(context, fpMsg2)
                         } else {
-                            Log.i(TAG, "就AI听方案指纹审核: 未匹配到任何水分指纹，所有干货保持原分类")
+                            val fpMsg = "就AI听方案指纹审核: 未匹配到任何水分指纹，所有干货保持原分类"
+                            Log.i(TAG, fpMsg)
+                            writeFingerprintLog(context, fpMsg)
                         }
                         segments = merged
                     } else {
-                        Log.i(TAG, "就AI听方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）")
+                        val fpMsg = "就AI听方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）"
+                        Log.i(TAG, fpMsg)
+                        writeFingerprintLog(context, fpMsg)
                         segments = baseSegments
                     }
 
-                    Log.i(TAG, "就AI听方案完成: ${segments.size}个片段（原干货${totalDrySegments}段，指纹匹配${matchedCount}段）")
+                    val fpMsgDone = "就AI听方案完成: ${segments.size}个片段（原干货${totalDrySegments}段，指纹匹配${matchedCount}段）"
+                    Log.i(TAG, fpMsgDone)
+                    writeFingerprintLog(context, fpMsgDone)
                 }
             } else {
                 // Keyword-based segments
@@ -717,7 +765,9 @@ object SegmentGenerator {
         progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): JiuAiTingResult? {
         val segStartTime = System.currentTimeMillis()
-        Log.i(TAG, "generateJiuAiTingSegments: 就AI听音频+指纹方案 for episode=$episodeId")
+        val fpMsgStart = "generateJiuAiTingSegments: 就AI听音频+指纹方案 for episode=$episodeId"
+        Log.i(TAG, fpMsgStart)
+        writeFingerprintLog(context, fpMsgStart)
 
         // 1. 调用双模型音频分段
         val audioResult = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl, progressCallback)
@@ -725,17 +775,23 @@ object SegmentGenerator {
         val engineName = if (audioResult != null) "${audioResult.engineName}+指纹" else "就AI听"
 
         if (baseSegments.isEmpty()) {
-            Log.w(TAG, "generateJiuAiTingSegments: 音频分段无结果")
+            val fpMsgEmpty = "generateJiuAiTingSegments: 音频分段无结果"
+            Log.w(TAG, fpMsgEmpty)
+            writeFingerprintLog(context, fpMsgEmpty)
             return null
         }
-        Log.i(TAG, "就AI听音频分段: 生成${baseSegments.size}个片段")
+        val fpMsgSegCount = "就AI听音频分段: 生成${baseSegments.size}个片段"
+        Log.i(TAG, fpMsgSegCount)
+        writeFingerprintLog(context, fpMsgSegCount)
 
         val dbHelper = RadioDatabaseHelper.getInstance(context)
         val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
         val totalDrySegments = baseSegments.count { it.hasVoice }
         var matchedCount = 0
 
-        Log.i(TAG, "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}")
+        val fpMsgPrepare = "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}"
+        Log.i(TAG, fpMsgPrepare)
+        writeFingerprintLog(context, fpMsgPrepare)
         val finalSegments = if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // 2. 对干货片段进行指纹二次审核
             val fingerprintChecked = applyAudioFingerprintSecondaryCheck(context, episodeId, baseSegments, waterFingerprints)
@@ -765,18 +821,28 @@ object SegmentGenerator {
                 val mergedWaterCount = merged.count { !it.hasVoice }
                 val dryPct = if (totalDrySegments > 0)
                     "%.1f%%".format(matchedCount.toFloat() / totalDrySegments * 100) else "0%"
-                Log.i(TAG, "就AI听方案指纹审核: 匹配${matchedCount}个干货片段 [$matchedDetails]")
-                Log.i(TAG, "就AI听方案指纹审核: 合并后${mergedWaterCount}段指纹水货，原干货匹配率$dryPct")
+                val fpMsg1 = "就AI听方案指纹审核: 匹配${matchedCount}个干货片段 [$matchedDetails]"
+                Log.i(TAG, fpMsg1)
+                writeFingerprintLog(context, fpMsg1)
+                val fpMsg2 = "就AI听方案指纹审核: 合并后${mergedWaterCount}段指纹水货，原干货匹配率$dryPct"
+                Log.i(TAG, fpMsg2)
+                writeFingerprintLog(context, fpMsg2)
             } else {
-                Log.i(TAG, "就AI听方案指纹审核: 未匹配到任何水分指纹，所有干货保持原分类")
+                val fpMsg = "就AI听方案指纹审核: 未匹配到任何水分指纹，所有干货保持原分类"
+                Log.i(TAG, fpMsg)
+                writeFingerprintLog(context, fpMsg)
             }
             merged
         } else {
-            Log.i(TAG, "就AI听方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）")
+            val fpMsg = "就AI听方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
             baseSegments
         }
 
-        Log.i(TAG, "就AI听方案完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，指纹匹配${matchedCount}段）")
+        val fpMsgDone = "就AI听方案完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，指纹匹配${matchedCount}段）"
+        Log.i(TAG, fpMsgDone)
+        writeFingerprintLog(context, fpMsgDone)
 
         return JiuAiTingResult(
             segments = finalSegments,
