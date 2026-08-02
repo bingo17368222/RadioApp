@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -66,6 +67,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.Objects
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener {
@@ -91,6 +93,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val ACTION_SEEK_SEC = "com.radio.app.SEEK_SEC"
         // v2.4.176: Notify UI that episode segments have been updated.
         const val ACTION_SEGMENTS_UPDATED = "com.radio.app.SEGMENTS_UPDATED"
+
+        const val ACTION_CANCEL_PCM_PREGEN = "com.radio.app.CANCEL_PCM_PREGEN"
+
+        val pcmPregenCancelFlags: MutableMap<String, Boolean> = ConcurrentHashMap()
+        private val pcmPregenNotifIdCounter = java.util.concurrent.atomic.AtomicInteger(2000)
 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
@@ -700,9 +707,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             append(episode.title)
             if (notificationTimeRange.isNotBlank()) append(" $notificationTimeRange")
         }
+        // v3.1.17: 通知栏日期后添加周几
+        val artistDate = if (notificationDate.length >= 10) {
+            val weekDay = getDayOfWeekText(notificationDate)
+            if (weekDay.isNotBlank()) "${notificationDate.substring(0, 10)} $weekDay" else notificationDate.substring(0, 10)
+        } else notificationDate
         val metadata = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, displayTitle)
-            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, notificationDate)
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artistDate)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, notificationTimeRange)
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, effectiveDur)
             .build()
@@ -2277,9 +2289,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // which triggered AI ASR segmentation (Whisper/Vosk) that could fail with
         // "分段失败" errors. Now we directly decode PCM without AI segmentation.
         // v3.1.2: 添加进度通知，类似预分段。
+        // v3.1.4: 取消进度条，改为显示已用时间和估计剩余时间。
+        // v3.2.0: 使用唯一通知ID避免多节目循环显示；增加取消按钮和取消标志。
+        // v3.1.8: 防止同一节目重复触发预生成
+        if (pcmPregenCancelFlags.containsKey(episodeId)) {
+            writePreCacheLog("startPreCachePcmGeneration:  already generating PCM for $episodeId, skipping duplicate")
+            return
+        }
+        pcmPregenCancelFlags[episodeId] = false
+        val notifId = getPcmPregenNotificationId(episodeId)
         Thread {
             try {
+                // 检查取消标志，如果已被取消则提前返回
+                if (pcmPregenCancelFlags[episodeId] == true) {
+                    writePreCacheLog("startPreCachePcmGeneration:  cancelled before starting PCM decode for $episodeId")
+                    pcmPregenCancelFlags.remove(episodeId)
+                    return@Thread
+                }
+
                 writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
+                val pcmStartTime = System.currentTimeMillis()
                 // v2.4.139: Pass episode metadata duration so the analyzer can fall back when
                 // MediaExtractor fails to read the MP4 duration (a common cause of mp4DurationMs=0
                 // in .info files).
@@ -2288,6 +2317,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     this, episodeId, audioUrl, expectedDurationMs, generateFullPcm,
                     progressCallback = { pct ->
                         try {
+                            // 每次回调时检查取消标志
+                            if (pcmPregenCancelFlags[episodeId] == true) {
+                                writePreCacheLog("startPreCachePcmGeneration:  cancelled during PCM decode for $episodeId at ${pct}%")
+                                return@preGeneratePcmFiles
+                            }
+
                             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 if (nm.getNotificationChannel("pcm_pregen_channel") == null) {
@@ -2303,20 +2338,42 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 episode.broadcastAt.length >= 10 -> episode.broadcastAt.substring(0, 10)
                                 else -> ""
                             }
-                            val contentText = if (pct >= 100) {
-                                "$epDateStr · PCM生成完成"
+                            val elapsedMs = System.currentTimeMillis() - pcmStartTime
+                            val elapsedStr = if (pct > 0) {
+                                val estTotalMs = (elapsedMs * 100L) / pct
+                                val etaMs = (estTotalMs - elapsedMs).coerceAtLeast(0L)
+                                val elapsed = formatDurationMmSs(elapsedMs)
+                                val eta = formatDurationMmSs(etaMs)
+                                "已用 $elapsed，预计剩余 $eta"
                             } else {
-                                "$epDateStr · 正在解码... ${pct}%"
+                                "已用 ${formatDurationMmSs(elapsedMs)}"
                             }
+                            val contentText = if (pct >= 100) {
+                                "$epDateStr · PCM生成完成 ($elapsedStr)"
+                            } else {
+                                "$epDateStr · 正在解码... ${pct}% ($elapsedStr)"
+                            }
+
+                            // 创建取消按钮的 PendingIntent
+                            val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN).apply {
+                                putExtra("episode_id", episodeId)
+                            }
+                            val cancelPendingIntent = PendingIntent.getBroadcast(
+                                this@RadioPlaybackService,
+                                notifId,
+                                cancelIntent,
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                            )
+
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "pcm_pregen_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
                                 .setContentTitle(title)
                                 .setContentText(contentText)
-                                .setProgress(100, pct, pct <= 0)
                                 .setOngoing(pct in 1..99)
                                 .setAutoCancel(true)
+                                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPendingIntent)
                                 .build()
-                            nm.notify(2002, notif)
+                            nm.notify(notifId, notif)
                         } catch (_: Exception) {}
                     }
                 )
@@ -2325,19 +2382,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } else {
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation FAILED for $episodeId (audio file may not be cached)")
                 }
-                // 完成后取消进度通知
+                // 完成后清除取消标志并取消进度通知
+                pcmPregenCancelFlags.remove(episodeId)
                 try {
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                    nm.cancel(2002)
+                    nm.cancel(notifId)
                 } catch (_: Exception) {}
             } catch (e: Exception) {
                 writePreCacheLog("startPreCachePcmGeneration:  PCM generation exception: ${e.message}")
+                pcmPregenCancelFlags.remove(episodeId)
                 try {
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                    nm.cancel(2002)
+                    nm.cancel(notifId)
                 } catch (_: Exception) {}
             }
         }.start()
+    }
+
+    private fun formatDurationMmSs(ms: Long): String {
+        val totalSec = (ms / 1000).toInt()
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        return String.format(java.util.Locale.US, "%02d:%02d", min, sec)
+    }
+
+    /**
+     * Generate a unique notification ID for PCM pre-generation progress of a given episode.
+     * Uses the episode ID hash to produce an ID in the range [2000, 2999].
+     */
+    private fun getPcmPregenNotificationId(episodeId: String): Int {
+        return pcmPregenNotifIdCounter.getAndIncrement()
     }
 
     /**
@@ -2434,6 +2508,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v3.1.2: 优先补全最近的节目——遇到未缓存的近期节目时停止巡逻并触发预缓存，
                 // 避免跳过临近节目去处理更远的节目。
                 var validEpisodeCounter = 0
+                var processedCount = 0  // v3.1.4: 批量处理计数，每次巡逻最多处理 preloadCacheCount 个节目
                 for (i in scanOrder) {
                     var ep = preCacheList[i]
                     if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
@@ -2461,11 +2536,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         // v3.1.2: 如果该未缓存节目在预缓存目标范围内，停止巡逻并触发预缓存，
                         // 避免跳过临近节目去处理更远的已缓存节目。
                         if (validEpisodeCounter <= targetCount) {
-                            writePreCacheLog("patrolSubtitle:  STOP — ep=${ep.id} ( #$validEpisodeCounter <= target $targetCount) audio NOT cached, triggering pre-cache to fill nearest gap first")
+                            writePreCacheLog("patrolSubtitle:  ep=${ep.id} ( #$validEpisodeCounter <= target $targetCount) audio NOT cached, triggering pre-cache")
                             if (!isPrecaching) {
                                 try { serviceScope.launch { triggerPreCache() } } catch (_: Exception) {}
                             }
-                            return@launch
+                            // 触发预缓存后继续扫描已缓存的节目，不停止巡逻
+                            continue
                         }
                         writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target range #$validEpisodeCounter > $targetCount)")
                         continue
@@ -2529,8 +2605,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     LocalBroadcastManager.getInstance(this@RadioPlaybackService)
                                         .sendBroadcast(Intent(ACTION_SEGMENTS_UPDATED))
                                 }
-                                // Process one episode per patrol; next patrol will continue.
-                                return@launch
+                                // 已预分段的节目数+1，继续扫描后续节目
+                                processedCount++
+                                if (processedCount >= settings.preloadCacheCount) {
+                                    writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
+                                    return@launch
+                                }
+                                continue
                             }
                         }
                     }
@@ -2579,7 +2660,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     ep.broadcastAt.substring(0, 10)
                                 }
                                 else -> {
-                                    // Fallback: extract date from episode ID (format: xxx-2024-08-30-N)
                                     val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
                                     dateMatch?.value ?: "未知日期"
                                 }
@@ -2593,7 +2673,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                             notifManager.notify(2001, notif)
                         } catch (_: Exception) {}
-                        return@launch
+                        processedCount++
+                        if (processedCount >= settings.preloadCacheCount) {
+                            writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
+                            return@launch
+                        }
+                        continue
                     }
 
                     var isComplete = false
@@ -3531,6 +3616,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         notificationRunnable?.let { notificationHandler?.post(it) }
     }
 
+    // v3.1.17: 获取中文星期几
+    private fun getDayOfWeekText(dateStr: String): String {
+        return try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+            val date = sdf.parse(if (dateStr.length >= 10) dateStr.substring(0, 10) else dateStr)
+            if (date == null) return ""
+            val cal = java.util.Calendar.getInstance()
+            cal.time = date
+            val weekDays = arrayOf("周日", "周一", "周二", "周三", "周四", "周五", "周六")
+            weekDays[cal.get(java.util.Calendar.DAY_OF_WEEK) - 1]
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
     /**
      * 构建通知栏副文本：将 notificationSubText 与日期/时间段信息拼接。
      * 日期格式化为 "2024-06-04T07:00:00" -> "06-04"，统一供 updateNotification()、
@@ -3543,6 +3644,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // Format date: "2024-06-04T07:00:00" -> "2024-06-04" (was "06-04")
                 if (notificationDate.length >= 10) {
                     append(notificationDate.substring(0, 10))
+                    // v3.1.17: 日期后添加周几
+                    val weekDay = getDayOfWeekText(notificationDate)
+                    if (weekDay.isNotBlank()) append(" $weekDay")
                 }
             }
             if (notificationTimeRange.isNotBlank()) {
@@ -3652,6 +3756,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v2.4.98: Combine date and start-end time as one unit
             if (dateStr.isNotBlank()) {
                 append(" · $dateStr")
+                // v3.1.17: 日期后添加周几
+                val weekDay = getDayOfWeekText(notificationDate)
+                if (weekDay.isNotBlank()) append(" $weekDay")
                 if (timeStr.isNotBlank()) append(" $timeStr")
             } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")
@@ -4084,6 +4191,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v2.4.98: Combine date and start-end time as one unit
             if (dateStr.isNotBlank()) {
                 append(" · $dateStr")
+                // v3.1.17: 日期后添加周几
+                val weekDay = getDayOfWeekText(notificationDate)
+                if (weekDay.isNotBlank()) append(" $weekDay")
                 if (timeStr.isNotBlank()) append(" $timeStr")
             } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")
@@ -4234,6 +4344,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v2.4.98: Combine date and start-end time as one unit
             if (dateStr.isNotBlank()) {
                 append(" · $dateStr")
+                // v3.1.17: 日期后添加周几
+                val weekDay = getDayOfWeekText(notificationDate)
+                if (weekDay.isNotBlank()) append(" $weekDay")
                 if (timeStr.isNotBlank()) append(" $timeStr")
             } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")

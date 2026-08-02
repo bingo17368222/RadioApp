@@ -232,6 +232,16 @@ object SegmentGenerator {
         var libraryOk = false
         val result = segments.map { it.copy() }.toMutableList()
 
+        // v3.1.4: 预解析所有水分指纹并构建分组，同组指纹共享匹配结果
+        val parsedWaterFps = waterFingerprints.map { ChromaprintExtractor.parseFingerprint(it.fingerprint) }
+        val groups = ChromaprintExtractor.buildFingerprintGroups(parsedWaterFps)
+        // 指纹索引 → 组ID 的快速查找
+        val fpIndexToGroupId = mutableMapOf<Int, Int>()
+        groups.forEach { group -> group.memberIndices.forEach { idx -> fpIndexToGroupId[idx] = group.groupId } }
+        // 组ID → 组信息 的快速查找
+        val groupIdToGroup = groups.associateBy { it.groupId }
+        Log.i(TAG, "applyAudioFingerprintSecondaryCheck: built ${groups.size} groups from ${waterFingerprints.size} water fingerprints")
+
         for (i in result.indices) {
             val seg = result[i]
             if (!seg.hasVoice) continue
@@ -257,21 +267,60 @@ object SegmentGenerator {
                     continue
                 }
 
-                val matched = waterFingerprints.any { waterFp ->
+                // v3.1.4: 分组匹配逻辑
+                var matched = false
+                var matchedGroupId: Int? = null
+                for (j in waterFingerprints.indices) {
+                    val waterFp = waterFingerprints[j]
                     val durationRatio = minOf(seg.end - seg.start, waterFp.durationMs).toFloat() /
                             maxOf(seg.end - seg.start, waterFp.durationMs).toFloat()
-                    if (durationRatio < 0.4f) {
-                        // 时长差异过大，跳过细致比对，避免误判
-                        false
-                    } else {
-                        ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, FINGERPRINT_MATCH_THRESHOLD)
+                    if (durationRatio < 0.4f) continue  // 时长差异过大，跳过
+
+                    // 先用标准匹配
+                    val detail = ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, FINGERPRINT_MATCH_THRESHOLD)
+                    if (detail) {
+                        matched = true
+                        matchedGroupId = fpIndexToGroupId[j]
+                        Log.i(TAG, "applyAudioFingerprintSecondaryCheck: direct match with waterFp[$j] (${waterFp.episodeId})")
+                        break
+                    }
+
+                    // 接近阈值时，尝试用伸缩容错比较
+                    val stretchDetail = ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, waterFp.fingerprint)
+                    if (stretchDetail.similarity >= FINGERPRINT_MATCH_THRESHOLD) {
+                        matched = true
+                        matchedGroupId = fpIndexToGroupId[j]
+                        Log.i(TAG, "applyAudioFingerprintSecondaryCheck: stretch match with waterFp[$j] (${waterFp.episodeId}), similarity=${String.format(java.util.Locale.US, "%.2f", stretchDetail.similarity)}")
+                        break
+                    }
+
+                    // 如果接近阈值（≥50%），尝试同组其他指纹
+                    val groupId = fpIndexToGroupId[j]
+                    if (stretchDetail.similarity >= 0.50f && groupId != null) {
+                        val group = groupIdToGroup[groupId] ?: continue
+                        for (memberIdx in group.memberIndices) {
+                            if (memberIdx == j) continue
+                            val memberFp = waterFingerprints[memberIdx]
+                            val memberDurationRatio = minOf(seg.end - seg.start, memberFp.durationMs).toFloat() /
+                                    maxOf(seg.end - seg.start, memberFp.durationMs).toFloat()
+                            if (memberDurationRatio < 0.4f) continue
+                            // 对组内成员先用伸缩容错比较
+                            val memberDetail = ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, memberFp.fingerprint)
+                            if (memberDetail.similarity >= FINGERPRINT_MATCH_THRESHOLD) {
+                                matched = true
+                                matchedGroupId = groupId
+                                Log.i(TAG, "applyAudioFingerprintSecondaryCheck: group match via waterFp[$memberIdx] (${memberFp.episodeId}), similarity=${String.format(java.util.Locale.US, "%.2f", memberDetail.similarity)}")
+                                break
+                            }
+                        }
+                        if (matched) break
                     }
                 }
 
                 if (matched) {
                     seg.hasVoice = false
                     seg.label = "水货"
-                    Log.i(TAG, "applyAudioFingerprintSecondaryCheck: flipped segment ${seg.start}-${seg.end} to water by fingerprint")
+                    Log.i(TAG, "applyAudioFingerprintSecondaryCheck: flipped segment ${seg.start}-${seg.end} to water by fingerprint (group=$matchedGroupId)")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "applyAudioFingerprintSecondaryCheck: failed for segment ${seg.start}-${seg.end}: ${e.message}")
@@ -355,6 +404,102 @@ object SegmentGenerator {
                 engineName = result?.engineName ?: "VAD+YAMNet"
                 processingTimeMs = result?.processingTimeMs ?: (System.currentTimeMillis() - segStartTime)
                 audioDurationMs = result?.audioDurationMs ?: durationMs
+            } else if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_JIU_AI_TING) {
+                // v3.1.12: 就AI听方案重构为音频加指纹方案
+                // 1. 先检查是否已有音频分段结果（VAD+YAMNet双模型）
+                // 2. 如不存在，调用双模型音频分段生成音频分段结果
+                // 3. 对干货片段用水分指纹二次审核，匹配则改为指纹水货片段
+                // 4. 合并相邻水货片段，标记为指纹水货片段
+                Log.i(TAG, "postSegmentKeyword: 就AI听 音频+指纹方案 for episode=$episodeId")
+
+                // 检查数据库是否已有音频分段结果
+                val existingSegments = dbHelper.getVoiceSegments(episodeId)
+                val realSegments = existingSegments.filter { !it.isSimulated }
+                var audioSegments: List<VoiceSegment> = emptyList()
+                var audioEngineName = "就AI听"
+
+                if (realSegments.isEmpty()) {
+                    // 没有音频分段结果，调用双模型音频分段
+                    Log.i(TAG, "postSegmentKeyword: 无音频分段结果，调用VAD+YAMNet双模型分段 for episode=$episodeId")
+                    val audioUrl = try {
+                        RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)?.audioUrl
+                    } catch (_: Exception) { null }
+                    val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
+                    if (result != null && result.segments.isNotEmpty()) {
+                        audioSegments = result.segments
+                        audioEngineName = "${result.engineName}+指纹"
+                        Log.i(TAG, "postSegmentKeyword: 音频分段生成${audioSegments.size}个片段 for episode=$episodeId")
+                    } else {
+                        Log.w(TAG, "postSegmentKeyword: 音频分段无结果，回退到关键词分段 for episode=$episodeId")
+                    }
+                } else {
+                    audioSegments = realSegments
+                    Log.i(TAG, "postSegmentKeyword: 使用已有音频分段结果(${audioSegments.size}个) for episode=$episodeId")
+                }
+
+                // 如果音频分段结果为空，回退到关键词分段
+                val baseSegments = if (audioSegments.isNotEmpty()) audioSegments else {
+                    generateKeywordSegments(context, episodeId, durationMs)
+                }
+
+                if (baseSegments.isEmpty()) {
+                    segments = emptyList()
+                    engineName = audioEngineName
+                    processingTimeMs = System.currentTimeMillis() - segStartTime
+                    audioDurationMs = durationMs
+                } else {
+                    engineName = audioEngineName
+                    processingTimeMs = System.currentTimeMillis() - segStartTime
+                    audioDurationMs = durationMs
+
+                    // 对干货片段进行指纹二次审核
+                    val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
+                    var totalDrySegments = baseSegments.count { it.hasVoice }
+                    var matchedCount = 0
+
+                    Log.i(TAG, "postSegmentKeyword: 指纹审核准备, waterFingerprints=${waterFingerprints.size}, chromaprintLoaded=${ChromaprintExtractor.ensureLibraryLoaded(context)}, totalDry=${totalDrySegments} for episode=$episodeId")
+                    if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                        val fingerprintChecked = applyAudioFingerprintSecondaryCheck(
+                            context, episodeId, baseSegments, waterFingerprints
+                        )
+                        // 统计被指纹匹配的干货片段数
+                        val matchedSegments = fingerprintChecked.filter { !it.hasVoice }
+                            .filter { fSeg ->
+                                val orig = baseSegments.find { it.start == fSeg.start && it.end == fSeg.end }
+                                orig != null && orig.hasVoice
+                            }
+                        matchedCount = matchedSegments.size
+
+                        // 合并相邻水货片段，标记为指纹水货片段
+                        val merged = mergeAdjacentSegments(fingerprintChecked)
+                        for (seg in merged) {
+                            if (!seg.hasVoice) {
+                                // 标记为指纹水货片段
+                                seg.label = "指纹水货"
+                            }
+                        }
+
+                        // 日志记录
+                        if (matchedCount > 0) {
+                            val matchedDetails = matchedSegments.joinToString("; ") { 
+                                "${it.start}-${it.end}ms (${(it.end - it.start) / 1000}s)"
+                            }
+                            val mergedWaterCount = merged.count { !it.hasVoice }
+                            val dryPct = if (totalDrySegments > 0) 
+                                "%.1f%%".format(matchedCount.toFloat() / totalDrySegments * 100) else "0%"
+                            Log.i(TAG, "就AI听-指纹审核: 匹配${matchedCount}个水货指纹片段 [$matchedDetails]")
+                            Log.i(TAG, "就AI听-指纹审核: 合并后${mergedWaterCount}个指纹水货片段, 原干货被指纹匹配$dryPct")
+                        } else {
+                            Log.i(TAG, "postSegmentKeyword: 指纹审核未匹配任何水货指纹片段 for episode=$episodeId")
+                        }
+                        segments = merged
+                    } else {
+                        Log.i(TAG, "postSegmentKeyword: 跳过指纹审核 (waterFingerprints=${waterFingerprints.size}, chromaprintLoaded=${ChromaprintExtractor.ensureLibraryLoaded(context)}) for episode=$episodeId")
+                        segments = baseSegments
+                    }
+
+                    Log.i(TAG, "postSegmentKeyword: 就AI听方案完成, ${segments.size}个片段 (原干货${totalDrySegments}个, 指纹匹配${matchedCount}个) for episode=$episodeId")
+                }
             } else {
                 // Keyword-based segments
                 Log.i(TAG, "postSegmentKeyword: using keyword-based for episode=$episodeId")
@@ -438,9 +583,12 @@ object SegmentGenerator {
             // going to run analysis. Because the helper uses a single notification ID, a later
             // manual segment request will take over the session, and stale pre-segment progress
             // callbacks will be dropped. Background sessions use the lower priority.
-            SegmentNotificationHelper.startSession(
+            val sessionStarted = SegmentNotificationHelper.startSession(
                 context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_BACKGROUND
             )
+            if (!sessionStarted) {
+                Log.i(TAG, "preSegmentAudio: notification session not started (another session is active), running silently for episode=$episodeId")
+            }
 
             // v2.4.178: Large PCM files are now handled by memory-mapped sample access in
             // AudioSegmentAnalyzer, so the artificial 120MB limit is removed. Pre-segmentation
@@ -493,7 +641,10 @@ object SegmentGenerator {
         } finally {
             // v2.4.186: Always end the notification session for this episode, but only
             // dismiss the notification if this episode still owns the active session.
-            SegmentNotificationHelper.endSession(context, episodeId)
+            // v3.1.4: 只有当分析实际开始时才结束会话，避免通知被过早取消
+            if (segmentingEpisodes.contains(episodeId)) {
+                SegmentNotificationHelper.endSession(context, episodeId)
+            }
             segmentingEpisodes.remove(episodeId)
         }
     }
@@ -536,5 +687,99 @@ object SegmentGenerator {
             Log.e(TAG, "tryGenerateAudioSegments failed: ${e.message}")
             return null
         }
+    }
+
+    // v3.1.15: 就AI听方案结果（含指纹匹配统计）
+    data class JiuAiTingResult(
+        val segments: List<VoiceSegment>,
+        val engineName: String,
+        val processingTimeMs: Long,
+        val matchedCount: Int,
+        val totalDrySegments: Int
+    )
+
+    /**
+     * v3.1.15: 就AI听方案 - 音频+指纹分段
+     * 1. 调用双模型音频分段（VAD+YAMNet）生成音频分段结果
+     * 2. 对分段结果中的干货片段用水分指纹二次审核
+     * 3. 合并相邻水货片段，标记为指纹水货片段
+     * 4. 日志记录匹配的指纹片段和合并的指纹水货片段
+     */
+    fun generateJiuAiTingSegments(
+        context: Context,
+        episodeId: String,
+        durationMs: Long,
+        audioUrl: String? = null,
+        progressCallback: ((Int, Long, Long) -> Unit)? = null
+    ): JiuAiTingResult? {
+        val segStartTime = System.currentTimeMillis()
+        Log.i(TAG, "generateJiuAiTingSegments: 就AI听音频+指纹方案 for episode=$episodeId")
+
+        // 1. 调用双模型音频分段
+        val audioResult = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl, progressCallback)
+        val baseSegments: List<VoiceSegment> = audioResult?.segments ?: emptyList()
+        val engineName = if (audioResult != null) "${audioResult.engineName}+指纹" else "就AI听"
+
+        if (baseSegments.isEmpty()) {
+            Log.w(TAG, "generateJiuAiTingSegments: 音频分段无结果")
+            return null
+        }
+        Log.i(TAG, "generateJiuAiTingSegments: 音频分段生成${baseSegments.size}个片段 for episode=$episodeId")
+
+        val dbHelper = RadioDatabaseHelper.getInstance(context)
+        val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
+        val totalDrySegments = baseSegments.count { it.hasVoice }
+        var matchedCount = 0
+
+        Log.i(TAG, "generateJiuAiTingSegments: 指纹审核准备, waterFingerprints=${waterFingerprints.size}, chromaprintLoaded=${ChromaprintExtractor.ensureLibraryLoaded(context)}, totalDry=${totalDrySegments} for episode=$episodeId")
+        val finalSegments = if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            // 2. 对干货片段进行指纹二次审核
+            val fingerprintChecked = applyAudioFingerprintSecondaryCheck(context, episodeId, baseSegments, waterFingerprints)
+
+            // 统计被指纹匹配的干货片段数
+            matchedCount = fingerprintChecked.filter { !it.hasVoice }
+                .count { fSeg ->
+                    val orig = baseSegments.find { it.start == fSeg.start && it.end == fSeg.end }
+                    orig != null && orig.hasVoice
+                }
+
+            // 3. 合并相邻水货片段，标记为指纹水货片段
+            val merged = mergeAdjacentSegments(fingerprintChecked)
+            for (seg in merged) {
+                if (!seg.hasVoice) {
+                    seg.label = "指纹水货"
+                }
+            }
+
+            // 4. 日志记录
+            if (matchedCount > 0) {
+                val matchedDetails = fingerprintChecked.filter { !it.hasVoice }
+                    .filter { fSeg ->
+                        val orig = baseSegments.find { it.start == fSeg.start && it.end == fSeg.end }
+                        orig != null && orig.hasVoice
+                    }.joinToString("; ") { "${it.start}-${it.end}ms (${(it.end - it.start) / 1000}s)" }
+                val mergedWaterCount = merged.count { !it.hasVoice }
+                val dryPct = if (totalDrySegments > 0)
+                    "%.1f%%".format(matchedCount.toFloat() / totalDrySegments * 100) else "0%"
+                Log.i(TAG, "就AI听-指纹审核: 匹配${matchedCount}个水货指纹片段 [$matchedDetails]")
+                Log.i(TAG, "就AI听-指纹审核: 合并后${mergedWaterCount}个指纹水货片段, 原干货被指纹匹配$dryPct")
+            } else {
+                Log.i(TAG, "generateJiuAiTingSegments: 指纹审核未匹配任何水货指纹片段 for episode=$episodeId")
+            }
+            merged
+        } else {
+            Log.i(TAG, "generateJiuAiTingSegments: 跳过指纹审核 (waterFingerprints=${waterFingerprints.size}, chromaprintLoaded=${ChromaprintExtractor.ensureLibraryLoaded(context)}) for episode=$episodeId")
+            baseSegments
+        }
+
+        Log.i(TAG, "generateJiuAiTingSegments: 完成, ${finalSegments.size}个片段 (原干货${totalDrySegments}个, 指纹匹配${matchedCount}个) for episode=$episodeId")
+
+        return JiuAiTingResult(
+            segments = finalSegments,
+            engineName = engineName,
+            processingTimeMs = System.currentTimeMillis() - segStartTime,
+            matchedCount = matchedCount,
+            totalDrySegments = totalDrySegments
+        )
     }
 }

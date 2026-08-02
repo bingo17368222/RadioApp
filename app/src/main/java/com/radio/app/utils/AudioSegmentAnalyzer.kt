@@ -508,7 +508,7 @@ object AudioSegmentAnalyzer {
 
         // Decode full PCM from scratch.
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
-        val scaledCbFull = progressCallback?.let { orig -> { pct: Int -> orig((pct * 5).coerceAtMost(90)) } }
+        val scaledCbFull = progressCallback?.let { orig -> { pct: Int -> orig((pct * 95 / 100).coerceAtMost(95)) } }
         val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, progressCallback = scaledCbFull)
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
             progressCallback?.invoke(100)
@@ -532,6 +532,7 @@ object AudioSegmentAnalyzer {
             writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
 
             // Generate 5-min PCM from full PCM.
+            progressCallback?.invoke(96)
             try {
                 val fiveMinBytes = 5 * 60 * 16000 * 2
                 val fullBytes = clampedFile.length().toInt()
@@ -551,6 +552,7 @@ object AudioSegmentAnalyzer {
                 }
                 writePcmInfo(min5InfoFile, mp4DurationMs, min5PcmFile.length() / (16000 * 2) * 1000, 16000, 1)
                 precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
+                progressCallback?.invoke(98)
             } catch (e: Exception) {
                 precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] failed to create 5-min PCM: ${e.message}\n")
             }

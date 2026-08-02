@@ -84,6 +84,17 @@
                 android:text="批量测试：所有指纹 vs 所有完整PCM"
                 android:textColor="@color/white"
                 android:backgroundTint="?attr/appAccent"
+                android:layout_marginBottom="8dp"
+                android:textSize="13sp" />
+
+            <!-- v3.1.6: 指纹分组管理入口 -->
+            <Button
+                android:id="@+id/btn_fingerprint_groups"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="指纹分组管理"
+                android:textColor="@color/white"
+                android:backgroundTint="#4CAF50"
                 android:layout_marginBottom="16dp"
                 android:textSize="13sp" />
 

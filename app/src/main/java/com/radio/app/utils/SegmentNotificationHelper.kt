@@ -70,6 +70,9 @@ object SegmentNotificationHelper {
      * @param priority Higher values win. Manual segmentation should use [PRIORITY_MANUAL];
      *                 background pre-segmentation should use [PRIORITY_BACKGROUND].
      */
+    /**
+     * @return true if the session was started, false if rejected (higher-priority or same-priority session active).
+     */
     @JvmStatic
     @Synchronized
     fun startSession(
@@ -77,14 +80,14 @@ object SegmentNotificationHelper {
         episodeId: String,
         title: String,
         priority: Int = PRIORITY_BACKGROUND
-    ) {
+    ): Boolean {
         // v2.4.187: A lower-priority session must not steal the notification from a
         // higher-priority one. Sessions with the same priority are also rejected while
         // the current session is still running, so two background pre-segment tasks
         // cannot fight over the same notification.
         if (activeEpisodeId != null) {
-            if (priority < activePriority) return
-            if (priority == activePriority && activeSessionRunning) return
+            if (priority < activePriority) return false
+            if (priority == activePriority && activeSessionRunning) return false
         }
         activeEpisodeId = episodeId
         activePriority = priority
@@ -94,6 +97,7 @@ object SegmentNotificationHelper {
         // Dismiss any stale notification so the new session starts clean.
         cancelNotification(context)
         update(context, episodeId, title, 0, "", "")
+        return true
     }
 
     // v2.4.186: Session priorities.

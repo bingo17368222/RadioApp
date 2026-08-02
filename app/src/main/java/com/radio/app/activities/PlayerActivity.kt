@@ -84,6 +84,10 @@ class PlayerActivity : AppCompatActivity() {
     // and notification when the user returns to the Activity.
     private var lastSegmentProgress = 0
 
+    // v3.1.12: 指纹审核统计（用于手动AI分段结果标注）
+    private var lastFingerprintMatchCount = 0
+    private var lastFingerprintDryTotal = 0
+
     // v3.0.4: 通知权限请求与待处理的水分指纹参数
     private data class FingerprintParams(val episodeId: String, val startMs: Long, val endMs: Long, val title: String?)
     private var pendingFingerprintParams: FingerprintParams? = null
@@ -479,6 +483,26 @@ class PlayerActivity : AppCompatActivity() {
         // v2.4.152: Segment progress is now stored as 0-1000 permille.
         lastSegmentProgress = if (isComplete) 1000 else progressPrefs.getInt(segmentProgressKey(currentEpisodeId), 0)
         if (isComplete) segmentProcessing = false
+        // v3.1.4: 安全检查 — 如果 segmentProcessing 为 true 但进度长时间未更新（超过60秒仍为0），
+        // 说明之前的任务已取消但状态未正确保存，清除状态释放按钮
+        // v3.1.16: 修复 getString 读取 Long 值的类型转换崩溃
+        if (segmentProcessing && currentEpisodeId != null) {
+            val segmentStartTime = progressPrefs.getLong(segmentStartKey(currentEpisodeId), 0L)
+            if (segmentStartTime > 0 && segmentStartTime < System.currentTimeMillis() - 60_000L && lastSegmentProgress == 0) {
+                android.util.Log.w("PlayerActivity", "restoreProcessingState: stale segment task detected (started=${segmentStartTime}, now=${System.currentTimeMillis()}, progress=$lastSegmentProgress), clearing")
+                segmentProcessing = false
+                segmentTaskEpisodeId = null
+                lastSegmentProgress = 0
+                progressPrefs.edit()
+                    .putInt(segmentProgressKey(currentEpisodeId), 0)
+                    .putBoolean(segmentCompleteKey(currentEpisodeId), false)
+                    .remove(segmentStartKey(currentEpisodeId))
+                    .remove(segmentElapsedKey(currentEpisodeId))
+                    .remove(segmentEtaKey(currentEpisodeId))
+                    .apply()
+                saveProcessingState()
+            }
+        }
         android.util.Log.d("PlayerActivity", "restoreProcessingState: restored subtitle=$subtitleProcessing segment=$segmentProcessing progress=$lastSegmentProgress complete=$isComplete savedEpisode=$savedEpisodeId current=$currentEpisodeId")
 
         // Safety: only on a genuine fresh start (no saved state) do we clear.
@@ -1563,7 +1587,14 @@ class PlayerActivity : AppCompatActivity() {
 
         initViews()
         setupListeners()
-        restoreProcessingState()
+        // v3.1.16: 防止 SharedPreferences 类型异常导致 app 启动崩溃
+        try { restoreProcessingState() } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "restoreProcessingState in onCreate failed: ${e.message}")
+            subtitleProcessing = false
+            segmentProcessing = false
+            segmentTaskEpisodeId = null
+            lastSegmentProgress = 0
+        }
         bindPlaybackService()
         // v2.4.45: Register segment cancel receiver
         registerReceiver(segmentCancelReceiver, android.content.IntentFilter(SEGMENT_CANCEL_ACTION), Context.RECEIVER_NOT_EXPORTED)
@@ -2229,7 +2260,8 @@ class PlayerActivity : AppCompatActivity() {
                     val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
 
                     // v2.4.101: Audio-vad mode doesn't need subtitles - skip the check
-                    if (aiModel != AppSettings.AI_MODEL_AUDIO_VAD) {
+                    // v3.1.13: 就AI听方案已重构为音频+指纹方案，不再依赖字幕
+                    if (aiModel != AppSettings.AI_MODEL_AUDIO_VAD && aiModel != AppSettings.AI_MODEL_JIU_AI_TING) {
                         val transcriptCount = dbHelper.getTranscriptCount(episode.id)
                         writeJitterLog(" btnAiSegment: transcriptCount=$transcriptCount")
 
@@ -2242,7 +2274,7 @@ class PlayerActivity : AppCompatActivity() {
                             return@Thread
                         }
                     } else {
-                        writeJitterLog(" btnAiSegment: audio-vad mode, skipping subtitle check")
+                        writeJitterLog(" btnAiSegment: $aiModel mode, skipping subtitle check")
                     }
 
                     // Generate content-based segments from subtitles
@@ -2457,14 +2489,73 @@ class PlayerActivity : AppCompatActivity() {
                                 try { MnnLlmBridge.release() } catch (_: Exception) {}
                             }
                         }
-                    } else {
-                        // v2.4.58: "就AI听"方案 = 基于字幕关键词的分类方案
-                        // 独立作为可选方案。不选择时不跳转此方案，保留mnn方案原始分段结果。
-                        // 当用户选择"就AI听"(AI_MODEL_JIU_AI_TING)或其他非MNN模型时，走关键词分类。
-                        val engineLabel = when (aiModel) {
-                            AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
-                            else -> "关键词"
+                    } else if (aiModel == AppSettings.AI_MODEL_JIU_AI_TING) {
+                        // v3.1.15: 就AI听方案 = 音频+指纹方案，和字幕无关
+                        writeJitterLog(" btnAiSegment: using 就AI听 audio+fingerprint segmentation")
+                        runOnUiThread { Toast.makeText(this, "就AI听音频分段分析中...", Toast.LENGTH_SHORT).show() }
+
+                        try {
+                            val episodeIdForProgress = episode.id
+                            val appCtx = applicationContext
+                            val notifTitle = buildSegmentNotificationTitle(episode)
+                            val audioUrl = try {
+                                com.radio.app.database.RadioDatabaseHelper.getInstance(this).getEpisodeInfo(episode.id)?.audioUrl
+                            } catch (_: Exception) { null }
+                            val jiuResult = com.radio.app.utils.SegmentGenerator.generateJiuAiTingSegments(
+                                this, episode.id, maxEnd.toLong(), audioUrl,
+                                progressCallback = { rawPermille, elapsedMs, etaMs ->
+                                    if (episodeIdForProgress != segmentTaskEpisodeId) return@generateJiuAiTingSegments
+                                    val pct = maxOf(rawPermille, lastSegmentProgress)
+                                    lastSegmentProgress = pct
+                                    getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                                        .putInt(segmentProgressKey(episodeIdForProgress), pct)
+                                        .putBoolean(segmentCompleteKey(episodeIdForProgress), false)
+                                        .putLong(segmentElapsedKey(episodeIdForProgress), elapsedMs)
+                                        .putLong(segmentEtaKey(episodeIdForProgress), etaMs)
+                                        .apply()
+                                    val elapsedText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
+                                    val etaText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(etaMs)
+                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct, elapsedText, etaText)
+                                    runOnUiThread {
+                                        if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId) {
+                                            val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
+                                            binding.tvAiStatus.text = "音频分段分析中(${segEngineName}) ${percentText}% (已用 $elapsedText，预计剩余 $etaText)"
+                                            binding.progressAi.progress = pct
+                                        }
+                                    }
+                                }
+                            )
+                            if (jiuResult != null) {
+                                segments = jiuResult.segments
+                                // 保存指纹匹配统计
+                                lastFingerprintMatchCount = jiuResult.matchedCount
+                                lastFingerprintDryTotal = jiuResult.totalDrySegments
+                                // 保存分段分析信息（含引擎名和耗时）
+                                try {
+                                    val dryCount = segments.count { it.hasVoice }
+                                    com.radio.app.database.RadioDatabaseHelper.getInstance(this).saveSegmentAnalysisInfo(
+                                        com.radio.app.database.SegmentAnalysisInfo(
+                                            episodeId = episode.id,
+                                            engineName = jiuResult.engineName,
+                                            generatedAt = System.currentTimeMillis(),
+                                            processingTimeMs = jiuResult.processingTimeMs,
+                                            audioDurationMs = maxEnd.toLong(),
+                                            segmentCount = segments.size,
+                                            dryCount = dryCount,
+                                            waterCount = segments.size - dryCount
+                                        )
+                                    )
+                                } catch (_: Exception) {}
+                                writeJitterLog(" btnAiSegment: 就AI听 returned ${segments.size} segments, engine=${jiuResult.engineName}, time=${jiuResult.processingTimeMs}ms, matched=${jiuResult.matchedCount}/${jiuResult.totalDrySegments}")
+                            } else {
+                                writeJitterLog(" btnAiSegment: 就AI听 returned null")
+                            }
+                        } catch (e: Exception) {
+                            writeJitterLog(" btnAiSegment: 就AI听 error: ${e.javaClass.simpleName}: ${e.message}")
                         }
+                    } else {
+                        // v2.4.58: 关键词方案 = 基于字幕关键词的分类方案
+                        val engineLabel = "关键词"
                         writeJitterLog(" btnAiSegment: using $engineLabel segmentation (aiModel=$aiModel)")
                         if (maxEnd > 0) segments = generateContentBasedSegments(episode.id, maxEnd)
                     }
@@ -2476,9 +2567,9 @@ class PlayerActivity : AppCompatActivity() {
                         dbHelper.saveVoiceSegments(episode.id, segments)
                         // v2.4.44: Update episode segment count in DB
                         dbHelper.updateEpisodeSegmentCount(episode.id, segments.size)
-                        // v2.4.150: Also persist engine/time for non-audio-vad engines.
-                        // Audio-vad path already saved exact analyzer timing above.
-                        if (aiModel != AppSettings.AI_MODEL_AUDIO_VAD) {
+                        // v2.4.150: Also persist engine/time for non-audio-vad / non-jiu-ai-ting engines.
+                        // Audio-vad and 就AI听 paths already saved exact analyzer timing above.
+                        if (aiModel != AppSettings.AI_MODEL_AUDIO_VAD && aiModel != AppSettings.AI_MODEL_JIU_AI_TING) {
                             val dryCount = segments.count { it.hasVoice }
                             val segElapsed = System.currentTimeMillis() - segStartTime
                             dbHelper.saveSegmentAnalysisInfo(
@@ -2529,12 +2620,25 @@ class PlayerActivity : AppCompatActivity() {
                             // v2.4.155: Append dry percentage after processing time.
                             val dryPercent = dbHelper.getDryPercentage(episode.id)
                             val dryPercentText = String.format(java.util.Locale.US, "%.1f", dryPercent)
-                            binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngine (耗时: $displayTimeText, 干货 $dryPercentText%)"
+                            // v3.1.12: 标注指纹匹配数量及百分比
+                            // v3.1.17: 从SharedPreferences恢复持久化的指纹匹配统计
+                            val fpMatchCount = if (lastFingerprintMatchCount > 0) lastFingerprintMatchCount
+                                else getSharedPreferences("segment_info", MODE_PRIVATE).getInt("fp_match_${episode.id}", 0)
+                            val fpDryTotal = if (lastFingerprintDryTotal > 0) lastFingerprintDryTotal
+                                else getSharedPreferences("segment_info", MODE_PRIVATE).getInt("fp_dry_${episode.id}", 0)
+                            val fingerprintSuffix = if (fpMatchCount > 0 && fpDryTotal > 0) {
+                                val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
+                                ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
+                            } else ""
+                            binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngine (耗时: $displayTimeText, 干货 $dryPercentText%)$fingerprintSuffix"
                             segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
                             // v2.4.57: Also persist to SharedPreferences so it survives Activity recreation
                             getSharedPreferences("segment_info", MODE_PRIVATE).edit()
                                 .putString("seg_engine_${episode.id}", displayEngine)
                                 .putLong("seg_time_${episode.id}", dbAnalysisInfo?.processingTimeMs ?: segElapsed)
+                                // v3.1.17: 持久化指纹匹配统计
+                                .putInt("fp_match_${episode.id}", lastFingerprintMatchCount)
+                                .putInt("fp_dry_${episode.id}", lastFingerprintDryTotal)
                                 .apply()
                             binding.tvAiStatus.visibility = View.VISIBLE
                             Toast.makeText(this,
@@ -3914,11 +4018,22 @@ class PlayerActivity : AppCompatActivity() {
 
     // [v2.4.25] Generate content-based segments from subtitles
     // Groups subtitles into meaningful segments and classifies as 干货(content) or 水货(filler)
+    // v3.1.13: 就AI听方案不依赖字幕，无字幕时生成固定分段+指纹审核
     private fun generateContentBasedSegments(episodeId: String, durationMs: Int): List<VoiceSegment> {
         try {
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             val transcripts = dbHelper.getTranscripts(episodeId)
-            if (transcripts.size < 3) return emptyList()
+            if (transcripts.size < 3) {
+                // v3.1.13: 无字幕时，生成固定分段，然后走指纹审核
+                writeJitterLog(" generateContentBasedSegments: no transcripts, using fixed segments + fingerprint check")
+                val fixedSegments = com.radio.app.utils.SegmentGenerator.generateFixedSegments(durationMs.toLong())
+                // 直接对固定分段进行指纹审核（跳过关键词分类）
+                val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
+                if (waterFingerprints.isNotEmpty() && com.radio.app.utils.ChromaprintExtractor.ensureLibraryLoaded(this)) {
+                    return applyFingerprintWithMerge(episodeId, fixedSegments, waterFingerprints)
+                }
+                return fixedSegments
+            }
 
             // [v2.4.25] Default keywords for content-based classification
             // v2.4.61: Merge with user-customized keywords from AppSettings (就AI听 scheme)
@@ -3997,12 +4112,195 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
 
-            writeJitterLog(" generateContentBasedSegments: ${mergedSegments.size} segments (merged from ${segments.size}) from ${transcripts.size} transcripts, dry=${mergedSegments.count{it.hasVoice}}, water=${mergedSegments.count{!it.hasVoice}}")
-            return mergedSegments
+            // v3.1.12: 对就AI听方案的干货片段进行音频指纹二次审核
+            val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
+            var finalSegments = mergedSegments
+            lastFingerprintMatchCount = 0
+            lastFingerprintDryTotal = 0
+
+            if (waterFingerprints.isNotEmpty() && com.radio.app.utils.ChromaprintExtractor.ensureLibraryLoaded(this)) {
+                val drySegments = mergedSegments.count { it.hasVoice }
+                lastFingerprintDryTotal = drySegments
+
+                // 使用SegmentGenerator的applyAudioFingerprintSecondaryCheck方法
+                // 但由于它是private，我们直接在这里实现指纹检查
+                val libraryChecked = com.radio.app.utils.ChromaprintExtractor.ensureLibraryLoaded(this)
+                if (libraryChecked) {
+                    val checkedSegments = mergedSegments.map { it.copy() }.toMutableList()
+                    var matchedDryCount = 0
+                    val matchedDetails = mutableListOf<String>()
+
+                    for (i in checkedSegments.indices) {
+                        val seg = checkedSegments[i]
+                        if (!seg.hasVoice) continue
+                        if (seg.end - seg.start < 3000L) continue
+
+                        var tempPcmFile: java.io.File? = null
+                        try {
+                            tempPcmFile = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(
+                                this, episodeId, seg.start, seg.end
+                            )
+                            if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+
+                            val fingerprint = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                            if (fingerprint.isNullOrBlank()) continue
+
+                            // 与所有水分指纹比对
+                            for (waterFp in waterFingerprints) {
+                                val durationRatio = minOf(seg.end - seg.start, waterFp.durationMs).toFloat() /
+                                        maxOf(seg.end - seg.start, waterFp.durationMs).toFloat()
+                                if (durationRatio < 0.4f) continue
+
+                                val isMatch = com.radio.app.utils.ChromaprintExtractor.isMatch(
+                                    fingerprint, waterFp.fingerprint, 0.75f
+                                )
+                                if (isMatch) {
+                                    seg.hasVoice = false
+                                    seg.label = "指纹水货"
+                                    matchedDryCount++
+                                    matchedDetails.add("${seg.start}-${seg.end}ms (${(seg.end - seg.start) / 1000}s)")
+                                    writeJitterLog(" generateContentBasedSegments: 指纹匹配水货片段 ${seg.start}-${seg.end} (匹配指纹: ${waterFp.episodeId})")
+                                    break
+                                }
+
+                                // 尝试伸缩容错比较
+                                val stretchDetail = com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(
+                                    fingerprint, waterFp.fingerprint
+                                )
+                                if (stretchDetail.similarity >= 0.75f) {
+                                    seg.hasVoice = false
+                                    seg.label = "指纹水货"
+                                    matchedDryCount++
+                                    matchedDetails.add("${seg.start}-${seg.end}ms (${(seg.end - seg.start) / 1000}s)")
+                                    writeJitterLog(" generateContentBasedSegments: 伸缩匹配水货片段 ${seg.start}-${seg.end} (匹配指纹: ${waterFp.episodeId}, 相似度: ${"%.2f".format(stretchDetail.similarity)})")
+                                    break
+                                }
+                            }
+                        } catch (e: Exception) {
+                            writeJitterLog(" generateContentBasedSegments: 指纹审核异常 ${seg.start}-${seg.end}: ${e.message}")
+                        } finally {
+                            try { tempPcmFile?.delete() } catch (_: Exception) {}
+                        }
+                    }
+
+                    lastFingerprintMatchCount = matchedDryCount
+
+                    // 合并相邻水货片段
+                    val afterFingerprint = mutableListOf<VoiceSegment>()
+                    for (seg in checkedSegments) {
+                        val last = afterFingerprint.lastOrNull()
+                        if (last != null && last.hasVoice == seg.hasVoice) {
+                            last.end = seg.end
+                            if (!seg.hasVoice) last.label = "指纹水货"
+                        } else {
+                            afterFingerprint.add(VoiceSegment().apply {
+                                this.start = seg.start
+                                this.end = seg.end
+                                this.hasVoice = seg.hasVoice
+                                this.label = seg.label
+                                this.isSimulated = false
+                            })
+                        }
+                    }
+                    finalSegments = afterFingerprint
+
+                    if (matchedDryCount > 0) {
+                        val dryPct = if (drySegments > 0) "%.1f%%".format(matchedDryCount.toFloat() / drySegments * 100) else "0%"
+                        val mergedWaterCount = afterFingerprint.count { !it.hasVoice }
+                        writeJitterLog(" generateContentBasedSegments: 指纹审核完成, 匹配${matchedDryCount}个干货片段, 合并后${mergedWaterCount}个指纹水货片段, 原干货指纹匹配率$dryPct")
+                    }
+                }
+            }
+
+            writeJitterLog(" generateContentBasedSegments: ${finalSegments.size} segments (merged from ${segments.size}) from ${transcripts.size} transcripts, dry=${finalSegments.count{it.hasVoice}}, water=${finalSegments.count{!it.hasVoice}}, fingerprintMatch=${lastFingerprintMatchCount}")
+            return finalSegments
         } catch (e: Exception) {
             writeJitterLog(" generateContentBasedSegments failed: ${e.message}")
             return emptyList()
         }
+    }
+
+    // v3.1.13: 对分段进行指纹审核并合并相邻水货片段
+    private fun applyFingerprintWithMerge(
+        episodeId: String,
+        segments: List<com.radio.app.models.VoiceSegment>,
+        waterFingerprints: List<com.radio.app.database.AudioFingerprint>
+    ): List<com.radio.app.models.VoiceSegment> {
+        val checkedSegments = segments.map { it.copy() }.toMutableList()
+        var matchedDryCount = 0
+        val drySegments = segments.count { it.hasVoice }
+        lastFingerprintMatchCount = 0
+        lastFingerprintDryTotal = drySegments
+
+        for (i in checkedSegments.indices) {
+            val seg = checkedSegments[i]
+            if (!seg.hasVoice) continue
+            if (seg.end - seg.start < 3000L) continue
+
+            var tempPcmFile: java.io.File? = null
+            try {
+                tempPcmFile = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, seg.start, seg.end)
+                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+
+                val fingerprint = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                if (fingerprint.isNullOrBlank()) continue
+
+                for (waterFp in waterFingerprints) {
+                    val durationRatio = minOf(seg.end - seg.start, waterFp.durationMs).toFloat() /
+                            maxOf(seg.end - seg.start, waterFp.durationMs).toFloat()
+                    if (durationRatio < 0.4f) continue
+
+                    val isMatch = com.radio.app.utils.ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, 0.75f)
+                    if (isMatch) {
+                        seg.hasVoice = false
+                        seg.label = "指纹水货"
+                        matchedDryCount++
+                        writeJitterLog(" applyFingerprintWithMerge: 匹配水货片段 ${seg.start}-${seg.end} (匹配指纹: ${waterFp.episodeId})")
+                        break
+                    }
+
+                    val stretchDetail = com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, waterFp.fingerprint)
+                    if (stretchDetail.similarity >= 0.75f) {
+                        seg.hasVoice = false
+                        seg.label = "指纹水货"
+                        matchedDryCount++
+                        writeJitterLog(" applyFingerprintWithMerge: 伸缩匹配水货片段 ${seg.start}-${seg.end} (相似度: ${"%.2f".format(stretchDetail.similarity)})")
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                writeJitterLog(" applyFingerprintWithMerge: 异常 ${seg.start}-${seg.end}: ${e.message}")
+            } finally {
+                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+        }
+
+        lastFingerprintMatchCount = matchedDryCount
+
+        // v3.1.14: 仅合并相邻水货片段，干货片段保留原始边界
+        val merged = mutableListOf<com.radio.app.models.VoiceSegment>()
+        for (seg in checkedSegments) {
+            val last = merged.lastOrNull()
+            if (last != null && !last.hasVoice && !seg.hasVoice) {
+                last.end = seg.end
+                last.label = "指纹水货"
+            } else {
+                merged.add(com.radio.app.models.VoiceSegment().apply {
+                    this.start = seg.start
+                    this.end = seg.end
+                    this.hasVoice = seg.hasVoice
+                    this.label = seg.label
+                    this.isSimulated = false
+                })
+            }
+        }
+
+        if (matchedDryCount > 0) {
+            val dryPct = if (drySegments > 0) "%.1f%%".format(matchedDryCount.toFloat() / drySegments * 100) else "0%"
+            val mergedWaterCount = merged.count { !it.hasVoice }
+            writeJitterLog(" applyFingerprintWithMerge: 匹配${matchedDryCount}个干货, 合并后${mergedWaterCount}个指纹水货, 原干货匹配率$dryPct")
+        }
+        return merged
     }
 
     // [v2.4.25] Classify a text segment as dry(content) or water(filler)
@@ -4108,7 +4406,14 @@ class PlayerActivity : AppCompatActivity() {
             subtitleReceiverRegistered = true
         }
         // 恢复处理状态持久化
-        restoreProcessingState()
+        // v3.1.16: 防止 SharedPreferences 类型异常导致 app 启动崩溃
+        try { restoreProcessingState() } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "restoreProcessingState in onResume failed: ${e.message}")
+            subtitleProcessing = false
+            segmentProcessing = false
+            segmentTaskEpisodeId = null
+            lastSegmentProgress = 0
+        }
         
         // Feature B: start position update for highlighting
         positionUpdateHandler.post(positionUpdateRunnable)

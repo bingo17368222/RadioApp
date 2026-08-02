@@ -56,6 +56,11 @@
             android:exported="false"
             android:parentActivityName=".activities.MainActivity" />
 
+        <activity
+            android:name=".activities.FingerprintGroupActivity"
+            android:exported="false"
+            android:parentActivityName=".activities.KeywordSettingsActivity" />
+
         <service
             android:name=".services.RadioPlaybackService"
             android:exported="false"
@@ -78,6 +83,22 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.radio.app.CANCEL_SEGMENT" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".utils.PcmPregenCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.radio.app.CANCEL_PCM_PREGEN" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".utils.FingerprintTestCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.radio.app.CANCEL_FINGERPRINT_TEST" />
             </intent-filter>
         </receiver>
     </application>

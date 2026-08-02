@@ -1286,49 +1286,100 @@ class SettingsFragment : Fragment() {
 
     private var mediaPlayer: android.media.MediaPlayer? = null
 
+    // v3.1.12: PCM播放进度条相关
+    @Volatile
+    private var pcmPlaybackSeekRequested: Long = -1L
+    @Volatile
+    private var pcmPlaybackCurrentPositionMs: Long = 0L
+    private var pcmPlaybackTotalMs: Long = 0L
+    private var pcmPlaybackFile: File? = null
+    private val pcmSeekBarHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pcmSeekBarUpdateRunnable: Runnable? = null
+
     private fun playPcmFile(pcmFile: File) {
+        val totalDurationMs = pcmFile.length() / (16000 * 2) * 1000
+        pcmPlaybackFile = pcmFile
+        pcmPlaybackTotalMs = totalDurationMs
+        pcmPlaybackCurrentPositionMs = 0L
+        pcmPlaybackSeekRequested = -1L
         pcmPlaybackActive = false
-        try { audioTrack?.stop() } catch (_: Exception) {}
-        try { audioTrack?.release() } catch (_: Exception) {}
-        audioTrack = null
-        try { mediaPlayer?.stop() } catch (_: Exception) {}
-        try { mediaPlayer?.release() } catch (_: Exception) {}
-        mediaPlayer = null
 
-        try {
-            // Prefer WAV file for reliable playback (correct sample rate handled by MediaPlayer)
-            val wavFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".wav")
-            if (wavFile.exists() && wavFile.length() > 44) {
-                android.util.Log.d("SettingsFragment", "playPcmFile: playing WAV: ${wavFile.name}")
-                mediaPlayer = android.media.MediaPlayer().apply {
-                    setDataSource(wavFile.absolutePath)
-                    setAudioAttributes(android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build())
-                    setOnCompletionListener { pcmPlaybackActive = false }
-                    setOnPreparedListener { start() }
-                    prepareAsync()
+        // 构建SeekBar对话框
+        val dialogBuilder = androidx.appcompat.app.AlertDialog.Builder(requireContext())
+        val dialogLayout = android.widget.LinearLayout(requireContext()).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 24)
+        }
+
+        val timeLayout = android.widget.LinearLayout(requireContext()).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val tvCurrent = android.widget.TextView(requireContext()).apply {
+            text = "00:00"
+            textSize = 12f
+        }
+        val tvTotal = android.widget.TextView(requireContext()).apply {
+            text = formatDurationMs(totalDurationMs)
+            textSize = 12f
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = android.view.Gravity.END }
+        }
+        val spacer = android.widget.Space(requireContext()).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, 0, 1f)
+        }
+        timeLayout.addView(tvCurrent)
+        timeLayout.addView(spacer)
+        timeLayout.addView(tvTotal)
+        dialogLayout.addView(timeLayout)
+
+        val seekBar = android.widget.SeekBar(requireContext()).apply {
+            max = totalDurationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            progress = 0
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        tvCurrent.text = formatDurationMs(progress.toLong())
+                    }
                 }
-                pcmPlaybackActive = true
-                Toast.makeText(requireContext(), "播放WAV: ${wavFile.name}", Toast.LENGTH_SHORT).show()
-                return
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {
+                    val seekPos = sb?.progress?.toLong() ?: return
+                    pcmPlaybackSeekRequested = seekPos
+                }
+            })
+        }
+        dialogLayout.addView(seekBar)
+
+        val btnClose = android.widget.Button(requireContext()).apply {
+            text = "停止"
+            setOnClickListener {
+                stopPcmPlayback()
             }
+        }
+        dialogLayout.addView(btnClose)
 
-            // Fallback to AudioTrack if WAV not available
-            // [v2.0.99] Force 16kHz mono - all PCM cache files are now 16kHz mono.
-            // Previously read .info file for sample rate, but stale .info files with
-            // wrong rates (e.g., 44100) caused slow/low-pitched playback.
+        dialogBuilder.setTitle("PCM播放 - ${pcmFile.name}")
+        dialogBuilder.setView(dialogLayout)
+        dialogBuilder.setCancelable(false)
+        val dialog = dialogBuilder.show()
+
+        // 启动播放
+        try {
             val sampleRate = 16000
-            val channels = 1
             val channelMask = android.media.AudioFormat.CHANNEL_OUT_MONO
-            val bytesPerFrame = 2
-            val expectedDurationSec = pcmFile.length() / (sampleRate * bytesPerFrame)
-            android.util.Log.d("SettingsFragment", "playPcmFile: streaming AudioTrack ${pcmFile.name}, size=${pcmFile.length()}, sampleRate=$sampleRate (forced 16kHz), expected=${expectedDurationSec}s")
-
             val bufferSize = maxOf(
                 android.media.AudioTrack.getMinBufferSize(sampleRate, channelMask, android.media.AudioFormat.ENCODING_PCM_16BIT),
-                4096
+                8192
             )
 
             audioTrack = android.media.AudioTrack(
@@ -1345,35 +1396,90 @@ class SettingsFragment : Fragment() {
                 android.media.AudioTrack.MODE_STREAM,
                 android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
             )
+            audioTrack?.play()
 
             pcmPlaybackActive = true
-            audioTrack?.play()
             Thread {
-                val buf = ByteArray(bufferSize)
-                val pcmIn = pcmFile.inputStream()
                 try {
-                    var read: Int
-                    while (pcmIn.read(buf).also { read = it } > 0 && pcmPlaybackActive && audioTrack != null) {
+                    var currentSeek = pcmPlaybackSeekRequested
+                    pcmPlaybackSeekRequested = -1L
+                    var fis = java.io.FileInputStream(pcmFile)
+                    // v3.1.14: 改用累计字节数计算位置，避免整数除法精度丢失
+                    var totalBytesRead = 0L
+                    if (currentSeek > 0) {
+                        val seekBytes = (currentSeek * 16000L * 2L / 1000L).coerceAtMost(pcmFile.length())
+                        fis.skip(seekBytes)
+                        pcmPlaybackCurrentPositionMs = currentSeek
+                    }
+                    val buf = ByteArray(bufferSize)
+                    while (!Thread.currentThread().isInterrupted && pcmPlaybackActive) {
+                        val seekReq = pcmPlaybackSeekRequested
+                        if (seekReq >= 0) {
+                            pcmPlaybackSeekRequested = -1L
+                            currentSeek = seekReq
+                            fis.close()
+                            fis = java.io.FileInputStream(pcmFile)
+                            val seekBytes = (seekReq * 16000L * 2L / 1000L).coerceAtMost(pcmFile.length())
+                            fis.skip(seekBytes)
+                            pcmPlaybackCurrentPositionMs = seekReq
+                            totalBytesRead = 0L  // 重置累计字节数
+                            try { audioTrack?.pause() } catch (_: Exception) {}
+                            try { audioTrack?.flush() } catch (_: Exception) {}
+                            try { audioTrack?.play() } catch (_: Exception) {}
+                        }
+                        val read = fis.read(buf)
+                        if (read <= 0) break
                         try {
                             val track = audioTrack ?: break
-                            val written = track.write(buf, 0, read)
-                            if (written <= 0) break
+                            track.write(buf, 0, read)
+                            totalBytesRead += read
+                            // v3.1.14: 用累计字节数计算位置，避免 read/32000=0 的问题
+                            pcmPlaybackCurrentPositionMs = currentSeek + totalBytesRead * 1000L / (16000L * 2L)
                         } catch (e: Exception) { break }
                     }
+                    fis.close()
+                } catch (e: Exception) {
+                    android.util.Log.e("SettingsFragment", "PCM playback error: ${e.message}")
                 } finally {
-                    pcmIn.close()
+                    try { audioTrack?.stop() } catch (_: Exception) {}
+                    try { audioTrack?.release() } catch (_: Exception) {}
+                    audioTrack = null
+                    pcmPlaybackActive = false
+                    try { if (dialog.isShowing) dialog.dismiss() } catch (_: Exception) {}
                 }
-            }.start()
+            }.apply { start() }
 
-            Toast.makeText(requireContext(), "播放PCM: ${pcmFile.name} (${expectedDurationSec}秒, ${sampleRate}Hz)", Toast.LENGTH_SHORT).show()
+            // 定期更新SeekBar
+            pcmSeekBarUpdateRunnable = object : Runnable {
+                override fun run() {
+                    // v3.1.13: 移除 audioTrack != null 检查，仅以 pcmPlaybackActive 和 dialog 状态为准
+                    if (dialog.isShowing && pcmPlaybackActive) {
+                        val pos = pcmPlaybackCurrentPositionMs.coerceAtMost(totalDurationMs)
+                        seekBar.progress = pos.toInt()
+                        tvCurrent.text = formatDurationMs(pos)
+                        pcmSeekBarUpdateRunnable?.let { pcmSeekBarHandler.postDelayed(this, 500) }
+                    }
+                }
+            }
+            pcmSeekBarHandler.postDelayed(pcmSeekBarUpdateRunnable!!, 500)
         } catch (e: Exception) {
             pcmPlaybackActive = false
+            try { dialog.dismiss() } catch (_: Exception) {}
             Toast.makeText(requireContext(), "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
+    private fun formatDurationMs(ms: Long): String {
+        val totalSec = (ms / 1000).toInt()
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        return String.format("%02d:%02d", min, sec)
+    }
+
     private fun stopPcmPlayback() {
         pcmPlaybackActive = false
+        pcmSeekBarUpdateRunnable?.let { pcmSeekBarHandler.removeCallbacks(it) }
+        pcmSeekBarUpdateRunnable = null
         try { audioTrack?.stop() } catch (_: Exception) {}
         try { audioTrack?.release() } catch (_: Exception) {}
         audioTrack = null

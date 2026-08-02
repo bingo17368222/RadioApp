@@ -40,7 +40,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 12
+        private const val DATABASE_VERSION = 14
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -50,6 +50,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         private const val TABLE_EPISODE_INFO = "episode_info"
         // v3.0.2: 音频指纹表，用于存储用户标记的水分片段指纹素材
         private const val TABLE_AUDIO_FINGERPRINTS = "audio_fingerprints"
+        // v3.1.6: 指纹分组管理表
+        private const val TABLE_FINGERPRINT_GROUPS = "fingerprint_groups"
+        private const val TABLE_FINGERPRINT_GROUP_MEMBERS = "fingerprint_group_members"
 
         private var instance: RadioDatabaseHelper? = null
 
@@ -78,6 +81,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.0.2: 音频指纹表
         db.execSQL("CREATE TABLE $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '')")
         db.execSQL("CREATE INDEX idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
+
+        // v3.1.7: 指纹分组管理表（增加note列）
+        db.execSQL("CREATE TABLE $TABLE_FINGERPRINT_GROUPS (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, note TEXT DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE $TABLE_FINGERPRINT_GROUP_MEMBERS (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, fingerprint_id INTEGER NOT NULL, is_representative INTEGER DEFAULT 0, manually_removed INTEGER DEFAULT 0, FOREIGN KEY(group_id) REFERENCES $TABLE_FINGERPRINT_GROUPS(id) ON DELETE CASCADE, FOREIGN KEY(fingerprint_id) REFERENCES $TABLE_AUDIO_FINGERPRINTS(id) ON DELETE CASCADE)")
+        db.execSQL("CREATE INDEX idx_fp_group_members_group ON $TABLE_FINGERPRINT_GROUP_MEMBERS(group_id)")
+        db.execSQL("CREATE INDEX idx_fp_group_members_fp ON $TABLE_FINGERPRINT_GROUP_MEMBERS(fingerprint_id)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -126,6 +135,17 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.1.3: Add note column to audio_fingerprints for user remarks.
         if (oldVersion < 12) {
             try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN note TEXT DEFAULT ''") } catch (_: Exception) {}
+        }
+        // v3.1.6: Add fingerprint group management tables
+        if (oldVersion < 13) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_FINGERPRINT_GROUPS (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_FINGERPRINT_GROUP_MEMBERS (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, fingerprint_id INTEGER NOT NULL, is_representative INTEGER DEFAULT 0, manually_removed INTEGER DEFAULT 0, FOREIGN KEY(group_id) REFERENCES $TABLE_FINGERPRINT_GROUPS(id) ON DELETE CASCADE, FOREIGN KEY(fingerprint_id) REFERENCES $TABLE_AUDIO_FINGERPRINTS(id) ON DELETE CASCADE)")
+            try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_fp_group_members_group ON $TABLE_FINGERPRINT_GROUP_MEMBERS(group_id)") } catch (_: Exception) {}
+            try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_fp_group_members_fp ON $TABLE_FINGERPRINT_GROUP_MEMBERS(fingerprint_id)") } catch (_: Exception) {}
+        }
+        // v3.1.7: Add note column to fingerprint_groups
+        if (oldVersion < 14) {
+            try { db.execSQL("ALTER TABLE $TABLE_FINGERPRINT_GROUPS ADD COLUMN note TEXT DEFAULT ''") } catch (_: Exception) {}
         }
     }
 
@@ -864,7 +884,187 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             note = if (noteIdx >= 0) c.getString(noteIdx) ?: "" else ""
         )
     }
+
+    // ===== Fingerprint Groups (v3.1.6) =====
+
+    /**
+     * v3.1.7: 保存或更新指纹分组（支持note字段）。
+     */
+    fun saveFingerprintGroup(group: FingerprintGroupInfo): Long {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("name", group.name)
+            put("note", group.note)
+            put("created_at", group.createdAt.takeIf { it > 0 } ?: now)
+            put("updated_at", now)
+        }
+        if (group.id > 0) {
+            db.update(TABLE_FINGERPRINT_GROUPS, values, "id = ?", arrayOf(group.id.toString()))
+            return group.id
+        }
+        return db.insert(TABLE_FINGERPRINT_GROUPS, null, values)
+    }
+
+    /**
+     * 删除指纹分组（级联删除成员）。
+     */
+    fun deleteFingerprintGroup(groupId: Long) {
+        val db = writableDatabase
+        db.delete(TABLE_FINGERPRINT_GROUP_MEMBERS, "group_id = ?", arrayOf(groupId.toString()))
+        db.delete(TABLE_FINGERPRINT_GROUPS, "id = ?", arrayOf(groupId.toString()))
+    }
+
+    /**
+     * v3.1.7: 获取所有指纹分组（支持note字段）。
+     */
+    fun getAllFingerprintGroups(): List<FingerprintGroupInfo> {
+        val list = mutableListOf<FingerprintGroupInfo>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(TABLE_FINGERPRINT_GROUPS, null, null, null, null, null, "created_at ASC")
+            while (cursor.moveToNext()) {
+                val noteIdx = cursor.getColumnIndex("note")
+                list.add(FingerprintGroupInfo(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    name = cursor.getString(cursor.getColumnIndexOrThrow("name")) ?: "",
+                    note = if (noteIdx >= 0) cursor.getString(noteIdx) ?: "" else "",
+                    createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("created_at")),
+                    updatedAt = cursor.getLong(cursor.getColumnIndexOrThrow("updated_at"))
+                ))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * 获取指定分组的成员列表。
+     */
+    fun getGroupMembers(groupId: Long): List<FingerprintGroupMember> {
+        val list = mutableListOf<FingerprintGroupMember>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_FINGERPRINT_GROUP_MEMBERS, null,
+                "group_id = ? AND manually_removed = 0",
+                arrayOf(groupId.toString()), null, null, null
+            )
+            while (cursor.moveToNext()) {
+                list.add(FingerprintGroupMember(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    groupId = cursor.getLong(cursor.getColumnIndexOrThrow("group_id")),
+                    fingerprintId = cursor.getLong(cursor.getColumnIndexOrThrow("fingerprint_id")),
+                    isRepresentative = cursor.getInt(cursor.getColumnIndexOrThrow("is_representative")) == 1,
+                    manuallyRemoved = cursor.getInt(cursor.getColumnIndexOrThrow("manually_removed")) == 1
+                ))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * 添加成员到分组。
+     */
+    fun addGroupMember(groupId: Long, fingerprintId: Long, isRepresentative: Boolean = false): Long {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("group_id", groupId)
+            put("fingerprint_id", fingerprintId)
+            put("is_representative", if (isRepresentative) 1 else 0)
+            put("manually_removed", 0)
+        }
+        return db.insert(TABLE_FINGERPRINT_GROUP_MEMBERS, null, values)
+    }
+
+    /**
+     * 从分组中移除成员（标记为手动移除）。
+     */
+    fun removeGroupMember(memberId: Long) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("manually_removed", 1)
+        }
+        db.update(TABLE_FINGERPRINT_GROUP_MEMBERS, values, "id = ?", arrayOf(memberId.toString()))
+    }
+
+    /**
+     * 清除所有分组数据（重新计算前使用）。
+     */
+    fun clearAllGroups() {
+        val db = writableDatabase
+        db.delete(TABLE_FINGERPRINT_GROUP_MEMBERS, null, null)
+        db.delete(TABLE_FINGERPRINT_GROUPS, null, null)
+    }
+
+    /**
+     * 根据指纹ID获取其所属分组信息。
+     */
+    fun getFingerprintGroupsByFingerprintId(fingerprintId: Long): List<FingerprintGroupInfo> {
+        val list = mutableListOf<FingerprintGroupInfo>()
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery(
+                "SELECT g.* FROM $TABLE_FINGERPRINT_GROUPS g " +
+                "INNER JOIN $TABLE_FINGERPRINT_GROUP_MEMBERS m ON g.id = m.group_id " +
+                "WHERE m.fingerprint_id = ? AND m.manually_removed = 0",
+                arrayOf(fingerprintId.toString())
+            )
+            while (cursor.moveToNext()) {
+                list.add(FingerprintGroupInfo(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    name = cursor.getString(cursor.getColumnIndexOrThrow("name")) ?: "",
+                    createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("created_at")),
+                    updatedAt = cursor.getLong(cursor.getColumnIndexOrThrow("updated_at"))
+                ))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * v3.1.7: 更新分组名称。
+     */
+    fun updateGroupName(groupId: Long, name: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("name", name)
+            put("updated_at", System.currentTimeMillis())
+        }
+        db.update(TABLE_FINGERPRINT_GROUPS, values, "id = ?", arrayOf(groupId.toString()))
+    }
+
+    /**
+     * v3.1.7: 更新分组备注。
+     */
+    fun updateGroupNote(groupId: Long, note: String) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put("note", note)
+            put("updated_at", System.currentTimeMillis())
+        }
+        db.update(TABLE_FINGERPRINT_GROUPS, values, "id = ?", arrayOf(groupId.toString()))
+    }
 }
+
+// v3.1.7: 指纹分组数据类（增加note字段）
+data class FingerprintGroupInfo(
+    val id: Long = 0,
+    val name: String = "",
+    val note: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class FingerprintGroupMember(
+    val id: Long = 0,
+    val groupId: Long = 0,
+    val fingerprintId: Long = 0,
+    val isRepresentative: Boolean = false,
+    val manuallyRemoved: Boolean = false
+)
 
 // v3.0.2: 音频指纹数据类
 // v3.1.3: 增加 note 字段，支持用户备注
