@@ -1772,7 +1772,14 @@ class PlayerActivity : AppCompatActivity() {
         if (savedEngine != null) {
             val dryPercent = dbHelper.getDryPercentage(episodeId)
             val dryPercentText = String.format(java.util.Locale.US, "%.1f", dryPercent)
-            val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)"
+            // v3.1.18: 恢复持久化的指纹匹配统计
+            val fpMatchCount = prefs.getInt("fp_match_${episodeId}", 0)
+            val fpDryTotal = prefs.getInt("fp_dry_${episodeId}", 0)
+            val fingerprintSuffix = if (fpMatchCount > 0 && fpDryTotal > 0) {
+                val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
+                ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
+            } else ""
+            val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)$fingerprintSuffix"
             binding.tvAiStatus.text = restoredText
             segmentListDisplayText = restoredText
             binding.tvAiStatus.visibility = View.VISIBLE
@@ -2491,7 +2498,7 @@ class PlayerActivity : AppCompatActivity() {
                         }
                     } else if (aiModel == AppSettings.AI_MODEL_JIU_AI_TING) {
                         // v3.1.15: 就AI听方案 = 音频+指纹方案，和字幕无关
-                        writeJitterLog(" btnAiSegment: using 就AI听 audio+fingerprint segmentation")
+                        writeJitterLog(" btnAiSegment: 开始就AI听音频+指纹分段")
                         runOnUiThread { Toast.makeText(this, "就AI听音频分段分析中...", Toast.LENGTH_SHORT).show() }
 
                         try {
@@ -2546,7 +2553,7 @@ class PlayerActivity : AppCompatActivity() {
                                         )
                                     )
                                 } catch (_: Exception) {}
-                                writeJitterLog(" btnAiSegment: 就AI听 returned ${segments.size} segments, engine=${jiuResult.engineName}, time=${jiuResult.processingTimeMs}ms, matched=${jiuResult.matchedCount}/${jiuResult.totalDrySegments}")
+                                writeJitterLog(" btnAiSegment: 就AI听完成: ${segments.size}段, 引擎=${jiuResult.engineName}, 耗时=${jiuResult.processingTimeMs}ms, 指纹匹配=${jiuResult.matchedCount}/${jiuResult.totalDrySegments}")
                             } else {
                                 writeJitterLog(" btnAiSegment: 就AI听 returned null")
                             }
@@ -4025,7 +4032,7 @@ class PlayerActivity : AppCompatActivity() {
             val transcripts = dbHelper.getTranscripts(episodeId)
             if (transcripts.size < 3) {
                 // v3.1.13: 无字幕时，生成固定分段，然后走指纹审核
-                writeJitterLog(" generateContentBasedSegments: no transcripts, using fixed segments + fingerprint check")
+                writeJitterLog(" generateContentBasedSegments: 无字幕，使用固定分段+指纹审核")
                 val fixedSegments = com.radio.app.utils.SegmentGenerator.generateFixedSegments(durationMs.toLong())
                 // 直接对固定分段进行指纹审核（跳过关键词分类）
                 val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
@@ -4158,8 +4165,8 @@ class PlayerActivity : AppCompatActivity() {
                                     seg.hasVoice = false
                                     seg.label = "指纹水货"
                                     matchedDryCount++
-                                    matchedDetails.add("${seg.start}-${seg.end}ms (${(seg.end - seg.start) / 1000}s)")
-                                    writeJitterLog(" generateContentBasedSegments: 指纹匹配水货片段 ${seg.start}-${seg.end} (匹配指纹: ${waterFp.episodeId})")
+                                    matchedDetails.add("${seg.start/1000}秒-${seg.end/1000}秒")
+                                    writeJitterLog(" generateContentBasedSegments: 片段${seg.start/1000}秒-${seg.end/1000}秒匹配水印指纹（来源: ${waterFp.episodeId}）")
                                     break
                                 }
 
@@ -4171,13 +4178,13 @@ class PlayerActivity : AppCompatActivity() {
                                     seg.hasVoice = false
                                     seg.label = "指纹水货"
                                     matchedDryCount++
-                                    matchedDetails.add("${seg.start}-${seg.end}ms (${(seg.end - seg.start) / 1000}s)")
-                                    writeJitterLog(" generateContentBasedSegments: 伸缩匹配水货片段 ${seg.start}-${seg.end} (匹配指纹: ${waterFp.episodeId}, 相似度: ${"%.2f".format(stretchDetail.similarity)})")
+                                    matchedDetails.add("${seg.start/1000}秒-${seg.end/1000}秒")
+                                    writeJitterLog(" generateContentBasedSegments: 片段${seg.start/1000}秒-${seg.end/1000}秒伸缩匹配水印指纹（来源: ${waterFp.episodeId}，相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）")
                                     break
                                 }
                             }
                         } catch (e: Exception) {
-                            writeJitterLog(" generateContentBasedSegments: 指纹审核异常 ${seg.start}-${seg.end}: ${e.message}")
+                            writeJitterLog(" generateContentBasedSegments: 片段${seg.start/1000}秒-${seg.end/1000}秒指纹审核异常: ${e.message}")
                         } finally {
                             try { tempPcmFile?.delete() } catch (_: Exception) {}
                         }
@@ -4207,12 +4214,12 @@ class PlayerActivity : AppCompatActivity() {
                     if (matchedDryCount > 0) {
                         val dryPct = if (drySegments > 0) "%.1f%%".format(matchedDryCount.toFloat() / drySegments * 100) else "0%"
                         val mergedWaterCount = afterFingerprint.count { !it.hasVoice }
-                        writeJitterLog(" generateContentBasedSegments: 指纹审核完成, 匹配${matchedDryCount}个干货片段, 合并后${mergedWaterCount}个指纹水货片段, 原干货指纹匹配率$dryPct")
+                        writeJitterLog(" generateContentBasedSegments: 指纹审核完成, 匹配${matchedDryCount}个干货片段, 合并后${mergedWaterCount}段指纹水货, 原干货匹配率$dryPct")
                     }
                 }
             }
 
-            writeJitterLog(" generateContentBasedSegments: ${finalSegments.size} segments (merged from ${segments.size}) from ${transcripts.size} transcripts, dry=${finalSegments.count{it.hasVoice}}, water=${finalSegments.count{!it.hasVoice}}, fingerprintMatch=${lastFingerprintMatchCount}")
+            writeJitterLog(" generateContentBasedSegments: 完成: ${finalSegments.size}段, 干货${finalSegments.count{it.hasVoice}}段, 水货${finalSegments.count{!it.hasVoice}}段, 指纹匹配${lastFingerprintMatchCount}段")
             return finalSegments
         } catch (e: Exception) {
             writeJitterLog(" generateContentBasedSegments failed: ${e.message}")
@@ -4255,7 +4262,7 @@ class PlayerActivity : AppCompatActivity() {
                         seg.hasVoice = false
                         seg.label = "指纹水货"
                         matchedDryCount++
-                        writeJitterLog(" applyFingerprintWithMerge: 匹配水货片段 ${seg.start}-${seg.end} (匹配指纹: ${waterFp.episodeId})")
+                        writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒匹配水印指纹（来源: ${waterFp.episodeId}）")
                         break
                     }
 
@@ -4264,12 +4271,12 @@ class PlayerActivity : AppCompatActivity() {
                         seg.hasVoice = false
                         seg.label = "指纹水货"
                         matchedDryCount++
-                        writeJitterLog(" applyFingerprintWithMerge: 伸缩匹配水货片段 ${seg.start}-${seg.end} (相似度: ${"%.2f".format(stretchDetail.similarity)})")
+                        writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒伸缩匹配水印指纹（相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）")
                         break
                     }
                 }
             } catch (e: Exception) {
-                writeJitterLog(" applyFingerprintWithMerge: 异常 ${seg.start}-${seg.end}: ${e.message}")
+                writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒异常: ${e.message}")
             } finally {
                 try { tempPcmFile?.delete() } catch (_: Exception) {}
             }
@@ -4298,7 +4305,7 @@ class PlayerActivity : AppCompatActivity() {
         if (matchedDryCount > 0) {
             val dryPct = if (drySegments > 0) "%.1f%%".format(matchedDryCount.toFloat() / drySegments * 100) else "0%"
             val mergedWaterCount = merged.count { !it.hasVoice }
-            writeJitterLog(" applyFingerprintWithMerge: 匹配${matchedDryCount}个干货, 合并后${mergedWaterCount}个指纹水货, 原干货匹配率$dryPct")
+            writeJitterLog(" applyFingerprintWithMerge: 匹配${matchedDryCount}个干货, 合并后${mergedWaterCount}段指纹水货, 原干货匹配率$dryPct")
         }
         return merged
     }

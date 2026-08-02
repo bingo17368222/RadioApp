@@ -438,6 +438,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
                         playbackCurrentPositionMs = currentSeek
                     }
                     val buffer = ByteArray(8192)
+                    // v3.1.18: 改用累计字节数计算位置，避免整数除法精度丢失
+                    var totalBytesRead = 0L
                     while (!Thread.currentThread().isInterrupted) {
                         // 检查seek请求
                         val seekReq = playbackSeekRequested
@@ -450,6 +452,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
                             val seekBytes = (seekReq * 16000L * 2L / 1000L).coerceAtMost(pcmFile.length())
                             fis.skip(seekBytes)
                             playbackCurrentPositionMs = seekReq
+                            totalBytesRead = 0L  // 重置累计字节数
                             // Flush AudioTrack
                             try { audioTrack?.pause() } catch (_: Exception) {}
                             try { audioTrack?.flush() } catch (_: Exception) {}
@@ -458,8 +461,9 @@ class KeywordSettingsActivity : AppCompatActivity() {
                         val read = fis.read(buffer)
                         if (read <= 0) break
                         audioTrack?.write(buffer, 0, read)
-                        // 更新播放位置（近似值）
-                        playbackCurrentPositionMs += (read / (16000 * 2)) * 1000L
+                        totalBytesRead += read
+                        // v3.1.18: 用累计字节数计算位置，避免 read/32000=0 的问题
+                        playbackCurrentPositionMs = currentSeek + totalBytesRead * 1000L / (16000L * 2L)
                     }
                     fis.close()
                 } catch (e: Exception) {
@@ -480,7 +484,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
             // 定期更新SeekBar
             seekBarUpdateRunnable = object : Runnable {
                 override fun run() {
-                    if (dialog.isShowing && audioTrack != null) {
+                    // v3.1.18: 移除 audioTrack != null 检查，仅以 dialog 状态为准
+                    if (dialog.isShowing) {
                         val pos = playbackCurrentPositionMs.coerceAtMost(totalDurationMs)
                         seekBar.progress = pos.toInt()
                         tvCurrent.text = formatMs(pos)
