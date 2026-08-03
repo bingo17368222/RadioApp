@@ -47,6 +47,21 @@ object SegmentGenerator {
     private const val FINGERPRINT_MATCH_THRESHOLD = 0.75f
     private const val MIN_SEGMENT_MS_FOR_FINGERPRINT = 3000L
 
+    // v3.2.2: 三层架构参数
+    // 第一层指纹快筛阈值（正式库匹配）
+    private const val LAYER1_FAST_SCREEN_THRESHOLD = 0.70f
+    // 第三层指纹漏判召回阈值（金标准匹配）
+    private const val LAYER3_RECALL_THRESHOLD = 0.82f
+    // 观察池进入时的重复判定阈值（与正式库/观察池已有指纹比较）
+    private const val POOL_DUPLICATE_THRESHOLD = 0.92f
+    // 观察池候选最小/最大时长
+    private const val POOL_MIN_DURATION_MS = 15_000L   // 15秒
+    private const val POOL_MAX_DURATION_MS = 600_000L  // 600秒
+    // 观察池晋升默认阈值（跨节目出现次数）
+    private const val POOL_PROMOTION_THRESHOLD_DEFAULT = 3
+    // 指纹hash取前N字符作为快速索引
+    private const val FINGERPRINT_HASH_PREFIX_LEN = 64
+
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
     private fun writeFingerprintLog(context: Context, message: String) {
         try {
@@ -444,113 +459,32 @@ object SegmentGenerator {
                 processingTimeMs = result?.processingTimeMs ?: (System.currentTimeMillis() - segStartTime)
                 audioDurationMs = result?.audioDurationMs ?: durationMs
             } else if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_JIU_AI_TING) {
-                // v3.1.12: 就AI听方案重构为音频加指纹方案
-                // 1. 先检查是否已有音频分段结果（VAD+YAMNet双模型）
-                // 2. 如不存在，调用双模型音频分段生成音频分段结果
-                // 3. 对干货片段用水分指纹二次审核，匹配则改为指纹水货片段
-                // 4. 合并相邻水货片段，标记为指纹水货片段
-                val fpMsgScheme = "postSegmentKeyword: 就AI听 音频+指纹方案 for episode=$episodeId"
+                // v3.2.2: 就AI听方案三层架构
+                // 第一层：指纹快筛 → 第二层：双模型判定(VAD+YAMNet) → 第三层：指纹漏判召回
+                val fpMsgScheme = "postSegmentKeyword: 就AI听三层架构方案 for episode=$episodeId"
                 Log.i(TAG, fpMsgScheme)
                 writeFingerprintLog(context, fpMsgScheme)
 
-                // 检查数据库是否已有音频分段结果
-                val existingSegments = dbHelper.getVoiceSegments(episodeId)
-                val realSegments = existingSegments.filter { !it.isSimulated }
-                var audioSegments: List<VoiceSegment> = emptyList()
-                var audioEngineName = "就AI听"
+                val audioUrl = try {
+                    RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)?.audioUrl
+                } catch (_: Exception) { null }
 
-                if (realSegments.isEmpty()) {
-                    // 没有音频分段结果，调用双模型音频分段
-                    Log.i(TAG, "postSegmentKeyword: 无音频分段结果，调用VAD+YAMNet双模型分段 for episode=$episodeId")
-                    val audioUrl = try {
-                        RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)?.audioUrl
-                    } catch (_: Exception) { null }
-                    val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
-                    if (result != null && result.segments.isNotEmpty()) {
-                        audioSegments = result.segments
-                        audioEngineName = "${result.engineName}+指纹"
-                        Log.i(TAG, "postSegmentKeyword: 音频分段生成${audioSegments.size}个片段 for episode=$episodeId")
-                    } else {
-                        Log.w(TAG, "postSegmentKeyword: 音频分段无结果，回退到关键词分段 for episode=$episodeId")
-                    }
-                } else {
-                    audioSegments = realSegments
-                    Log.i(TAG, "postSegmentKeyword: 使用已有音频分段结果(${audioSegments.size}个) for episode=$episodeId")
-                }
-
-                // 如果音频分段结果为空，回退到关键词分段
-                val baseSegments = if (audioSegments.isNotEmpty()) audioSegments else {
-                    generateKeywordSegments(context, episodeId, durationMs)
-                }
-
-                if (baseSegments.isEmpty()) {
-                    segments = emptyList()
-                    engineName = audioEngineName
-                    processingTimeMs = System.currentTimeMillis() - segStartTime
-                    audioDurationMs = durationMs
-                } else {
-                    engineName = audioEngineName
-                    processingTimeMs = System.currentTimeMillis() - segStartTime
+                val jiuAiTingResult = generateJiuAiTingSegments(context, episodeId, durationMs, audioUrl)
+                if (jiuAiTingResult != null && jiuAiTingResult.segments.isNotEmpty()) {
+                    segments = jiuAiTingResult.segments
+                    engineName = jiuAiTingResult.engineName
+                    processingTimeMs = jiuAiTingResult.processingTimeMs
                     audioDurationMs = durationMs
 
-                    // 对干货片段进行指纹二次审核
-                    val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
-                    var totalDrySegments = baseSegments.count { it.hasVoice }
-                    var matchedCount = 0
-
-                    Log.i(TAG, "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}")
-                    writeFingerprintLog(context, "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}")
-                    if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-                        val fingerprintChecked = applyAudioFingerprintSecondaryCheck(
-                            context, episodeId, baseSegments, waterFingerprints
-                        )
-                        // 统计被指纹匹配的干货片段数
-                        val matchedSegments = fingerprintChecked.filter { !it.hasVoice }
-                            .filter { fSeg ->
-                                val orig = baseSegments.find { it.start == fSeg.start && it.end == fSeg.end }
-                                orig != null && orig.hasVoice
-                            }
-                        matchedCount = matchedSegments.size
-
-                        // 合并相邻水货片段，标记为指纹水货片段
-                        val merged = mergeAdjacentSegments(fingerprintChecked)
-                        for (seg in merged) {
-                            if (!seg.hasVoice) {
-                                // 标记为指纹水货片段
-                                seg.label = "指纹水货"
-                            }
-                        }
-
-                        // 日志记录
-                        if (matchedCount > 0) {
-                            val matchedDetails = matchedSegments.joinToString("; ") { 
-                                "${it.start/1000}秒-${it.end/1000}秒"
-                            }
-                            val mergedWaterCount = merged.count { !it.hasVoice }
-                            val dryPct = if (totalDrySegments > 0) 
-                                "%.1f%%".format(matchedCount.toFloat() / totalDrySegments * 100) else "0%"
-                            val fpMsg1 = "就AI听方案指纹审核: 匹配${matchedCount}个干货片段 [$matchedDetails]"
-                            Log.i(TAG, fpMsg1)
-                            writeFingerprintLog(context, fpMsg1)
-                            val fpMsg2 = "就AI听方案指纹审核: 合并后${mergedWaterCount}段指纹水货，原干货匹配率$dryPct"
-                            Log.i(TAG, fpMsg2)
-                            writeFingerprintLog(context, fpMsg2)
-                        } else {
-                            val fpMsg = "就AI听方案指纹审核: 未匹配到任何水分指纹，所有干货保持原分类"
-                            Log.i(TAG, fpMsg)
-                            writeFingerprintLog(context, fpMsg)
-                        }
-                        segments = merged
-                    } else {
-                        val fpMsg = "就AI听方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）"
-                        Log.i(TAG, fpMsg)
-                        writeFingerprintLog(context, fpMsg)
-                        segments = baseSegments
-                    }
-
-                    val fpMsgDone = "就AI听方案完成: ${segments.size}个片段（原干货${totalDrySegments}段，指纹匹配${matchedCount}段）"
+                    val fpMsgDone = "就AI听三层架构方案完成: ${segments.size}个片段（原干货${jiuAiTingResult.totalDrySegments}段，第一层快筛${jiuAiTingResult.layer1MatchCount}段，第三层召回${jiuAiTingResult.layer3RecallCount}段）"
                     Log.i(TAG, fpMsgDone)
                     writeFingerprintLog(context, fpMsgDone)
+                } else {
+                    segments = emptyList()
+                    engineName = "就AI听"
+                    processingTimeMs = System.currentTimeMillis() - segStartTime
+                    audioDurationMs = durationMs
+                    Log.w(TAG, "postSegmentKeyword: 就AI听三层架构方案无结果 for episode=$episodeId")
                 }
             } else {
                 // Keyword-based segments
@@ -742,20 +676,29 @@ object SegmentGenerator {
     }
 
     // v3.1.15: 就AI听方案结果（含指纹匹配统计）
+    // v3.2.2: 增加三层架构各层统计
     data class JiuAiTingResult(
         val segments: List<VoiceSegment>,
         val engineName: String,
         val processingTimeMs: Long,
         val matchedCount: Int,
-        val totalDrySegments: Int
+        val totalDrySegments: Int,
+        val layer1MatchCount: Int = 0,
+        val layer3RecallCount: Int = 0,
+        val observationPoolNewCount: Int = 0,
+        val observationPoolHitCount: Int = 0
     )
 
     /**
-     * v3.1.15: 就AI听方案 - 音频+指纹分段
-     * 1. 调用双模型音频分段（VAD+YAMNet）生成音频分段结果
-     * 2. 对分段结果中的干货片段用水分指纹二次审核
-     * 3. 合并相邻水货片段，标记为指纹水货片段
-     * 4. 日志记录匹配的指纹片段和合并的指纹水货片段
+     * v3.2.2: 就AI听方案 - 三层架构
+     * 第一层：指纹快筛 → 第二层：双模型判定(VAD+YAMNet) → 第三层：指纹漏判召回
+     *
+     * 整体流程：
+     * 1. 第一层指纹快筛：使用正式指纹库对分段做快速指纹匹配，命中则直接标记为水货
+     * 2. 第二层双模型判定：调用VAD+YAMNet生成干湿分段（如已有则跳过）
+     * 3. 合并相邻同类型片段
+     * 4. 第三层指纹漏判召回：仅对干货片段，仅用金标准指纹查询，匹配则改为水货并合并相邻水分
+     * 5. 候选指纹观察池处理：第三层合并得到的大水分片段进入观察池
      */
     fun generateJiuAiTingSegments(
         context: Context,
@@ -765,91 +708,420 @@ object SegmentGenerator {
         progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): JiuAiTingResult? {
         val segStartTime = System.currentTimeMillis()
-        val fpMsgStart = "generateJiuAiTingSegments: 就AI听音频+指纹方案 for episode=$episodeId"
+        val fpMsgStart = "generateJiuAiTingSegments: 就AI听三层架构方案 for episode=$episodeId"
         Log.i(TAG, fpMsgStart)
         writeFingerprintLog(context, fpMsgStart)
 
-        // 1. 调用双模型音频分段
-        val audioResult = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl, progressCallback)
-        val baseSegments: List<VoiceSegment> = audioResult?.segments ?: emptyList()
-        val engineName = if (audioResult != null) "${audioResult.engineName}+指纹" else "就AI听"
+        val dbHelper = RadioDatabaseHelper.getInstance(context)
+
+        // ========== 获取指纹库 ==========
+        // 正式指纹库（金标准+自动晋升）→ 第一层使用
+        val formalLibrary = try { dbHelper.getFormalLibraryFingerprints() } catch (_: Exception) { emptyList() }
+        // 金标准指纹（仅人工录入）→ 第三层使用
+        val goldStandardFingerprints = try { dbHelper.getGoldStandardFingerprints() } catch (_: Exception) { emptyList() }
+
+        val fpMsgLib = "三层架构: 正式指纹库${formalLibrary.size}条（金标准${goldStandardFingerprints.size}条，自动晋升${formalLibrary.size - goldStandardFingerprints.size}条）"
+        Log.i(TAG, fpMsgLib)
+        writeFingerprintLog(context, fpMsgLib)
+
+        // ========== 第二层：双模型判定(VAD+YAMNet) ==========
+        // 检查数据库是否已有音频分段结果
+        val existingSegments = dbHelper.getVoiceSegments(episodeId)
+        val realSegments = existingSegments.filter { !it.isSimulated }
+        var baseSegments: List<VoiceSegment> = emptyList()
+        var audioEngineName = "就AI听"
+
+        if (realSegments.isEmpty()) {
+            Log.i(TAG, "三层架构: 无音频分段结果，调用VAD+YAMNet双模型分段 for episode=$episodeId")
+            val audioResult = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl, progressCallback)
+            if (audioResult != null && audioResult.segments.isNotEmpty()) {
+                baseSegments = audioResult.segments
+                audioEngineName = "${audioResult.engineName}+三层"
+                Log.i(TAG, "三层架构: 第二层VAD+YAMNet生成${baseSegments.size}个片段 for episode=$episodeId")
+            } else {
+                Log.w(TAG, "三层架构: 音频分段无结果，回退到关键词分段 for episode=$episodeId")
+                baseSegments = generateKeywordSegments(context, episodeId, durationMs)
+                audioEngineName = "关键词+三层"
+            }
+        } else {
+            baseSegments = realSegments
+            Log.i(TAG, "三层架构: 使用已有音频分段结果(${baseSegments.size}个) for episode=$episodeId")
+        }
 
         if (baseSegments.isEmpty()) {
-            val fpMsgEmpty = "generateJiuAiTingSegments: 音频分段无结果"
+            val fpMsgEmpty = "generateJiuAiTingSegments: 无分段结果"
             Log.w(TAG, fpMsgEmpty)
             writeFingerprintLog(context, fpMsgEmpty)
             return null
         }
-        val fpMsgSegCount = "就AI听音频分段: 生成${baseSegments.size}个片段"
-        Log.i(TAG, fpMsgSegCount)
-        writeFingerprintLog(context, fpMsgSegCount)
 
-        val dbHelper = RadioDatabaseHelper.getInstance(context)
-        val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
         val totalDrySegments = baseSegments.count { it.hasVoice }
-        var matchedCount = 0
+        var layer1MatchCount = 0
+        var layer3RecallCount = 0
+        var observationPoolNewCount = 0
+        var observationPoolHitCount = 0
 
-        val fpMsgPrepare = "就AI听方案指纹审核: 准备审核，水分指纹库${waterFingerprints.size}条，待审核干货${totalDrySegments}段，指纹引擎${if (ChromaprintExtractor.ensureLibraryLoaded(context)) "已就绪" else "未加载"}"
-        Log.i(TAG, fpMsgPrepare)
-        writeFingerprintLog(context, fpMsgPrepare)
-        val finalSegments = if (waterFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            // 2. 对干货片段进行指纹二次审核
-            val fingerprintChecked = applyAudioFingerprintSecondaryCheck(context, episodeId, baseSegments, waterFingerprints)
-
-            // 统计被指纹匹配的干货片段数
-            matchedCount = fingerprintChecked.filter { !it.hasVoice }
-                .count { fSeg ->
-                    val orig = baseSegments.find { it.start == fSeg.start && it.end == fSeg.end }
-                    orig != null && orig.hasVoice
-                }
-
-            // 3. 合并相邻水货片段，标记为指纹水货片段
-            val merged = mergeAdjacentSegments(fingerprintChecked)
-            for (seg in merged) {
-                if (!seg.hasVoice) {
-                    seg.label = "指纹水货"
-                }
-            }
-
-            // 4. 日志记录
-            if (matchedCount > 0) {
-                val matchedDetails = fingerprintChecked.filter { !it.hasVoice }
-                    .filter { fSeg ->
-                        val orig = baseSegments.find { it.start == fSeg.start && it.end == fSeg.end }
-                        orig != null && orig.hasVoice
-                    }.joinToString("; ") { "${it.start/1000}秒-${it.end/1000}秒" }
-                val mergedWaterCount = merged.count { !it.hasVoice }
-                val dryPct = if (totalDrySegments > 0)
-                    "%.1f%%".format(matchedCount.toFloat() / totalDrySegments * 100) else "0%"
-                val fpMsg1 = "就AI听方案指纹审核: 匹配${matchedCount}个干货片段 [$matchedDetails]"
-                Log.i(TAG, fpMsg1)
-                writeFingerprintLog(context, fpMsg1)
-                val fpMsg2 = "就AI听方案指纹审核: 合并后${mergedWaterCount}段指纹水货，原干货匹配率$dryPct"
-                Log.i(TAG, fpMsg2)
-                writeFingerprintLog(context, fpMsg2)
-            } else {
-                val fpMsg = "就AI听方案指纹审核: 未匹配到任何水分指纹，所有干货保持原分类"
-                Log.i(TAG, fpMsg)
-                writeFingerprintLog(context, fpMsg)
-            }
-            merged
+        // ========== 第一层：指纹快筛 ==========
+        val layer1Result = if (formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val screened = applyFingerprintFastScreening(context, episodeId, baseSegments, formalLibrary)
+            layer1MatchCount = screened.count { !it.hasVoice } - baseSegments.count { !it.hasVoice }
+            Log.i(TAG, "三层架构: 第一层指纹快筛完成，匹配${layer1MatchCount}个片段")
+            screened
         } else {
-            val fpMsg = "就AI听方案指纹审核: 跳过（水分指纹库为空或指纹引擎未就绪）"
+            val fpMsg = "三层架构: 第一层指纹快筛跳过（正式库为空或指纹引擎未就绪）"
             Log.i(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
             baseSegments
         }
 
-        val fpMsgDone = "就AI听方案完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，指纹匹配${matchedCount}段）"
+        // 第一层后合并相邻同类型
+        var mergedAfterLayer1 = mergeAdjacentSegments(layer1Result)
+
+        // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
+        val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer1, goldStandardFingerprints)
+            layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer1.count { !it.hasVoice }
+            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
+            recalled
+        } else {
+            val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            mergedAfterLayer1
+        }
+
+        // 最终合并
+        val finalSegments = mergeAdjacentSegments(layer3Result).apply {
+            for (seg in this) {
+                if (!seg.hasVoice && seg.label == null) {
+                    seg.label = "指纹水货"
+                }
+            }
+        }
+
+        // 日志统计
+        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，第一层快筛${layer1MatchCount}段，第三层召回${layer3RecallCount}段）"
+        Log.i(TAG, fpMsgStats)
+        writeFingerprintLog(context, fpMsgStats)
+
+        // ========== 观察池处理 ==========
+        // 第三层合并得到的大水分片段，进入观察池
+        if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val beforePoolWaterCount = finalSegments.count { !it.hasVoice }
+            // 处理观察池，统计新增和命中
+            val poolNewBefore = dbHelper.getObservationPoolCount()
+            processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer1, goldStandardFingerprints)
+            val poolNewAfter = dbHelper.getObservationPoolCount()
+            // 处理观察池中已达晋升条件的候选
+            val promoted = dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
+            for (candidate in promoted) {
+                try {
+                    // incrementObservationPoolHit 中的自动晋升逻辑会处理
+                    dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
+                } catch (_: Exception) {}
+            }
+            // 清理过期观察池候选
+            dbHelper.cleanupExpiredObservationPool()
+
+            val fpMsgPool = "观察池: 当前共${dbHelper.getObservationPoolCount()}个候选"
+            Log.i(TAG, fpMsgPool)
+            writeFingerprintLog(context, fpMsgPool)
+        } else {
+            val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        }
+
+        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，快筛${layer1MatchCount}段，召回${layer3RecallCount}段）"
         Log.i(TAG, fpMsgDone)
         writeFingerprintLog(context, fpMsgDone)
 
         return JiuAiTingResult(
             segments = finalSegments,
-            engineName = engineName,
+            engineName = audioEngineName,
             processingTimeMs = System.currentTimeMillis() - segStartTime,
-            matchedCount = matchedCount,
-            totalDrySegments = totalDrySegments
+            matchedCount = layer1MatchCount + layer3RecallCount,
+            totalDrySegments = totalDrySegments,
+            layer1MatchCount = layer1MatchCount,
+            layer3RecallCount = layer3RecallCount,
+            observationPoolNewCount = observationPoolNewCount,
+            observationPoolHitCount = observationPoolHitCount
         )
+    }
+
+    /**
+     * v3.2.2: 第一层指纹快筛。
+     * 使用正式指纹库（金标准+自动晋升）对音频分段做快速指纹匹配。
+     * 命中则直接标记为水货；未命中的分段保留原分类进入下一层。
+     */
+    private fun applyFingerprintFastScreening(
+        context: Context,
+        episodeId: String,
+        segments: List<VoiceSegment>,
+        formalLibrary: List<AudioFingerprint>
+    ): List<VoiceSegment> {
+        if (segments.isEmpty() || formalLibrary.isEmpty()) return segments
+        if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val fpMsg = "第一层指纹快筛: 跳过（指纹引擎未就绪）"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return segments
+        }
+
+        val appContext = context.applicationContext
+        val result = segments.map { it.copy() }.toMutableList()
+        var hitCount = 0
+        val hitDetails = mutableListOf<String>()
+
+        val fpMsgStart = "第一层指纹快筛: 正式指纹库${formalLibrary.size}条，待筛选${result.size}个片段"
+        Log.i(TAG, fpMsgStart)
+        writeFingerprintLog(context, fpMsgStart)
+
+        for (i in result.indices) {
+            val seg = result[i]
+            if (!seg.hasVoice) continue
+            if (seg.end - seg.start < MIN_SEGMENT_MS_FOR_FINGERPRINT) continue
+
+            var tempPcmFile: File? = null
+            try {
+                tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
+                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+
+                val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                if (fingerprint.isNullOrBlank()) continue
+
+                var matched = false
+                for (formalFp in formalLibrary) {
+                    val durationRatio = minOf(seg.end - seg.start, formalFp.durationMs).toFloat() /
+                            maxOf(seg.end - seg.start, formalFp.durationMs).toFloat()
+                    if (durationRatio < 0.4f) continue
+
+                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, formalFp.fingerprint)
+                    if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
+                        matched = true
+                        hitDetails.add("${seg.start/1000}秒-${seg.end/1000}秒(相似度:${"%.0f".format(sim*100)}%)")
+                        break
+                    }
+                }
+
+                if (matched) {
+                    seg.hasVoice = false
+                    seg.label = "指纹水货"
+                    hitCount++
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "第一层指纹快筛: 片段${seg.start/1000}秒异常: ${e.message}")
+            } finally {
+                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+        }
+
+        if (hitCount > 0) {
+            val fpMsg = "第一层指纹快筛: 匹配${hitCount}个片段 [${hitDetails.joinToString("; ")}]"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        } else {
+            val fpMsg = "第一层指纹快筛: 未匹配到任何水分指纹，所有片段进入第二层"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        }
+
+        return result
+    }
+
+    /**
+     * v3.2.2: 第三层指纹漏判召回。
+     * 仅处理第二层输出的干货片段，仅使用金标准指纹（人工录入）做查询。
+     * 如果指纹命中：说明模型发生漏判，该片段实际是水分。
+     * 将该片段与前后相邻的水分片段合并，生成一整块大的水分片段。
+     */
+    private fun applyFingerprintRecallLayer3(
+        context: Context,
+        episodeId: String,
+        segments: List<VoiceSegment>,
+        goldStandardFingerprints: List<AudioFingerprint>
+    ): List<VoiceSegment> {
+        if (segments.isEmpty() || goldStandardFingerprints.isEmpty()) return segments
+        if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val fpMsg = "第三层指纹漏判召回: 跳过（指纹引擎未就绪）"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return segments
+        }
+
+        val appContext = context.applicationContext
+        val result = segments.map { it.copy() }.toMutableList()
+        var recallCount = 0
+        val recallDetails = mutableListOf<String>()
+
+        val fpMsgStart = "第三层指纹漏判召回: 金标准指纹库${goldStandardFingerprints.size}条，待审核干货${result.count { it.hasVoice }}段"
+        Log.i(TAG, fpMsgStart)
+        writeFingerprintLog(context, fpMsgStart)
+
+        for (i in result.indices) {
+            val seg = result[i]
+            if (!seg.hasVoice) continue
+            if (seg.end - seg.start < MIN_SEGMENT_MS_FOR_FINGERPRINT) continue
+
+            var tempPcmFile: File? = null
+            try {
+                tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
+                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+
+                val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                if (fingerprint.isNullOrBlank()) continue
+
+                var matched = false
+                var matchedSimilarity = 0f
+                for (goldFp in goldStandardFingerprints) {
+                    val durationRatio = minOf(seg.end - seg.start, goldFp.durationMs).toFloat() /
+                            maxOf(seg.end - seg.start, goldFp.durationMs).toFloat()
+                    if (durationRatio < 0.4f) continue
+
+                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, goldFp.fingerprint)
+                    if (sim >= LAYER3_RECALL_THRESHOLD) {
+                        matched = true
+                        matchedSimilarity = sim
+                        break
+                    }
+                }
+
+                if (matched) {
+                    seg.hasVoice = false
+                    seg.label = "水货(漏判召回)"
+                    recallCount++
+                    recallDetails.add("${seg.start/1000}秒-${seg.end/1000}秒(相似度:${"%.0f".format(matchedSimilarity*100)}%)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "第三层指纹漏判召回: 片段${seg.start/1000}秒异常: ${e.message}")
+            } finally {
+                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+        }
+
+        // 将被召回的片段与前后相邻的水分片段合并
+        val merged = mergeAdjacentSegments(result)
+
+        if (recallCount > 0) {
+            val fpMsg = "第三层指纹漏判召回: 召回${recallCount}个漏判片段 [${recallDetails.joinToString("; ")}]，合并后共${merged.count{!it.hasVoice}}段水货"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        } else {
+            val fpMsg = "第三层指纹漏判召回: 无漏判，所有干货保持原分类"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        }
+
+        return merged
+    }
+
+    /**
+     * v3.2.2: 处理观察池候选入库。
+     * 第三层合并得到的大水分片段，不直接加入正式指纹库，先进入观察池做重复出现验证。
+     *
+     * 前置过滤条件：
+     * 1. 合并后片段时长：15秒～600秒
+     * 2. 第三层指纹匹配相似度 ≥0.82
+     * 3. 和正式库、观察池内已有指纹相似度大于0.92视为重复，不重复新增候选
+     */
+    private fun processObservationPoolForSegment(
+        context: Context,
+        episodeId: String,
+        layer3MergedSegments: List<VoiceSegment>,
+        layer2Segments: List<VoiceSegment>,
+        goldStandardFingerprints: List<AudioFingerprint>
+    ) {
+        try {
+            val dbHelper = RadioDatabaseHelper.getInstance(context)
+
+            // 找出第三层新召回的片段（在layer2中是干货，在layer3中变成水货的片段）
+            val recalledSegments = layer3MergedSegments.filter { !it.hasVoice }
+
+            for (waterSeg in recalledSegments) {
+                val durationMs = waterSeg.end - waterSeg.start
+
+                // 前置过滤1: 时长 15秒～600秒
+                if (durationMs < POOL_MIN_DURATION_MS || durationMs > POOL_MAX_DURATION_MS) {
+                    Log.d(TAG, "观察池过滤: 片段${waterSeg.start/1000}s-${waterSeg.end/1000}s时长${durationMs/1000}s不在15~600s范围，丢弃")
+                    continue
+                }
+
+                if (!ChromaprintExtractor.ensureLibraryLoaded(context)) continue
+                var tempPcmFile: File? = null
+                try {
+                    tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
+                        context.applicationContext, episodeId, waterSeg.start, waterSeg.end
+                    )
+                    if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+
+                    val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                    if (fingerprint.isNullOrBlank()) continue
+
+                    // 前置过滤2: 计算与金标准指纹的最大相似度
+                    var maxSimilarity = 0f
+                    for (goldFp in goldStandardFingerprints) {
+                        val sim = ChromaprintExtractor.compareFingerprints(fingerprint, goldFp.fingerprint)
+                        if (sim > maxSimilarity) maxSimilarity = sim
+                    }
+                    if (maxSimilarity < LAYER3_RECALL_THRESHOLD) {
+                        Log.d(TAG, "观察池过滤: 片段${waterSeg.start/1000}s-${waterSeg.end/1000}s相似度${"%.2f".format(maxSimilarity)}<0.82，丢弃")
+                        continue
+                    }
+
+                    // 前置过滤3: 检查是否与正式库或观察池重复（相似度 > 0.92）
+                    if (dbHelper.isDuplicateFingerprint(fingerprint, POOL_DUPLICATE_THRESHOLD)) {
+                        val hash = fingerprintHash(fingerprint)
+                        val existing = dbHelper.findObservationPoolCandidateByHash(hash)
+                        if (existing != null) {
+                            dbHelper.incrementObservationPoolHit(
+                                existing.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT
+                            )
+                            val fpMsg = "观察池: 候选指纹#${existing.id}跨节目命中（节目ID=$episodeId），hit_count=${existing.hitCount + 1}"
+                            Log.i(TAG, fpMsg)
+                            writeFingerprintLog(context, fpMsg)
+                        } else {
+                            Log.d(TAG, "观察池过滤: 片段${waterSeg.start/1000}s-${waterSeg.end/1000}s与正式库/观察池重复，但hash未匹配，跳过")
+                        }
+                        continue
+                    }
+
+                    // 全部条件满足，进入观察池
+                    val hash = fingerprintHash(fingerprint)
+                    val now = System.currentTimeMillis()
+                    val candidate = RadioDatabaseHelper.ObservationPoolCandidate(
+                        fingerprintHash = hash,
+                        fingerprint = fingerprint,
+                        episodeId = episodeId,
+                        durationMs = durationMs,
+                        similarity = maxSimilarity,
+                        hitCount = 1,
+                        lastHitTime = now,
+                        expiredAt = now + 30L * 24 * 60 * 60 * 1000,
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                    val poolId = dbHelper.saveObservationPoolCandidate(candidate)
+                    if (poolId > 0) {
+                        dbHelper.cleanupExpiredObservationPool()
+                        val fpMsg = "观察池: 新候选#${poolId}入库（${waterSeg.start/1000}s-${waterSeg.end/1000}s，相似度${"%.2f".format(maxSimilarity)}，节目ID=$episodeId）"
+                        Log.i(TAG, fpMsg)
+                        writeFingerprintLog(context, fpMsg)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "观察池处理异常: ${e.message}")
+                } finally {
+                    try { tempPcmFile?.delete() } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "processObservationPoolForSegment failed: ${e.message}")
+        }
+    }
+
+    /**
+     * v3.2.2: 生成指纹hash（取指纹字符串前N字符）。
+     */
+    private fun fingerprintHash(fingerprint: String): String {
+        return fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
     }
 }

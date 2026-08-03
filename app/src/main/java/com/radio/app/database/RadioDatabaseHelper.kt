@@ -5,10 +5,12 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
 import com.radio.app.models.PlayProgress
 import com.radio.app.models.Transcript
 import com.radio.app.models.VoiceSegment
 import com.radio.app.models.Episode
+import com.radio.app.utils.ChromaprintExtractor
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,7 +42,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 14
+        private const val DATABASE_VERSION = 15
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -53,6 +55,11 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.1.6: 指纹分组管理表
         private const val TABLE_FINGERPRINT_GROUPS = "fingerprint_groups"
         private const val TABLE_FINGERPRINT_GROUP_MEMBERS = "fingerprint_group_members"
+        // v3.2.2: 候选指纹观察池表
+        private const val TABLE_FINGERPRINT_OBSERVATION_POOL = "fingerprint_observation_pool"
+
+        // 观察池默认容量上限
+        private const val OBSERVATION_POOL_MAX_CAPACITY = 1000
 
         private var instance: RadioDatabaseHelper? = null
 
@@ -87,6 +94,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE $TABLE_FINGERPRINT_GROUP_MEMBERS (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, fingerprint_id INTEGER NOT NULL, is_representative INTEGER DEFAULT 0, manually_removed INTEGER DEFAULT 0, FOREIGN KEY(group_id) REFERENCES $TABLE_FINGERPRINT_GROUPS(id) ON DELETE CASCADE, FOREIGN KEY(fingerprint_id) REFERENCES $TABLE_AUDIO_FINGERPRINTS(id) ON DELETE CASCADE)")
         db.execSQL("CREATE INDEX idx_fp_group_members_group ON $TABLE_FINGERPRINT_GROUP_MEMBERS(group_id)")
         db.execSQL("CREATE INDEX idx_fp_group_members_fp ON $TABLE_FINGERPRINT_GROUP_MEMBERS(fingerprint_id)")
+        // v3.2.2: 候选指纹观察池表
+        db.execSQL("CREATE TABLE $TABLE_FINGERPRINT_OBSERVATION_POOL (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, episode_id TEXT NOT NULL, duration_ms INTEGER NOT NULL, similarity REAL NOT NULL DEFAULT 0.82, hit_count INTEGER DEFAULT 1, last_hit_time INTEGER NOT NULL, expired_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX idx_fp_obs_pool_hash ON $TABLE_FINGERPRINT_OBSERVATION_POOL(fingerprint_hash)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -146,6 +156,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.1.7: Add note column to fingerprint_groups
         if (oldVersion < 14) {
             try { db.execSQL("ALTER TABLE $TABLE_FINGERPRINT_GROUPS ADD COLUMN note TEXT DEFAULT ''") } catch (_: Exception) {}
+        }
+        // v3.2.2: Add is_gold_standard column to audio_fingerprints and observation pool table
+        if (oldVersion < 15) {
+            try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN is_gold_standard INTEGER DEFAULT 1") } catch (_: Exception) {}
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_FINGERPRINT_OBSERVATION_POOL (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, episode_id TEXT NOT NULL, duration_ms INTEGER NOT NULL, similarity REAL NOT NULL DEFAULT 0.82, hit_count INTEGER DEFAULT 1, last_hit_time INTEGER NOT NULL, expired_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+            try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_fp_obs_pool_hash ON $TABLE_FINGERPRINT_OBSERVATION_POOL(fingerprint_hash)") } catch (_: Exception) {}
         }
     }
 
@@ -773,6 +789,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             put("created_at", fingerprint.createdAt.takeIf { it > 0 } ?: now)
             put("updated_at", now)
             put("note", fingerprint.note)
+            put("is_gold_standard", if (fingerprint.isGoldStandard) 1 else 0)
         }
         return db.replace(TABLE_AUDIO_FINGERPRINTS, null, values)
     }
@@ -846,7 +863,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = readableDatabase
             val cursor = db.query(
                 TABLE_AUDIO_FINGERPRINTS,
-                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note"),
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard"),
                 null, null, null, null,
                 "created_at DESC"
             )
@@ -870,8 +887,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     // v3.1.3: 读取 note 列（兼容旧数据库无该列的情况）
+    // v3.2.2: 读取 is_gold_standard 列（兼容旧数据库无该列的情况）
     private fun cursorToAudioFingerprint(c: Cursor): AudioFingerprint {
         val noteIdx = c.getColumnIndex("note")
+        val goldIdx = c.getColumnIndex("is_gold_standard")
         return AudioFingerprint(
             id = c.getLong(c.getColumnIndexOrThrow("id")),
             episodeId = c.getString(c.getColumnIndexOrThrow("episode_id")),
@@ -881,7 +900,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             durationMs = c.getLong(c.getColumnIndexOrThrow("duration_ms")),
             createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
             updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at")),
-            note = if (noteIdx >= 0) c.getString(noteIdx) ?: "" else ""
+            note = if (noteIdx >= 0) c.getString(noteIdx) ?: "" else "",
+            isGoldStandard = if (goldIdx >= 0) c.getInt(goldIdx) == 1 else true
         )
     }
 
@@ -1047,6 +1067,313 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
         db.update(TABLE_FINGERPRINT_GROUPS, values, "id = ?", arrayOf(groupId.toString()))
     }
+
+    // ===== 金标准指纹 & 正式指纹库 (v3.2.2) =====
+
+    /**
+     * v3.2.2: 获取金标准指纹（人工录入的，is_gold_standard=1）。
+     * 仅用于第三层指纹漏判召回。
+     */
+    fun getGoldStandardFingerprints(): List<AudioFingerprint> {
+        val list = mutableListOf<AudioFingerprint>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_AUDIO_FINGERPRINTS,
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard"),
+                "is_gold_standard = 1",
+                null, null, null,
+                "created_at DESC"
+            )
+            while (cursor.moveToNext()) {
+                list.add(cursorToAudioFingerprint(cursor))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * v3.2.2: 获取正式指纹库全部指纹（金标准 + 自动晋升）。
+     * 用于第一层指纹快筛。
+     */
+    fun getFormalLibraryFingerprints(): List<AudioFingerprint> {
+        // 正式库 = audio_fingerprints 表中所有记录（金标准 + 自动晋升）
+        return getAllAudioFingerprints()
+    }
+
+    // ===== 候选指纹观察池 (v3.2.2) =====
+
+    /**
+     * v3.2.2: 观察池候选指纹数据类。
+     */
+    data class ObservationPoolCandidate(
+        val id: Long = 0,
+        val fingerprintHash: String = "",
+        val fingerprint: String = "",
+        val episodeId: String = "",
+        val durationMs: Long = 0,
+        val similarity: Float = 0.82f,
+        val hitCount: Int = 1,
+        val lastHitTime: Long = System.currentTimeMillis(),
+        val expiredAt: Long = System.currentTimeMillis() + 30L * 24 * 60 * 60 * 1000,
+        val createdAt: Long = System.currentTimeMillis(),
+        val updatedAt: Long = System.currentTimeMillis()
+    )
+
+    /**
+     * v3.2.2: 保存候选指纹到观察池。
+     * 前置条件已校验：时长15s~600s、相似度≥0.82、非重复。
+     */
+    fun saveObservationPoolCandidate(candidate: ObservationPoolCandidate): Long {
+        val db = writableDatabase
+        // 先检查是否已达容量上限
+        val countCursor = db.rawQuery("SELECT COUNT(*) FROM $TABLE_FINGERPRINT_OBSERVATION_POOL", null)
+        var currentCount = 0
+        if (countCursor.moveToFirst()) currentCount = countCursor.getInt(0)
+        countCursor.close()
+        if (currentCount >= OBSERVATION_POOL_MAX_CAPACITY) {
+            // 容量已满，删除最旧的候选
+            db.execSQL("DELETE FROM $TABLE_FINGERPRINT_OBSERVATION_POOL WHERE id IN (SELECT id FROM $TABLE_FINGERPRINT_OBSERVATION_POOL ORDER BY last_hit_time ASC LIMIT ${currentCount - OBSERVATION_POOL_MAX_CAPACITY + 1})")
+        }
+
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("fingerprint_hash", candidate.fingerprintHash)
+            put("fingerprint", candidate.fingerprint)
+            put("episode_id", candidate.episodeId)
+            put("duration_ms", candidate.durationMs)
+            put("similarity", candidate.similarity)
+            put("hit_count", candidate.hitCount)
+            put("last_hit_time", candidate.lastHitTime)
+            put("expired_at", candidate.expiredAt)
+            put("created_at", now)
+            put("updated_at", now)
+        }
+        return db.insert(TABLE_FINGERPRINT_OBSERVATION_POOL, null, values)
+    }
+
+    /**
+     * v3.2.2: 获取观察池中所有候选指纹。
+     */
+    fun getAllObservationPoolCandidates(): List<ObservationPoolCandidate> {
+        val list = mutableListOf<ObservationPoolCandidate>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_FINGERPRINT_OBSERVATION_POOL,
+                null, null, null, null, null,
+                "last_hit_time DESC"
+            )
+            while (cursor.moveToNext()) {
+                list.add(cursorToObservationPoolCandidate(cursor))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * v3.2.2: 检查候选指纹是否与正式库或观察池中的指纹重复（相似度 > 0.92）。
+     * @return true 表示重复，不应新增
+     */
+    fun isDuplicateFingerprint(fingerprint: String, threshold: Float = 0.92f): Boolean {
+        try {
+            // 检查正式库
+            val formalFps = getAllAudioFingerprints()
+            for (fp in formalFps) {
+                val sim = ChromaprintExtractor.compareFingerprints(fingerprint, fp.fingerprint)
+                if (sim > threshold) return true
+            }
+            // 检查观察池
+            val poolFps = getAllObservationPoolCandidates()
+            for (fp in poolFps) {
+                val sim = ChromaprintExtractor.compareFingerprints(fingerprint, fp.fingerprint)
+                if (sim > threshold) return true
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    /**
+     * v3.2.2: 增加观察池候选的跨节目命中计数。
+     * 同一节目ID不重复计数。
+     * @return true 表示命中计数已增加，false 表示同一节目不增加
+     */
+    fun incrementObservationPoolHit(poolId: Long, episodeId: String, hitCountThreshold: Int = 3): Boolean {
+        val db = writableDatabase
+        try {
+            // 查询当前候选信息
+            val cursor = db.query(
+                TABLE_FINGERPRINT_OBSERVATION_POOL,
+                arrayOf("episode_id", "hit_count"),
+                "id = ?", arrayOf(poolId.toString()),
+                null, null, null
+            )
+            if (!cursor.moveToFirst()) { cursor.close(); return false }
+            val firstEpisodeId = cursor.getString(0)
+            val currentHitCount = cursor.getInt(1)
+            cursor.close()
+
+            // 同一节目不增加计数
+            if (episodeId == firstEpisodeId) return false
+
+            val now = System.currentTimeMillis()
+            val newHitCount = currentHitCount + 1
+            val expiredAt = now + 30L * 24 * 60 * 60 * 1000  // 重新计时30天
+
+            val values = ContentValues().apply {
+                put("hit_count", newHitCount)
+                put("last_hit_time", now)
+                put("expired_at", expiredAt)
+                put("updated_at", now)
+            }
+            db.update(TABLE_FINGERPRINT_OBSERVATION_POOL, values, "id = ?", arrayOf(poolId.toString()))
+
+            // 如果达到晋升阈值，自动晋升
+            if (newHitCount >= hitCountThreshold) {
+                promoteObservationPoolToFormalLibrary(poolId)
+            }
+            return true
+        } catch (_: Exception) { return false }
+    }
+
+    /**
+     * v3.2.2: 将观察池候选晋升到正式指纹库。
+     * 设置 is_gold_standard = 0（自动晋升，非金标准）。
+     */
+    private fun promoteObservationPoolToFormalLibrary(poolId: Long) {
+        try {
+            val db = writableDatabase
+            val cursor = db.query(
+                TABLE_FINGERPRINT_OBSERVATION_POOL,
+                arrayOf("fingerprint", "episode_id", "duration_ms"),
+                "id = ?", arrayOf(poolId.toString()),
+                null, null, null
+            )
+            if (!cursor.moveToFirst()) { cursor.close(); return }
+            val fingerprint = cursor.getString(0)
+            val episodeId = cursor.getString(1)
+            val durationMs = cursor.getLong(2)
+            cursor.close()
+
+            // 添加到正式指纹库（is_gold_standard = 0）
+            val now = System.currentTimeMillis()
+            val values = ContentValues().apply {
+                put("episode_id", episodeId)
+                put("start_ms", 0L)
+                put("end_ms", durationMs)
+                put("fingerprint", fingerprint)
+                put("duration_ms", durationMs)
+                put("created_at", now)
+                put("updated_at", now)
+                put("note", "自动晋升（观察池）")
+                put("is_gold_standard", 0)
+            }
+            db.insert(TABLE_AUDIO_FINGERPRINTS, null, values)
+
+            // 从观察池删除
+            db.delete(TABLE_FINGERPRINT_OBSERVATION_POOL, "id = ?", arrayOf(poolId.toString()))
+
+            Log.i("RadioDatabaseHelper", "promoteObservationPoolToFormalLibrary: 候选指纹#${poolId}晋升为正式指纹")
+        } catch (e: Exception) {
+            Log.e("RadioDatabaseHelper", "promoteObservationPoolToFormalLibrary failed: ${e.message}")
+        }
+    }
+
+    /**
+     * v3.2.2: 清理过期观察池候选（30天未命中）。
+     */
+    fun cleanupExpiredObservationPool() {
+        try {
+            val db = writableDatabase
+            val now = System.currentTimeMillis()
+            val deleted = db.delete(TABLE_FINGERPRINT_OBSERVATION_POOL, "expired_at < ?", arrayOf(now.toString()))
+            if (deleted > 0) {
+                Log.i("RadioDatabaseHelper", "cleanupExpiredObservationPool: 删除了$deleted 个过期候选指纹")
+            }
+        } catch (e: Exception) {
+            Log.e("RadioDatabaseHelper", "cleanupExpiredObservationPool failed: ${e.message}")
+        }
+    }
+
+    /**
+     * v3.2.2: 获取达到晋升条件的观察池候选（hit_count >= threshold）。
+     */
+    fun getPromotableCandidates(threshold: Int = 3): List<ObservationPoolCandidate> {
+        val list = mutableListOf<ObservationPoolCandidate>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_FINGERPRINT_OBSERVATION_POOL,
+                null,
+                "hit_count >= ?",
+                arrayOf(threshold.toString()),
+                null, null,
+                "last_hit_time ASC"
+            )
+            while (cursor.moveToNext()) {
+                list.add(cursorToObservationPoolCandidate(cursor))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * v3.2.2: 根据指纹hash查找观察池候选。
+     */
+    fun findObservationPoolCandidateByHash(hash: String): ObservationPoolCandidate? {
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_FINGERPRINT_OBSERVATION_POOL,
+                null,
+                "fingerprint_hash = ?",
+                arrayOf(hash),
+                null, null, null
+            )
+            var candidate: ObservationPoolCandidate? = null
+            if (cursor.moveToFirst()) {
+                candidate = cursorToObservationPoolCandidate(cursor)
+            }
+            cursor.close()
+            return candidate
+        } catch (_: Exception) { return null }
+    }
+
+    /**
+     * v3.2.2: 获取观察池候选总数。
+     */
+    fun getObservationPoolCount(): Int {
+        var count = 0
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT COUNT(*) FROM $TABLE_FINGERPRINT_OBSERVATION_POOL", null)
+            if (cursor.moveToFirst()) count = cursor.getInt(0)
+            cursor.close()
+        } catch (_: Exception) {}
+        return count
+    }
+
+    /**
+     * v3.2.2: 游标转ObservationPoolCandidate。
+     */
+    private fun cursorToObservationPoolCandidate(c: Cursor): ObservationPoolCandidate {
+        return ObservationPoolCandidate(
+            id = c.getLong(c.getColumnIndexOrThrow("id")),
+            fingerprintHash = c.getString(c.getColumnIndexOrThrow("fingerprint_hash")) ?: "",
+            fingerprint = c.getString(c.getColumnIndexOrThrow("fingerprint")) ?: "",
+            episodeId = c.getString(c.getColumnIndexOrThrow("episode_id")) ?: "",
+            durationMs = c.getLong(c.getColumnIndexOrThrow("duration_ms")),
+            similarity = c.getFloat(c.getColumnIndexOrThrow("similarity")),
+            hitCount = c.getInt(c.getColumnIndexOrThrow("hit_count")),
+            lastHitTime = c.getLong(c.getColumnIndexOrThrow("last_hit_time")),
+            expiredAt = c.getLong(c.getColumnIndexOrThrow("expired_at")),
+            createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),
+            updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at"))
+        )
+    }
 }
 
 // v3.1.7: 指纹分组数据类（增加note字段）
@@ -1068,6 +1395,7 @@ data class FingerprintGroupMember(
 
 // v3.0.2: 音频指纹数据类
 // v3.1.3: 增加 note 字段，支持用户备注
+// v3.2.2: 增加 isGoldStandard 字段，区分人工录入金标准与自动晋升指纹
 data class AudioFingerprint(
     val id: Long = 0,
     val episodeId: String,
@@ -1077,5 +1405,6 @@ data class AudioFingerprint(
     val durationMs: Long,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    val note: String = ""
+    val note: String = "",
+    val isGoldStandard: Boolean = true
 )
