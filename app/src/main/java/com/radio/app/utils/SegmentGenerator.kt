@@ -724,20 +724,36 @@ object SegmentGenerator {
         Log.i(TAG, fpMsgLib)
         writeFingerprintLog(context, fpMsgLib)
 
-        // ========== 生成基础分段（固定15分钟分段，用作第一层指纹快筛的输入） ==========
-        // 使用固定分段作为第一层的输入，而不是先做VAD+YAMNet
+        // ========== 获取基础分段 ==========
+        // 检查数据库中是否有有效的真实分段结果
         val existingSegments = dbHelper.getVoiceSegments(episodeId)
         val realSegments = existingSegments.filter { !it.isSimulated }
         var baseSegments: List<VoiceSegment> = emptyList()
         var audioEngineName = "就AI听"
 
-        if (realSegments.isEmpty()) {
-            // 生成固定15分钟分段作为第一层快筛的输入
-            baseSegments = generateFixedSegments(durationMs)
-            Log.i(TAG, "三层架构: 生成固定分段(${baseSegments.size}个)作为第一层快筛输入 for episode=$episodeId")
-        } else {
+        // 固定15分钟分段是预分段未完成时的临时手段，不能作为三层架构的输入
+        // 只有一个大分段时，说明是错误分段结果，也不能使用
+        // 这两种情况都应视为没有有效分段，运行全量VAD+YAMNet获取真实分段
+        if (realSegments.size >= 2) {
             baseSegments = realSegments
-            Log.i(TAG, "三层架构: 使用已有分段结果(${baseSegments.size}个) for episode=$episodeId")
+            Log.i(TAG, "三层架构: 使用已有真实分段结果(${baseSegments.size}个) for episode=$episodeId")
+        } else {
+            // 没有有效分段，运行全量VAD+YAMNet获取真实分段作为三层架构的输入
+            val fullResult = try {
+                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl, progressCallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "三层架构: 全量VAD+YAMNet失败: ${e.message}")
+                null
+            }
+            if (fullResult != null && fullResult.segments.size >= 2) {
+                baseSegments = fullResult.segments.map { it.copy() }
+                audioEngineName = fullResult.engineName
+                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${baseSegments.size}个真实分段作为输入 for episode=$episodeId")
+            } else {
+                // VAD也无结果，使用固定分段兜底
+                baseSegments = generateFixedSegments(durationMs)
+                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${baseSegments.size}个)兜底 for episode=$episodeId")
+            }
         }
 
         if (baseSegments.isEmpty()) {
