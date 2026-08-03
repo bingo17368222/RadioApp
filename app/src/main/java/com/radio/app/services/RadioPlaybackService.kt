@@ -97,7 +97,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val ACTION_CANCEL_PCM_PREGEN = "com.radio.app.CANCEL_PCM_PREGEN"
 
         val pcmPregenCancelFlags: MutableMap<String, Boolean> = ConcurrentHashMap()
-        private val pcmPregenNotifIdCounter = java.util.concurrent.atomic.AtomicInteger(2000)
+        // v3.2.1: 从30000开始避免与 patrol (20001/20002) 等通知ID冲突
+        private val pcmPregenNotifIdCounter = java.util.concurrent.atomic.AtomicInteger(30000)
 
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
@@ -1413,8 +1414,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return try {
             val dbHelper = RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodesByDateAndStation(stationId, dateStr)
-            // 认为至少 3 个节目才算完整（可根据电台实际节目密度调整）
-            if (cached.size >= 3) {
+            // 认为至少 5 个节目才算完整（可根据电台实际节目密度调整）
+            if (cached.size >= 5) {
                 Log.d(TAG, "ensureScheduleComplete: schedule already complete for $stationId $dateStr (${cached.size} episodes)")
                 return true
             }
@@ -2265,11 +2266,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * This generates 5-min PCM and full PCM without generating subtitles.
      * Used when pre-generate subtitles is OFF but preprocessing is ON.
      */
-    private fun startPreCachePcmGeneration(episode: Episode, generateFullPcm: Boolean = true) {
-        val episodeId = episode.id ?: return
-        if (episodeId.isBlank()) return
-        val audioUrl = episode.audioUrl ?: return
-        if (audioUrl.isBlank()) return
+    /**
+     * v3.2.1: 返回true表示PCM生成已开始，false表示被防重复守卫拦截。
+     * 调用方根据返回值决定是否递增processedCount。
+     */
+    private fun startPreCachePcmGeneration(episode: Episode, generateFullPcm: Boolean = true): Boolean {
+        val episodeId = episode.id ?: return false
+        if (episodeId.isBlank()) return false
+        val audioUrl = episode.audioUrl ?: return false
+        if (audioUrl.isBlank()) return false
 
         writePreCacheLog("startPreCachePcmGeneration:  starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm)")
 
@@ -2292,9 +2297,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.4: 取消进度条，改为显示已用时间和估计剩余时间。
         // v3.2.0: 使用唯一通知ID避免多节目循环显示；增加取消按钮和取消标志。
         // v3.1.8: 防止同一节目重复触发预生成
+        // v3.2.1: 防重复守卫返回false，调用方据此不递增processedCount
         if (pcmPregenCancelFlags.containsKey(episodeId)) {
             writePreCacheLog("startPreCachePcmGeneration:  already generating PCM for $episodeId, skipping duplicate")
-            return
+            return false
         }
         pcmPregenCancelFlags[episodeId] = false
         val notifId = getPcmPregenNotificationId(episodeId)
@@ -2388,6 +2394,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                     nm.cancel(notifId)
                 } catch (_: Exception) {}
+                // v3.2.1: PCM生成完成后链式触发巡逻，继续处理下一个节目
+                // 确保维持目标数量的已处理节目，不会因为一次性处理完所有节目而耗尽
+                try {
+                    Handler(Looper.getMainLooper()).post {
+                        if (::subtitlePatrolHandler.isInitialized) {
+                            patrolSubtitleGeneration()
+                        }
+                    }
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 writePreCacheLog("startPreCachePcmGeneration:  PCM generation exception: ${e.message}")
                 pcmPregenCancelFlags.remove(episodeId)
@@ -2395,8 +2410,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                     nm.cancel(notifId)
                 } catch (_: Exception) {}
+                // v3.2.1: 异常退出时也链式触发巡逻
+                try {
+                    Handler(Looper.getMainLooper()).post {
+                        if (::subtitlePatrolHandler.isInitialized) {
+                            patrolSubtitleGeneration()
+                        }
+                    }
+                } catch (_: Exception) {}
             }
         }.start()
+        return true
     }
 
     private fun formatDurationMmSs(ms: Long): String {
@@ -2638,7 +2662,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val settings = com.radio.app.models.AppSettings.getInstance(this@RadioPlaybackService)
                         val shouldGenerateFullPcm = settings.patrolGenerateFullPcm
                         writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id}), generateFullPcm=${shouldGenerateFullPcm}")
-                        startPreCachePcmGeneration(ep, generateFullPcm = shouldGenerateFullPcm)
+                        val pcmStarted = startPreCachePcmGeneration(ep, generateFullPcm = shouldGenerateFullPcm)
+                        if (!pcmStarted) {
+                            writePreCacheLog("patrolSubtitle:  PCM generation already in progress for ${ep.id}, skipping")
+                            continue
+                        }
                         try {
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2671,11 +2699,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 .setAutoCancel(true)
                                 .build()
                             val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            notifManager.notify(2001, notif)
+                            notifManager.notify(20001, notif)
                         } catch (_: Exception) {}
                         processedCount++
                         if (processedCount >= settings.preloadCacheCount) {
                             writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
+                            // v3.2.1: 达到批量上限时，PCM生成完成后会通过链式触发继续巡逻
                             return@launch
                         }
                         continue
