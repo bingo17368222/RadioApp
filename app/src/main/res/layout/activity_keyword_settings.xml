@@ -95,6 +95,17 @@
                 android:text="指纹分组管理"
                 android:textColor="@color/white"
                 android:backgroundTint="#4CAF50"
+                android:layout_marginBottom="8dp"
+                android:textSize="13sp" />
+
+            <!-- v3.2.3: 指纹分类管理入口（人工/候选/自动） -->
+            <Button
+                android:id="@+id/btn_fingerprint_management"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="指纹分类管理（人工/候选/自动）"
+                android:textColor="@color/white"
+                android:backgroundTint="#FF9800"
                 android:layout_marginBottom="16dp"
                 android:textSize="13sp" />
 

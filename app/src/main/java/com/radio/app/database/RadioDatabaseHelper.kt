@@ -1094,6 +1094,43 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     /**
+     * v3.2.2: 获取自动晋升指纹（is_gold_standard = 0）。
+     * 用于查看和管理自动晋升的指纹。
+     */
+    fun getAutomaticFingerprints(): List<AudioFingerprint> {
+        val list = mutableListOf<AudioFingerprint>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_AUDIO_FINGERPRINTS,
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard"),
+                "is_gold_standard = 0",
+                null, null, null,
+                "created_at DESC"
+            )
+            while (cursor.moveToNext()) {
+                list.add(cursorToAudioFingerprint(cursor))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
+     * v3.2.2: 获取自动晋升指纹总数。
+     */
+    fun getAutomaticFingerprintsCount(): Int {
+        var count = 0
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT COUNT(*) FROM $TABLE_AUDIO_FINGERPRINTS WHERE is_gold_standard = 0", null)
+            if (cursor.moveToFirst()) count = cursor.getInt(0)
+            cursor.close()
+        } catch (_: Exception) {}
+        return count
+    }
+
+    /**
      * v3.2.2: 获取正式指纹库全部指纹（金标准 + 自动晋升）。
      * 用于第一层指纹快筛。
      */
@@ -1354,6 +1391,16 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             cursor.close()
         } catch (_: Exception) {}
         return count
+    }
+
+    /**
+     * v3.2.2: 按ID删除观察池候选指纹。
+     */
+    fun deleteObservationPoolCandidate(id: Long) {
+        try {
+            val db = writableDatabase
+            db.delete(TABLE_FINGERPRINT_OBSERVATION_POOL, "id = ?", arrayOf(id.toString()))
+        } catch (_: Exception) {}
     }
 
     /**

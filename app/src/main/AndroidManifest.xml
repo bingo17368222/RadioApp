@@ -61,6 +61,11 @@
             android:exported="false"
             android:parentActivityName=".activities.KeywordSettingsActivity" />
 
+        <activity
+            android:name=".activities.FingerprintManagementActivity"
+            android:exported="false"
+            android:parentActivityName=".activities.KeywordSettingsActivity" />
+
         <service
             android:name=".services.RadioPlaybackService"
             android:exported="false"

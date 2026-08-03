@@ -262,6 +262,11 @@ class KeywordSettingsActivity : AppCompatActivity() {
         findViewById<android.widget.Button>(R.id.btn_fingerprint_groups)?.setOnClickListener {
             startActivity(android.content.Intent(this, FingerprintGroupActivity::class.java))
         }
+
+        // v3.2.3: 指纹分类管理入口（人工/候选/自动）
+        findViewById<android.widget.Button>(R.id.btn_fingerprint_management)?.setOnClickListener {
+            startActivity(android.content.Intent(this, FingerprintManagementActivity::class.java))
+        }
     }
 
     private fun loadFingerprints() {

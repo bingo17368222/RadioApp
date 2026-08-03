@@ -690,12 +690,12 @@ object SegmentGenerator {
     )
 
     /**
-     * v3.2.2: 就AI听方案 - 三层架构
-     * 第一层：指纹快筛 → 第二层：双模型判定(VAD+YAMNet) → 第三层：指纹漏判召回
+     * v3.2.3: 就AI听方案 - 三层架构（修正层顺序）
+     * 第一层：指纹快筛 → 第二层：双模型判定(VAD+YAMNet，仅处理第一层剩余部分) → 第三层：指纹漏判召回
      *
      * 整体流程：
      * 1. 第一层指纹快筛：使用正式指纹库对分段做快速指纹匹配，命中则直接标记为水货
-     * 2. 第二层双模型判定：调用VAD+YAMNet生成干湿分段（如已有则跳过）
+     * 2. 第二层双模型判定：仅对第一层未命中的干货片段，提取各片段PCM送入VAD+YAMNet做干湿细分
      * 3. 合并相邻同类型片段
      * 4. 第三层指纹漏判召回：仅对干货片段，仅用金标准指纹查询，匹配则改为水货并合并相邻水分
      * 5. 候选指纹观察池处理：第三层合并得到的大水分片段进入观察池
@@ -724,28 +724,20 @@ object SegmentGenerator {
         Log.i(TAG, fpMsgLib)
         writeFingerprintLog(context, fpMsgLib)
 
-        // ========== 第二层：双模型判定(VAD+YAMNet) ==========
-        // 检查数据库是否已有音频分段结果
+        // ========== 生成基础分段（固定15分钟分段，用作第一层指纹快筛的输入） ==========
+        // 使用固定分段作为第一层的输入，而不是先做VAD+YAMNet
         val existingSegments = dbHelper.getVoiceSegments(episodeId)
         val realSegments = existingSegments.filter { !it.isSimulated }
         var baseSegments: List<VoiceSegment> = emptyList()
         var audioEngineName = "就AI听"
 
         if (realSegments.isEmpty()) {
-            Log.i(TAG, "三层架构: 无音频分段结果，调用VAD+YAMNet双模型分段 for episode=$episodeId")
-            val audioResult = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl, progressCallback)
-            if (audioResult != null && audioResult.segments.isNotEmpty()) {
-                baseSegments = audioResult.segments
-                audioEngineName = "${audioResult.engineName}+三层"
-                Log.i(TAG, "三层架构: 第二层VAD+YAMNet生成${baseSegments.size}个片段 for episode=$episodeId")
-            } else {
-                Log.w(TAG, "三层架构: 音频分段无结果，回退到关键词分段 for episode=$episodeId")
-                baseSegments = generateKeywordSegments(context, episodeId, durationMs)
-                audioEngineName = "关键词+三层"
-            }
+            // 生成固定15分钟分段作为第一层快筛的输入
+            baseSegments = generateFixedSegments(durationMs)
+            Log.i(TAG, "三层架构: 生成固定分段(${baseSegments.size}个)作为第一层快筛输入 for episode=$episodeId")
         } else {
             baseSegments = realSegments
-            Log.i(TAG, "三层架构: 使用已有音频分段结果(${baseSegments.size}个) for episode=$episodeId")
+            Log.i(TAG, "三层架构: 使用已有分段结果(${baseSegments.size}个) for episode=$episodeId")
         }
 
         if (baseSegments.isEmpty()) {
@@ -757,15 +749,17 @@ object SegmentGenerator {
 
         val totalDrySegments = baseSegments.count { it.hasVoice }
         var layer1MatchCount = 0
+        var layer2DrySegments = 0
+        var layer2WaterSegments = 0
         var layer3RecallCount = 0
         var observationPoolNewCount = 0
         var observationPoolHitCount = 0
 
-        // ========== 第一层：指纹快筛 ==========
+        // ========== 第一层：指纹快筛（对全部分段做指纹匹配） ==========
         val layer1Result = if (formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             val screened = applyFingerprintFastScreening(context, episodeId, baseSegments, formalLibrary)
             layer1MatchCount = screened.count { !it.hasVoice } - baseSegments.count { !it.hasVoice }
-            Log.i(TAG, "三层架构: 第一层指纹快筛完成，匹配${layer1MatchCount}个片段")
+            Log.i(TAG, "三层架构: 第一层指纹快筛完成，匹配${layer1MatchCount}个片段为水货")
             screened
         } else {
             val fpMsg = "三层架构: 第一层指纹快筛跳过（正式库为空或指纹引擎未就绪）"
@@ -775,78 +769,151 @@ object SegmentGenerator {
         }
 
         // 第一层后合并相邻同类型
-        var mergedAfterLayer1 = mergeAdjacentSegments(layer1Result)
+        val mergedAfterLayer1 = mergeAdjacentSegments(layer1Result)
 
-        // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
-        val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer1, goldStandardFingerprints)
-            layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer1.count { !it.hasVoice }
-            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
-            recalled
-        } else {
-            val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
-            Log.i(TAG, fpMsg)
-            writeFingerprintLog(context, fpMsg)
-            mergedAfterLayer1
-        }
+        // ========== 第二层：双模型判定(VAD+YAMNet，仅处理第一层剩余干货部分) ==========
+        // 提取第一层后仍为干货的片段，对每个片段独立运行VAD+YAMNet
+        val drySegmentsAfterLayer1 = mergedAfterLayer1.filter { it.hasVoice }
+        val waterSegmentsAfterLayer1 = mergedAfterLayer1.filter { !it.hasVoice }
 
-        // 最终合并
-        val finalSegments = mergeAdjacentSegments(layer3Result).apply {
-            for (seg in this) {
-                if (!seg.hasVoice && seg.label == null) {
-                    seg.label = "指纹水货"
+        if (drySegmentsAfterLayer1.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            Log.i(TAG, "三层架构: 第二层VAD+YAMNet处理${drySegmentsAfterLayer1.size}个第一层剩余干货片段 for episode=$episodeId")
+
+            // 对每个干货片段提取PCM并运行VAD+YAMNet
+            val layer2SubSegments = mutableListOf<VoiceSegment>()
+            for (drySeg in drySegmentsAfterLayer1) {
+                try {
+                    // 提取该片段的PCM
+                    val tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
+                        context.applicationContext, episodeId, drySeg.start, drySeg.end
+                    )
+                    if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
+                         val pcmDurationMs = drySeg.end - drySeg.start
+                         // 对该片段PCM运行VAD+YAMNet分析（使用原始独立方案音频分段算法）
+                         val result = AudioSegmentAnalyzer.analyzePcmFile(
+                             context, tempPcmFile, pcmDurationMs, progressCallback
+                         )
+                         // 调整VAD结果中的时间偏移量（从片段相对偏移变为全局偏移）
+                         for (subSeg in result.segments) {
+                             subSeg.start += drySeg.start
+                             subSeg.end += drySeg.start
+                         }
+                         if (result.segments.isNotEmpty()) {
+                            layer2SubSegments.addAll(result.segments)
+                            // 统计VAD+YAMNet产出的干湿片段数
+                            for (subSeg in result.segments) {
+                                if (subSeg.hasVoice) layer2DrySegments++ else layer2WaterSegments++
+                            }
+                            Log.i(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s，产出${result.segments.size}个VAD子片段")
+                        } else {
+                            // VAD无结果，保留原干货
+                            layer2SubSegments.add(drySeg)
+                            layer2DrySegments++
+                            Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s无VAD结果，保留原干货")
+                        }
+                        tempPcmFile.delete()
+                    } else {
+                        // 无PCM数据，保留原干货
+                        layer2SubSegments.add(drySeg)
+                        layer2DrySegments++
+                        Log.w(TAG, "三层架构: 第二层片段${drySeg.start/1000}s-${drySeg.end/1000}s无PCM数据，保留原干货")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s异常: ${e.message}")
+                    layer2SubSegments.add(drySeg)
+                    layer2DrySegments++
                 }
             }
-        }
 
-        // 日志统计
-        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，第一层快筛${layer1MatchCount}段，第三层召回${layer3RecallCount}段）"
-        Log.i(TAG, fpMsgStats)
-        writeFingerprintLog(context, fpMsgStats)
+            // 合并第一层水货片段 + 第二层子片段
+            val combinedSegments = (waterSegmentsAfterLayer1 + layer2SubSegments).sortedBy { it.start }
+            val mergedAfterLayer2 = mergeAdjacentSegments(combinedSegments)
+            audioEngineName = "VAD+YAMNet+三层"
 
-        // ========== 观察池处理 ==========
-        // 第三层合并得到的大水分片段，进入观察池
-        if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            val beforePoolWaterCount = finalSegments.count { !it.hasVoice }
-            // 处理观察池，统计新增和命中
-            val poolNewBefore = dbHelper.getObservationPoolCount()
-            processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer1, goldStandardFingerprints)
-            val poolNewAfter = dbHelper.getObservationPoolCount()
-            // 处理观察池中已达晋升条件的候选
-            val promoted = dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
-            for (candidate in promoted) {
-                try {
-                    // incrementObservationPoolHit 中的自动晋升逻辑会处理
-                    dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
-                } catch (_: Exception) {}
+            Log.i(TAG, "三层架构: 第二层完成，合并后${mergedAfterLayer2.size}个片段（干货${mergedAfterLayer2.count { it.hasVoice }}段，水货${mergedAfterLayer2.count { !it.hasVoice }}段）")
+
+            // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
+            val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
+                layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer2.count { !it.hasVoice }
+                Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
+                recalled
+            } else {
+                val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
+                Log.i(TAG, fpMsg)
+                writeFingerprintLog(context, fpMsg)
+                mergedAfterLayer2
             }
-            // 清理过期观察池候选
-            dbHelper.cleanupExpiredObservationPool()
 
-            val fpMsgPool = "观察池: 当前共${dbHelper.getObservationPoolCount()}个候选"
-            Log.i(TAG, fpMsgPool)
-            writeFingerprintLog(context, fpMsgPool)
+            // 最终合并
+            val finalSegments = mergeAdjacentSegments(layer3Result).apply {
+                for (seg in this) {
+                    if (!seg.hasVoice && seg.label == null) {
+                        seg.label = "指纹水货"
+                    }
+                }
+            }
+
+            // 日志统计
+            val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，第一层快筛${layer1MatchCount}段，第二层VAD产出${layer2DrySegments}干/${layer2WaterSegments}水，第三层召回${layer3RecallCount}段）"
+            Log.i(TAG, fpMsgStats)
+            writeFingerprintLog(context, fpMsgStats)
+
+            // ========== 观察池处理 ==========
+            if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer2, goldStandardFingerprints)
+                // 处理观察池中已达晋升条件的候选
+                val promoted = dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
+                for (candidate in promoted) {
+                    try {
+                        dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
+                    } catch (_: Exception) {}
+                }
+                // 清理过期观察池候选
+                dbHelper.cleanupExpiredObservationPool()
+
+                val fpMsgPool = "观察池: 当前共${dbHelper.getObservationPoolCount()}个候选"
+                Log.i(TAG, fpMsgPool)
+                writeFingerprintLog(context, fpMsgPool)
+            } else {
+                val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
+                Log.i(TAG, fpMsg)
+                writeFingerprintLog(context, fpMsg)
+            }
+
+            val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
+            Log.i(TAG, fpMsgDone)
+            writeFingerprintLog(context, fpMsgDone)
+
+            return JiuAiTingResult(
+                segments = finalSegments,
+                engineName = audioEngineName,
+                processingTimeMs = System.currentTimeMillis() - segStartTime,
+                matchedCount = layer1MatchCount + layer3RecallCount,
+                totalDrySegments = totalDrySegments,
+                layer1MatchCount = layer1MatchCount,
+                layer3RecallCount = layer3RecallCount,
+                observationPoolNewCount = observationPoolNewCount,
+                observationPoolHitCount = observationPoolHitCount
+            )
         } else {
-            val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
+            // 没有干货需要处理第二层，直接使用第一层结果
+            val fpMsg = "三层架构: 第一层后无剩余干货片段，跳过第二、三层，直接使用第一层结果"
             Log.i(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
+
+            return JiuAiTingResult(
+                segments = mergedAfterLayer1,
+                engineName = "三层架构(仅第一层)",
+                processingTimeMs = System.currentTimeMillis() - segStartTime,
+                matchedCount = layer1MatchCount,
+                totalDrySegments = totalDrySegments,
+                layer1MatchCount = layer1MatchCount,
+                layer3RecallCount = 0,
+                observationPoolNewCount = 0,
+                observationPoolHitCount = 0
+            )
         }
-
-        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，快筛${layer1MatchCount}段，召回${layer3RecallCount}段）"
-        Log.i(TAG, fpMsgDone)
-        writeFingerprintLog(context, fpMsgDone)
-
-        return JiuAiTingResult(
-            segments = finalSegments,
-            engineName = audioEngineName,
-            processingTimeMs = System.currentTimeMillis() - segStartTime,
-            matchedCount = layer1MatchCount + layer3RecallCount,
-            totalDrySegments = totalDrySegments,
-            layer1MatchCount = layer1MatchCount,
-            layer3RecallCount = layer3RecallCount,
-            observationPoolNewCount = observationPoolNewCount,
-            observationPoolHitCount = observationPoolHitCount
-        )
     }
 
     /**
