@@ -776,7 +776,11 @@ object SegmentGenerator {
         val drySegmentsAfterLayer1 = mergedAfterLayer1.filter { it.hasVoice }
         val waterSegmentsAfterLayer1 = mergedAfterLayer1.filter { !it.hasVoice }
 
-        if (drySegmentsAfterLayer1.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+        // v3.1.22: 第二层条件改为检查VAD/YAMNet模型（而非Chromaprint指纹库）
+        // 没有音频分段结果的节目，必须运行第二层VAD+YAMNet
+        val vadModelDir = AudioSegmentAnalyzer.getModelDir(context)
+        val vadModelsReady = AudioSegmentAnalyzer.isModelInstalled(vadModelDir)
+        if (drySegmentsAfterLayer1.isNotEmpty() && vadModelsReady) {
             Log.i(TAG, "三层架构: 第二层VAD+YAMNet处理${drySegmentsAfterLayer1.size}个第一层剩余干货片段 for episode=$episodeId")
 
             // 对每个干货片段提取PCM并运行VAD+YAMNet

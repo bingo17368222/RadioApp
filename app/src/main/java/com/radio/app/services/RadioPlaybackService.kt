@@ -2692,14 +2692,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     dateMatch?.value ?: "未知日期"
                                 }
                             }
+                            val pcmCancelIntent = Intent("com.radio.app.CANCEL_PCM_PATROL").setClass(
+                                this@RadioPlaybackService, com.radio.app.utils.SegmentCancelReceiver::class.java
+                            )
+                            val pcmCancelPending = PendingIntent.getBroadcast(
+                                this@RadioPlaybackService, 20002, pcmCancelIntent,
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                            )
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
                                 .setContentTitle("预处理PCM [${ep.title ?: ep.id}]")
                                 .setContentText("$epDateStr · 正在生成PCM文件...")
-                                .setAutoCancel(true)
+                                .setOngoing(true)
+                                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", pcmCancelPending)
                                 .build()
                             val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            notifManager.notify(20001, notif)
+                            notifManager.notify(20002, notif)
                         } catch (_: Exception) {}
                         processedCount++
                         if (processedCount >= settings.preloadCacheCount) {
