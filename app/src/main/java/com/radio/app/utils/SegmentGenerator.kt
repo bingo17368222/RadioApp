@@ -724,46 +724,18 @@ object SegmentGenerator {
         Log.i(TAG, fpMsgLib)
         writeFingerprintLog(context, fpMsgLib)
 
-        // ========== 获取基础分段 ==========
-        // 检查数据库中是否有有效的真实分段结果
-        val existingSegments = dbHelper.getVoiceSegments(episodeId)
-        val realSegments = existingSegments.filter { !it.isSimulated }
-        var baseSegments: List<VoiceSegment> = emptyList()
+        // ========== 第一层：对完整PCM滑动窗口指纹匹配 ==========
+        // 不管之前有没有分段，都从头开始，对节目完整PCM滑动窗口匹配
+        // 匹配到的部分标记为水货，匹配剩余部分交给第2层
         var audioEngineName = "就AI听"
-
-        // 固定15分钟分段是预分段未完成时的临时手段，不能作为三层架构的输入
-        // 只有一个大分段时，说明是错误分段结果，也不能使用
-        // 这两种情况都应视为没有有效分段，运行全量VAD+YAMNet获取真实分段
-        if (realSegments.size >= 2) {
-            baseSegments = realSegments
-            Log.i(TAG, "三层架构: 使用已有真实分段结果(${baseSegments.size}个) for episode=$episodeId")
-        } else {
-            // 没有有效分段，运行全量VAD+YAMNet获取真实分段作为三层架构的输入
-            val fullResult = try {
-                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl, progressCallback)
-            } catch (e: Exception) {
-                Log.w(TAG, "三层架构: 全量VAD+YAMNet失败: ${e.message}")
-                null
-            }
-            if (fullResult != null && fullResult.segments.size >= 2) {
-                baseSegments = fullResult.segments.map { it.copy() }
-                audioEngineName = fullResult.engineName
-                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${baseSegments.size}个真实分段作为输入 for episode=$episodeId")
-            } else {
-                // VAD也无结果，使用固定分段兜底
-                baseSegments = generateFixedSegments(durationMs)
-                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${baseSegments.size}个)兜底 for episode=$episodeId")
-            }
+        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+        val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+        val pcmSourceFile = when {
+            fullPcmFile.exists() && fullPcmFile.length() > 0 -> fullPcmFile
+            else -> null
         }
 
-        if (baseSegments.isEmpty()) {
-            val fpMsgEmpty = "generateJiuAiTingSegments: 无分段结果"
-            Log.w(TAG, fpMsgEmpty)
-            writeFingerprintLog(context, fpMsgEmpty)
-            return null
-        }
-
-        val totalDrySegments = baseSegments.count { it.hasVoice }
+        val mergedAfterLayer1: List<VoiceSegment>
         var layer1MatchCount = 0
         var layer2DrySegments = 0
         var layer2WaterSegments = 0
@@ -771,21 +743,49 @@ object SegmentGenerator {
         var observationPoolNewCount = 0
         var observationPoolHitCount = 0
 
-        // ========== 第一层：指纹快筛（对全部分段做指纹匹配） ==========
-        val layer1Result = if (formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            val screened = applyFingerprintFastScreening(context, episodeId, baseSegments, formalLibrary)
-            layer1MatchCount = screened.count { !it.hasVoice } - baseSegments.count { !it.hasVoice }
-            Log.i(TAG, "三层架构: 第一层指纹快筛完成，匹配${layer1MatchCount}个片段为水货")
-            screened
+        if (pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            // 滑动窗口指纹匹配
+            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, durationMs, formalLibrary)
+            mergedAfterLayer1 = slidingResult
+            layer1MatchCount = slidingResult.count { !it.hasVoice }
+            audioEngineName = "滑动窗口指纹"
+            Log.i(TAG, "三层架构: 第一层滑动窗口完成，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段 for episode=$episodeId")
         } else {
-            val fpMsg = "三层架构: 第一层指纹快筛跳过（正式库为空或指纹引擎未就绪）"
-            Log.i(TAG, fpMsg)
-            writeFingerprintLog(context, fpMsg)
-            baseSegments
+            // 无PCM或无指纹库，运行全量VAD+YAMNet获取真实分段
+            val fallbackReason = when {
+                pcmSourceFile == null -> "PCM文件不存在"
+                formalLibrary.isEmpty() -> "正式指纹库为空"
+                !ChromaprintExtractor.ensureLibraryLoaded(context) -> "指纹引擎未就绪"
+                else -> "未知原因"
+            }
+            Log.w(TAG, "三层架构: 第一层滑动窗口跳过（$fallbackReason），运行全量VAD+YAMNet")
+
+            val fullVadResult = try {
+                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl, progressCallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "三层架构: 全量VAD+YAMNet失败: ${e.message}")
+                null
+            }
+            if (fullVadResult != null && fullVadResult.segments.size >= 2) {
+                mergedAfterLayer1 = mergeAdjacentSegments(fullVadResult.segments.map { it.copy() })
+                audioEngineName = fullVadResult.engineName
+                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${mergedAfterLayer1.size}个真实分段 for episode=$episodeId")
+            } else {
+                // VAD也无结果，使用固定分段兜底
+                val fixedSegs = generateFixedSegments(durationMs)
+                mergedAfterLayer1 = fixedSegs
+                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底 for episode=$episodeId")
+            }
         }
 
-        // 第一层后合并相邻同类型
-        val mergedAfterLayer1 = mergeAdjacentSegments(layer1Result)
+        if (mergedAfterLayer1.isEmpty()) {
+            val fpMsgEmpty = "generateJiuAiTingSegments: 无分段结果"
+            Log.w(TAG, fpMsgEmpty)
+            writeFingerprintLog(context, fpMsgEmpty)
+            return null
+        }
+
+        val totalDrySegments = mergedAfterLayer1.count { it.hasVoice }
 
         // ========== 第二层：双模型判定(VAD+YAMNet，仅处理第一层剩余干货部分) ==========
         // 提取第一层后仍为干货的片段，对每个片段独立运行VAD+YAMNet
@@ -937,83 +937,147 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.2.2: 第一层指纹快筛。
-     * 使用正式指纹库（金标准+自动晋升）对音频分段做快速指纹匹配。
-     * 命中则直接标记为水货；未命中的分段保留原分类进入下一层。
+     * v3.1.23: 第一层滑动窗口指纹匹配。
+     * 对完整PCM以固定窗口大小滑动，提取每个窗口的指纹并与正式指纹库比对。
+     * 匹配到的窗口合并为水货段，未匹配的窗口标记为干货。
+     * 不再依赖任何已有分段结果，完全从头开始。
      */
-    private fun applyFingerprintFastScreening(
+    private fun applyLayer1SlidingWindow(
         context: Context,
         episodeId: String,
-        segments: List<VoiceSegment>,
-        formalLibrary: List<AudioFingerprint>
+        pcmFile: File,
+        durationMs: Long,
+        formalLibrary: List<AudioFingerprint>,
+        progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): List<VoiceSegment> {
-        if (segments.isEmpty() || formalLibrary.isEmpty()) return segments
         if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            val fpMsg = "第一层指纹快筛: 跳过（指纹引擎未就绪）"
+            val fpMsg = "第一层滑动窗口: 跳过（指纹引擎未就绪）"
             Log.w(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
-            return segments
+            return listOf(VoiceSegment().apply {
+                this.start = 0; this.end = durationMs; this.hasVoice = true; this.label = "干货"; this.isSimulated = true
+            })
         }
 
-        val appContext = context.applicationContext
-        val result = segments.map { it.copy() }.toMutableList()
-        var hitCount = 0
+        // 窗口参数：15秒窗口，5秒步长
+        val WINDOW_MS = 15000L
+        val STEP_MS = 5000L
+
+        // 预解析正式库指纹为整数数组（避免反复解析）
+        val parsedLibrary = formalLibrary.map { fp ->
+            ChromaprintExtractor.parseFingerprint(fp.fingerprint) to fp.fingerprint
+        }
+
+        val matchedRanges = mutableListOf<Pair<Long, Long>>()
         val hitDetails = mutableListOf<String>()
+        var totalWindows = 0
+        var matchedWindows = 0
+        var lastReportedPct = -1
 
-        val fpMsgStart = "第一层指纹快筛: 正式指纹库${formalLibrary.size}条，待筛选${result.size}个片段"
-        Log.i(TAG, fpMsgStart)
-        writeFingerprintLog(context, fpMsgStart)
+        var pos = 0L
+        while (pos + WINDOW_MS <= durationMs) {
+            totalWindows++
 
-        for (i in result.indices) {
-            val seg = result[i]
-            if (!seg.hasVoice) continue
-            if (seg.end - seg.start < MIN_SEGMENT_MS_FOR_FINGERPRINT) continue
+            // 进度回调
+            val pct = ((pos * 1000L) / durationMs).toInt().coerceIn(0, 1000)
+            if (pct / 50 != lastReportedPct / 50) {
+                lastReportedPct = pct
+                progressCallback?.invoke(pct, System.currentTimeMillis() - 0, 0)
+            }
 
-            var tempPcmFile: File? = null
             try {
-                tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
-                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+                val pcmBytes = PcmSegmentExtractor.readSegmentBytes(pcmFile, pos, pos + WINDOW_MS)
+                if (pcmBytes == null || pcmBytes.isEmpty()) {
+                    pos += STEP_MS
+                    continue
+                }
 
-                val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
-                if (fingerprint.isNullOrBlank()) continue
+                val fingerprint = ChromaprintExtractor.extractFingerprint(pcmBytes)
+                if (fingerprint.isNullOrBlank()) {
+                    pos += STEP_MS
+                    continue
+                }
+
+                val parsedWindow = ChromaprintExtractor.parseFingerprint(fingerprint)
+                if (parsedWindow.isEmpty()) {
+                    pos += STEP_MS
+                    continue
+                }
 
                 var matched = false
-                for (formalFp in formalLibrary) {
-                    val durationRatio = minOf(seg.end - seg.start, formalFp.durationMs).toFloat() /
-                            maxOf(seg.end - seg.start, formalFp.durationMs).toFloat()
-                    if (durationRatio < 0.4f) continue
-
-                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, formalFp.fingerprint)
+                var bestSim = 0f
+                for ((parsedFp, originalFp) in parsedLibrary) {
+                    if (parsedFp.isEmpty()) continue
+                    val sim = ChromaprintExtractor.compareFingerprintArrays(parsedWindow, parsedFp).similarity
+                    if (sim > bestSim) bestSim = sim
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
-                        hitDetails.add("${seg.start/1000}秒-${seg.end/1000}秒(相似度:${"%.0f".format(sim*100)}%)")
                         break
                     }
                 }
 
                 if (matched) {
-                    seg.hasVoice = false
-                    seg.label = "指纹水货"
-                    hitCount++
+                    matchedRanges.add(pos to (pos + WINDOW_MS))
+                    matchedWindows++
+                    if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
+                        hitDetails.add("${pos/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
+                    }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "第一层指纹快筛: 片段${seg.start/1000}秒异常: ${e.message}")
-            } finally {
-                try { tempPcmFile?.delete() } catch (_: Exception) {}
+                Log.w(TAG, "第一层滑动窗口: 位置${pos}ms异常: ${e.message}")
+            }
+            pos += STEP_MS
+        }
+
+        // 合并重叠/相邻的匹配范围
+        matchedRanges.sortBy { it.first }
+        val mergedRanges = mutableListOf<Pair<Long, Long>>()
+        for (range in matchedRanges) {
+            val last = mergedRanges.lastOrNull()
+            if (last != null && range.first <= last.second + STEP_MS) {
+                mergedRanges[mergedRanges.size - 1] = last.first to maxOf(last.second, range.second)
+            } else {
+                mergedRanges.add(range)
             }
         }
 
-        if (hitCount > 0) {
-            val fpMsg = "第一层指纹快筛: 匹配${hitCount}个片段 [${hitDetails.joinToString("; ")}]"
-            Log.i(TAG, fpMsg)
-            writeFingerprintLog(context, fpMsg)
-        } else {
-            val fpMsg = "第一层指纹快筛: 未匹配到任何水分指纹，所有片段进入第二层"
-            Log.i(TAG, fpMsg)
-            writeFingerprintLog(context, fpMsg)
+        // 生成全量分段列表（干货+水货交替）
+        val segments = mutableListOf<VoiceSegment>()
+        var currentPos = 0L
+        for (waterRange in mergedRanges) {
+            if (waterRange.first > currentPos) {
+                segments.add(VoiceSegment().apply {
+                    this.start = currentPos
+                    this.end = waterRange.first
+                    this.hasVoice = true
+                    this.label = "干货"
+                    this.isSimulated = false
+                })
+            }
+            segments.add(VoiceSegment().apply {
+                this.start = waterRange.first
+                this.end = waterRange.second
+                this.hasVoice = false
+                this.label = "指纹水货"
+                this.isSimulated = false
+            })
+            currentPos = waterRange.second
+        }
+        if (currentPos < durationMs) {
+            segments.add(VoiceSegment().apply {
+                this.start = currentPos
+                this.end = durationMs
+                this.hasVoice = true
+                this.label = "干货"
+                this.isSimulated = false
+            })
         }
 
-        return result
+        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段 [${hitDetails.joinToString("; ")}]"
+        Log.i(TAG, fpMsg)
+        writeFingerprintLog(context, fpMsg)
+
+        return segments
     }
 
     /**
