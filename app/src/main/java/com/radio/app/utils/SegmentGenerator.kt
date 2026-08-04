@@ -719,6 +719,10 @@ object SegmentGenerator {
         Log.i(TAG, fpMsgStart)
         writeFingerprintLog(context, fpMsgStart)
 
+        // v3.1.32: 清除历史取消标志，避免VAD因上次取消信号而立即失败
+        AudioSegmentAnalyzer.resetCancellation()
+        SegmentNotificationHelper.reset()
+
         val dbHelper = RadioDatabaseHelper.getInstance(context)
 
         // v3.1.28: 启动通知会话，显示三层分段进度
@@ -796,6 +800,19 @@ object SegmentGenerator {
                 mergedAfterLayer1 = fixedSegs
                 Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底 for episode=$episodeId")
             }
+        }
+
+        // v3.1.32: 如果第1层处理期间用户取消了通知，重新建立通知会话
+        // 确保后续第2层和第3层的进度能正常显示
+        if (AudioSegmentAnalyzer.isAnalysisCancelled()) {
+            AudioSegmentAnalyzer.resetCancellation()
+            SegmentNotificationHelper.reset()
+            val reSessionStarted = SegmentNotificationHelper.startSession(
+                context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL
+            )
+            val fpMsgReSession = "三层架构: 第1层期间收到取消信号，重新建立通知会话(reSessionStarted=$reSessionStarted) for episode=$episodeId"
+            Log.i(TAG, fpMsgReSession)
+            writeFingerprintLog(context, fpMsgReSession)
         }
 
         if (mergedAfterLayer1.isEmpty()) {
@@ -1000,6 +1017,14 @@ object SegmentGenerator {
         var pos = 0L
         while (pos + WINDOW_MS <= durationMs) {
             totalWindows++
+
+            // v3.1.32: 响应取消信号，及时停止滑动窗口处理
+            if (Thread.interrupted() || AudioSegmentAnalyzer.isAnalysisCancelled()) {
+                val fpMsgCancel = "第一层滑动窗口: 用户取消处理，位置${pos}ms"
+                Log.i(TAG, fpMsgCancel)
+                writeFingerprintLog(context, fpMsgCancel)
+                break
+            }
 
             // 进度回调
             val pct = ((pos * 1000L) / durationMs).toInt().coerceIn(0, 1000)

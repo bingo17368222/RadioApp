@@ -1320,6 +1320,8 @@ object AudioSegmentAnalyzer {
 
         // v2.4.170: Allow notifications for a new analysis (clears any previous cancel flag).
         SegmentNotificationHelper.reset()
+        // v3.1.32: 清除分析取消标志，确保VAD不会因历史取消信号而立即失败
+        resetCancellation()
 
         // v2.4.161: Reset object-level counters
         synchronized(this) {
