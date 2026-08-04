@@ -2363,6 +2363,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             // 创建取消按钮的 PendingIntent
                             val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN).apply {
                                 putExtra("episode_id", episodeId)
+                                putExtra("notif_id", notifId)
                             }
                             val cancelPendingIntent = PendingIntent.getBroadcast(
                                 this@RadioPlaybackService,
@@ -5884,7 +5885,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * cross-day episode that is NOT marked as "no preprocessing needed" and is NOT on a weekend.
      * This prevents "上一集/下一集" from jumping to weekend/no-preprocess episodes.
      */
-    private fun fetchCrossDayEpisodeSkippingNoPreprocess(nextDate: Boolean, maxDays: Int = 7): Episode? {
+    private fun fetchCrossDayEpisodeSkippingNoPreprocess(nextDate: Boolean, maxDays: Int = 14): Episode? {
         val originalEpisode = currentEpisode
         val originalUrl = currentPlayingUrl
         var days = 0

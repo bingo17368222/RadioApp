@@ -232,12 +232,19 @@ object SegmentGenerator {
 
     /**
      * v3.0.2: 合并相邻同类型分段。
+     * v3.1.27: 分段合并条件改为 isWaterLabel 分类 + hasVoice 双层判断。
+     * "待处理"与"指纹水货"/"水货"不合并，即使 hasVoice 相同。
      */
+    private fun isWaterLabel(label: String?): Boolean {
+        return label == "指纹水货" || label == "水货" || label == "水货(漏判召回)"
+    }
+
     private fun mergeAdjacentSegments(segments: List<VoiceSegment>): MutableList<VoiceSegment> {
         val merged = mutableListOf<VoiceSegment>()
         for (seg in segments) {
             val last = merged.lastOrNull()
-            if (last != null && last.hasVoice == seg.hasVoice) {
+            if (last != null && last.hasVoice == seg.hasVoice
+                    && isWaterLabel(last.label) == isWaterLabel(seg.label)) {
                 last.end = seg.end
             } else {
                 merged.add(VoiceSegment().apply {

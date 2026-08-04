@@ -12,6 +12,9 @@ import com.radio.app.services.RadioPlaybackService
  * Registered in AndroidManifest.xml so it works regardless of activity state.
  * When the user taps "取消" on the PCM pre-generation progress notification,
  * this receiver sets the cancel flag and dismisses the notification.
+ *
+ * v3.1.27: 修复通知ID不匹配问题——从intent中获取真实的notif_id（动态递增的30000+），
+ * 而非通过hashCode计算，确保能正确取消通知。
  */
 class PcmPregenCancelReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -26,9 +29,12 @@ class PcmPregenCancelReceiver : BroadcastReceiver() {
         // 记录取消日志
         android.util.Log.d("PcmPregenCancelReceiver", "PCM pre-generation cancelled for episode: $episodeId")
 
-        // 取消该节目的通知
-        val notifId = 2000 + (kotlin.math.abs(episodeId.hashCode()) % 1000)
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(notifId)
+        // 从intent中获取真实的notif_id（由RadioPlaybackService动态生成，从30000开始递增）
+        val notifId = intent.getIntExtra("notif_id", -1)
+        if (notifId >= 0) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(notifId)
+            android.util.Log.d("PcmPregenCancelReceiver", "Cancelled notification notif_id=$notifId for episode=$episodeId")
+        }
     }
 }
