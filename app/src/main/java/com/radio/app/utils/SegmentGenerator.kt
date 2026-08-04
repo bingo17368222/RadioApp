@@ -721,6 +721,16 @@ object SegmentGenerator {
 
         val dbHelper = RadioDatabaseHelper.getInstance(context)
 
+        // v3.1.28: 启动通知会话，显示三层分段进度
+        val episodeInfo = try { dbHelper.getEpisodeInfo(episodeId) } catch (_: Exception) { null }
+        val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
+        val sessionStarted = SegmentNotificationHelper.startSession(
+            context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL
+        )
+        if (!sessionStarted) {
+            Log.w(TAG, "generateJiuAiTingSegments: 通知会话未启动（已有更高优先级会话）")
+        }
+
         // ========== 获取指纹库 ==========
         // 正式指纹库（金标准+自动晋升）→ 第一层使用
         val formalLibrary = try { dbHelper.getFormalLibraryFingerprints() } catch (_: Exception) { emptyList() }
@@ -751,8 +761,11 @@ object SegmentGenerator {
         var observationPoolHitCount = 0
 
         if (pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            // 滑动窗口指纹匹配
-            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, durationMs, formalLibrary)
+            // 滑动窗口指纹匹配，传递进度回调以更新通知
+            val slidingProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille / 10, "第1层指纹快筛", "")
+            }
+            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, durationMs, formalLibrary, slidingProgressCallback)
             mergedAfterLayer1 = slidingResult
             layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
@@ -789,6 +802,7 @@ object SegmentGenerator {
             val fpMsgEmpty = "generateJiuAiTingSegments: 无分段结果"
             Log.w(TAG, fpMsgEmpty)
             writeFingerprintLog(context, fpMsgEmpty)
+            SegmentNotificationHelper.endSession(context, episodeId)
             return null
         }
 
@@ -809,7 +823,11 @@ object SegmentGenerator {
 
             // 对每个待处理片段提取PCM并运行VAD+YAMNet
             val layer2SubSegments = mutableListOf<VoiceSegment>()
-            for (drySeg in pendingSegmentsAfterLayer1) {
+            val layer2Total = pendingSegmentsAfterLayer1.size
+            for ((layer2Idx, drySeg) in pendingSegmentsAfterLayer1.withIndex()) {
+                // v3.1.28: 更新通知进度（第2层进度 0~1000‰）
+                val layer2Progress = ((layer2Idx + 1) * 1000 / layer2Total).coerceIn(0, 1000)
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 500 + layer2Progress / 20, "第2层VAD分析(${layer2Idx + 1}/$layer2Total)", "")
                 try {
                     // 提取该片段的PCM
                     val tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
@@ -834,20 +852,27 @@ object SegmentGenerator {
                             }
                             Log.i(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s，产出${result.segments.size}个VAD子片段")
                         } else {
-                            // VAD无结果，保留原干货
+                            // v3.1.28: VAD无结果时，将待处理片段标记为干货（hasVoice=true），避免UI显示为水分
+                            drySeg.hasVoice = true
+                            drySeg.label = "干货"
                             layer2SubSegments.add(drySeg)
                             layer2DrySegments++
-                            Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s无VAD结果，保留原干货")
+                            Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s无VAD结果，标记为干货")
                         }
                         tempPcmFile.delete()
                     } else {
-                        // 无PCM数据，保留原干货
+                        // v3.1.28: 无PCM数据时，将待处理片段标记为干货（hasVoice=true），避免UI显示为水分
+                        drySeg.hasVoice = true
+                        drySeg.label = "干货"
                         layer2SubSegments.add(drySeg)
                         layer2DrySegments++
-                        Log.w(TAG, "三层架构: 第二层片段${drySeg.start/1000}s-${drySeg.end/1000}s无PCM数据，保留原干货")
+                        Log.w(TAG, "三层架构: 第二层片段${drySeg.start/1000}s-${drySeg.end/1000}s无PCM数据，标记为干货")
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s异常: ${e.message}")
+                    // v3.1.28: 异常时将待处理片段标记为干货（hasVoice=true），避免UI显示为水分
+                    drySeg.hasVoice = true
+                    drySeg.label = "干货"
                     layer2SubSegments.add(drySeg)
                     layer2DrySegments++
                 }
@@ -909,10 +934,14 @@ object SegmentGenerator {
                 writeFingerprintLog(context, fpMsg)
             }
 
+            // v3.1.28: 更新通知为100%完成
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成", "")
+
             val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原待处理${totalPendingSegments}段，快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
             Log.i(TAG, fpMsgDone)
             writeFingerprintLog(context, fpMsgDone)
 
+            SegmentNotificationHelper.endSession(context, episodeId)
             return JiuAiTingResult(
                 segments = finalSegments,
                 engineName = audioEngineName,
@@ -930,6 +959,7 @@ object SegmentGenerator {
             Log.i(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
 
+            SegmentNotificationHelper.endSession(context, episodeId)
             return JiuAiTingResult(
                 segments = mergedAfterLayer1,
                 engineName = "三层架构(仅第一层)",
