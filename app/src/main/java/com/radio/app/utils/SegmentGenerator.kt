@@ -747,7 +747,7 @@ object SegmentGenerator {
             // 滑动窗口指纹匹配
             val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, durationMs, formalLibrary)
             mergedAfterLayer1 = slidingResult
-            layer1MatchCount = slidingResult.count { !it.hasVoice }
+            layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
             Log.i(TAG, "三层架构: 第一层滑动窗口完成，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段 for episode=$episodeId")
         } else {
@@ -785,23 +785,24 @@ object SegmentGenerator {
             return null
         }
 
-        val totalDrySegments = mergedAfterLayer1.count { it.hasVoice }
+        val totalPendingSegments = mergedAfterLayer1.count { it.label == "待处理" }
 
-        // ========== 第二层：双模型判定(VAD+YAMNet，仅处理第一层剩余干货部分) ==========
-        // 提取第一层后仍为干货的片段，对每个片段独立运行VAD+YAMNet
-        val drySegmentsAfterLayer1 = mergedAfterLayer1.filter { it.hasVoice }
-        val waterSegmentsAfterLayer1 = mergedAfterLayer1.filter { !it.hasVoice }
+        // ========== 第二层：双模型判定(VAD+YAMNet，仅处理第一层"待处理"部分) ==========
+        // 提取第一层后标记为"待处理"的片段，第2层通过VAD+YAMNet决定干湿分类
+        // 第1层已标记为"指纹水货"的片段，第2层直接认可为水分，不重新处理
+        val pendingSegmentsAfterLayer1 = mergedAfterLayer1.filter { it.label == "待处理" }
+        val waterSegmentsAfterLayer1 = mergedAfterLayer1.filter { it.label == "指纹水货" }
 
         // v3.1.22: 第二层条件改为检查VAD/YAMNet模型（而非Chromaprint指纹库）
         // 没有音频分段结果的节目，必须运行第二层VAD+YAMNet
         val vadModelDir = AudioSegmentAnalyzer.getModelDir(context)
         val vadModelsReady = AudioSegmentAnalyzer.isModelInstalled(vadModelDir)
-        if (drySegmentsAfterLayer1.isNotEmpty() && vadModelsReady) {
-            Log.i(TAG, "三层架构: 第二层VAD+YAMNet处理${drySegmentsAfterLayer1.size}个第一层剩余干货片段 for episode=$episodeId")
+        if (pendingSegmentsAfterLayer1.isNotEmpty() && vadModelsReady) {
+            Log.i(TAG, "三层架构: 第二层VAD+YAMNet处理${pendingSegmentsAfterLayer1.size}个第一层待处理片段 for episode=$episodeId")
 
-            // 对每个干货片段提取PCM并运行VAD+YAMNet
+            // 对每个待处理片段提取PCM并运行VAD+YAMNet
             val layer2SubSegments = mutableListOf<VoiceSegment>()
-            for (drySeg in drySegmentsAfterLayer1) {
+            for (drySeg in pendingSegmentsAfterLayer1) {
                 try {
                     // 提取该片段的PCM
                     val tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
@@ -875,7 +876,7 @@ object SegmentGenerator {
             }
 
             // 日志统计
-            val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，第一层快筛${layer1MatchCount}段，第二层VAD产出${layer2DrySegments}干/${layer2WaterSegments}水，第三层召回${layer3RecallCount}段）"
+            val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（原待处理${totalPendingSegments}段，第一层快筛${layer1MatchCount}段，第二层VAD产出${layer2DrySegments}干/${layer2WaterSegments}水，第三层召回${layer3RecallCount}段）"
             Log.i(TAG, fpMsgStats)
             writeFingerprintLog(context, fpMsgStats)
 
@@ -901,7 +902,7 @@ object SegmentGenerator {
                 writeFingerprintLog(context, fpMsg)
             }
 
-            val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原干货${totalDrySegments}段，快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
+            val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原待处理${totalPendingSegments}段，快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
             Log.i(TAG, fpMsgDone)
             writeFingerprintLog(context, fpMsgDone)
 
@@ -910,15 +911,15 @@ object SegmentGenerator {
                 engineName = audioEngineName,
                 processingTimeMs = System.currentTimeMillis() - segStartTime,
                 matchedCount = layer1MatchCount + layer3RecallCount,
-                totalDrySegments = totalDrySegments,
+                totalDrySegments = totalPendingSegments,
                 layer1MatchCount = layer1MatchCount,
                 layer3RecallCount = layer3RecallCount,
                 observationPoolNewCount = observationPoolNewCount,
                 observationPoolHitCount = observationPoolHitCount
             )
         } else {
-            // 没有干货需要处理第二层，直接使用第一层结果
-            val fpMsg = "三层架构: 第一层后无剩余干货片段，跳过第二、三层，直接使用第一层结果"
+            // 没有待处理片段需要处理，直接使用第一层结果
+            val fpMsg = "三层架构: 第一层后无待处理片段，跳过第二、三层，直接使用第一层结果"
             Log.i(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
 
@@ -927,7 +928,7 @@ object SegmentGenerator {
                 engineName = "三层架构(仅第一层)",
                 processingTimeMs = System.currentTimeMillis() - segStartTime,
                 matchedCount = layer1MatchCount,
-                totalDrySegments = totalDrySegments,
+                totalDrySegments = totalPendingSegments,
                 layer1MatchCount = layer1MatchCount,
                 layer3RecallCount = 0,
                 observationPoolNewCount = 0,
@@ -1041,8 +1042,10 @@ object SegmentGenerator {
             }
         }
 
-        // 生成全量分段列表（待处理+水货交替）
-        // v3.1.25: 不匹配部分标记为"待处理"而非"干货"，由第2层双音频模型再分段
+        // 生成全量分段列表（待处理+指纹水货交替）
+        // v3.1.26: 第1层取消hasVoice判断，完全由第2层决定干湿分类。
+        // 匹配部分标记为"指纹水货"(hasVoice=false)，第2层直接认可为水分；
+        // 不匹配部分标记为"待处理"(hasVoice=false)，第2层通过VAD+YAMNet判断。
         val segments = mutableListOf<VoiceSegment>()
         var currentPos = 0L
         for (waterRange in mergedRanges) {
@@ -1050,7 +1053,7 @@ object SegmentGenerator {
                 segments.add(VoiceSegment().apply {
                     this.start = currentPos
                     this.end = waterRange.first
-                    this.hasVoice = true
+                    this.hasVoice = false
                     this.label = "待处理"
                     this.isSimulated = false
                 })
@@ -1068,7 +1071,7 @@ object SegmentGenerator {
             segments.add(VoiceSegment().apply {
                 this.start = currentPos
                 this.end = durationMs
-                this.hasVoice = true
+                this.hasVoice = false
                 this.label = "待处理"
                 this.isSimulated = false
             })
