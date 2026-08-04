@@ -808,227 +808,136 @@ object SegmentGenerator {
 
         val totalPendingSegments = mergedAfterLayer1.count { it.label == "待处理" }
 
-        // ========== 第二层：双模型判定(VAD+YAMNet，仅处理第一层"待处理"部分) ==========
-        // 提取第一层后标记为"待处理"的片段，第2层通过VAD+YAMNet决定干湿分类
-        // 第1层已标记为"指纹水货"的片段，第2层直接认可为水分，不重新处理
-        val pendingSegmentsAfterLayer1 = mergedAfterLayer1.filter { it.label == "待处理" }
+        if (totalPendingSegments > 0) {
+        // ========== 第二层：对完整PCM运行VAD+YAMNet全量分析 ==========
+        // v3.1.30: 使用完整PCM运行VAD，再将第1层指纹水货段叠加覆盖。
+        // 不再逐片段提取PCM，避免VAD在片段边界处产生碎片化分段。
         val waterSegmentsAfterLayer1 = mergedAfterLayer1.filter { it.label == "指纹水货" }
 
-        // v3.1.22: 第二层条件改为检查VAD/YAMNet模型（而非Chromaprint指纹库）
-        // 没有音频分段结果的节目，必须运行第二层VAD+YAMNet
         val vadModelDir = AudioSegmentAnalyzer.getModelDir(context)
         val vadModelsReady = AudioSegmentAnalyzer.isModelInstalled(vadModelDir)
-        if (pendingSegmentsAfterLayer1.isNotEmpty() && vadModelsReady) {
-            Log.i(TAG, "三层架构: 第二层VAD+YAMNet处理${pendingSegmentsAfterLayer1.size}个第一层待处理片段 for episode=$episodeId")
 
-            // 对每个待处理片段提取PCM并运行VAD+YAMNet
-            val layer2SubSegments = mutableListOf<VoiceSegment>()
-            val layer2Total = pendingSegmentsAfterLayer1.size
-            for ((layer2Idx, drySeg) in pendingSegmentsAfterLayer1.withIndex()) {
-                // v3.1.28: 更新通知进度（第2层进度 0~1000‰）
-                val layer2Progress = ((layer2Idx + 1) * 1000 / layer2Total).coerceIn(0, 1000)
-                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 500 + layer2Progress / 20, "第2层VAD分析(${layer2Idx + 1}/$layer2Total)", "")
+        var mergedAfterLayer2: List<VoiceSegment>
+        if (vadModelsReady && pcmSourceFile != null) {
+            Log.i(TAG, "三层架构: 第二层全量VAD+YAMNet分析 for episode=$episodeId")
+            try {
+                // 对完整PCM运行VAD+YAMNet分析（使用完整PCM文件，不逐片段提取）
+                val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
+                    context, pcmSourceFile, durationMs, { permille, elapsedMs, etaMs ->
+                        val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析", "")
+                    }
+                )
+
+                // 叠加第1层指纹水货段：VAD结果中与第1层指纹水货重叠的片段改为"指纹水货"
+                val overlaidSegments = overlayLayer1WaterSegments(vadResult.segments, waterSegmentsAfterLayer1)
+                mergedAfterLayer2 = mergeAdjacentSegments(overlaidSegments)
+                audioEngineName = "VAD+YAMNet+三层"
+
+                Log.i(TAG, "三层架构: 第二层全量VAD完成，VAD产出${vadResult.segments.size}段，叠加后${mergedAfterLayer2.size}段 for episode=$episodeId")
+            } catch (e: Exception) {
+                // VAD异常时记录详细信息，不允许回退其他方案
+                val fpMsgVadError = "三层架构: 第二层VAD分析异常: ${e.javaClass.simpleName}: ${e.message}"
+                Log.e(TAG, fpMsgVadError)
+                writeFingerprintLog(context, fpMsgVadError)
+                // 使用第1层结果继续
+                mergedAfterLayer2 = mergedAfterLayer1
+                audioEngineName = "VAD+YAMNet+三层(VAD异常)"
+            }
+        } else {
+            // VAD不可用，使用第1层结果
+            val reason = when {
+                !vadModelsReady -> "VAD/YAMNet模型未安装"
+                pcmSourceFile == null -> "PCM文件不存在"
+                else -> "未知原因"
+            }
+            val fpMsgVadUnavailable = "三层架构: 第二层VAD跳过($reason)"
+            Log.w(TAG, fpMsgVadUnavailable)
+            writeFingerprintLog(context, fpMsgVadUnavailable)
+            mergedAfterLayer2 = mergedAfterLayer1
+            audioEngineName = "VAD+YAMNet+三层(VAD跳过)"
+        }
+
+        // 统计第2层VAD产出
+        layer2DrySegments = mergedAfterLayer2.count { it.hasVoice }
+        layer2WaterSegments = mergedAfterLayer2.count { !it.hasVoice }
+
+        Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段）")
+
+        // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
+        val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
+            layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer2.count { !it.hasVoice }
+            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
+            recalled
+        } else {
+            val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            mergedAfterLayer2
+        }
+
+        // 最终合并
+        val finalSegments = mergeAdjacentSegments(layer3Result).apply {
+            for (seg in this) {
+                if (!seg.hasVoice && seg.label == null) {
+                    seg.label = "指纹水货"
+                }
+            }
+        }
+
+        // 日志统计
+        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（第一层快筛${layer1MatchCount}段，第二层VAD产出${layer2DrySegments}干/${layer2WaterSegments}水，第三层召回${layer3RecallCount}段）"
+        Log.i(TAG, fpMsgStats)
+        writeFingerprintLog(context, fpMsgStats)
+
+        // v3.1.30: 验证结果异常时仅记录日志，不允许回退其他方案
+        val validationResult = validateThreeLayerResult(finalSegments, durationMs)
+        if (validationResult != null) {
+            val fpMsgAbnormal = "三层架构结果异常: $validationResult（已记录，使用当前结果，不执行回退）"
+            Log.w(TAG, fpMsgAbnormal)
+            writeFingerprintLog(context, fpMsgAbnormal)
+        }
+
+        // ========== 观察池处理 ==========
+        if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer2, goldStandardFingerprints)
+            val promoted = dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
+            for (candidate in promoted) {
                 try {
-                    // v3.1.29: 尝试提取PCM，如果失败则尝试重新生成
-                    var tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
-                        context.applicationContext, episodeId, drySeg.start, drySeg.end
-                    )
-
-                    // v3.1.29: 如果PCM提取失败，尝试重新生成完整PCM
-                    if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) {
-                        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
-                        val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
-                        if (fullPcmFile.exists() && fullPcmFile.length() > 0) {
-                            // 完整PCM存在但提取失败，尝试直接读取
-                            tempPcmFile = PcmSegmentExtractor.extractSegmentFromFile(fullPcmFile, drySeg.start, drySeg.end)
-                            if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
-                                Log.i(TAG, "三层架构: 第二层从完整PCM直接提取成功 for ${drySeg.start/1000}s-${drySeg.end/1000}s")
-                            }
-                        } else {
-                            // 完整PCM不存在，尝试重新生成
-                            Log.w(TAG, "三层架构: 第二层完整PCM不存在，尝试重新生成 for episode=$episodeId")
-                            tempPcmFile = regenerateFullPcmAndExtractSegment(context, episodeId, drySeg.start, drySeg.end, fullPcmFile, audioUrl)
-                            if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
-                                Log.i(TAG, "三层架构: 第二层重新生成PCM成功 for ${drySeg.start/1000}s-${drySeg.end/1000}s")
-                            }
-                        }
-                    }
-
-                    if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
-                         val pcmDurationMs = drySeg.end - drySeg.start
-                         // 对该片段PCM运行VAD+YAMNet分析（使用原始独立方案音频分段算法）
-                         val result = AudioSegmentAnalyzer.analyzePcmFile(
-                             context, tempPcmFile, pcmDurationMs, progressCallback
-                         )
-                         // 调整VAD结果中的时间偏移量（从片段相对偏移变为全局偏移）
-                         for (subSeg in result.segments) {
-                             subSeg.start += drySeg.start
-                             subSeg.end += drySeg.start
-                         }
-                         if (result.segments.isNotEmpty()) {
-                            layer2SubSegments.addAll(result.segments)
-                            // 统计VAD+YAMNet产出的干湿片段数
-                            for (subSeg in result.segments) {
-                                if (subSeg.hasVoice) layer2DrySegments++ else layer2WaterSegments++
-                            }
-                            Log.i(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s，产出${result.segments.size}个VAD子片段")
-                        } else {
-                            // v3.1.29: VAD无结果时，标记为干货（hasVoice已由第1层设为true）
-                            drySeg.label = "干货"
-                            layer2SubSegments.add(drySeg)
-                            layer2DrySegments++
-                            Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s无VAD结果，标记为干货")
-                        }
-                        tempPcmFile.delete()
-                    } else {
-                        val failReason = when {
-                            tempPcmFile == null -> "PCM提取返回null"
-                            !tempPcmFile.exists() -> "PCM文件不存在"
-                            tempPcmFile.length() <= 0 -> "PCM文件为空"
-                            else -> "未知原因"
-                        }
-                        // v3.1.29: PCM提取失败，标记为干货并记录失败原因（hasVoice已由第1层设为true）
-                        drySeg.label = "干货(分段失败: $failReason)"
-                        layer2SubSegments.add(drySeg)
-                        layer2DrySegments++
-                        Log.w(TAG, "三层架构: 第二层片段${drySeg.start/1000}s-${drySeg.end/1000}s无PCM数据($failReason)，标记为干货")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s异常: ${e.message}")
-                    // v3.1.29: 异常时标记为干货并记录异常原因（hasVoice已由第1层设为true）
-                    drySeg.label = "干货(分段失败: ${e.javaClass.simpleName}: ${e.message})"
-                    layer2SubSegments.add(drySeg)
-                    layer2DrySegments++
-                }
+                    dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
+                } catch (_: Exception) {}
             }
+            dbHelper.cleanupExpiredObservationPool()
 
-            // 合并第一层水货片段 + 第二层子片段
-            val combinedSegments = (waterSegmentsAfterLayer1 + layer2SubSegments).sortedBy { it.start }
-            val mergedAfterLayer2 = mergeAdjacentSegments(combinedSegments)
-            audioEngineName = "VAD+YAMNet+三层"
+            val fpMsgPool = "观察池: 当前共${dbHelper.getObservationPoolCount()}个候选"
+            Log.i(TAG, fpMsgPool)
+            writeFingerprintLog(context, fpMsgPool)
+        } else {
+            val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        }
 
-            Log.i(TAG, "三层架构: 第二层完成，合并后${mergedAfterLayer2.size}个片段（干货${mergedAfterLayer2.count { it.hasVoice }}段，水货${mergedAfterLayer2.count { !it.hasVoice }}段）")
+        // v3.1.28: 更新通知为100%完成
+        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成", "")
 
-            // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
-            val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-                val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
-                layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer2.count { !it.hasVoice }
-                Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
-                recalled
-            } else {
-                val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
-                Log.i(TAG, fpMsg)
-                writeFingerprintLog(context, fpMsg)
-                mergedAfterLayer2
-            }
+        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
+        Log.i(TAG, fpMsgDone)
+        writeFingerprintLog(context, fpMsgDone)
 
-            // 最终合并
-            val finalSegments = mergeAdjacentSegments(layer3Result).apply {
-                for (seg in this) {
-                    if (!seg.hasVoice && seg.label == null) {
-                        seg.label = "指纹水货"
-                    }
-                }
-            }
-
-            // 日志统计
-            val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（原待处理${totalPendingSegments}段，第一层快筛${layer1MatchCount}段，第二层VAD产出${layer2DrySegments}干/${layer2WaterSegments}水，第三层召回${layer3RecallCount}段）"
-            Log.i(TAG, fpMsgStats)
-            writeFingerprintLog(context, fpMsgStats)
-
-            // ========== 观察池处理 ==========
-            if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-                processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer2, goldStandardFingerprints)
-                // 处理观察池中已达晋升条件的候选
-                val promoted = dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
-                for (candidate in promoted) {
-                    try {
-                        dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
-                    } catch (_: Exception) {}
-                }
-                // 清理过期观察池候选
-                dbHelper.cleanupExpiredObservationPool()
-
-                val fpMsgPool = "观察池: 当前共${dbHelper.getObservationPoolCount()}个候选"
-                Log.i(TAG, fpMsgPool)
-                writeFingerprintLog(context, fpMsgPool)
-            } else {
-                val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
-                Log.i(TAG, fpMsg)
-                writeFingerprintLog(context, fpMsg)
-            }
-
-            // v3.1.29: 验证三层分段结果是否正常
-            val validationResult = validateThreeLayerResult(finalSegments, durationMs)
-            if (validationResult != null) {
-                // 结果异常，回退到全量VAD+YAMNet分析
-                val fpMsgAbnormal = "三层架构结果异常: $validationResult，回退到全量VAD+YAMNet分析"
-                Log.w(TAG, fpMsgAbnormal)
-                writeFingerprintLog(context, fpMsgAbnormal)
-
-                val fullVadFallback = try {
-                    val fullVadResult = AudioSegmentAnalyzer.analyzeEpisode(
-                        context, episodeId, durationMs, audioUrl,
-                        progressCallback = { permille, elapsedMs, etaMs ->
-                            SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "全量VAD回退分析", "")
-                        }
-                    )
-                    if (fullVadResult.segments.size >= 2) {
-                        val fallbackSegments = mergeAdjacentSegments(fullVadResult.segments.map { it.copy() })
-                        val fpMsgFallbackOk = "三层架构回退成功: 全量VAD+YAMNet生成${fallbackSegments.size}个分段（原三层仅${finalSegments.size}个）"
-                        Log.i(TAG, fpMsgFallbackOk)
-                        writeFingerprintLog(context, fpMsgFallbackOk)
-                        fallbackSegments
-                    } else {
-                        null
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "三层架构回退到全量VAD失败: ${e.message}")
-                    null
-                }
-
-                if (fullVadFallback != null) {
-                    // 使用回退结果
-                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "全量VAD回退完成", "")
-                    SegmentNotificationHelper.endSession(context, episodeId)
-                    return JiuAiTingResult(
-                        segments = fullVadFallback,
-                        engineName = "VAD+YAMNet(三层回退)",
-                        processingTimeMs = System.currentTimeMillis() - segStartTime,
-                        matchedCount = 0,
-                        totalDrySegments = 0,
-                        layer1MatchCount = 0,
-                        layer3RecallCount = 0,
-                        observationPoolNewCount = 0,
-                        observationPoolHitCount = 0
-                    )
-                } else {
-                    // 回退也失败，继续使用三层结果（至少有问题也比空结果好）
-                    val fpMsgFallbackFail = "三层架构回退失败，继续使用异常三层结果（${finalSegments.size}个分段）"
-                    Log.w(TAG, fpMsgFallbackFail)
-                    writeFingerprintLog(context, fpMsgFallbackFail)
-                }
-            }
-
-            // v3.1.28: 更新通知为100%完成
-            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成", "")
-
-            val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（原待处理${totalPendingSegments}段，快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
-            Log.i(TAG, fpMsgDone)
-            writeFingerprintLog(context, fpMsgDone)
-
-            SegmentNotificationHelper.endSession(context, episodeId)
-            return JiuAiTingResult(
-                segments = finalSegments,
-                engineName = audioEngineName,
-                processingTimeMs = System.currentTimeMillis() - segStartTime,
-                matchedCount = layer1MatchCount + layer3RecallCount,
-                totalDrySegments = totalPendingSegments,
-                layer1MatchCount = layer1MatchCount,
-                layer3RecallCount = layer3RecallCount,
-                observationPoolNewCount = observationPoolNewCount,
-                observationPoolHitCount = observationPoolHitCount
-            )
+        SegmentNotificationHelper.endSession(context, episodeId)
+        return JiuAiTingResult(
+            segments = finalSegments,
+            engineName = audioEngineName,
+            processingTimeMs = System.currentTimeMillis() - segStartTime,
+            matchedCount = layer1MatchCount + layer3RecallCount,
+            totalDrySegments = 0,
+            layer1MatchCount = layer1MatchCount,
+            layer3RecallCount = layer3RecallCount,
+            observationPoolNewCount = observationPoolNewCount,
+            observationPoolHitCount = observationPoolHitCount
+        )
         } else {
             // 没有待处理片段需要处理，直接使用第一层结果
             val fpMsg = "三层架构: 第一层后无待处理片段，跳过第二、三层，直接使用第一层结果"
@@ -1156,38 +1065,35 @@ object SegmentGenerator {
         }
 
         // 生成全量分段列表（待处理+指纹水货交替）
-        // v3.1.29: 第1层只判定是否符合指纹，hasVoice由第2层VAD+YAMNet判定。
-        // 匹配部分标记为"指纹水货"(hasVoice=false)，第2层直接认可为水分；
-        // 不匹配部分标记为"待处理"(hasVoice=true)，第2层通过VAD+YAMNet判断干湿。
-        // 这样第2层VAD失败时，待处理片段默认显示为干货，不会全部变成水分。
+        // v3.1.30: 第1层只负责指纹匹配，不管理hasVoice标签。
+        // 待处理片段不需要默认属性（hasVoice保持默认false），由第2层VAD+YAMNet决定干湿。
+        // 匹配部分标记为"指纹水货"(hasVoice=false)，第2层直接认可为水分。
         val segments = mutableListOf<VoiceSegment>()
         var currentPos = 0L
         for (waterRange in mergedRanges) {
             if (waterRange.first > currentPos) {
                 segments.add(VoiceSegment().apply {
-                    this.start = currentPos
-                    this.end = waterRange.first
-                    this.hasVoice = true
-                    this.label = "待处理"
-                    this.isSimulated = false
+                    start = currentPos
+                    end = waterRange.first
+                    label = "待处理"
+                    isSimulated = false
                 })
             }
             segments.add(VoiceSegment().apply {
-                this.start = waterRange.first
-                this.end = waterRange.second
-                this.hasVoice = false
-                this.label = "指纹水货"
-                this.isSimulated = false
+                start = waterRange.first
+                end = waterRange.second
+                hasVoice = false
+                label = "指纹水货"
+                isSimulated = false
             })
             currentPos = waterRange.second
         }
         if (currentPos < durationMs) {
             segments.add(VoiceSegment().apply {
-                this.start = currentPos
-                this.end = durationMs
-                this.hasVoice = true
-                this.label = "待处理"
-                this.isSimulated = false
+                start = currentPos
+                end = durationMs
+                label = "待处理"
+                isSimulated = false
             })
         }
 
@@ -1395,41 +1301,45 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.1.29: 重新生成完整PCM并提取指定片段。
-     * 当完整PCM文件不存在时，尝试通过音频解码重新生成。
+     * v3.1.30: 叠加第1层指纹水货段到VAD结果上。
+     * VAD结果中与第1层"指纹水货"段重叠的片段，改为"指纹水货"分类。
+     * 不重叠的片段保留VAD的原始分类。
      */
-    private fun regenerateFullPcmAndExtractSegment(
-        context: Context,
-        episodeId: String,
-        startMs: Long,
-        endMs: Long,
-        fullPcmFile: File,
-        audioUrl: String?
-    ): File? {
-        try {
-            // 尝试通过 AudioSegmentAnalyzer 的 analyzeEpisode 来触发PCM生成
-            // analyzeEpisode 会在PCM不存在时自动解码生成
-            val dummyCallback: ((Int, Long, Long) -> Unit)? = { _, _, _ -> }
-            val result = AudioSegmentAnalyzer.analyzeEpisode(
-                context, episodeId, endMs, audioUrl,
-                progressCallback = dummyCallback, blocking = false
-            )
-            // 重新生成后，检查完整PCM是否存在
-            if (fullPcmFile.exists() && fullPcmFile.length() > 0) {
-                return PcmSegmentExtractor.extractSegmentFromFile(fullPcmFile, startMs, endMs)
+    private fun overlayLayer1WaterSegments(
+        vadSegments: List<VoiceSegment>,
+        layer1WaterSegments: List<VoiceSegment>
+    ): List<VoiceSegment> {
+        if (layer1WaterSegments.isEmpty()) return vadSegments
+        if (vadSegments.isEmpty()) return layer1WaterSegments
+
+        val result = mutableListOf<VoiceSegment>()
+        for (vadSeg in vadSegments) {
+            // 检查VAD片段是否与第1层指纹水货段重叠
+            val overlapsWater = layer1WaterSegments.any { waterSeg ->
+                vadSeg.start < waterSeg.end && vadSeg.end > waterSeg.start
             }
-            Log.e(TAG, "regenerateFullPcmAndExtractSegment: 重新生成PCM后文件仍不存在 for episode=$episodeId")
-            return null
-        } catch (e: Exception) {
-            Log.e(TAG, "regenerateFullPcmAndExtractSegment: 重新生成PCM失败: ${e.message}")
-            return null
+            if (overlapsWater) {
+                // 重叠部分覆盖为"指纹水货"
+                result.add(VoiceSegment().apply {
+                    start = vadSeg.start
+                    end = vadSeg.end
+                    hasVoice = false
+                    label = "指纹水货"
+                    isSimulated = false
+                })
+            } else {
+                // 不重叠部分保留VAD原始分类
+                result.add(vadSeg.copy())
+            }
         }
+        return result
     }
 
     /**
-     * v3.1.29: 验证三层分段结果是否正常。
+     * v3.1.30: 验证三层分段结果是否正常。
      * - 全部水分或全部干货均为异常
      * - 分段数过少（两小时节目应>20段）为异常
+     * 仅记录异常日志，不允许回退其他方案。
      * @return 验证结果描述，null表示正常
      */
     private fun validateThreeLayerResult(
@@ -1447,15 +1357,13 @@ object SegmentGenerator {
             return "全部${segments.size}个分段均为水分（0个干货）"
         }
         if (dryCount == segments.size) {
-            // 全部干货不一定是异常（如果指纹库为空且VAD分类为干货）
-            // 但记录日志供调试
-            Log.w(TAG, "validateThreeLayerResult: 全部${segments.size}个分段均为干货，确认是否正常")
+            return "全部${segments.size}个分段均为干货（0个水分）"
         }
 
         // 两小时节目应有60~100个分段，小于20个为异常
         val durationMinutes = durationMs / 60000
         if (durationMinutes >= 60 && segments.size < 20) {
-            return "分段数过少: ${segments.size}个分段（节目时长${durationMinutes}分钟，预期>20段）"
+            return "分段数过少: ${segments.size}个分段（节目时长${durationMinutes}分钟，预期60~100段）"
         }
 
         return null
