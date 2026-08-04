@@ -829,10 +829,31 @@ object SegmentGenerator {
                 val layer2Progress = ((layer2Idx + 1) * 1000 / layer2Total).coerceIn(0, 1000)
                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, 500 + layer2Progress / 20, "第2层VAD分析(${layer2Idx + 1}/$layer2Total)", "")
                 try {
-                    // 提取该片段的PCM
-                    val tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
+                    // v3.1.29: 尝试提取PCM，如果失败则尝试重新生成
+                    var tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(
                         context.applicationContext, episodeId, drySeg.start, drySeg.end
                     )
+
+                    // v3.1.29: 如果PCM提取失败，尝试重新生成完整PCM
+                    if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) {
+                        val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+                        val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+                        if (fullPcmFile.exists() && fullPcmFile.length() > 0) {
+                            // 完整PCM存在但提取失败，尝试直接读取
+                            tempPcmFile = PcmSegmentExtractor.extractSegmentFromFile(fullPcmFile, drySeg.start, drySeg.end)
+                            if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
+                                Log.i(TAG, "三层架构: 第二层从完整PCM直接提取成功 for ${drySeg.start/1000}s-${drySeg.end/1000}s")
+                            }
+                        } else {
+                            // 完整PCM不存在，尝试重新生成
+                            Log.w(TAG, "三层架构: 第二层完整PCM不存在，尝试重新生成 for episode=$episodeId")
+                            tempPcmFile = regenerateFullPcmAndExtractSegment(context, episodeId, drySeg.start, drySeg.end, fullPcmFile, audioUrl)
+                            if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
+                                Log.i(TAG, "三层架构: 第二层重新生成PCM成功 for ${drySeg.start/1000}s-${drySeg.end/1000}s")
+                            }
+                        }
+                    }
+
                     if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
                          val pcmDurationMs = drySeg.end - drySeg.start
                          // 对该片段PCM运行VAD+YAMNet分析（使用原始独立方案音频分段算法）
@@ -852,8 +873,7 @@ object SegmentGenerator {
                             }
                             Log.i(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s-${drySeg.end/1000}s，产出${result.segments.size}个VAD子片段")
                         } else {
-                            // v3.1.28: VAD无结果时，将待处理片段标记为干货（hasVoice=true），避免UI显示为水分
-                            drySeg.hasVoice = true
+                            // v3.1.29: VAD无结果时，标记为干货（hasVoice已由第1层设为true）
                             drySeg.label = "干货"
                             layer2SubSegments.add(drySeg)
                             layer2DrySegments++
@@ -861,18 +881,22 @@ object SegmentGenerator {
                         }
                         tempPcmFile.delete()
                     } else {
-                        // v3.1.28: 无PCM数据时，将待处理片段标记为干货（hasVoice=true），避免UI显示为水分
-                        drySeg.hasVoice = true
-                        drySeg.label = "干货"
+                        val failReason = when {
+                            tempPcmFile == null -> "PCM提取返回null"
+                            !tempPcmFile.exists() -> "PCM文件不存在"
+                            tempPcmFile.length() <= 0 -> "PCM文件为空"
+                            else -> "未知原因"
+                        }
+                        // v3.1.29: PCM提取失败，标记为干货并记录失败原因（hasVoice已由第1层设为true）
+                        drySeg.label = "干货(分段失败: $failReason)"
                         layer2SubSegments.add(drySeg)
                         layer2DrySegments++
-                        Log.w(TAG, "三层架构: 第二层片段${drySeg.start/1000}s-${drySeg.end/1000}s无PCM数据，标记为干货")
+                        Log.w(TAG, "三层架构: 第二层片段${drySeg.start/1000}s-${drySeg.end/1000}s无PCM数据($failReason)，标记为干货")
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "三层架构: 第二层分析片段${drySeg.start/1000}s异常: ${e.message}")
-                    // v3.1.28: 异常时将待处理片段标记为干货（hasVoice=true），避免UI显示为水分
-                    drySeg.hasVoice = true
-                    drySeg.label = "干货"
+                    // v3.1.29: 异常时标记为干货并记录异常原因（hasVoice已由第1层设为true）
+                    drySeg.label = "干货(分段失败: ${e.javaClass.simpleName}: ${e.message})"
                     layer2SubSegments.add(drySeg)
                     layer2DrySegments++
                 }
@@ -932,6 +956,58 @@ object SegmentGenerator {
                 val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
                 Log.i(TAG, fpMsg)
                 writeFingerprintLog(context, fpMsg)
+            }
+
+            // v3.1.29: 验证三层分段结果是否正常
+            val validationResult = validateThreeLayerResult(finalSegments, durationMs)
+            if (validationResult != null) {
+                // 结果异常，回退到全量VAD+YAMNet分析
+                val fpMsgAbnormal = "三层架构结果异常: $validationResult，回退到全量VAD+YAMNet分析"
+                Log.w(TAG, fpMsgAbnormal)
+                writeFingerprintLog(context, fpMsgAbnormal)
+
+                val fullVadFallback = try {
+                    val fullVadResult = AudioSegmentAnalyzer.analyzeEpisode(
+                        context, episodeId, durationMs, audioUrl,
+                        progressCallback = { permille, elapsedMs, etaMs ->
+                            SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "全量VAD回退分析", "")
+                        }
+                    )
+                    if (fullVadResult.segments.size >= 2) {
+                        val fallbackSegments = mergeAdjacentSegments(fullVadResult.segments.map { it.copy() })
+                        val fpMsgFallbackOk = "三层架构回退成功: 全量VAD+YAMNet生成${fallbackSegments.size}个分段（原三层仅${finalSegments.size}个）"
+                        Log.i(TAG, fpMsgFallbackOk)
+                        writeFingerprintLog(context, fpMsgFallbackOk)
+                        fallbackSegments
+                    } else {
+                        null
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "三层架构回退到全量VAD失败: ${e.message}")
+                    null
+                }
+
+                if (fullVadFallback != null) {
+                    // 使用回退结果
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "全量VAD回退完成", "")
+                    SegmentNotificationHelper.endSession(context, episodeId)
+                    return JiuAiTingResult(
+                        segments = fullVadFallback,
+                        engineName = "VAD+YAMNet(三层回退)",
+                        processingTimeMs = System.currentTimeMillis() - segStartTime,
+                        matchedCount = 0,
+                        totalDrySegments = 0,
+                        layer1MatchCount = 0,
+                        layer3RecallCount = 0,
+                        observationPoolNewCount = 0,
+                        observationPoolHitCount = 0
+                    )
+                } else {
+                    // 回退也失败，继续使用三层结果（至少有问题也比空结果好）
+                    val fpMsgFallbackFail = "三层架构回退失败，继续使用异常三层结果（${finalSegments.size}个分段）"
+                    Log.w(TAG, fpMsgFallbackFail)
+                    writeFingerprintLog(context, fpMsgFallbackFail)
+                }
             }
 
             // v3.1.28: 更新通知为100%完成
@@ -1080,9 +1156,10 @@ object SegmentGenerator {
         }
 
         // 生成全量分段列表（待处理+指纹水货交替）
-        // v3.1.26: 第1层取消hasVoice判断，完全由第2层决定干湿分类。
+        // v3.1.29: 第1层只判定是否符合指纹，hasVoice由第2层VAD+YAMNet判定。
         // 匹配部分标记为"指纹水货"(hasVoice=false)，第2层直接认可为水分；
-        // 不匹配部分标记为"待处理"(hasVoice=false)，第2层通过VAD+YAMNet判断。
+        // 不匹配部分标记为"待处理"(hasVoice=true)，第2层通过VAD+YAMNet判断干湿。
+        // 这样第2层VAD失败时，待处理片段默认显示为干货，不会全部变成水分。
         val segments = mutableListOf<VoiceSegment>()
         var currentPos = 0L
         for (waterRange in mergedRanges) {
@@ -1090,7 +1167,7 @@ object SegmentGenerator {
                 segments.add(VoiceSegment().apply {
                     this.start = currentPos
                     this.end = waterRange.first
-                    this.hasVoice = false
+                    this.hasVoice = true
                     this.label = "待处理"
                     this.isSimulated = false
                 })
@@ -1108,7 +1185,7 @@ object SegmentGenerator {
             segments.add(VoiceSegment().apply {
                 this.start = currentPos
                 this.end = durationMs
-                this.hasVoice = false
+                this.hasVoice = true
                 this.label = "待处理"
                 this.isSimulated = false
             })
@@ -1315,5 +1392,72 @@ object SegmentGenerator {
      */
     private fun fingerprintHash(fingerprint: String): String {
         return fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
+    }
+
+    /**
+     * v3.1.29: 重新生成完整PCM并提取指定片段。
+     * 当完整PCM文件不存在时，尝试通过音频解码重新生成。
+     */
+    private fun regenerateFullPcmAndExtractSegment(
+        context: Context,
+        episodeId: String,
+        startMs: Long,
+        endMs: Long,
+        fullPcmFile: File,
+        audioUrl: String?
+    ): File? {
+        try {
+            // 尝试通过 AudioSegmentAnalyzer 的 analyzeEpisode 来触发PCM生成
+            // analyzeEpisode 会在PCM不存在时自动解码生成
+            val dummyCallback: ((Int, Long, Long) -> Unit)? = { _, _, _ -> }
+            val result = AudioSegmentAnalyzer.analyzeEpisode(
+                context, episodeId, endMs, audioUrl,
+                progressCallback = dummyCallback, blocking = false
+            )
+            // 重新生成后，检查完整PCM是否存在
+            if (fullPcmFile.exists() && fullPcmFile.length() > 0) {
+                return PcmSegmentExtractor.extractSegmentFromFile(fullPcmFile, startMs, endMs)
+            }
+            Log.e(TAG, "regenerateFullPcmAndExtractSegment: 重新生成PCM后文件仍不存在 for episode=$episodeId")
+            return null
+        } catch (e: Exception) {
+            Log.e(TAG, "regenerateFullPcmAndExtractSegment: 重新生成PCM失败: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * v3.1.29: 验证三层分段结果是否正常。
+     * - 全部水分或全部干货均为异常
+     * - 分段数过少（两小时节目应>20段）为异常
+     * @return 验证结果描述，null表示正常
+     */
+    private fun validateThreeLayerResult(
+        segments: List<VoiceSegment>,
+        durationMs: Long
+    ): String? {
+        if (segments.isEmpty()) {
+            return "分段结果为空"
+        }
+
+        val waterCount = segments.count { !it.hasVoice }
+        val dryCount = segments.count { it.hasVoice }
+
+        if (waterCount == segments.size) {
+            return "全部${segments.size}个分段均为水分（0个干货）"
+        }
+        if (dryCount == segments.size) {
+            // 全部干货不一定是异常（如果指纹库为空且VAD分类为干货）
+            // 但记录日志供调试
+            Log.w(TAG, "validateThreeLayerResult: 全部${segments.size}个分段均为干货，确认是否正常")
+        }
+
+        // 两小时节目应有60~100个分段，小于20个为异常
+        val durationMinutes = durationMs / 60000
+        if (durationMinutes >= 60 && segments.size < 20) {
+            return "分段数过少: ${segments.size}个分段（节目时长${durationMinutes}分钟，预期>20段）"
+        }
+
+        return null
     }
 }
