@@ -1041,7 +1041,8 @@ object SegmentGenerator {
             }
         }
 
-        // 生成全量分段列表（干货+水货交替）
+        // 生成全量分段列表（待处理+水货交替）
+        // v3.1.25: 不匹配部分标记为"待处理"而非"干货"，由第2层双音频模型再分段
         val segments = mutableListOf<VoiceSegment>()
         var currentPos = 0L
         for (waterRange in mergedRanges) {
@@ -1050,7 +1051,7 @@ object SegmentGenerator {
                     this.start = currentPos
                     this.end = waterRange.first
                     this.hasVoice = true
-                    this.label = "干货"
+                    this.label = "待处理"
                     this.isSimulated = false
                 })
             }
@@ -1068,7 +1069,7 @@ object SegmentGenerator {
                 this.start = currentPos
                 this.end = durationMs
                 this.hasVoice = true
-                this.label = "干货"
+                this.label = "待处理"
                 this.isSimulated = false
             })
         }

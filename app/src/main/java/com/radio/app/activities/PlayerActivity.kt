@@ -3859,6 +3859,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /**
      * 跨天获取相邻日期的节目列表并播放
+     * v3.1.25: 支持跨周连续搜索，最多尝试14天（2周）
      * @param direction 1=下一天, -1=前一天
      */
     private fun fetchAndPlayCrossDayEpisode(direction: Int) {
@@ -3875,60 +3876,76 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
 
-        Toast.makeText(this, if (direction > 0) "正在获取下一天节目..." else "正在获取前一天节目...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, if (direction > 0) "正在搜索后续节目..." else "正在搜索更早节目...", Toast.LENGTH_SHORT).show()
 
         Thread {
             try {
                 val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
                 dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-                cal.time = dateFormat.parse(currentDateStr) ?: return@Thread
-
-                cal.add(java.util.Calendar.DAY_OF_YEAR, direction)
-                val targetDate = dateFormat.format(cal.time)
-
-                android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: fetching $stationId on $targetDate (direction=$direction)")
                 val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-                val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
-
-                if (newEpisodes.isNullOrEmpty()) {
-                    runOnUiThread {
-                        Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
-                    }
-                    return@Thread
-                }
-
-                // 过滤掉没有有效音频URL的节目
-                val validEpisodes = newEpisodes.filter { it.audioUrl.isNotBlank() && it.audioUrl.startsWith("http") }
-                if (validEpisodes.isEmpty()) {
-                    runOnUiThread {
-                        Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
-                    }
-                    return@Thread
-                }
-
-                // 过滤掉已不喜欢和无需预处理的节目
                 val settings = AppSettings.getInstance(this)
-                val nonDisliked = validEpisodes.filter {
-                    !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title)
-                        && !settings.isNoPreprocess(it.id ?: "")
+
+                // v3.1.25: 跨周连续搜索，最多尝试14天
+                val maxSearchDays = 14
+                var searchDay = 0
+                var foundEpisodes: List<com.radio.app.models.Episode>? = null
+                var foundDate: String? = null
+
+                while (searchDay < maxSearchDays) {
+                    searchDay++
+                    val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                    cal.time = dateFormat.parse(currentDateStr) ?: break
+                    cal.add(java.util.Calendar.DAY_OF_YEAR, direction * searchDay)
+                    val targetDate = dateFormat.format(cal.time)
+
+                    android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: searching $stationId on $targetDate (day=$searchDay/$maxSearchDays, direction=$direction)")
+                    val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+
+                    if (newEpisodes.isNullOrEmpty()) {
+                        android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: no episodes on $targetDate, continuing search")
+                        continue
+                    }
+
+                    // 过滤掉没有有效音频URL的节目
+                    val validEpisodes = newEpisodes.filter { it.audioUrl.isNotBlank() && it.audioUrl.startsWith("http") }
+                    if (validEpisodes.isEmpty()) {
+                        android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: no valid audio on $targetDate, continuing search")
+                        continue
+                    }
+
+                    // 过滤掉已不喜欢和无需预处理的节目
+                    val nonDisliked = validEpisodes.filter {
+                        !settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title)
+                            && !settings.isNoPreprocess(it.id ?: "")
+                    }
+                    if (nonDisliked.isEmpty()) {
+                        android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: all episodes disliked on $targetDate, continuing search")
+                        continue
+                    }
+
+                    foundEpisodes = nonDisliked
+                    foundDate = targetDate
+                    break
                 }
-                if (nonDisliked.isEmpty()) {
+
+                if (foundEpisodes == null || foundDate == null) {
                     runOnUiThread {
                         Toast.makeText(this, if (direction > 0) "没有更多节目了" else "没有更早的节目了", Toast.LENGTH_SHORT).show()
                     }
                     return@Thread
                 }
 
+                val finalDate = foundDate
+                val finalEpisodes = foundEpisodes
                 runOnUiThread {
                     // 更新节目列表为新一天的节目
-                    episodeList = ArrayList(nonDisliked)
+                    episodeList = ArrayList(finalEpisodes)
                     saveEpisodeListToPrefs()
                     // direction > 0 (next): 播放第一天第一个节目
                     // direction < 0 (prev): 播放最后一天最后一个节目
-                    val targetIndex = if (direction > 0) 0 else nonDisliked.size - 1
+                    val targetIndex = if (direction > 0) 0 else finalEpisodes.size - 1
                     currentEpisodeIndex = targetIndex
-                    val targetEpisode = nonDisliked[targetIndex]
+                    val targetEpisode = finalEpisodes[targetIndex]
                     currentEpisode = targetEpisode
                     // Issue 10 Fix 2: clear old subtitles when crossing to another day's episode
                     clearSubtitles()
@@ -3941,7 +3958,7 @@ class PlayerActivity : AppCompatActivity() {
                     ensureSegmentsForCurrentEpisode()
                     updateUI()
                     setupPreCacheList()
-                    android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: crossed to $targetDate, playing ${targetEpisode.title}, index=$currentEpisodeIndex")
+                    android.util.Log.d("PlayerActivity", "fetchAndPlayCrossDayEpisode: crossed to $finalDate, playing ${targetEpisode.title}, index=$currentEpisodeIndex (searchDays=$searchDay)")
                 }
             } catch (e: Exception) {
                 android.util.Log.e("PlayerActivity", "fetchAndPlayCrossDayEpisode failed", e)
