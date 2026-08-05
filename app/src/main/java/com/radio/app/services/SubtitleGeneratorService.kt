@@ -1825,8 +1825,28 @@ class SubtitleGeneratorService : Service() {
         } else if (pcmFile.exists()) {
             logToFile("getAudioDataForProcessing: PCM cache too small (${pcmFile.length()} bytes), will regenerate")
         }
-        // 3) Download and process
-        ctx.log("No PCM cache, downloading from $audioUrl")
+        // 3) v3.1.37: 检查本地是否已缓存音频文件，避免重复下载
+        val epsCacheDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
+        val audioFileName = try {
+            val path = java.net.URL(audioUrl).path
+            path.substringAfterLast("/")
+        } catch (_: Exception) { null }
+        if (audioFileName != null) {
+            val cachedAudioFile = File(epsCacheDir, audioFileName)
+            if (cachedAudioFile.exists() && cachedAudioFile.length() > 1024) {
+                ctx.log("使用本地缓存音频: ${cachedAudioFile.absolutePath} (${cachedAudioFile.length()} bytes)")
+                logToFile("getAudioDataForProcessing: using local cached audio ${cachedAudioFile.name}, size=${cachedAudioFile.length()}")
+                val pcmData = decodeLocalCachedAudio(cachedAudioFile, episodeId, ctx)
+                if (pcmData != null) {
+                    val cacheTime = System.currentTimeMillis() - startTime
+                    logToFile("getAudioDataForProcessing: local cached audio decoded in ${cacheTime}ms, size=${pcmData.size}")
+                    return pcmData
+                }
+                logToFile("getAudioDataForProcessing: local cached audio decode failed, falling through to network download")
+            }
+        }
+        // 4) Download and process
+        ctx.log("No PCM cache or local audio cache, downloading from $audioUrl")
         logToFile("generateSubtitlesForEpisode: downloading audio from $audioUrl")
         val downloadedData = downloadAndProcessAudio(audioUrl, episodeId, ctx)
         val downloadTime = System.currentTimeMillis() - startTime
@@ -1941,6 +1961,8 @@ class SubtitleGeneratorService : Service() {
         // [v2.0.62] Issue 3 Fix: Download audio, decode to 16kHz mono PCM, return PCM bytes.
         // Vosk ONLY accepts 16kHz mono 16-bit PCM, NOT raw MP3/AAC.
         // Previous bug: returned raw compressed bytes, causing Vosk to produce no output.
+        // v3.1.37: 记录字幕生成过程中的音频下载
+        logToFile("DOWNLOAD: downloadAndProcessAudio for episode=$episodeId (url=$audioUrl, reason=字幕生成需要音频数据)")
         try {
             val url = java.net.URL(audioUrl)
             val conn = url.openConnection() as java.net.HttpURLConnection
@@ -3614,6 +3636,59 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
+    // v3.1.37: 从本地缓存音频直接解码PCM，避免重复下载
+    private fun decodeLocalCachedAudio(audioFile: File, episodeId: String, ctx: TaskContext): ByteArray? {
+        val startTime = System.currentTimeMillis()
+        logToFile("decodeLocalCachedAudio: START, file=${audioFile.absolutePath}, size=${audioFile.length()}")
+        try {
+            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
+            if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
+            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+            var decodedOk = false
+            var fallbackUsed = false
+            // Try multiple time ranges: 15-20min (primary), 10-15min, 5-10min, 0-5min
+            val ranges = arrayOf(
+                15L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,
+                10L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,
+                5L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,
+                0L to 5L * 60 * 1000 * 1000
+            )
+            for ((start, dur) in ranges) {
+                if (pcmFile.exists()) pcmFile.delete()
+                val rangeLabel = "${start/60000000}-${(start+dur)/60000000}min"
+                try {
+                    logToFile("decodeLocalCachedAudio: attempting decode range $rangeLabel")
+                    decodeToPcm(audioFile, pcmFile, dur, ctx, startUs = start)
+                    val pcmSize = pcmFile.length()
+                    if (pcmSize > 100000) {
+                        logToFile("decodeLocalCachedAudio: decode OK for $rangeLabel: $pcmSize bytes")
+                        decodedOk = true
+                        if (start > 0) fallbackUsed = true
+                        break
+                    } else {
+                        logToFile("decodeLocalCachedAudio: decode for $rangeLabel produced only $pcmSize bytes, trying next")
+                    }
+                } catch (e: Exception) {
+                    logToFile("decodeLocalCachedAudio: decode for $rangeLabel failed: ${e.message}")
+                }
+            }
+            if (!decodedOk) {
+                ctx.log("ERROR: Failed to decode any PCM data from local cached audio")
+                logToFile("decodeLocalCachedAudio: ALL decode ranges failed")
+                return null
+            }
+            val pcmData = pcmFile.readBytes()
+            val elapsed = System.currentTimeMillis() - startTime
+            ctx.log("本地缓存解码完成: ${pcmData.size} bytes PCM in ${elapsed}ms${if (fallbackUsed) " (fallback range)" else ""}")
+            logToFile("decodeLocalCachedAudio: decoded to ${pcmData.size} bytes PCM in ${elapsed}ms${if (fallbackUsed) " (FALLBACK)" else ""}")
+            return pcmData
+        } catch (e: Exception) {
+            ctx.log("ERROR: Local cached audio decode failed: ${e.message}")
+            logToFile("decodeLocalCachedAudio: ERROR: ${e.javaClass.name}: ${e.message}")
+            return null
+        }
+    }
+
     private fun decodeToPcm(
         audioFile: File, pcmFile: File, durationUs: Long,
         ctx: TaskContext, onProgress: ((Int) -> Unit)? = null,
@@ -4008,6 +4083,7 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun downloadAudioWithProgress(audioUrl: String, onProgress: (Int) -> Unit): File? {
+        logToFile("DOWNLOAD: downloadAudioWithProgress (url=$audioUrl, reason=字幕生成手动下载音频)")
         var outFile: File? = null; var conn: HttpURLConnection? = null
         try {
             outFile = File(cacheDir, "subtitle_audio_${Math.abs(audioUrl.hashCode())}.tmp")

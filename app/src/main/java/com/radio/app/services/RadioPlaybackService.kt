@@ -991,16 +991,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun startBackgroundDownload() {
         if (isLive) return
-        // v3.1.33: 如果当前播放的是网络流（文件未缓存），跳过后台下载以避免双倍流量消耗
-        // 预缓存系统会在后续轮次中自动下载该文件
+        // v3.1.37: 保留网络流缓存下载，仅记录日志
         if (currentPlaybackUri.startsWith("http")) {
-            Log.d(TAG, "startBackgroundDownload: 跳过后台下载（当前播放网络流，由预缓存系统负责下载）")
+            Log.d(TAG, "startBackgroundDownload: 当前播放网络流，由预缓存系统负责下载")
             return
         }
         val url = currentStreamUrl
         if (url.isBlank() || !url.startsWith("http")) return
         if (downloadActive.get()) return  // 已有下载任务进行中
         val fileName = extractCacheFileName(url)
+        // v3.1.37: 记录后台下载原因
+        writePreCacheLog("DOWNLOAD: startBackgroundDownload for ${currentEpisode?.title} (file=$fileName, reason=当前节目播放完毕后台缓存)")
         // [v2.1.0] Use centralized cache dir
         val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
@@ -1678,7 +1679,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         editor.apply()
         writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size})")
-        return resultList
+        // v3.1.37: 按播放时间排序后返回
+        return sortPreCacheListByTime(resultList)
     }
 
     private fun savePreCacheList(episodes: List<Episode>) {
@@ -1692,6 +1694,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             obj.put("station_id", ep.stationId ?: "")
             obj.put("duration", ep.duration)
             obj.put("broadcast_at", ep.broadcastAt ?: "")
+            // v3.1.37: 保存startTime/endTime用于排序
+            obj.put("start_time", ep.startTime)
+            obj.put("end_time", ep.endTime)
             arr.put(obj)
         }
         getSharedPreferences("precache_list", MODE_PRIVATE)
@@ -1716,6 +1721,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     stationId = obj.optString("station_id", "")
                     duration = obj.optLong("duration", 0)
                     broadcastAt = obj.optString("broadcast_at", "")
+                    // v3.1.37: 加载startTime/endTime用于排序
+                    startTime = obj.optLong("start_time", 0)
+                    endTime = obj.optLong("end_time", 0)
                 }
                 if (ep.audioUrl.isNotBlank()) list.add(ep)
             }
@@ -1723,6 +1731,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // v3.1.37: 按播放时间排序预缓存节目单
+    private fun sortPreCacheListByTime(list: List<Episode>): List<Episode> {
+        val sorted = list.sortedWith(compareBy<Episode> { ep ->
+            // 优先使用startTime（epoch毫秒），其次解析broadcastAt
+            if (ep.startTime > 0) ep.startTime
+            else {
+                try {
+                    val dateStr = ep.broadcastAt.take(10)
+                    if (dateStr.length == 10) {
+                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                        sdf.parse(dateStr)?.time ?: 0L
+                    } else 0L
+                } catch (_: Exception) { 0L }
+            }
+        }.thenBy { ep ->
+            // 相同日期的按broadcastAt中的时间字符串排序
+            ep.broadcastAt
+        })
+        return sorted
     }
 
     private fun loadEpisodeList(): List<Episode> {
@@ -1784,8 +1813,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun setPreCacheEpisodeList(episodes: List<Episode>) {
+        // v3.1.37: 按播放时间排序后保存
+        val sortedEpisodes = sortPreCacheListByTime(episodes)
         val arr = org.json.JSONArray()
-        for (ep in episodes) {
+        for (ep in sortedEpisodes) {
             val obj = org.json.JSONObject()
             obj.put("id", ep.id ?: "")
             obj.put("title", ep.title ?: "")
@@ -1794,6 +1825,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             obj.put("station_id", ep.stationId ?: "")
             obj.put("duration", ep.duration)
             obj.put("broadcast_at", ep.broadcastAt ?: "")
+            // v3.1.37: 保存startTime/endTime用于排序
+            obj.put("start_time", ep.startTime)
+            obj.put("end_time", ep.endTime)
             arr.put(obj)
         }
         // 保存电台ID和当前日期用于跨天预缓存
@@ -1836,6 +1870,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
         val fileName = extractCacheFileName(url)
+        // v3.1.37: 记录预缓存下载原因
+        writePreCacheLog("DOWNLOAD: downloadPreCacheEpisode for ${episode.title} (id=${episode.id}, file=$fileName, reason=预缓存未来节目)")
         // [v2.1.0] Use centralized cache dir
         val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
