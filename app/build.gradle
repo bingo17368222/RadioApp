@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 24
         targetSdk 33
-        versionCode 440
-        versionName "3.1.32"
+        versionCode 441
+        versionName "3.1.33"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -65,47 +65,24 @@ android {
 
     packagingOptions {
         exclude 'lib/*/libvosk.so'
-        // v2.4.103: Include libonnxruntime.so in APK (14.6MB).
-        // It must be in the standard library path because libonnxruntime4j_jni.so
-        // has DT_NEEDED dependency on it. System.loadLibrary("onnxruntime4j_jni")
-        // calls dlopen which searches the APK lib/ dir for DT_NEEDED libs.
-        // System.load() by absolute path doesn't make the .so visible to dlopen's
-        // DT_NEEDED resolution on Android 12+ (namespace linker issue).
-
-        // v2.4.111: Exclude Whisper native libraries from APK (~3.1MB savings).
-        // These are downloaded at runtime via whisper-engine.zip in OfflineEngineActivity.
-        // SubtitleGeneratorService.loadWhisperNativeLibrary() falls back to external
-        // storage loading when System.loadLibrary fails.
-        // Note: libwhisper_jni.so is NOT excluded — it's built from source and is
-        // the JNI bridge that loads the other .so files.
         exclude 'lib/*/libggml-base-whisper.so'
         exclude 'lib/*/libggml-cpu-whisper.so'
         exclude 'lib/*/libggml-whisper.so'
         exclude 'lib/*/libwhisper.so'
-
-        // v2.4.111: Exclude MNN GPU backends (~2.9MB savings).
-        // MNN loads these via dlopen in mnn_llm_jni.cpp (lines 211-212).
-        // If not found, MNN falls back to CPU backend. No DT_NEEDED dependency.
         exclude 'lib/*/libMNN_Vulkan.so'
         exclude 'lib/*/libMNN_CL.so'
-
-        // v2.4.111: Exclude MNN optional modules (~1.1MB savings).
-        // These are loaded via dlopen without return value check (optional).
         exclude 'lib/*/libMNNOpenCV.so'
         exclude 'lib/*/libMNNAudio.so'
-
         exclude 'META-INF/INDEX.LIST'
         exclude 'META-INF/DEPENDENCIES'
     }
 
-    // Issue 5: Point to the CMakeLists.txt that builds libwhisper_jni.so
     externalNativeBuild {
         cmake {
             path "src/main/cpp/CMakeLists.txt"
         }
     }
 
-    // Issue 5: Prebuilt .so libraries (e.g. whisper.cpp runtime) lookup directory
     sourceSets {
         main {
             jniLibs.srcDirs = ['src/main/jniLibs']
@@ -115,7 +92,6 @@ android {
     applicationVariants.all { variant ->
         variant.outputs.all {
             outputFileName = "RadioApp-v${variant.versionName}.apk"
-            // v3.1.6: outputFileName is set via variant.versionName which now reads 3.1.6
         }
     }
 }
@@ -136,19 +112,9 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1'
     implementation 'androidx.viewpager2:viewpager2:1.0.0'
-
-    // ExoPlayer - 支持M3U8流媒体
     implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
-
-    // Vosk - 离线语音识别 (Java classes bundled, .so excluded - user downloads separately)
     implementation 'com.alphacephei:vosk-android:0.3.47'
-
-    // v2.4.94: ONNX Runtime for Silero VAD (audio-based AI segmentation)
-    // v2.4.95: .so excluded from APK, downloaded at runtime
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.16.3'
-
-    // v2.4.95: TFLite for YAMNet audio classification (dual-model with Silero VAD)
-    // .so excluded from APK, downloaded at runtime
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
 }
