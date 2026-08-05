@@ -19,8 +19,7 @@ import android.widget.Toast
 import androidx.fragment.app.Fragment
 import com.radio.app.R
 import com.radio.app.activities.DislikedEpisodesActivity
-// v3.1.41: 取消水分指纹音频素材列表入口，避免与指纹分类管理重复
-// import com.radio.app.activities.KeywordSettingsActivity
+import com.radio.app.activities.KeywordSettingsActivity
 import com.radio.app.activities.OfflineEngineActivity
 import com.radio.app.databinding.FragmentSettingsBinding
 import com.radio.app.models.AppSettings
@@ -102,10 +101,7 @@ class SettingsFragment : Fragment() {
             Log.e("SettingsFragment", "addInstalledEngines failed", e)
         }
 
-        // v3.1.41: 取消水分指纹音频素材列表入口，隐藏该菜单项
-        try {
-            binding.tvKeywordSettings.visibility = android.view.View.GONE
-        } catch (_: Exception) {}
+        
     }
 
     private fun addInstalledEnginesToAsrList(adapter: ArrayAdapter<String>) {
@@ -486,10 +482,9 @@ class SettingsFragment : Fragment() {
         binding.tvDislikedEpisodes.setOnClickListener {
             startActivity(Intent(requireContext(), DislikedEpisodesActivity::class.java))
         }
-        // v3.1.41: 取消水分指纹音频素材列表入口，避免与指纹分类管理重复
-        // binding.tvKeywordSettings.setOnClickListener {
-        //     startActivity(Intent(requireContext(), KeywordSettingsActivity::class.java))
-        // }
+        binding.tvKeywordSettings.setOnClickListener {
+            startActivity(Intent(requireContext(), KeywordSettingsActivity::class.java))
+        }
         binding.tvAbout.setOnClickListener {
             showAboutDialog()
         }

@@ -555,6 +555,20 @@ object AudioSegmentAnalyzer {
             return true
         }
 
+        // v3.1.41-fix: 在删除旧PCM前，确认存在可用的解码源（音频文件或URL），
+        // 避免PCM被删除后无法重新生成导致全部丢失。
+        val decodeSourceAvailable = (audioFile != null && audioFile.exists()) || (audioUrl != null && audioUrl.startsWith("http"))
+        if (!decodeSourceAvailable) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: 无可用解码源（音频文件或URL），保留现有PCM文件。episode=$episodeId\n")
+            if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+                return true
+            }
+            if (min5PcmFile.exists() && min5PcmFile.length() > 16000) {
+                return true
+            }
+            // 无PCM文件且无解码源，继续尝试流式解码
+        }
+
         // Not valid — delete old PCM and .info files to force regeneration.
         if (fullPcmFile.exists()) fullPcmFile.delete()
         if (min5PcmFile.exists()) min5PcmFile.delete()

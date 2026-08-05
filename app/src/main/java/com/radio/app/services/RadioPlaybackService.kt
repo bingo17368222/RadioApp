@@ -1588,17 +1588,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // Only go forward (future dates)
-        val dayOffset = daysFetched + 1
+        // v3.1.41-fix: 交替向未来和过去方向获取，覆盖近期节目和远期节目
+        // days_fetched=0 → +1, days_fetched=1 → -1, days_fetched=2 → +2, days_fetched=3 → -2, ...
+        val isFuture = daysFetched % 2 == 0
+        val dayOffset = if (isFuture) (daysFetched / 2) + 1 else -((daysFetched + 1) / 2)
         var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
             cal.time = dateFormat.parse(startDate) ?: return existingList
             cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
             val targetDate = dateFormat.format(cal.time)
-            latestFetchedDate = targetDate
+            // 仅未来方向更新latestFetchedDate，保持current_date向前推进
+            if (isFuture) {
+                latestFetchedDate = targetDate
+            }
 
-            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
+            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=${if (dayOffset >= 0) "+" else ""}$dayOffset, isFuture=$isFuture)")
 
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
