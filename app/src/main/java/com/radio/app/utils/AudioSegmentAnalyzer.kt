@@ -312,26 +312,38 @@ object AudioSegmentAnalyzer {
         currentMp4DurationMs: Long,
         toleranceRatio: Double = 0.2
     ): PcmInfo? {
+        val pcmName = pcmFile.name
         if (!pcmFile.exists() || pcmFile.length() <= 16000) {
-            Log.w(TAG, "validatePcmWithInfo: ${pcmFile.name} 不存在或太小 (${pcmFile.length()} bytes)")
+            val msg = "validatePcmWithInfo: $pcmName 不存在或太小 (${pcmFile.length()} bytes)"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
         val info = readPcmInfo(infoFile)
         if (info == null) {
-            Log.w(TAG, "validatePcmWithInfo: ${infoFile.name} 不存在或读取失败 -> 需要重新生成info文件")
+            val msg = "validatePcmWithInfo: ${infoFile.name} 不存在或读取失败 -> 需要重新生成info文件"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
         // v3.1.43: 精确指出isValid()中哪个字段不达标
+        // v3.1.44: 所有info文件校验日志同时写入FileLogUtils
         if (info.version < REQUIRED_PCM_VERSION) {
-            Log.w(TAG, "validatePcmWithInfo: ${infoFile.name} version=${info.version} < REQUIRED=$REQUIRED_PCM_VERSION -> 版本过旧，需要重新生成")
+            val msg = "validatePcmWithInfo: ${infoFile.name} version=${info.version} < REQUIRED=$REQUIRED_PCM_VERSION -> 版本过旧，需要重新生成"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
         if (info.mp4DurationMs <= 0) {
-            Log.w(TAG, "validatePcmWithInfo: ${infoFile.name} mp4DurationMs=${info.mp4DurationMs} <= 0 -> info文件中的mp4DurationMs无效，需要重新生成")
+            val msg = "validatePcmWithInfo: ${infoFile.name} mp4DurationMs=${info.mp4DurationMs} <= 0 -> info文件中的mp4DurationMs无效，需要重新生成"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
         if (info.pcmDurationMs <= 0) {
-            Log.w(TAG, "validatePcmWithInfo: ${infoFile.name} pcmDurationMs=${info.pcmDurationMs} <= 0 -> info文件中的pcmDurationMs无效，需要重新生成")
+            val msg = "validatePcmWithInfo: ${infoFile.name} pcmDurationMs=${info.pcmDurationMs} <= 0 -> info文件中的pcmDurationMs无效，需要重新生成"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
         // v3.1.41-fix: 当PCM文件较大（>50MB）时，直接跳过mp4DurationMs校验，
@@ -342,11 +354,16 @@ object AudioSegmentAnalyzer {
                 val diff = kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs)
                 val ratio = diff.toDouble() / currentMp4DurationMs
                 if (ratio > 0.03) {
-                    Log.w(TAG, "validatePcmWithInfo: mp4DurationMs 不匹配但PCM文件较大(${pcmFile.length()/1024/1024}MB)，跳过校验 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}")
+                    val msg = "validatePcmWithInfo: mp4DurationMs 不匹配但PCM文件较大(${pcmFile.length()/1024/1024}MB)，跳过校验 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}"
+                    Log.w(TAG, msg)
+                    FileLogUtils.logInfoFile(msg)
                 }
             }
             // PCM文件较大时，信任info文件中的pcmDurationMs
             if (info.pcmDurationMs > 0) {
+                val msg = "validatePcmWithInfo: 大文件校验通过 - $pcmName version=${info.version} mp4DurationMs=${info.mp4DurationMs}ms pcmDurationMs=${info.pcmDurationMs}ms pcmSize=${pcmFile.length()}"
+                Log.d(TAG, msg)
+                FileLogUtils.logInfoFile(msg)
                 return info
             }
         }
@@ -355,28 +372,40 @@ object AudioSegmentAnalyzer {
             val diff = kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs)
             val ratio = diff.toDouble() / currentMp4DurationMs
             if (ratio > 0.03) {
-                Log.w(TAG, "validatePcmWithInfo: mp4DurationMs 不匹配 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, diff=${diff}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}, file=${pcmFile.name}")
+                val msg = "validatePcmWithInfo: mp4DurationMs 不匹配 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, diff=${diff}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}, file=${pcmName}"
+                Log.w(TAG, msg)
+                FileLogUtils.logInfoFile(msg)
                 // v3.1.41-fix: 提高容差至30%，避免因MediaExtractor读取时长波动导致已正常使用的info文件被判定不匹配
                 if (ratio > 0.30) {
-                    Log.w(TAG, "validatePcmWithInfo: mp4DurationMs 差异超过30%(${String.format(java.util.Locale.US, "%.1f", ratio * 100)}%)，info文件不匹配，需要重新生成PCM")
+                    val msg2 = "validatePcmWithInfo: mp4DurationMs 差异超过30%(${String.format(java.util.Locale.US, "%.1f", ratio * 100)}%)，info文件不匹配，需要重新生成PCM"
+                    Log.w(TAG, msg2)
+                    FileLogUtils.logInfoFile(msg2)
                     return null
                 }
             }
         } else {
-            Log.d(TAG, "validatePcmWithInfo: currentMp4DurationMs=0(MediaExtractor或API均未提供时长)，跳过mp4DurationMs校验，使用info文件中的mp4DurationMs=${info.mp4DurationMs}ms")
+            val msg = "validatePcmWithInfo: currentMp4DurationMs=0(MediaExtractor或API均未提供时长)，跳过mp4DurationMs校验，使用info文件中的mp4DurationMs=${info.mp4DurationMs}ms"
+            Log.d(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
         }
         // PCM duration must be within tolerance of MP4 duration.
         val expectedDurationMs = if (currentMp4DurationMs > 0) currentMp4DurationMs else info.mp4DurationMs
         if (expectedDurationMs <= 0) {
-            Log.w(TAG, "validatePcmWithInfo: expectedDurationMs <= 0 (currentMp4=$currentMp4DurationMs, info.mp4=${info.mp4DurationMs}) -> 无法确定预期时长，跳过校验")
+            val msg = "validatePcmWithInfo: expectedDurationMs <= 0 (currentMp4=$currentMp4DurationMs, info.mp4=${info.mp4DurationMs}) -> 无法确定预期时长，跳过校验"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
         val delta = kotlin.math.abs(info.pcmDurationMs - expectedDurationMs)
         if (delta > expectedDurationMs * toleranceRatio) {
-            Log.w(TAG, "validatePcmWithInfo: pcmDurationMs 不匹配 - pcm=${info.pcmDurationMs}ms, expected=${expectedDurationMs}ms, delta=${delta}ms, tolerance=${(expectedDurationMs * toleranceRatio).toLong()}ms (${String.format(java.util.Locale.US, "%.1f", toleranceRatio * 100)}%), file=${pcmFile.name}")
+            val msg = "validatePcmWithInfo: pcmDurationMs 不匹配 - pcm=${info.pcmDurationMs}ms, expected=${expectedDurationMs}ms, delta=${delta}ms, tolerance=${(expectedDurationMs * toleranceRatio).toLong()}ms (${String.format(java.util.Locale.US, "%.1f", toleranceRatio * 100)}%), file=${pcmName}"
+            Log.w(TAG, msg)
+            FileLogUtils.logInfoFile(msg)
             return null
         }
-        Log.d(TAG, "validatePcmWithInfo: 校验通过 - ${pcmFile.name} version=${info.version} mp4DurationMs=${info.mp4DurationMs}ms pcmDurationMs=${info.pcmDurationMs}ms pcmSize=${pcmFile.length()}")
+        val msg = "validatePcmWithInfo: 校验通过 - $pcmName version=${info.version} mp4DurationMs=${info.mp4DurationMs}ms pcmDurationMs=${info.pcmDurationMs}ms pcmSize=${pcmFile.length()}"
+        Log.d(TAG, msg)
+        FileLogUtils.logInfoFile(msg)
         return info
     }
 

@@ -18,7 +18,20 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- v3.1.41-fix: 水分指纹音频素材列表已取消，仅保留水货分段组合管理 -->
+            <!-- v3.1.44: 恢复水分指纹音频素材列表入口，跳转到指纹管理页面 -->
+            <TextView
+                android:id="@+id/tv_fingerprint_entry"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="指纹管理（播放/测试）"
+                android:textColor="?attr/appAccent"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:padding="12dp"
+                android:background="@drawable/bg_card"
+                android:clickable="true"
+                android:focusable="true"
+                android:layout_marginBottom="12dp" />
 
             <!-- 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用） -->
             <TextView

@@ -1,5 +1,6 @@
 package com.radio.app.activities
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -61,6 +62,11 @@ class KeywordSettingsActivity : AppCompatActivity() {
 
         prefMgr = PreferenceManager(this)
         settings = prefMgr.loadSettings()
+
+        // v3.1.44: 恢复原始水分指纹音频素材列表UI入口，跳转到指纹管理页面
+        findViewById<TextView>(R.id.tv_fingerprint_entry).setOnClickListener {
+            startActivity(Intent(this, FingerprintManagementActivity::class.java))
+        }
 
         initWaterCombinationManagement()
     }

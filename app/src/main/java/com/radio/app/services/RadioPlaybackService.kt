@@ -1590,12 +1590,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // v3.1.41-fix: 跳过近期（最近4天），处理远期（第5天起）
-        // 假设今天是10号，跳过11,12,13,14，处理15,16,17,18
-        // days_fetched=0 → offset=5, days_fetched=1 → offset=6, ...
-        // 始终向未来方向获取，不向过去方向获取
-        val skipDays = 4
-        val dayOffset = skipDays + daysFetched + 1
+        // v3.1.44: 不允许跳过近期处理远期，从当前日期起按顺序获取每一天
+        // days_fetched=0 → offset=1（明天）, days_fetched=1 → offset=2, ...
+        // 始终向未来方向按顺序获取，不跳过任何一天
+        val dayOffset = daysFetched + 1
         var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
@@ -1605,7 +1603,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 始终向未来方向获取，current_date持续向前推进
             latestFetchedDate = targetDate
 
-            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset, skipDays=$skipDays)")
+            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
 
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
@@ -1951,7 +1949,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 connection.setRequestProperty("Referer", "https://www.hndt.com/")
                 connection.connect()
                 if (connection.responseCode != 200) {
-                    Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
+                    com.radio.app.utils.FileLogUtils.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
                     // Download failed, release guard and schedule next pre-cache check
                     isPrecaching = false
                     Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
@@ -1993,7 +1991,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         .apply()
                     Log.d(TAG, "Pre-cache: saved cache_episode_mapping for $fileName")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Pre-cache: failed to save cache_episode_mapping: ${e.message}")
+                    com.radio.app.utils.FileLogUtils.e(TAG, "Pre-cache: failed to save cache_episode_mapping: ${e.message}")
                 }
                 // [v2.4.61] 不再自动生成5分钟PCM文件，手动生成字幕时再生成
                 // startPcmPreDecode(episode.id ?: "", targetFile, episode.title ?: "unknown")
@@ -2014,7 +2012,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 isPrecaching = false
                 Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             } catch (e: Exception) {
-                Log.e(TAG, "Pre-cache download error: ${e.message}")
+                com.radio.app.utils.FileLogUtils.e(TAG, "Pre-cache download error: ${e.message}")
                 // 删除不完整的文件
                 if (targetFile.exists()) {
                     writeServiceLog("notification", "DELETING file: ${targetFile.absolutePath}, size=${targetFile.length()} (pre-cache download error)")
@@ -2095,16 +2093,38 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 增加文件头校验，区分有效文件（MediaExtractor自身问题）和损坏文件（需要重新下载）。
      */
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
-        if (!audioFile.exists() || audioFile.length() <= 1024 * 100) return false
+        if (!audioFile.exists() || audioFile.length() <= 1024 * 100) {
+            Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 不存在或太小，返回false")
+            return false
+        }
+
+        // v3.1.44: 大文件（>10MB）直接跳过头校验，很可能是有效媒体文件
+        if (audioFile.length() > 10 * 1024 * 1024L) {
+            Log.d(TAG, "validateCachedAudioFile: ${audioFile.name} 文件大于10MB(${audioFile.length()/1024/1024}MB)，跳过头校验直接使用MediaExtractor")
+            return validateWithExtractor(audioFile, expectedDurationMs)
+        }
 
         // v3.1.43: 优先检查文件头，判断是否为有效的媒体文件
         val headerValid = isMediaFileHeaderValid(audioFile)
         if (!headerValid) {
-            Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头无效，文件可能损坏或格式错误，删除并重新下载。size=${audioFile.length()}")
+            // v3.1.44: 文件头不识别但文件>1MB时，保留并尝试MediaExtractor解析
+            if (audioFile.length() > 1024 * 1024) {
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头无法识别但文件较大(${audioFile.length()/1024}KB)，尝试MediaExtractor解析")
+                return validateWithExtractor(audioFile, expectedDurationMs)
+            }
+            Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头无效且文件较小(${audioFile.length()/1024}KB)，删除并重新下载。size=${audioFile.length()}")
             audioFile.delete()
             return false
         }
 
+        return validateWithExtractor(audioFile, expectedDurationMs)
+    }
+
+    /**
+     * v3.1.44: 使用MediaExtractor校验音频文件，分离自validateCachedAudioFile以便复用。
+     * 返回true表示文件有效，false表示无效（需要删除并重新下载）。
+     */
+    private fun validateWithExtractor(audioFile: File, expectedDurationMs: Long): Boolean {
         var extractor: MediaExtractor? = null
         try {
             extractor = MediaExtractor()
@@ -2118,61 +2138,74 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     audioTrackCount++
                     if (format.containsKey(MediaFormat.KEY_DURATION)) {
                         actualDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
-                        Log.d(TAG, "validateCachedAudioFile: ${audioFile.name} track=$i mime=$mime duration=${actualDurationMs}ms")
+                        Log.d(TAG, "validateWithExtractor: ${audioFile.name} track=$i mime=$mime duration=${actualDurationMs}ms")
                     }
                 }
             }
             if (audioTrackCount == 0) {
-                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 无音频轨道，共${extractor.trackCount}个轨道")
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道，共${extractor.trackCount}个轨道，文件大小=${audioFile.length()}")
+                // v3.1.44: 无音频轨道但文件较大时保留（可能是视频文件或其他格式）
+                if (audioFile.length() > 30 * 1024 * 1024L) {
+                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道但文件较大(${audioFile.length()/1024/1024}MB)，保留")
+                    return true
+                }
+                audioFile.delete()
                 return false
             }
             if (actualDurationMs <= 0) {
                 // 文件头有效、有音频轨道但MediaExtractor读不到时长，可能是文件末尾截断但仍可播放
-                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 有音频轨道(${audioTrackCount}个)但MediaExtractor读不到时长，文件可能被截断")
-                // 文件较大时（>50MB）保留，可能只是末尾截断，中间部分仍可解码
-                if (audioFile.length() > 50 * 1024 * 1024L) {
-                    Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 有音频轨道(${audioTrackCount}个)但MediaExtractor读不到时长，文件可能被截断")
+                // 文件较大时（>30MB）保留，可能只是末尾截断，中间部分仍可解码
+                if (audioFile.length() > 30 * 1024 * 1024L) {
+                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
                     return true
                 }
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较小(${audioFile.length()/1024}KB)，删除")
+                audioFile.delete()
                 return false
             }
             if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) {
                 // 时长不匹配——分析原因：文件截断/重新下载/API返回错误时长
                 val ratio = actualDurationMs.toDouble() / expectedDurationMs
-                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 时长不匹配(actual=${actualDurationMs}ms, expected=${expectedDurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)})，size=${audioFile.length()}")
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 时长不匹配(actual=${actualDurationMs}ms, expected=${expectedDurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)})，size=${audioFile.length()}")
                 // 如果文件大小达到预期时长的50%以上，保留（可能是API返回的时长有误）
                 val keepThreshold = (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.5).toLong().coerceAtLeast(5 * 1024 * 1024)
                 if (audioFile.length() > keepThreshold) {
-                    Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
+                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
                     return true
                 }
                 // 文件太小，确实是截断，返回false触发重新下载
-                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件太小(${audioFile.length()/1024}KB)，删除并重新下载")
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件太小(${audioFile.length()/1024}KB)，删除并重新下载")
                 audioFile.delete()
                 return false
             }
+            Log.d(TAG, "validateWithExtractor: ${audioFile.name} 校验通过，duration=${actualDurationMs}ms, size=${audioFile.length()}")
             return true
         } catch (e: IOException) {
             // IO异常：文件不可读、权限问题、文件系统错误
-            Log.e(TAG, "validateCachedAudioFile: ${audioFile.name} IO异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
+            com.radio.app.utils.FileLogUtils.e(TAG, "validateWithExtractor: ${audioFile.name} IO异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
             // 文件头校验通过但IO异常，可能是文件系统瞬态问题，保留文件等待下次重试
             return audioFile.length() > 30 * 1024 * 1024L
         } catch (e: IllegalArgumentException) {
             // 参数异常：URI格式错误等
-            Log.e(TAG, "validateCachedAudioFile: ${audioFile.name} 参数异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
+            com.radio.app.utils.FileLogUtils.e(TAG, "validateWithExtractor: ${audioFile.name} 参数异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
+            // v3.1.44: 参数异常但文件较大时保留，可能是文件本身有效但MediaExtractor不兼容
+            if (audioFile.length() > 30 * 1024 * 1024L) {
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 参数异常但文件较大(${audioFile.length()/1024/1024}MB)，保留")
+                return true
+            }
             audioFile.delete()
             return false
         } catch (e: Exception) {
             // 其他异常：MediaExtractor内部错误、格式不支持等
-            Log.e(TAG, "validateCachedAudioFile: ${audioFile.name} 未知异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
-            // 文件头校验通过，说明文件格式基本正确，但MediaExtractor解析失败
+            com.radio.app.utils.FileLogUtils.e(TAG, "validateWithExtractor: ${audioFile.name} 未知异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
             // 文件较大时保留，可能是编解码器不支持但文件本身有效
-            if (audioFile.length() > 50 * 1024 * 1024L) {
-                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头有效但MediaExtractor异常，文件较大(${audioFile.length()/1024/1024}MB)，保留")
+            if (audioFile.length() > 30 * 1024 * 1024L) {
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
                 return true
             }
             // 小文件异常，可能是损坏，删除重新下载
-            Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头有效但MediaExtractor异常，文件较小，删除重新下载")
+            Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较小(${audioFile.length()/1024}KB)，删除重新下载")
             audioFile.delete()
             return false
         } finally {

@@ -84,7 +84,7 @@ class AudioFingerprintService : Service() {
                     context.startService(intent)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "startAddFingerprint failed to start service: ${e.message}", e)
+                com.radio.app.utils.FileLogUtils.e(TAG, "startAddFingerprint failed to start service: ${e.message}", e)
                 // 启动失败时立即发广播通知 UI
                 try {
                     val errorIntent = Intent(ACTION_FINGERPRINT_ERROR).apply {
@@ -168,7 +168,7 @@ class AudioFingerprintService : Service() {
                         }
                         fis.close()
                     } catch (e: Exception) {
-                        Log.e(TAG, "playFingerprint: playback error: ${e.message}", e)
+                        com.radio.app.utils.FileLogUtils.e(TAG, "playFingerprint: playback error: ${e.message}", e)
                     } finally {
                         // 播放完毕，自动清理
                         if (isPlaying) {
@@ -187,7 +187,7 @@ class AudioFingerprintService : Service() {
                     start()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "playFingerprint failed: ${e.message}", e)
+                com.radio.app.utils.FileLogUtils.e(TAG, "playFingerprint failed: ${e.message}", e)
                 isPlaying = false
                 playbackAudioTrack = null
             }
@@ -250,7 +250,7 @@ class AudioFingerprintService : Service() {
                     LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
                 } catch (_: Exception) {}
             } catch (e: Exception) {
-                Log.e(TAG, "testFingerprint failed: ${e.message}", e)
+                com.radio.app.utils.FileLogUtils.e(TAG, "testFingerprint failed: ${e.message}", e)
             }
         }
     }
