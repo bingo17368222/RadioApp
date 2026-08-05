@@ -320,13 +320,30 @@ object AudioSegmentAnalyzer {
             Log.w(TAG, "validatePcmWithInfo: ${infoFile.name} 无效")
             return null
         }
+        // v3.1.41-fix: 当PCM文件较大（>50MB）时，直接跳过mp4DurationMs校验，
+        // 因为MediaExtractor读取的时长可能因文件重新下载或编解码器差异而不同，
+        // 但PCM文件本身是有效的，不应因mp4DurationMs不一致而删除。
+        if (pcmFile.length() > 50 * 1024 * 1024L) {
+            if (currentMp4DurationMs > 0 && info.mp4DurationMs > 0) {
+                val diff = kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs)
+                val ratio = diff.toDouble() / currentMp4DurationMs
+                if (ratio > 0.03) {
+                    Log.w(TAG, "validatePcmWithInfo: mp4DurationMs 不匹配但PCM文件较大(${pcmFile.length()} bytes)，跳过校验 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}")
+                }
+            }
+            // PCM文件较大时，信任info文件中的pcmDurationMs
+            if (info.pcmDurationMs > 0) {
+                return info
+            }
+        }
         // v3.1.41: 记录详细不匹配日志，排查真正原因
         if (currentMp4DurationMs > 0) {
             val diff = kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs)
             val ratio = diff.toDouble() / currentMp4DurationMs
             if (ratio > 0.03) {
                 Log.w(TAG, "validatePcmWithInfo: mp4DurationMs 不匹配 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, diff=${diff}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}, file=${pcmFile.name}")
-                if (ratio > 0.15) {
+                // v3.1.41-fix: 提高容差至30%，避免因MediaExtractor读取时长波动导致已正常使用的info文件被判定不匹配
+                if (ratio > 0.30) {
                     return null
                 }
             }
@@ -540,8 +557,10 @@ object AudioSegmentAnalyzer {
         }
 
         // v2.4.139: Validate using .info file. If valid and durations match, skip all decoding.
+        // v3.1.41-fix: 不再要求5分钟版PCM必须存在（v3.1.40已不再自动生成5分钟版PCM），
+        // 只要完整版PCM有效即可跳过解码，避免每次循环都重新生成完整PCM。
         val validInfo = if (mp4DurationMs > 0) validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs) else null
-        if (validInfo != null && min5PcmFile.exists() && min5PcmFile.length() > 16000) {
+        if (validInfo != null) {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms). Skipping decode.\n")
             return true
         }

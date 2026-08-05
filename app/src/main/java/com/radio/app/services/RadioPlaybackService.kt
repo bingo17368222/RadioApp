@@ -1588,22 +1588,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // v3.1.41-fix: 交替向未来和过去方向获取，覆盖近期节目和远期节目
-        // days_fetched=0 → +1, days_fetched=1 → -1, days_fetched=2 → +2, days_fetched=3 → -2, ...
-        val isFuture = daysFetched % 2 == 0
-        val dayOffset = if (isFuture) (daysFetched / 2) + 1 else -((daysFetched + 1) / 2)
+        // v3.1.41-fix: 跳过近期（最近4天），处理远期（第5天起）
+        // 假设今天是10号，跳过11,12,13,14，处理15,16,17,18
+        // days_fetched=0 → offset=5, days_fetched=1 → offset=6, ...
+        // 始终向未来方向获取，不向过去方向获取
+        val skipDays = 4
+        val dayOffset = skipDays + daysFetched + 1
         var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
             cal.time = dateFormat.parse(startDate) ?: return existingList
             cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
             val targetDate = dateFormat.format(cal.time)
-            // 仅未来方向更新latestFetchedDate，保持current_date向前推进
-            if (isFuture) {
-                latestFetchedDate = targetDate
-            }
+            // 始终向未来方向获取，current_date持续向前推进
+            latestFetchedDate = targetDate
 
-            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=${if (dayOffset >= 0) "+" else ""}$dayOffset, isFuture=$isFuture)")
+            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset, skipDays=$skipDays)")
 
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
@@ -2134,6 +2134,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return true
         } catch (e: Exception) {
             Log.w(TAG, "validateCachedAudioFile failed for ${audioFile.name}: ${e.message}")
+            // v3.1.41-fix: MediaExtractor失败时，如果文件较大则保留，避免无限重新下载
+            if (audioFile.length() > 30 * 1024 * 1024L) {
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} MediaExtractor failed but file is large (${audioFile.length()} bytes), keeping it")
+                return true
+            }
             return false
         } finally {
             extractor?.release()

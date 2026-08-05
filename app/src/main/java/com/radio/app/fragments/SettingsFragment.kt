@@ -19,7 +19,7 @@ import android.widget.Toast
 import androidx.fragment.app.Fragment
 import com.radio.app.R
 import com.radio.app.activities.DislikedEpisodesActivity
-import com.radio.app.activities.KeywordSettingsActivity
+import com.radio.app.activities.FingerprintManagementActivity
 import com.radio.app.activities.OfflineEngineActivity
 import com.radio.app.databinding.FragmentSettingsBinding
 import com.radio.app.models.AppSettings
@@ -483,7 +483,7 @@ class SettingsFragment : Fragment() {
             startActivity(Intent(requireContext(), DislikedEpisodesActivity::class.java))
         }
         binding.tvKeywordSettings.setOnClickListener {
-            startActivity(Intent(requireContext(), KeywordSettingsActivity::class.java))
+            startActivity(Intent(requireContext(), FingerprintManagementActivity::class.java))
         }
         binding.tvAbout.setOnClickListener {
             showAboutDialog()
