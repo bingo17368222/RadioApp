@@ -1842,10 +1842,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun setPreCacheEpisodeList(episodes: List<Episode>) {
-        // v3.1.37: 按播放时间排序后保存
-        val sortedEpisodes = sortPreCacheListByTime(episodes)
+        // v3.1.39: 合并新节目到现有预缓存列表，不覆盖已有列表（Fix: 节目单刷新不再重置已积累的列表）
+        val existingList = loadPreCacheList()
+        val existingUrls = existingList.mapNotNull { it.audioUrl }.toSet()
+        val newEpisodes = episodes.filter { ep ->
+            val url = ep.audioUrl
+            url != null && url !in existingUrls && url.startsWith("http")
+        }
+        val mergedList = sortPreCacheListByTime(existingList + newEpisodes)
+        
         val arr = org.json.JSONArray()
-        for (ep in sortedEpisodes) {
+        for (ep in mergedList) {
             val obj = org.json.JSONObject()
             obj.put("id", ep.id ?: "")
             obj.put("title", ep.title ?: "")
@@ -1864,15 +1871,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val broadcastAt = episodes.firstOrNull()?.broadcastAt ?: currentEpisode?.broadcastAt ?: ""
         val currentDate = if (broadcastAt.length >= 10) broadcastAt.substring(0, 10) else ""
         
+        // v3.1.39: 不再重置 days_fetched，保留跨天获取进度
         getSharedPreferences("precache_list", MODE_PRIVATE)
             .edit()
             .putString("episodes", arr.toString())
             .putString("station_id", stationId)
             .putString("current_date", currentDate)
-            .putInt("days_fetched", 0)  // 重置跨天计数
             .apply()
-        writePreCacheLog("setPreCacheEpisodeList: updated ${episodes.size} episodes, station=$stationId, date=$currentDate")
-        Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes, station=$stationId, date=$currentDate")
+        writePreCacheLog("setPreCacheEpisodeList: merged ${episodes.size} incoming + ${existingList.size} existing = ${mergedList.size} episodes, station=$stationId, date=$currentDate")
+        Log.d(TAG, "Pre-cache list merged: ${episodes.size} incoming + ${existingList.size} existing = ${mergedList.size} episodes, station=$stationId, date=$currentDate")
         // 立即触发预缓存检查（独立于下载状态）
         writePreCacheLog("setPreCacheEpisodeList: triggering pre-cache check")
         triggerPreCache()
@@ -2396,7 +2403,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val audioUrl = episode.audioUrl ?: return false
         if (audioUrl.isBlank()) return false
 
-        writePreCacheLog("startPreCachePcmGeneration:  starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm)")
+        // v3.1.39: 提前检查音频文件是否已缓存，避免在音频未下载完成时启动PCM解码（浪费CPU和时间）
+        val fileName = extractCacheFileName(audioUrl)
+        val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+        val audioFile = java.io.File(episodesDir, fileName)
+        if (!audioFile.exists() || audioFile.length() <= 1024) {
+            writePreCacheLog("startPreCachePcmGeneration:  SKIP $episodeId: audio file not cached yet ($fileName)")
+            return false
+        }
+
+        writePreCacheLog("startPreCachePcmGeneration:  starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm, audioFile=${audioFile.length()} bytes)")
 
         // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {

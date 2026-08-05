@@ -725,6 +725,11 @@ object AudioSegmentAnalyzer {
             if (validInfo != null) {
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: full PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms)")
                 pcmFile = fullPcmFile
+            } else if (mp4DurationMs <= 0 && fullPcmFile.length() > 1024 * 500) {
+                // v3.1.39: 当mp4DurationMs为0（MediaExtractor暂时无法读取）但PCM文件较大时，
+                // 保留PCM文件，避免因MediaExtractor间歇性失败而反复删除重建PCM，造成流量和CPU浪费
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: mp4DurationMs=0 but full PCM exists (${fullPcmFile.length()} bytes), keeping it")
+                pcmFile = fullPcmFile
             } else {
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: full PCM .info mismatch for $episodeId. Deleting and regenerating.")
                 fullPcmFile.delete()

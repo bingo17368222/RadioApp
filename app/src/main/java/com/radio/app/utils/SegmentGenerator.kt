@@ -837,7 +837,9 @@ object SegmentGenerator {
         val totalPendingSegments = mergedAfterLayer1.count { it.label == "待处理" }
         // v3.1.35: 即使第一层无待处理片段，只要有PCM文件就始终运行第二层VAD分析
         // 确保三层分段完整执行，避免仅第一层的问题
-        val shouldRunLayer2 = totalPendingSegments > 0 || (pcmSourceFile != null && durationMs > 60000)
+        // v3.1.39: 即使无PCM文件，只要有VAD回退结果（来自analyzeEpisode），也运行第二/三层
+        // 确保第三层指纹漏判召回能执行，不会跳过
+        val shouldRunLayer2 = durationMs > 60000 && (totalPendingSegments > 0 || pcmSourceFile != null || mergedAfterLayer1.size >= 2)
 
         if (shouldRunLayer2) {
         // ========== 第二层：对完整PCM运行VAD+YAMNet全量分析 ==========
