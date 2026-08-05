@@ -1649,6 +1649,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     for ((slotIdx, slot) in timeSlots.withIndex()) {
                         val constructedUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$slot.mp4"
                         if (constructedUrl !in existingUrls) {
+                            // v3.1.38: 从slot解析startTime/endTime用于排序
+                            var startTime = 0L
+                            var endTime = 0L
+                            try {
+                                val slotParts = slot.split("_")
+                                if (slotParts.size == 2) {
+                                    val sh = slotParts[0].substring(0, 2).toInt()
+                                    val sm = slotParts[0].substring(2, 4).toInt()
+                                    val eh = slotParts[1].substring(0, 2).toInt()
+                                    val em = slotParts[1].substring(2, 4).toInt()
+                                    if (sh in 0..23 && sm in 0..59 && eh in 0..23 && em in 0..59) {
+                                        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                                        cal.time = dateFormat.parse(targetDate) ?: throw Exception()
+                                        cal.set(java.util.Calendar.HOUR_OF_DAY, sh)
+                                        cal.set(java.util.Calendar.MINUTE, sm)
+                                        cal.set(java.util.Calendar.SECOND, 0)
+                                        cal.set(java.util.Calendar.MILLISECOND, 0)
+                                        startTime = cal.timeInMillis
+                                        cal.set(java.util.Calendar.HOUR_OF_DAY, eh)
+                                        cal.set(java.util.Calendar.MINUTE, em)
+                                        if (eh < sh || (eh == sh && em <= sm)) {
+                                            cal.add(java.util.Calendar.DAY_OF_YEAR, 1)
+                                        }
+                                        endTime = cal.timeInMillis
+                                    }
+                                }
+                            } catch (_: Exception) {}
                             // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
                             // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
                             val constructedEp = Episode(
@@ -1659,10 +1686,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 }?.title ?: "节目",
                                 audioUrl = constructedUrl,
                                 stationId = stationId,
-                                broadcastAt = targetDate
+                                broadcastAt = targetDate,
+                                startTime = startTime,
+                                endTime = endTime
                             )
                             resultList.add(constructedEp)
-                            writePreCacheLog("fetchMoreDaysForPreCache: constructed episode: ${constructedEp.id}, url=$constructedUrl")
+                            writePreCacheLog("fetchMoreDaysForPreCache: constructed episode: ${constructedEp.id}, url=$constructedUrl, startTime=$startTime, endTime=$endTime")
                         }
                     }
                 }
@@ -1990,10 +2019,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 1. 优先从URL解析时间段（如 0700_0900），这是最可靠的来源
         // v3.1.33: 修复正则匹配到日期部分（如 2024_1029）而非时间段的bug，
         // 改为遍历所有匹配，只取小时在0-23、分钟在0-59的合法时间段
+        // v3.1.38: 修复正则匹配到日期部分（如 20241031 中的 10_31）被解释为时间段的bug。
+        // 实际时间范围总是在文件名末尾，因此优先选择位置靠后的匹配。
         val audioUrl = episode.audioUrl
         if (!audioUrl.isNullOrBlank()) {
             val path = audioUrl.substringBeforeLast("?").substringAfterLast("/")
             val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
+            var bestMatch = 0L
+            var bestPos = -1
             for (match in regex.findAll(path)) {
                 val (_, sh, sm, eh, em) = match.groupValues
                 try {
@@ -2005,12 +2038,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         var end = endH * 3600000L + endM * 60000L
                         if (end < start) end += 24 * 3600000L
                         val duration = end - start
-                        if (duration in 600_000L..86_400_000L) { // 10分钟~24小时
-                            return duration
+                        if (duration in 600_000L..86_400_000L) {
+                            // 取位置靠后的匹配（实际时间范围总是在文件名末尾，日期部分在开头）
+                            if (match.range.first > bestPos) {
+                                bestPos = match.range.first
+                                bestMatch = duration
+                            }
                         }
                     }
                 } catch (_: Exception) {}
             }
+            if (bestMatch > 0L) return bestMatch
         }
 
         // 2. Episode metadata duration (seconds) - 作为后备，带合理性校验
