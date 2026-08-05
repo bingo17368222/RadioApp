@@ -398,12 +398,13 @@ object SegmentGenerator {
      * Called before subtitle generation starts.
      */
     fun preSegmentFixed(context: Context, episodeId: String, durationMs: Long) {
-        // v3.1.35: 显示预分段进度通知
+        // v3.1.36: 使用PRIORITY_MANUAL确保预分段进度通知始终可见，不被后台会话拦截
         val episodeTitle = try {
             val info = RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)
             buildSegmentNotificationTitle(episodeId, info?.title)
         } catch (_: Exception) { episodeId }
-        SegmentNotificationHelper.startSession(context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_BACKGROUND)
+        // v3.1.36: 使用PRIORITY_MANUAL，与手动分段同样的优先级，确保通知始终显示
+        SegmentNotificationHelper.startSession(context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL)
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 0, "预分段(15分钟固定)")
         try {
             val dbHelper = RadioDatabaseHelper.getInstance(context)

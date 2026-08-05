@@ -1847,13 +1847,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             return
         }
-        // v3.1.35: 如果当前播放的节目与预缓存下载的节目相同，且正在播放网络流，
-        // 则跳过预缓存下载（ExoPlayer已在流式播放，无需重复下载双倍流量）
-        if (currentEpisode?.id == episode.id && currentPlaybackUri.startsWith("http")) {
-            Log.d(TAG, "Pre-cache: skip download for ${episode.title} ($fileName) — currently playing via network stream")
-            isPrecaching = false
-            Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
-            return
+        // v3.1.36: 移除v3.1.35的跳过逻辑—播放网络流时也保留缓存下载
+        // v3.1.36: 检查是否有后台下载任务正在进行同一文件，避免重复下载
+        if (downloadActive.get()) {
+            val bgFileName = extractCacheFileName(currentStreamUrl)
+            if (bgFileName == fileName) {
+                Log.d(TAG, "Pre-cache: skip download for ${episode.title} ($fileName) — background download already in progress")
+                isPrecaching = false
+                Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
+                return
+            }
         }
         Log.d(TAG, "Pre-cache: downloading ${episode.title} from $url")
         serviceScope.launch {
