@@ -351,7 +351,7 @@ object AudioSegmentAnalyzer {
      * RadioApp/episodes, which could be a different path and caused "audio file may not
      * be cached" failures even though the patrol saw the file as cached.
      */
-    private fun getCachedAudioFile(context: Context, episodeId: String, audioUrl: String?): java.io.File? {
+    fun getCachedAudioFile(context: Context, episodeId: String, audioUrl: String?): java.io.File? {
         val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
         if (!episodesDir.exists()) return null
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".mp4") || it.name.endsWith(".m4a") || it.name.endsWith(".aac")) } ?: emptyList()
@@ -526,36 +526,14 @@ object AudioSegmentAnalyzer {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] ERROR: PCM duration (${pcmDurationMs}ms) still < 85% of MP4 duration (${mp4DurationMs}ms). Keeping file but marking unreliable.\n")
         }
 
-        // v2.4.139: Only write .info when we have a non-zero MP4 duration. A 0 duration makes
-        // the info file useless for future validation and causes the bug "Info文件中mp4时长为0".
+        // v3.1.40: 不再自动生成5分钟版PCM（手动测试字幕用），仅写入.info文件。
         if (mp4DurationMs > 0) {
             writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
-
-            // Generate 5-min PCM from full PCM.
-            progressCallback?.invoke(96)
+            // 删除遗留的5分钟PCM文件，避免手动生成字幕时误用
             try {
-                val fiveMinBytes = 5 * 60 * 16000 * 2
-                val fullBytes = clampedFile.length().toInt()
-                val copyBytes = minOf(fiveMinBytes, fullBytes)
-                java.io.FileInputStream(clampedFile).use { fis ->
-                    java.io.FileOutputStream(min5PcmFile).use { fos ->
-                        val buffer = ByteArray(8192)
-                        var remaining = copyBytes
-                        while (remaining > 0) {
-                            val toRead = minOf(remaining, buffer.size)
-                            val read = fis.read(buffer, 0, toRead)
-                            if (read < 0) break
-                            fos.write(buffer, 0, read)
-                            remaining -= read
-                        }
-                    }
-                }
-                writePcmInfo(min5InfoFile, mp4DurationMs, min5PcmFile.length() / (16000 * 2) * 1000, 16000, 1)
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated: ${min5PcmFile.name} (${min5PcmFile.length()} bytes)\n")
-                progressCallback?.invoke(98)
-            } catch (e: Exception) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] failed to create 5-min PCM: ${e.message}\n")
-            }
+                if (min5PcmFile.exists()) min5PcmFile.delete()
+                if (min5InfoFile.exists()) min5InfoFile.delete()
+            } catch (_: Exception) {}
         } else {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: mp4DurationMs is 0, skipping .info write for $episodeId to avoid invalid info files.\n")
         }

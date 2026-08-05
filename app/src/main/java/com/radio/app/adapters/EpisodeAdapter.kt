@@ -55,15 +55,18 @@ class EpisodeAdapter(
         holder.tvTime.text = timeText
 
         val durationMin = episode.duration / 60
-        // v2.4.44: Check DB for segment count if not loaded in memory
-        var segments = episode.voiceSegments?.size ?: 0
+        // v3.1.40: Always prefer DB segment count over episode's in-memory segments.
+        // API returns episodes with 8 dummy segments (generateSimpleSegments), which would
+        // overwrite the actual segmentation count from patrol/pre-segmentation.
+        var segments = 0
+        try {
+            val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
+            val dbSegments = dbHelper.getVoiceSegments(episode.id)
+            segments = dbSegments.filter { !it.isSimulated }.size
+        } catch (_: Exception) {}
         if (segments == 0) {
-            // Try loading from DB
-            try {
-                val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
-                val dbSegments = dbHelper.getVoiceSegments(episode.id)
-                segments = dbSegments.filter { !it.isSimulated }.size
-            } catch (_: Exception) {}
+            // Fallback to episode's in-memory segments if DB is empty
+            segments = episode.voiceSegments?.size ?: 0
         }
         holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 

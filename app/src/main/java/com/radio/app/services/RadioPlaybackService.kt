@@ -2085,6 +2085,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
         if (!audioFile.exists() || audioFile.length() <= 1024 * 100) return false
+        // v3.1.40: 文件足够大（>5MB）时跳过验证，直接认为有效
+        // 避免因MediaExtractor间歇性读取时长失败或URL解析出错误预期时长而反复删除
+        if (audioFile.length() > 5 * 1024 * 1024) return true
         var extractor: MediaExtractor? = null
         try {
             extractor = MediaExtractor()
@@ -2099,7 +2102,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
             if (actualDurationMs <= 0) return false
-            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) return false
+            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) {
+                // v3.1.40: 文件过大时即使时长不匹配也不删除，避免反复下载
+                if (audioFile.length() > 1024 * 1024) {
+                    Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} duration mismatch (actual=${actualDurationMs}ms expected=${expectedDurationMs}ms) but size=${audioFile.length()}, keeping it")
+                    return true
+                }
+                return false
+            }
             return true
         } catch (e: Exception) {
             Log.w(TAG, "validateCachedAudioFile failed for ${audioFile.name}: ${e.message}")
@@ -2782,13 +2792,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // v2.4.123: When subtitles are disabled but preprocessing is on,
                     // check for PCM files instead of subtitles.
                     if (!subtitlesEnabled && preprocessingEnabled) {
-                        // PCM-only mode: check if both 5-min PCM and full PCM exist
-                        val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
+                        // v3.1.40: PCM-only mode: check if full PCM or 5-min PCM exists
                         val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
-                        val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
+                        val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
                         val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
+                        val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
 
-                        if (hasPcm5min) {
+                        if (hasPcmFull || hasPcm5min) {
                             withSubtitles++ // count as "already processed"
                             continue
                         }
@@ -3012,28 +3022,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             continue
                         }
 
-                        val pcmFile = File(pcmCacheDir, "${ep.id}_5min.pcm")
-                        val infoFile = File(pcmCacheDir, "${ep.id}_5min.info")
+                        // v3.1.40: Check full PCM first, then legacy 5-min PCM
+                        val fullPcmFile = File(pcmCacheDir, "${ep.id}_full.pcm")
+                        val fullInfoFile = File(pcmCacheDir, "${ep.id}_full.info")
+                        val pcm5minFile = File(pcmCacheDir, "${ep.id}_5min.pcm")
+                        val pcm5minInfoFile = File(pcmCacheDir, "${ep.id}_5min.info")
 
-                        val pcmValid = pcmFile.exists() && pcmFile.length() > minValidPcmBytes
-                        val infoValid = infoFile.exists() && infoFile.readText().contains("version=3")
+                        val fullPcmValid = fullPcmFile.exists() && fullPcmFile.length() > minValidPcmBytes
+                        val pcm5minValid = pcm5minFile.exists() && pcm5minFile.length() > minValidPcmBytes
 
-                        if (pcmValid && infoValid) {
+                        if (fullPcmValid || pcm5minValid) {
                             alreadyOk++
                             continue
                         }
 
                         // Delete invalid files
-                        if (pcmFile.exists() && pcmFile.length() <= minValidPcmBytes) {
-                            writePreCacheLog("patrolPcm: deleting invalid PCM: ${pcmFile.name} (${pcmFile.length()} bytes)")
-                            pcmFile.delete()
+                        if (fullPcmFile.exists() && fullPcmFile.length() <= minValidPcmBytes) {
+                            fullPcmFile.delete()
                         }
-                        if (infoFile.exists() && !infoFile.readText().contains("version=3")) {
-                            infoFile.delete()
+                        if (pcm5minFile.exists() && pcm5minFile.length() <= minValidPcmBytes) {
+                            writePreCacheLog("patrolPcm: deleting invalid 5-min PCM: ${pcm5minFile.name} (${pcm5minFile.length()} bytes)")
+                            pcm5minFile.delete()
+                        }
+                        if (pcm5minInfoFile.exists() && !pcm5minInfoFile.readText().contains("version=3")) {
+                            pcm5minInfoFile.delete()
                         }
 
-                        // Regenerate PCM
-                        writePreCacheLog("patrolPcm: REPAIRING PCM for episode=${ep.id}, audio=${audioFile.name} (${audioFile.length()/1024/1024}MB)")
+                        // Regenerate PCM (full PCM)
+                        writePreCacheLog("patrolPcm: REPAIRING full PCM for episode=${ep.id}, audio=${audioFile.name} (${audioFile.length()/1024/1024}MB)")
                         // Get actual audio duration
                         val audioDuration = try {
                             val de = MediaExtractor()
@@ -3049,12 +3065,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             de.release()
                             dur
                         } catch (e: Exception) { 0L }
-                        decodeToPcmForPreCache(audioFile, pcmFile, audioDuration)
-                        if (pcmFile.exists() && pcmFile.length() > minValidPcmBytes) {
+                        decodeToPcmForPreCache(audioFile, fullPcmFile, audioDuration)
+                        if (fullPcmFile.exists() && fullPcmFile.length() > minValidPcmBytes) {
                             repaired++
-                            writePreCacheLog("patrolPcm: successfully repaired PCM for ${ep.id} (${pcmFile.length()/1024}KB)")
+                            writePreCacheLog("patrolPcm: successfully repaired full PCM for ${ep.id} (${fullPcmFile.length()/1024}KB)")
                         } else {
-                            writePreCacheLog("patrolPcm: FAILED to repair PCM for ${ep.id}")
+                            writePreCacheLog("patrolPcm: FAILED to repair full PCM for ${ep.id}")
                         }
                     } catch (e: Exception) {
                         writePreCacheLog("patrolPcm: error processing ${ep.id}: ${e.message}")

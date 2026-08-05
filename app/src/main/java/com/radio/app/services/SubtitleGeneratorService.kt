@@ -1100,20 +1100,20 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // [v2.1.0] Use centralized cache dir
+            // [v3.1.40] Use full PCM for Vosk subtitle generation
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
-            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            val minValidPcmBytes = 1024 * 1024  // [v2.0.67] At least ~30s of audio (was 1024 bytes, too small)
-            val pcmValid = pcm16kFile.exists() && pcm16kFile.length() >= minValidPcmBytes
-            logToFile("generateWithVosk: PCM file=${pcm16kFile.absolutePath}, size=${pcm16kFile.length()}, valid=${pcmValid}, minRequired=${minValidPcmBytes}")
-            if (!pcmValid && pcm16kFile.exists()) {
-                logToFile("generateWithVosk: PCM cache too small (${pcm16kFile.length()} bytes), deleting to regenerate")
-                try { pcm16kFile.delete() } catch (_: Exception) {}
+            val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+            val minValidPcmBytes = 1024 * 1024  // [v2.0.67] At least ~30s of audio
+            val pcmValid = fullPcmFile.exists() && fullPcmFile.length() >= minValidPcmBytes
+            logToFile("generateWithVosk: PCM file=${fullPcmFile.absolutePath}, size=${fullPcmFile.length()}, valid=${pcmValid}, minRequired=${minValidPcmBytes}")
+            if (!pcmValid && fullPcmFile.exists()) {
+                logToFile("generateWithVosk: PCM cache too small (${fullPcmFile.length()} bytes), deleting to regenerate")
+                try { fullPcmFile.delete() } catch (_: Exception) {}
             }
             if (pcmValid) {
-                val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("${com.radio.app.RadioApplication.appVersionTag()} Using chunked Vosk processing (PCM=${sizeMB}MB)")
-                return processVoskInChunks(pcm16kFile, modelPath, callback, ctx)
+                val sizeMB = fullPcmFile.length() / 1024 / 1024
+                ctx.log("${com.radio.app.RadioApplication.appVersionTag()} Using full PCM for Vosk processing (${sizeMB}MB)")
+                return processVoskInChunks(fullPcmFile, modelPath, callback, ctx)
             }
 
             // [v2.0.78] Issue 2-4 Fix: UNIFY both paths through processVoskInChunks.
@@ -1166,6 +1166,7 @@ class SubtitleGeneratorService : Service() {
             }
 
             // Save audio data to PCM cache for future reuse AND for unified chunked processing
+            val pcm16kFile = File(pcmCacheDir, "${episodeId}_full.pcm")  // [v3.1.40] Use full PCM file
             try {
                 pcmCacheDir.mkdirs()
                 // Write the downloaded PCM data to cache file (should already be 16kHz mono)
@@ -1797,33 +1798,31 @@ class SubtitleGeneratorService : Service() {
         // Issue 8: Log each step with timing
         val startTime = System.currentTimeMillis()
         logToFile("getAudioDataForProcessing: START, audioUrl=$audioUrl")
-        // [v2.1.0] Unified PCM cache: ${episodeId}_5min.pcm is always 16kHz mono.
-        // No more separate _16k file. RadioPlaybackService and SubtitleGeneratorService
-        // both write to the same _5min.pcm file with 16kHz mono data.
+        // [v3.1.40] Use full PCM for subtitle generation
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
-        val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+        val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         val minValidPcmBytes = 1024 * 1024  // [v2.0.67] Require at least ~30s of audio
-        if (pcmFile.exists() && pcmFile.length() >= minValidPcmBytes) {
-            ctx.log("Using PCM cache: ${pcmFile.length()} bytes")
-            logToFile("getAudioDataForProcessing: PCM cache hit, size=${pcmFile.length()}")
-            // PCM cache is 16kHz mono, safe to read entirely if < 50MB
-            if (pcmFile.length() < 50_000_000) {
-                val data = pcmFile.readBytes()
+        if (fullPcmFile.exists() && fullPcmFile.length() >= minValidPcmBytes) {
+            ctx.log("Using full PCM cache: ${fullPcmFile.length()} bytes")
+            logToFile("getAudioDataForProcessing: full PCM cache hit, size=${fullPcmFile.length()}")
+            // Full PCM is 16kHz mono, safe to read entirely if < 50MB
+            if (fullPcmFile.length() < 50_000_000) {
+                val data = fullPcmFile.readBytes()
                 if (data.isEmpty() || data.size < minValidPcmBytes) {
-                    ctx.log("ERROR: PCM cache data is empty or too small (${data.size} bytes), falling through")
+                    ctx.log("ERROR: full PCM cache data is empty or too small (${data.size} bytes), falling through")
                 } else {
                     val cacheTime = System.currentTimeMillis() - startTime
-                    logToFile("getAudioDataForProcessing: PCM cache hit, time=${cacheTime}ms, size=${data.size}")
+                    logToFile("getAudioDataForProcessing: full PCM cache hit, time=${cacheTime}ms, size=${data.size}")
                     return data
                 }
             } else {
                 // File too large for in-memory: signal caller to use chunked processing
-                val sizeMB = pcmFile.length() / 1024 / 1024
+                val sizeMB = fullPcmFile.length() / 1024 / 1024
                 ctx.log("音频文件过大（${sizeMB}MB），需要分块处理")
                 return null
             }
-        } else if (pcmFile.exists()) {
-            logToFile("getAudioDataForProcessing: PCM cache too small (${pcmFile.length()} bytes), will regenerate")
+        } else if (fullPcmFile.exists()) {
+            logToFile("getAudioDataForProcessing: full PCM cache too small (${fullPcmFile.length()} bytes), will regenerate")
         }
         // 3) v3.1.37: 检查本地是否已缓存音频文件，避免重复下载
         val epsCacheDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this)
@@ -1988,50 +1987,23 @@ class SubtitleGeneratorService : Service() {
             ctx.log("Downloaded ${tempAudioFile.length()} bytes, decoding to PCM...")
             logToFile("downloadAndProcessAudio: downloaded ${tempAudioFile.length()} bytes to ${tempAudioFile.absolutePath}")
 
-            // [v2.1.0] Decode to 16kHz mono PCM, save to centralized cache dir
+            // [v3.1.40] Decode full audio to 16kHz mono PCM, save to centralized cache dir
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")  // [v2.0.99] unified file name
-            var decodedOk = false
-            var fallbackUsed = false
+            val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")  // [v3.1.40] full PCM
             try {
-                // [v2.0.74] Issue 2 Fix: Try multiple time ranges if primary range produces 0 bytes.
-                // v2.0.73 logs showed "decoded to 0 bytes PCM" for some episodes when seeking to 15min,
-                // likely due to VBR files, truncated downloads, or seek landing near EOF.
-                // Fallback chain: 15-20min -> 10-15min -> 5-10min -> 0-5min
-                val ranges = arrayOf(
-                    15L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,  // 15-20min (primary)
-                    10L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,  // 10-15min (fallback 1)
-                    5L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,   // 5-10min (fallback 2)
-                    0L to 5L * 60 * 1000 * 1000                        // 0-5min (fallback 3)
-                )
-                for ((start, dur) in ranges) {
-                    if (pcmFile.exists()) pcmFile.delete()
-                    val rangeLabel = "${start/60000000}-${(start+dur)/60000000}min"
-                    try {
-                        logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] attempting decode range $rangeLabel")
-                        decodeToPcm(tempAudioFile, pcmFile, dur, ctx, startUs = start)
-                        val pcmSize = pcmFile.length()
-                        if (pcmSize > 100000) {  // At least ~3 seconds of audio
-                            logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decode OK for $rangeLabel: $pcmSize bytes")
-                            decodedOk = true
-                            if (start > 0) fallbackUsed = true
-                            break
-                        } else {
-                            logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decode for $rangeLabel produced only $pcmSize bytes, trying next range")
-                        }
-                    } catch (e: Exception) {
-                        logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decode for $rangeLabel failed: ${e.message}")
-                    }
-                }
-                if (!decodedOk) {
-                    ctx.log("ERROR: Failed to decode any PCM data from audio file")
-                    logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] ALL decode ranges failed")
+                logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full audio to PCM")
+                // Decode full audio (no time range seeking)
+                decodeToPcm(tempAudioFile, fullPcmFile, Long.MAX_VALUE, ctx, startUs = 0)
+                val pcmSize = fullPcmFile.length()
+                if (pcmSize <= 100000) {
+                    ctx.log("ERROR: Decoded PCM too small (${pcmSize} bytes)")
+                    logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decoded PCM too small: $pcmSize bytes")
                     return null
                 }
-                val pcmData = pcmFile.readBytes()
-                ctx.log("Decoded to ${pcmData.size} bytes of 16kHz PCM (${pcmData.size / 32000}s)${if (fallbackUsed) " (fallback range used)" else " from 15-20 min"}")
-                logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decoded to ${pcmData.size} bytes PCM, cached to ${pcmFile.absolutePath}${if (fallbackUsed) " (FALLBACK)" else ""}")
+                val pcmData = fullPcmFile.readBytes()
+                ctx.log("Decoded to ${pcmData.size} bytes of full PCM (${pcmData.size / 32000}s)")
+                logToFile("downloadAndProcessAudio: [${com.radio.app.RadioApplication.appVersionTag()}] decoded to ${pcmData.size} bytes full PCM, cached to ${fullPcmFile.absolutePath}")
                 return pcmData
             } finally {
                 tempAudioFile.delete()
@@ -2665,16 +2637,9 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // [v2.1.0] Unified PCM cache: always use ${episodeId}_5min.pcm (16kHz mono)
+            // [v3.1.40] Always use full PCM for subtitle generation (both manual and pre-cache)
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
-            val pcm16kFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-
-            // v2.4.56: Only pre-cache (forceWhisperBase=true) uses full audio PCM.
-            // Manual subtitle generation uses 5-min PCM (for quick testing).
-            // Pre-cache runs in background and needs complete subtitles.
-            if (forceWhisperBaseModel) {
-                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] pre-cache mode, generating FULL audio PCM")
-                val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+            val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 val statsStartTime = System.currentTimeMillis()  // [v2.4.16] For speed statistics
                 var pcmDecodeTimeMs = 0L  // [v2.4.18] Track PCM decode time separately
 
@@ -2815,22 +2780,21 @@ class SubtitleGeneratorService : Service() {
                         }
                     }
                 } catch (e: Exception) {
-                    logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM generation error: ${e.message}, falling back to 5min PCM")
+                    logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM generation error: ${e.message}")
                     fullPcmFile.delete()
-                    // [v2.4.16] Fix: Also delete corresponding info file on error
                     val errInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                     if (errInfoFile.exists()) errInfoFile.delete()
                 }
+            // v3.1.40: Fallback — try 5-min PCM (legacy files) if full PCM path failed
+            val pcm5minFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+            if (pcm5minFile.exists() && pcm5minFile.length() > 1024 * 500) {
+                val sizeMB = pcm5minFile.length() / 1024 / 1024
+                ctx.log("使用5分钟PCM缓存 (${sizeMB}MB)")
+                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] using 5-min PCM cache (${sizeMB}MB)")
+                return processWhisperInChunks(pcm5minFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)
             }
 
-            if (pcm16kFile.exists() && pcm16kFile.length() > 1024 * 500) {
-                val sizeMB = pcm16kFile.length() / 1024 / 1024
-                ctx.log("PCM cache found (${sizeMB}MB), using chunked Whisper processing")
-                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] using PCM cache (${sizeMB}MB)")
-                return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)  // [v2.4.63] non-precache path: no resume/timing accumulation
-            }
-
-            // No PCM cache — download and decode to 16kHz PCM
+            // No PCM cache — download and decode to full PCM
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
             if (audioData == null) {
                 val detail = "音频数据获取失败（PCM缓存不可用，网络可能断开）"
@@ -2841,10 +2805,10 @@ class SubtitleGeneratorService : Service() {
                 return false
             }
 
-            // [v2.0.99] Save to unified _5min.pcm file
-            pcm16kFile.writeBytes(audioData)
-            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] saved audio data to PCM cache (${audioData.size} bytes), calling processWhisperInChunks")
-            return processWhisperInChunks(pcm16kFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)  // [v2.4.63] non-precache path: no resume/timing accumulation
+            // [v3.1.40] Save to full PCM file
+            fullPcmFile.writeBytes(audioData)
+            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] saved audio data to full PCM (${audioData.size} bytes), calling processWhisperInChunks")
+            return processWhisperInChunks(fullPcmFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)
         } catch (e: Exception) {
             val detail = if (e is OutOfMemoryError) "内存不足(OutOfMemoryError)" else "Whisper处理异常(${e.javaClass.simpleName}: ${e.message})"
             ctx.lastErrorDetail = detail
@@ -3406,19 +3370,26 @@ class SubtitleGeneratorService : Service() {
      */
     private fun find16kHzPcmCache(episodeId: String): File? {
         try {
-            // [v2.1.0] Use centralized cache dir from RadioApplication
+            // [v3.1.40] Use centralized cache dir, prefer full PCM, fallback to 5-min PCM
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
-            // [v2.4.15] Cleaned up legacy _5min_16k.pcm migration code (v2.0.98 era, no longer needed)
-            // [v2.1.0] Unified _5min.pcm file (always 16kHz mono)
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            // [v2.1.0] Raised minimum from 1024 to 500KB to reject corrupt tiny files
             val minValid = 500 * 1024  // ~15s of 16kHz mono audio
-            if (pcmFile.exists() && pcmFile.length() >= minValid) {
-                logToFile("find16kHzPcmCache: found PCM cache: ${pcmFile.absolutePath} (${pcmFile.length()} bytes)")
-                return pcmFile
-            } else if (pcmFile.exists()) {
-                logToFile("find16kHzPcmCache: [${com.radio.app.RadioApplication.appVersionTag()}] PCM too small (${pcmFile.length()} bytes < ${minValid}), deleting")
-                try { pcmFile.delete() } catch (_: Exception) {}
+            // Try full PCM first
+            val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+            if (fullPcmFile.exists() && fullPcmFile.length() >= minValid) {
+                logToFile("find16kHzPcmCache: found full PCM cache: ${fullPcmFile.absolutePath} (${fullPcmFile.length()} bytes)")
+                return fullPcmFile
+            } else if (fullPcmFile.exists()) {
+                logToFile("find16kHzPcmCache: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM too small (${fullPcmFile.length()} bytes), deleting")
+                try { fullPcmFile.delete() } catch (_: Exception) {}
+            }
+            // Fallback to legacy 5-min PCM
+            val pcm5minFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+            if (pcm5minFile.exists() && pcm5minFile.length() >= minValid) {
+                logToFile("find16kHzPcmCache: found 5-min PCM cache: ${pcm5minFile.absolutePath} (${pcm5minFile.length()} bytes)")
+                return pcm5minFile
+            } else if (pcm5minFile.exists()) {
+                logToFile("find16kHzPcmCache: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM too small (${pcm5minFile.length()} bytes), deleting")
+                try { pcm5minFile.delete() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             logToFile("find16kHzPcmCache: error: ${e.message}")
@@ -3636,51 +3607,26 @@ class SubtitleGeneratorService : Service() {
         }
     }
 
-    // v3.1.37: 从本地缓存音频直接解码PCM，避免重复下载
+    // v3.1.40: 从本地缓存音频直接解码完整PCM，避免重复下载
     private fun decodeLocalCachedAudio(audioFile: File, episodeId: String, ctx: TaskContext): ByteArray? {
         val startTime = System.currentTimeMillis()
         logToFile("decodeLocalCachedAudio: START, file=${audioFile.absolutePath}, size=${audioFile.length()}")
         try {
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-            val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            var decodedOk = false
-            var fallbackUsed = false
-            // Try multiple time ranges: 15-20min (primary), 10-15min, 5-10min, 0-5min
-            val ranges = arrayOf(
-                15L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,
-                10L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,
-                5L * 60 * 1000 * 1000 to 5L * 60 * 1000 * 1000,
-                0L to 5L * 60 * 1000 * 1000
-            )
-            for ((start, dur) in ranges) {
-                if (pcmFile.exists()) pcmFile.delete()
-                val rangeLabel = "${start/60000000}-${(start+dur)/60000000}min"
-                try {
-                    logToFile("decodeLocalCachedAudio: attempting decode range $rangeLabel")
-                    decodeToPcm(audioFile, pcmFile, dur, ctx, startUs = start)
-                    val pcmSize = pcmFile.length()
-                    if (pcmSize > 100000) {
-                        logToFile("decodeLocalCachedAudio: decode OK for $rangeLabel: $pcmSize bytes")
-                        decodedOk = true
-                        if (start > 0) fallbackUsed = true
-                        break
-                    } else {
-                        logToFile("decodeLocalCachedAudio: decode for $rangeLabel produced only $pcmSize bytes, trying next")
-                    }
-                } catch (e: Exception) {
-                    logToFile("decodeLocalCachedAudio: decode for $rangeLabel failed: ${e.message}")
-                }
-            }
-            if (!decodedOk) {
-                ctx.log("ERROR: Failed to decode any PCM data from local cached audio")
-                logToFile("decodeLocalCachedAudio: ALL decode ranges failed")
+            val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+            logToFile("decodeLocalCachedAudio: decoding full audio to PCM")
+            decodeToPcm(audioFile, fullPcmFile, Long.MAX_VALUE, ctx, startUs = 0)
+            val pcmSize = fullPcmFile.length()
+            if (pcmSize <= 100000) {
+                ctx.log("ERROR: Decoded PCM too small (${pcmSize} bytes)")
+                logToFile("decodeLocalCachedAudio: decoded PCM too small: $pcmSize bytes")
                 return null
             }
-            val pcmData = pcmFile.readBytes()
+            val pcmData = fullPcmFile.readBytes()
             val elapsed = System.currentTimeMillis() - startTime
-            ctx.log("本地缓存解码完成: ${pcmData.size} bytes PCM in ${elapsed}ms${if (fallbackUsed) " (fallback range)" else ""}")
-            logToFile("decodeLocalCachedAudio: decoded to ${pcmData.size} bytes PCM in ${elapsed}ms${if (fallbackUsed) " (FALLBACK)" else ""}")
+            ctx.log("本地缓存解码完成: ${pcmData.size} bytes full PCM in ${elapsed}ms")
+            logToFile("decodeLocalCachedAudio: decoded to ${pcmData.size} bytes full PCM in ${elapsed}ms")
             return pcmData
         } catch (e: Exception) {
             ctx.log("ERROR: Local cached audio decode failed: ${e.message}")

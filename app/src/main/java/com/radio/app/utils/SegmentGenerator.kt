@@ -835,11 +835,10 @@ object SegmentGenerator {
         }
 
         val totalPendingSegments = mergedAfterLayer1.count { it.label == "待处理" }
-        // v3.1.35: 即使第一层无待处理片段，只要有PCM文件就始终运行第二层VAD分析
-        // 确保三层分段完整执行，避免仅第一层的问题
-        // v3.1.39: 即使无PCM文件，只要有VAD回退结果（来自analyzeEpisode），也运行第二/三层
-        // 确保第三层指纹漏判召回能执行，不会跳过
-        val shouldRunLayer2 = durationMs > 60000 && (totalPendingSegments > 0 || pcmSourceFile != null || mergedAfterLayer1.size >= 2)
+        // v3.1.40: 允许跳过第2/3层的唯一条件是节目时长不足（<60秒）
+        // 只要有足够的节目时长，始终运行全量VAD+YAMNet和第三层指纹召回
+        // 如果PCM文件不存在，会在第2层运行时自动重新生成（见第二层VAD跳过逻辑）
+        val shouldRunLayer2 = durationMs > 60000
 
         if (shouldRunLayer2) {
         // ========== 第二层：对完整PCM运行VAD+YAMNet全量分析 ==========
@@ -877,11 +876,72 @@ object SegmentGenerator {
                 mergedAfterLayer2 = mergedAfterLayer1
                 audioEngineName = "VAD+YAMNet+三层(VAD异常)"
             }
+        } else if (vadModelsReady && pcmSourceFile == null) {
+            // v3.1.40: PCM文件不存在时，先重新生成完整版PCM（带进度通知），再运行VAD
+            val fpMsgPcmMissing = "三层架构: 完整PCM文件不存在，重新生成PCM for episode=$episodeId"
+            Log.i(TAG, fpMsgPcmMissing)
+            writeFingerprintLog(context, fpMsgPcmMissing)
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50, "重新生成PCM")
+
+            // 调用AudioSegmentAnalyzer预生成PCM（从音频文件解码）
+            val audioFile = AudioSegmentAnalyzer.getCachedAudioFile(context, episodeId, audioUrl)
+            if (audioFile != null && audioFile.exists() && audioFile.length() > 1024 * 100) {
+                val regenResult = AudioSegmentAnalyzer.preGeneratePcmFiles(
+                    context, episodeId, audioUrl, durationMs, true,
+                    progressCallback = { pct ->
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50 + pct / 2, "重新生成PCM ${pct}%")
+                    }
+                )
+                if (regenResult) {
+                    // 重新生成成功，重新检查PCM文件
+                    val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
+                    val newFullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
+                    if (newFullPcm.exists() && newFullPcm.length() > 0) {
+                        Log.i(TAG, "三层架构: PCM重新生成成功，运行VAD for episode=$episodeId")
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 100, "PCM生成完成，开始VAD分析")
+                        try {
+                            val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
+                                context, newFullPcm, durationMs, { permille, _, _ ->
+                                    val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
+                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析")
+                                }
+                            )
+                            val overlaid = overlayLayer1WaterSegments(vadResult.segments, waterSegmentsAfterLayer1)
+                            mergedAfterLayer2 = mergeAdjacentSegments(overlaid)
+                            audioEngineName = "VAD+YAMNet+三层(PCM重新生成)"
+                            Log.i(TAG, "三层架构: 第二层全量VAD完成（PCM重新生成后），VAD产出${vadResult.segments.size}段，叠加后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                        } catch (e: Exception) {
+                            val fpMsgVadError = "三层架构: 重新生成PCM后VAD分析异常: ${e.message}"
+                            Log.e(TAG, fpMsgVadError)
+                            writeFingerprintLog(context, fpMsgVadError)
+                            mergedAfterLayer2 = mergedAfterLayer1
+                            audioEngineName = "VAD+YAMNet+三层(VAD异常)"
+                        }
+                    } else {
+                        // PCM重新生成后文件仍不存在，使用第1层结果
+                        mergedAfterLayer2 = mergedAfterLayer1
+                        audioEngineName = "三层架构(仅第一层)"
+                    }
+                } else {
+                    // PCM重新生成失败，使用第1层结果
+                    val fpMsgPcmFail = "三层架构: PCM重新生成失败，使用第1层结果"
+                    Log.w(TAG, fpMsgPcmFail)
+                    writeFingerprintLog(context, fpMsgPcmFail)
+                    mergedAfterLayer2 = mergedAfterLayer1
+                    audioEngineName = "三层架构(仅第一层)"
+                }
+            } else {
+                // 音频文件不存在，无法重新生成PCM
+                val fpMsgNoAudio = "三层架构: 音频文件不存在，无法重新生成PCM for episode=$episodeId"
+                Log.w(TAG, fpMsgNoAudio)
+                writeFingerprintLog(context, fpMsgNoAudio)
+                mergedAfterLayer2 = mergedAfterLayer1
+                audioEngineName = "三层架构(仅第一层)"
+            }
         } else {
-            // VAD不可用，使用第1层结果
+            // VAD不可用（模型未安装），使用第1层结果
             val reason = when {
                 !vadModelsReady -> "VAD/YAMNet模型未安装"
-                pcmSourceFile == null -> "PCM文件不存在"
                 else -> "未知原因"
             }
             val fpMsgVadUnavailable = "三层架构: 第二层VAD跳过($reason)"
