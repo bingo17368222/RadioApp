@@ -1583,11 +1583,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // Only go forward (future dates)
         val dayOffset = daysFetched + 1
+        var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
             cal.time = dateFormat.parse(startDate) ?: return existingList
             cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
             val targetDate = dateFormat.format(cal.time)
+            latestFetchedDate = targetDate
 
             writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
 
@@ -1611,6 +1613,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
                 resultList.addAll(validNewEpisodes)
+                // v3.1.33: 将API返回的节目保存到数据库，确保节目单UI能更新
+                try {
+                    val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                    dbHelper.saveEpisodeInfos(newEpisodes)
+                    writePreCacheLog("fetchMoreDaysForPreCache: saved ${newEpisodes.size} episodes to DB for $targetDate")
+                } catch (e: Exception) {
+                    writePreCacheLog("fetchMoreDaysForPreCache: DB save failed: ${e.message}")
+                }
             } else {
                 writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate, trying URL construction")
                 // Issue 7 Fix: 网络抓取失败时，根据已保存节目的时间段和 URL 模式构造节目，
@@ -1654,7 +1664,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("fetchMoreDaysForPreCache: error: ${e.message}")
         }
 
-        prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
+        val editor = prefs.edit()
+        editor.putInt("days_fetched", daysFetched + 1)
+        // v3.1.33: 更新current_date为本次获取的最新日期，确保下次预缓存从正确位置继续
+        if (latestFetchedDate.isNotBlank()) {
+            editor.putString("current_date", latestFetchedDate)
+        }
+        editor.apply()
         writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size})")
         return resultList
     }
@@ -1918,31 +1934,44 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * (e.g. sijiache_20240917_1730_1930.mp4 -> 2 hours), then start/end times.
      */
     private fun getExpectedAudioDurationMs(episode: Episode): Long {
-        // 1. Episode metadata duration (seconds)
-        val metaDuration = episode.duration?.let { if (it in 60..100000) it * 1000L else 0L } ?: 0L
-        if (metaDuration > 0) return metaDuration
-
-        // 2. Parse URL path for HHMM_HHMM pattern
+        // 1. 优先从URL解析时间段（如 0700_0900），这是最可靠的来源
+        // v3.1.33: 修复正则匹配到日期部分（如 2024_1029）而非时间段的bug，
+        // 改为遍历所有匹配，只取小时在0-23、分钟在0-59的合法时间段
         val audioUrl = episode.audioUrl
         if (!audioUrl.isNullOrBlank()) {
             val path = audioUrl.substringBeforeLast("?").substringAfterLast("/")
             val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
-            val match = regex.find(path)
-            if (match != null) {
-                val (_, startHour, startMin, endHour, endMin) = match.groupValues
+            for (match in regex.findAll(path)) {
+                val (_, sh, sm, eh, em) = match.groupValues
                 try {
-                    var start = startHour.toInt() * 3600000L + startMin.toInt() * 60000L
-                    var end = endHour.toInt() * 3600000L + endMin.toInt() * 60000L
-                    if (end < start) end += 24 * 3600000L
-                    val duration = end - start
-                    if (duration > 0) return duration
+                    val startH = sh.toInt(); val startM = sm.toInt()
+                    val endH = eh.toInt(); val endM = em.toInt()
+                    // 校验：只有小时0-23、分钟0-59才是合法时间段，过滤掉日期部分（如 2024_1029 中24>23）
+                    if (startH in 0..23 && startM in 0..59 && endH in 0..23 && endM in 0..59) {
+                        var start = startH * 3600000L + startM * 60000L
+                        var end = endH * 3600000L + endM * 60000L
+                        if (end < start) end += 24 * 3600000L
+                        val duration = end - start
+                        if (duration in 600_000L..86_400_000L) { // 10分钟~24小时
+                            return duration
+                        }
+                    }
                 } catch (_: Exception) {}
             }
         }
 
+        // 2. Episode metadata duration (seconds) - 作为后备，带合理性校验
+        val metaDuration = episode.duration?.let { if (it in 60..100000) it * 1000L else 0L } ?: 0L
+        if (metaDuration > 0 && metaDuration <= 86_400_000L) { // 不超过24小时
+            return metaDuration
+        }
+
         // 3. Start/end time if available
         if (episode.startTime > 0 && episode.endTime > episode.startTime) {
-            return episode.endTime - episode.startTime
+            val duration = episode.endTime - episode.startTime
+            if (duration in 600_000L..86_400_000L) {
+                return duration
+            }
         }
 
         return 0L
