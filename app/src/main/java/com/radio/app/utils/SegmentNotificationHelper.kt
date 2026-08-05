@@ -96,7 +96,7 @@ object SegmentNotificationHelper {
         cancelled = false
         // Dismiss any stale notification so the new session starts clean.
         cancelNotification(context)
-        update(context, episodeId, title, 0, "", "")
+        update(context, episodeId, title, 0, "初始化")
         return true
     }
 
@@ -141,8 +141,7 @@ object SegmentNotificationHelper {
         episodeId: String,
         episodeTitle: String,
         progress: Int,
-        elapsedText: String = "",
-        etaText: String = ""
+        layerName: String = ""
     ) {
         // v2.4.170: Drop any stale update that races in after the user cancelled.
         if (cancelled) return
@@ -166,11 +165,27 @@ object SegmentNotificationHelper {
 
             // progress is 0-1000 permille; show as x.x%.
             val percentText = String.format(java.util.Locale.US, "%.1f", progress / 10f)
+
+            // 计算已用时间和ETA
+            val elapsedMs = System.currentTimeMillis() - activeStartTime
+            val elapsedStr = formatDurationMmSs(elapsedMs)
+            val etaStr = if (progress > 0 && progress < 1000) {
+                val remainingMs = ((elapsedMs * 1000L) / progress - elapsedMs).toLong().coerceAtLeast(0L)
+                formatDurationMmSs(remainingMs)
+            } else {
+                ""
+            }
+
             val infoText = buildString {
                 append("AI分段: ${percentText}%")
-                if (elapsedText.isNotEmpty()) {
-                    append(" (已用 $elapsedText")
-                    if (etaText.isNotEmpty()) append("，预计剩余 $etaText")
+                if (layerName.isNotEmpty()) {
+                    append(" ($layerName")
+                    append("，已用 $elapsedStr")
+                    if (etaStr.isNotEmpty()) append("，预计剩余 $etaStr")
+                    append(")")
+                } else {
+                    append(" (已用 $elapsedStr")
+                    if (etaStr.isNotEmpty()) append("，预计剩余 $etaStr")
                     append(")")
                 }
             }
@@ -197,6 +212,13 @@ object SegmentNotificationHelper {
                 .build()
             nm.notify(SEGMENT_NOTIFICATION_ID, notification)
         } catch (_: Exception) {}
+    }
+
+    private fun formatDurationMmSs(ms: Long): String {
+        val totalSec = (ms / 1000).toInt()
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        return String.format(java.util.Locale.US, "%02d:%02d", min, sec)
     }
 
     @JvmStatic

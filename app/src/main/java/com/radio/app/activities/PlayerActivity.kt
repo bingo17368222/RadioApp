@@ -2336,7 +2336,7 @@ class PlayerActivity : AppCompatActivity() {
                                     // callbacks when a newer segment session has started.
                                     val elapsedText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
                                     val etaText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(etaMs)
-                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct, elapsedText, etaText)
+                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct)
 
                                     runOnUiThread {
                                         if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId) {
@@ -2522,7 +2522,7 @@ class PlayerActivity : AppCompatActivity() {
                                         .apply()
                                     val elapsedText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
                                     val etaText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(etaMs)
-                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct, elapsedText, etaText)
+                                    com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct)
                                     runOnUiThread {
                                         if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId) {
                                             val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
@@ -3707,7 +3707,7 @@ class PlayerActivity : AppCompatActivity() {
         // the shared notification while a newer task is running.
         val episodeId = segmentTaskEpisodeId ?: currentEpisode?.id ?: return
         com.radio.app.utils.SegmentNotificationHelper.update(
-            this, episodeId, buildSegmentNotificationTitle(currentEpisode), progress, elapsedText, etaText
+            this, episodeId, buildSegmentNotificationTitle(currentEpisode), progress
         )
     }
 

@@ -991,6 +991,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private fun startBackgroundDownload() {
         if (isLive) return
+        // v3.1.33: 如果当前播放的是网络流（文件未缓存），跳过后台下载以避免双倍流量消耗
+        // 预缓存系统会在后续轮次中自动下载该文件
+        if (currentPlaybackUri.startsWith("http")) {
+            Log.d(TAG, "startBackgroundDownload: 跳过后台下载（当前播放网络流，由预缓存系统负责下载）")
+            return
+        }
         val url = currentStreamUrl
         if (url.isBlank() || !url.startsWith("http")) return
         if (downloadActive.get()) return  // 已有下载任务进行中
@@ -1841,6 +1847,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
             return
         }
+        // v3.1.35: 如果当前播放的节目与预缓存下载的节目相同，且正在播放网络流，
+        // 则跳过预缓存下载（ExoPlayer已在流式播放，无需重复下载双倍流量）
+        if (currentEpisode?.id == episode.id && currentPlaybackUri.startsWith("http")) {
+            Log.d(TAG, "Pre-cache: skip download for ${episode.title} ($fileName) — currently playing via network stream")
+            isPrecaching = false
+            Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
+            return
+        }
         Log.d(TAG, "Pre-cache: downloading ${episode.title} from $url")
         serviceScope.launch {
             try {
@@ -2465,7 +2479,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * Uses the episode ID hash to produce an ID in the range [2000, 2999].
      */
     private fun getPcmPregenNotificationId(episodeId: String): Int {
-        return pcmPregenNotifIdCounter.getAndIncrement()
+        return 30000  // v3.1.33: 使用固定通知ID，避免多个PCM通知同时出现
     }
 
     /**
@@ -2697,48 +2711,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             writePreCacheLog("patrolSubtitle:  PCM generation already in progress for ${ep.id}, skipping")
                             continue
                         }
-                        try {
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                                if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
-                                    nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
-                                }
-                            }
-                            // v2.4.148: Prefer DB-cached startTime/endTime for patrol notification.
-                            // This keeps the date/time visible even when offline.
-                            val epDateStr = when {
-                                ep.startTime > 0 && ep.endTime > ep.startTime -> {
-                                    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                                    fmt.format(java.util.Date(ep.startTime)) + "-" + fmt.format(java.util.Date(ep.endTime)).substringAfter(' ')
-                                }
-                                ep.broadcastAt.length >= 16 -> {
-                                    ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
-                                }
-                                ep.broadcastAt.length >= 10 -> {
-                                    ep.broadcastAt.substring(0, 10)
-                                }
-                                else -> {
-                                    val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
-                                    dateMatch?.value ?: "未知日期"
-                                }
-                            }
-                            val pcmCancelIntent = Intent("com.radio.app.CANCEL_PCM_PATROL").setClass(
-                                this@RadioPlaybackService, com.radio.app.utils.SegmentCancelReceiver::class.java
-                            )
-                            val pcmCancelPending = PendingIntent.getBroadcast(
-                                this@RadioPlaybackService, 20002, pcmCancelIntent,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            )
-                            val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
-                                .setSmallIcon(android.R.drawable.ic_media_ff)
-                                .setContentTitle("预处理PCM [${ep.title ?: ep.id}]")
-                                .setContentText("$epDateStr · 正在生成PCM文件...")
-                                .setOngoing(true)
-                                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", pcmCancelPending)
-                                .build()
-                            val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            notifManager.notify(20002, notif)
-                        } catch (_: Exception) {}
+                        // v3.1.33: 移除冗余通知 — PCM预生成有自己的进度通知（在startPreCachePcmGeneration中）
                         processedCount++
                         if (processedCount >= settings.preloadCacheCount) {
                             writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
@@ -2784,38 +2757,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Found a cached episode without subtitles — trigger subtitle generation
                     writePreCacheLog("patrolSubtitle:  found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
                     startPreCacheSubtitleGeneration(ep)
-                    // v2.4.135: 如果预生成字幕已关闭，不显示字幕生成通知
-                    if (!subtitlesEnabled) return@launch
-                    // v2.4.80: Show notification when patrol finds episode to process
-                    try {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
-                                nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预生成字幕", NotificationManager.IMPORTANCE_LOW))
-                            }
-                        }
-                        // v2.4.148: Prefer DB-cached startTime/endTime/timeRange for subtitle patrol notification.
-                        val subDateStr = when {
-                            ep.startTime > 0 && ep.endTime > ep.startTime -> {
-                                val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                                fmt.format(java.util.Date(ep.startTime)) + "-" + fmt.format(java.util.Date(ep.endTime)).substringAfter(' ')
-                            }
-                            ep.broadcastAt.length >= 16 -> ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
-                            ep.broadcastAt.length >= 10 -> ep.broadcastAt.substring(0, 10)
-                            else -> {
-                                val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
-                                dateMatch?.value ?: "未知日期"
-                            }
-                        }
-                        val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
-                            .setSmallIcon(android.R.drawable.ic_media_ff)
-                            .setContentTitle("预生成字幕 [${ep.title ?: ep.id}]")
-                            .setContentText("$subDateStr · 正在生成字幕...")
-                            .setAutoCancel(true)
-                            .build()
-                        val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                        notifManager.notify(2001, notif)
-                    } catch (_: Exception) {}
+                    // v3.1.34: 移除冗余通知 — PCM预生成(30000)和巡逻总结(2002)已足够，无需额外"正在生成字幕"通知
                     return@launch  // Only generate one at a time; next patrol will pick up the next one
                 }
 

@@ -398,6 +398,13 @@ object SegmentGenerator {
      * Called before subtitle generation starts.
      */
     fun preSegmentFixed(context: Context, episodeId: String, durationMs: Long) {
+        // v3.1.35: 显示预分段进度通知
+        val episodeTitle = try {
+            val info = RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)
+            buildSegmentNotificationTitle(episodeId, info?.title)
+        } catch (_: Exception) { episodeId }
+        SegmentNotificationHelper.startSession(context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_BACKGROUND)
+        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 0, "预分段(15分钟固定)")
         try {
             val dbHelper = RadioDatabaseHelper.getInstance(context)
             // Check if segments already exist
@@ -408,8 +415,11 @@ object SegmentGenerator {
                 val logFile = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
                 logFile.parentFile?.mkdirs()
                 logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping (durationMs=$durationMs)\n")
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "预分段(已存在)")
+                SegmentNotificationHelper.endSession(context, episodeId)
                 return
             }
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 500, "预分段(生成固定分段)")
             val segments = generateFixedSegments(durationMs)
             if (segments.isNotEmpty()) {
                 dbHelper.saveVoiceSegments(episodeId, segments)
@@ -421,9 +431,11 @@ object SegmentGenerator {
                 val segInfo = segments.mapIndexed { i, s -> "seg[$i]: ${s.start}-${s.end}ms (${(s.end - s.start) / 1000}s) ${s.label}" }.joinToString(", ")
                 logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: SAVED ${segments.size} fixed 15-min segments for episode=$episodeId (durationMs=$durationMs): $segInfo\n")
             }
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "预分段完成")
         } catch (e: Exception) {
             Log.e(TAG, "preSegmentFixed failed: ${e.message}")
         }
+        SegmentNotificationHelper.endSession(context, episodeId)
     }
 
     /**
@@ -592,10 +604,8 @@ object SegmentGenerator {
             // another audio analysis (manual or another pre-segment task) is already running.
             val result = tryGenerateAudioSegments(
                 context, episodeId, durationMs, audioUrl,
-                progressCallback = { permille, elapsedMs, etaMs ->
-                    val elapsedText = AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
-                    val etaText = AudioSegmentAnalyzer.formatDurationMs(etaMs)
-                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, elapsedText, etaText)
+                progressCallback = { permille, _, _ ->
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille)
                 },
                 blocking = false
             )
@@ -767,7 +777,7 @@ object SegmentGenerator {
         if (pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // 滑动窗口指纹匹配，传递进度回调以更新通知
             val slidingProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
-                SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille / 10, "第1层指纹快筛", "")
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille / 10, "第1层指纹快筛")
             }
             val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, durationMs, formalLibrary, slidingProgressCallback)
             mergedAfterLayer1 = slidingResult
@@ -824,8 +834,11 @@ object SegmentGenerator {
         }
 
         val totalPendingSegments = mergedAfterLayer1.count { it.label == "待处理" }
+        // v3.1.35: 即使第一层无待处理片段，只要有PCM文件就始终运行第二层VAD分析
+        // 确保三层分段完整执行，避免仅第一层的问题
+        val shouldRunLayer2 = totalPendingSegments > 0 || (pcmSourceFile != null && durationMs > 60000)
 
-        if (totalPendingSegments > 0) {
+        if (shouldRunLayer2) {
         // ========== 第二层：对完整PCM运行VAD+YAMNet全量分析 ==========
         // v3.1.30: 使用完整PCM运行VAD，再将第1层指纹水货段叠加覆盖。
         // 不再逐片段提取PCM，避免VAD在片段边界处产生碎片化分段。
@@ -842,7 +855,7 @@ object SegmentGenerator {
                 val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
                     context, pcmSourceFile, durationMs, { permille, elapsedMs, etaMs ->
                         val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
-                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析", "")
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析")
                     }
                 )
 
@@ -937,7 +950,7 @@ object SegmentGenerator {
         }
 
         // v3.1.28: 更新通知为100%完成
-        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成", "")
+        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成")
 
         val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
         Log.i(TAG, fpMsgDone)
@@ -956,18 +969,17 @@ object SegmentGenerator {
             observationPoolHitCount = observationPoolHitCount
         )
         } else {
-            // 没有待处理片段需要处理，直接使用第一层结果
-            val fpMsg = "三层架构: 第一层后无待处理片段，跳过第二、三层，直接使用第一层结果"
+            // 没有待处理片段且无PCM文件，直接使用第一层结果
+            val fpMsg = "三层架构: 无待处理片段且无PCM文件，跳过第二、三层，直接使用第一层结果"
             Log.i(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
-
             SegmentNotificationHelper.endSession(context, episodeId)
             return JiuAiTingResult(
                 segments = mergedAfterLayer1,
                 engineName = "三层架构(仅第一层)",
                 processingTimeMs = System.currentTimeMillis() - segStartTime,
                 matchedCount = layer1MatchCount,
-                totalDrySegments = totalPendingSegments,
+                totalDrySegments = mergedAfterLayer1.size,
                 layer1MatchCount = layer1MatchCount,
                 layer3RecallCount = 0,
                 observationPoolNewCount = 0,

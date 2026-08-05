@@ -1,9 +1,13 @@
 package com.radio.app.adapters
 
+import android.text.Editable
+import android.text.TextWatcher
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
@@ -14,22 +18,57 @@ import java.util.Locale
 
 /**
  * v3.2.2: 候选指纹列表适配器。
- * 展示观察池中的候选指纹，支持删除操作。
+ * 展示观察池中的候选指纹，支持删除、播放和备注功能。
  */
 class CandidateFingerprintAdapter : RecyclerView.Adapter<CandidateFingerprintAdapter.ViewHolder>() {
 
+    private val TAG = "CandidateFingerprintAdapter"
     private var items: List<ObservationPoolCandidate> = emptyList()
+    private var playingPosition: Int = -1
     private var onDeleteListener: ((ObservationPoolCandidate) -> Unit)? = null
+    private var onPlayListener: ((ObservationPoolCandidate) -> Unit)? = null
+    private var onStopListener: (() -> Unit)? = null
+    private var onNoteUpdateListener: ((ObservationPoolCandidate, String) -> Unit)? = null
+
+    /**
+     * 备注缓存（key 为 episodeId）。
+     * ObservationPoolCandidate 没有 note 字段，用内部缓存保存备注。
+     */
+    private val noteCache = mutableMapOf<String, String>()
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
 
     fun setItems(items: List<ObservationPoolCandidate>) {
         this.items = items
+        playingPosition = -1
         notifyDataSetChanged()
     }
 
     fun setOnDeleteListener(listener: (ObservationPoolCandidate) -> Unit) {
         onDeleteListener = listener
+    }
+
+    fun setOnPlayListener(listener: (ObservationPoolCandidate) -> Unit) {
+        onPlayListener = listener
+    }
+
+    fun setOnStopListener(listener: () -> Unit) {
+        onStopListener = listener
+    }
+
+    fun setOnNoteUpdateListener(listener: (ObservationPoolCandidate, String) -> Unit) {
+        onNoteUpdateListener = listener
+    }
+
+    fun setPlayingPosition(position: Int) {
+        val old = playingPosition
+        playingPosition = position
+        if (old >= 0 && old < itemCount) notifyItemChanged(old)
+        if (position >= 0 && position < itemCount) notifyItemChanged(position)
+    }
+
+    fun stopPlaying() {
+        setPlayingPosition(-1)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -71,6 +110,22 @@ class CandidateFingerprintAdapter : RecyclerView.Adapter<CandidateFingerprintAda
             )
         }
 
+        // 绑定备注
+        holder.bindNote(candidate, noteCache)
+        holder.itemView.tag = onNoteUpdateListener
+
+        // 播放/停止按钮
+        val isPlaying = position == playingPosition
+        holder.btnPlay.text = if (isPlaying) "停止" else "播放"
+        holder.btnPlay.setOnClickListener {
+            if (isPlaying) {
+                onStopListener?.invoke()
+            } else {
+                setPlayingPosition(position)
+                onPlayListener?.invoke(candidate)
+            }
+        }
+
         // 删除按钮
         holder.btnDelete.setOnClickListener { onDeleteListener?.invoke(candidate) }
     }
@@ -99,6 +154,44 @@ class CandidateFingerprintAdapter : RecyclerView.Adapter<CandidateFingerprintAda
         val tvHitCount: TextView = view.findViewById(R.id.tv_candidate_hit_count)
         val tvLastHitTime: TextView = view.findViewById(R.id.tv_candidate_last_hit_time)
         val tvExpiredTime: TextView = view.findViewById(R.id.tv_candidate_expired_time)
+        val btnPlay: Button = view.findViewById(R.id.btn_play_candidate)
         val btnDelete: Button = view.findViewById(R.id.btn_delete_candidate)
+        val etNote: EditText = view.findViewById(R.id.et_candidate_note)
+
+        private var currentCandidate: ObservationPoolCandidate? = null
+        private var isBinding = false
+
+        private val noteWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {}
+        }
+
+        init {
+            etNote.setOnFocusChangeListener { _, hasFocus ->
+                if (!hasFocus && !isBinding) {
+                    val candidate = currentCandidate
+                    val newText = etNote.text?.toString()?.trim() ?: ""
+                    if (candidate != null) {
+                        Log.d("CandidateFingerprintAdapter", "备注失焦保存: episodeId=${candidate.episodeId} note='$newText'")
+                        val callback = itemView.tag as? ((ObservationPoolCandidate, String) -> Unit)
+                        callback?.invoke(candidate, newText)
+                    }
+                }
+            }
+            etNote.setOnEditorActionListener { _, _, _ ->
+                etNote.clearFocus()
+                true
+            }
+        }
+
+        fun bindNote(candidate: ObservationPoolCandidate, noteCache: MutableMap<String, String>) {
+            isBinding = true
+            currentCandidate = candidate
+            val note = noteCache[candidate.episodeId] ?: ""
+            etNote.setText(note)
+            etNote.setSelection(note.length)
+            isBinding = false
+        }
     }
 }
