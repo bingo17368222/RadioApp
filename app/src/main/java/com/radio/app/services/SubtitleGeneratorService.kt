@@ -4224,9 +4224,11 @@ class SubtitleGeneratorService : Service() {
                     this.title = defaultTitle
                     this.broadcastAt = currentDate
                     this.audioUrl = audioUrl
+                    // v3.1.41-fix: 尝试从audioUrl文件名解析duration，避免duration=0
+                    this.duration = deriveDurationFromAudioUrl(audioUrl)
                 }
                 dbHelper.saveEpisodeInfo(ep)
-                logToFile("ensureEpisodeInfo: created missing episode_info for $episodeId (title=$defaultTitle, date=$currentDate)")
+                logToFile("ensureEpisodeInfo: created missing episode_info for $episodeId (title=$defaultTitle, date=$currentDate, duration=${ep.duration})")
             } else {
                 val dateBlank = existing.broadcastAt.isNullOrBlank()
                 val titleBlank = existing.title.isNullOrBlank()
@@ -4245,6 +4247,33 @@ class SubtitleGeneratorService : Service() {
     }
 
     // [v2.4.18] Build display title from episodeId for notification
+    // v3.1.41-fix: 从audioUrl文件名解析节目时长
+    // 文件名格式: station_YYYYMMDD_HHMM_HHMM.mp4 → 最后两个HHMM段为开始和结束时间
+    private fun deriveDurationFromAudioUrl(audioUrl: String): Long {
+        return try {
+            val fileName = audioUrl.substringAfterLast("/").substringBeforeLast(".")
+            val parts = fileName.split("_")
+            // 期望至少有4段: station_YYYYMMDD_HHMM_HHMM
+            if (parts.size >= 4) {
+                val startPart = parts[parts.size - 2]
+                val endPart = parts[parts.size - 1]
+                if (startPart.length == 4 && endPart.length == 4 &&
+                    startPart.all { it.isDigit() } && endPart.all { it.isDigit() }) {
+                    val startHour = startPart.substring(0, 2).toInt()
+                    val startMin = startPart.substring(2, 4).toInt()
+                    val endHour = endPart.substring(0, 2).toInt()
+                    val endMin = endPart.substring(2, 4).toInt()
+                    val startTotalMin = startHour * 60 + startMin
+                    val endTotalMin = endHour * 60 + endMin
+                    // 处理跨天情况（结束时间小于开始时间）
+                    val diffMin = if (endTotalMin >= startTotalMin) endTotalMin - startTotalMin
+                                 else endTotalMin + 24 * 60 - startTotalMin
+                    (diffMin.toLong() * 60).coerceAtLeast(1800L) // 至少30分钟
+                } else 7200L // 默认2小时
+            } else 7200L
+        } catch (_: Exception) { 7200L }
+    }
+
     private fun buildDisplayTitle(episodeId: String, audioUrl: String): String {
         return try {
             // episodeId format: "station-date-index" e.g. "henan-private-car-2024-07-23-2"

@@ -179,6 +179,17 @@ class RadioApplication : Application() {
         // [v2.1.0] Warm up cache dir + migrate legacy PCM cache
         migrateLegacyPcmCache()
 
+        // v3.1.41: 应用启动时清理过期人工指纹（连续两个月零匹配）
+        try {
+            val db = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+            val deleted = db.cleanupExpiredFingerprints()
+            if (deleted > 0) {
+                android.util.Log.w("RadioApplication", "v3.1.41: 启动时清理了 $deleted 个过期人工指纹")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("RadioApplication", "v3.1.41: 过期指纹清理失败: ${e.message}")
+        }
+
         // v2.4.52: Kill :subtitle process if APK version changed.
         // The :subtitle process (SubtitleGeneratorService) survives APK updates.
         // Once .so is loaded, it can't be unloaded. We must kill the process

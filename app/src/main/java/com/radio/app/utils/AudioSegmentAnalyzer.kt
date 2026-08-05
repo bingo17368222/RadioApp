@@ -65,6 +65,9 @@ object AudioSegmentAnalyzer {
     // segmentation from PlayerActivity blocks briefly after cancelling the previous run.
     private val analysisLock = ReentrantLock()
 
+    // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
+    private val pcmGenerateLock = java.util.concurrent.locks.ReentrantLock()
+
     /**
      * Interrupt the currently running audio-segment analysis (decode + classify).
      * Called from the notification cancel action or when starting a new segment task.
@@ -300,6 +303,7 @@ object AudioSegmentAnalyzer {
     /**
      * v2.4.138: Determine whether cached PCM is valid by comparing its info-file durations
      * with the source MP4 duration. Returns the matching PcmInfo if valid, null otherwise.
+     * v3.1.41: 添加详细日志记录不匹配原因，用于排查真正原因。
      */
     private fun validatePcmWithInfo(
         pcmFile: File,
@@ -307,19 +311,35 @@ object AudioSegmentAnalyzer {
         currentMp4DurationMs: Long,
         toleranceRatio: Double = 0.2
     ): PcmInfo? {
-        if (!pcmFile.exists() || pcmFile.length() <= 16000) return null
-        val info = readPcmInfo(infoFile) ?: return null
-        if (!info.isValid()) return null
-        // v3.1.41: 提高mp4DurationMs容差至15%，MediaExtractor对VBR文件的时长读取可能波动
-        // 特别是HE-AAC v2格式（容器22050Hz→解码器输出44100Hz后），实际时长与预期时长差异较大
-        if (currentMp4DurationMs > 0 && kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs) > (currentMp4DurationMs * 0.15)) {
+        if (!pcmFile.exists() || pcmFile.length() <= 16000) {
+            Log.w(TAG, "validatePcmWithInfo: ${pcmFile.name} 不存在或太小 (${pcmFile.length()} bytes)")
             return null
+        }
+        val info = readPcmInfo(infoFile) ?: return null
+        if (!info.isValid()) {
+            Log.w(TAG, "validatePcmWithInfo: ${infoFile.name} 无效")
+            return null
+        }
+        // v3.1.41: 记录详细不匹配日志，排查真正原因
+        if (currentMp4DurationMs > 0) {
+            val diff = kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs)
+            val ratio = diff.toDouble() / currentMp4DurationMs
+            if (ratio > 0.03) {
+                Log.w(TAG, "validatePcmWithInfo: mp4DurationMs 不匹配 - info=${info.mp4DurationMs}ms, current=${currentMp4DurationMs}ms, diff=${diff}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)}, file=${pcmFile.name}")
+                if (ratio > 0.15) {
+                    return null
+                }
+            }
         }
         // PCM duration must be within tolerance of MP4 duration.
         val expectedDurationMs = if (currentMp4DurationMs > 0) currentMp4DurationMs else info.mp4DurationMs
-        if (expectedDurationMs <= 0) return null
+        if (expectedDurationMs <= 0) {
+            Log.w(TAG, "validatePcmWithInfo: expectedDurationMs <= 0 (currentMp4=$currentMp4DurationMs, info.mp4=${info.mp4DurationMs})")
+            return null
+        }
         val delta = kotlin.math.abs(info.pcmDurationMs - expectedDurationMs)
         if (delta > expectedDurationMs * toleranceRatio) {
+            Log.w(TAG, "validatePcmWithInfo: pcmDurationMs 不匹配 - pcm=${info.pcmDurationMs}ms, expected=${expectedDurationMs}ms, delta=${delta}ms, tolerance=${(expectedDurationMs * toleranceRatio).toLong()}ms, file=${pcmFile.name}")
             return null
         }
         return info
@@ -385,6 +405,8 @@ object AudioSegmentAnalyzer {
                     break
                 }
             }
+            // v3.1.41: 记录MediaExtractor读取的时长，用于排查时长不匹配问题
+            Log.i(TAG, "getMp4DurationMs: ${audioFile.name} -> ${durationMs}ms (${durationMs / 60000}min), fileSize=${audioFile.length()}")
         } catch (e: Exception) {
             Log.w(TAG, "[${com.radio.app.RadioApplication.appVersionTag()}] getMp4DurationMs failed: ${e.message}")
         } finally {
@@ -417,19 +439,28 @@ object AudioSegmentAnalyzer {
         generateFullPcm: Boolean = true,
         progressCallback: ((Int) -> Unit)? = null
     ): Boolean {
-        // v3.1.41: 保存并设置当前线程引用，使取消操作能中断PCM解码过程
-        // preGeneratePcmFiles可能从协程或三层分段流程中调用，此时currentAnalysisThread为null
-        val savedThread = currentAnalysisThread
-        if (savedThread == null) {
-            currentAnalysisThread = Thread.currentThread()
+        // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
+        if (!pcmGenerateLock.tryLock()) {
+            Log.w(TAG, "preGeneratePcmFiles: 另一个PCM生成正在进行中，跳过 episode=$episodeId")
+            return false
         }
         try {
-            return preGeneratePcmFilesInner(context, episodeId, audioUrl, expectedDurationMs, generateFullPcm, progressCallback)
-        } finally {
-            // v3.1.41: 恢复之前保存的线程引用
+            // v3.1.41: 保存并设置当前线程引用，使取消操作能中断PCM解码过程
+            // preGeneratePcmFiles可能从协程或三层分段流程中调用，此时currentAnalysisThread为null
+            val savedThread = currentAnalysisThread
             if (savedThread == null) {
-                currentAnalysisThread = null
+                currentAnalysisThread = Thread.currentThread()
             }
+            try {
+                return preGeneratePcmFilesInner(context, episodeId, audioUrl, expectedDurationMs, generateFullPcm, progressCallback)
+            } finally {
+                // v3.1.41: 恢复之前保存的线程引用
+                if (savedThread == null) {
+                    currentAnalysisThread = null
+                }
+            }
+        } finally {
+            pcmGenerateLock.unlock()
         }
     }
 

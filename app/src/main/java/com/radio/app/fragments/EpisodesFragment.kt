@@ -379,17 +379,20 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             EpisodeApiService.getInstance().getEpisodesByDate(stationId, dateStr,
                 object : EpisodeApiService.ApiCallback<List<Episode>> {
                     override fun onSuccess(result: List<Episode>) {
-                        // [v2.2.4] Save to DB for future lookups
-                        try {
-                            RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(result)
-                        } catch (_: Exception) {}
-                        mainHandler.post {
-                            progressBar?.visibility = View.GONE
-                            episodes.clear()
-                            episodes.addAll(result)
-                            adapter?.notifyDataSetChanged()
+                            // [v2.2.4] Save to DB for future lookups
+                            // v3.1.41: 过滤时长为0的无效节目
+                            val validEpisodes = result.filter { it.duration > 0 }
+                            try {
+                                RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(validEpisodes)
+                            } catch (_: Exception) {}
+                            mainHandler.post {
+                                progressBar?.visibility = View.GONE
+                                episodes.clear()
+                                // v3.1.41: 按广播时间排序
+                                episodes.addAll(validEpisodes.sortedBy { it.broadcastAt })
+                                adapter?.notifyDataSetChanged()
+                            }
                         }
-                    }
 
                     override fun onError(error: String) {
                         mainHandler.post {

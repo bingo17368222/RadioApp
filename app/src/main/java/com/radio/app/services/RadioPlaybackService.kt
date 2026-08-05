@@ -1678,6 +1678,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             } catch (_: Exception) {}
                             // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
                             // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
+                            // v3.1.41-fix: 从startTime/endTime计算duration，避免构造的节目duration=0污染DB
+                            val constructedDuration = if (endTime > startTime) (endTime - startTime) / 1000 else 3600
                             val constructedEp = Episode(
                                 id = "$stationId-$targetDate-$slotIdx",
                                 title = savedList.firstOrNull {
@@ -1687,6 +1689,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 audioUrl = constructedUrl,
                                 stationId = stationId,
                                 broadcastAt = targetDate,
+                                duration = constructedDuration,
                                 startTime = startTime,
                                 endTime = endTime
                             )
