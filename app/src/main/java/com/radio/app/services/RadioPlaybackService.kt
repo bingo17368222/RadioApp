@@ -2085,9 +2085,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
         if (!audioFile.exists() || audioFile.length() <= 1024 * 100) return false
-        // v3.1.40: 文件足够大（>5MB）时跳过验证，直接认为有效
+        // v3.1.41: 根据预期时长计算最小有效文件大小（128kbps码率估算）
+        // 128kbps ≈ 16KB/s, 1分钟 ≈ 960KB, 1小时 ≈ 57.6MB
+        // 文件大小达到预期时长对应大小的80%以上时，跳过MediaExtractor验证
         // 避免因MediaExtractor间歇性读取时长失败或URL解析出错误预期时长而反复删除
-        if (audioFile.length() > 5 * 1024 * 1024) return true
+        val minValidSize = if (expectedDurationMs > 0) {
+            (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.8).toLong().coerceAtLeast(5 * 1024 * 1024)
+        } else {
+            // 无预期时长时，文件>30MB才跳过验证（约30分钟128kbps）
+            30 * 1024 * 1024L
+        }
+        if (audioFile.length() > minValidSize) return true
         var extractor: MediaExtractor? = null
         try {
             extractor = MediaExtractor()
@@ -2103,8 +2111,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (actualDurationMs <= 0) return false
             if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) {
-                // v3.1.40: 文件过大时即使时长不匹配也不删除，避免反复下载
-                if (audioFile.length() > 1024 * 1024) {
+                // v3.1.41: 时长不匹配时，根据预期时长计算保留阈值
+                val keepThreshold = if (expectedDurationMs > 0) {
+                    (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.5).toLong().coerceAtLeast(5 * 1024 * 1024)
+                } else {
+                    30 * 1024 * 1024L
+                }
+                if (audioFile.length() > keepThreshold) {
                     Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} duration mismatch (actual=${actualDurationMs}ms expected=${expectedDurationMs}ms) but size=${audioFile.length()}, keeping it")
                     return true
                 }

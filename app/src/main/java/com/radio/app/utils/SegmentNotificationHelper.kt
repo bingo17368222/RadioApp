@@ -56,11 +56,19 @@ object SegmentNotificationHelper {
     @Volatile
     private var activeStartTime: Long = 0
 
-    // v2.4.187: Whether the active session is still running. Used to stop
+    // v2.4.186: Whether the active session is still running. Used to stop
     // same-priority background sessions from repeatedly stealing the notification
     // while another background pre-segment task is already in progress.
     @Volatile
     private var activeSessionRunning: Boolean = false
+
+    // v3.1.41: 防抖机制，防止三个层级的进度快速循环导致通知栏闪烁
+    @Volatile
+    private var lastUpdateTimeMs: Long = 0
+    @Volatile
+    private var lastProgressValue: Int = -1
+    private const val UPDATE_DEBOUNCE_MS = 300L  // 同一层最小更新间隔300ms
+    private const val PROGRESS_SIGNIFICANT_CHANGE = 5  // 进度变化超过5%才算有意义的变化
 
     /**
      * v2.4.186: Begin a new notification session for [episodeId].
@@ -94,8 +102,8 @@ object SegmentNotificationHelper {
         activeStartTime = System.currentTimeMillis()
         activeSessionRunning = true
         cancelled = false
-        // Dismiss any stale notification so the new session starts clean.
-        cancelNotification(context)
+        // v3.1.41: 不先cancelNotification再update，避免通知栏短暂消失。
+        // 直接update会覆盖旧通知内容，确保通知栏持续可见无闪烁。
         update(context, episodeId, title, 0, "初始化")
         return true
     }
@@ -133,6 +141,9 @@ object SegmentNotificationHelper {
     @JvmStatic
     fun reset() {
         cancelled = false
+        // v3.1.41: 重置防抖状态，确保新会话的进度更新不因旧值被跳过
+        lastUpdateTimeMs = 0
+        lastProgressValue = -1
     }
 
     @JvmStatic
@@ -150,6 +161,26 @@ object SegmentNotificationHelper {
         // This prevents two concurrent segmentation tasks from cycling the
         // same notification between two different percentages.
         if (episodeId != activeEpisodeId) return
+
+        // v3.1.41: 防抖 - 同一层级的进度更新如果变化不大且更新间隔太短，则跳过
+        // 解决三层分段过程中三个层级的进度快速循环显示的问题
+        val now = System.currentTimeMillis()
+        if (progress == 1000 || progress == 0) {
+            // 完成(100%)或初始化(0%)的更新总是允许通过
+            lastUpdateTimeMs = now
+            lastProgressValue = progress
+        } else {
+            if (now - lastUpdateTimeMs < UPDATE_DEBOUNCE_MS) {
+                // 更新间隔太短，跳过
+                return
+            }
+            if (kotlin.math.abs(progress - lastProgressValue) < PROGRESS_SIGNIFICANT_CHANGE) {
+                // 进度变化太小，跳过
+                return
+            }
+            lastUpdateTimeMs = now
+            lastProgressValue = progress
+        }
 
         try {
             val appCtx = context.applicationContext

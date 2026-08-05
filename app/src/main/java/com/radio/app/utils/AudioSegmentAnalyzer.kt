@@ -305,14 +305,14 @@ object AudioSegmentAnalyzer {
         pcmFile: File,
         infoFile: File,
         currentMp4DurationMs: Long,
-        toleranceRatio: Double = 0.1
+        toleranceRatio: Double = 0.2
     ): PcmInfo? {
         if (!pcmFile.exists() || pcmFile.length() <= 16000) return null
         val info = readPcmInfo(infoFile) ?: return null
         if (!info.isValid()) return null
-        // If the source MP4 duration is known and differs from the recorded MP4 duration,
-        // the source file may have been replaced (e.g. re-downloaded). Re-generate PCM.
-        if (currentMp4DurationMs > 0 && kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs) > (currentMp4DurationMs * 0.05)) {
+        // v3.1.41: 提高mp4DurationMs容差至15%，MediaExtractor对VBR文件的时长读取可能波动
+        // 特别是HE-AAC v2格式（容器22050Hz→解码器输出44100Hz后），实际时长与预期时长差异较大
+        if (currentMp4DurationMs > 0 && kotlin.math.abs(info.mp4DurationMs - currentMp4DurationMs) > (currentMp4DurationMs * 0.15)) {
             return null
         }
         // PCM duration must be within tolerance of MP4 duration.
@@ -417,6 +417,30 @@ object AudioSegmentAnalyzer {
         generateFullPcm: Boolean = true,
         progressCallback: ((Int) -> Unit)? = null
     ): Boolean {
+        // v3.1.41: 保存并设置当前线程引用，使取消操作能中断PCM解码过程
+        // preGeneratePcmFiles可能从协程或三层分段流程中调用，此时currentAnalysisThread为null
+        val savedThread = currentAnalysisThread
+        if (savedThread == null) {
+            currentAnalysisThread = Thread.currentThread()
+        }
+        try {
+            return preGeneratePcmFilesInner(context, episodeId, audioUrl, expectedDurationMs, generateFullPcm, progressCallback)
+        } finally {
+            // v3.1.41: 恢复之前保存的线程引用
+            if (savedThread == null) {
+                currentAnalysisThread = null
+            }
+        }
+    }
+
+    private fun preGeneratePcmFilesInner(
+        context: Context,
+        episodeId: String,
+        audioUrl: String?,
+        expectedDurationMs: Long = 0,
+        generateFullPcm: Boolean = true,
+        progressCallback: ((Int) -> Unit)? = null
+    ): Boolean {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
@@ -428,6 +452,7 @@ object AudioSegmentAnalyzer {
 
         // v2.4.139: Resolve MP4 duration from multiple sources, never trust a 0 value.
         val audioFile = getCachedAudioFile(context, episodeId, audioUrl)
+        checkCancelled()
         var mp4DurationMs = if (audioFile != null && audioFile.exists()) {
             val d = getMp4DurationMs(audioFile)
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] MediaExtractor duration for $episodeId: ${d}ms (${d / 60000} min), audioFile=${audioFile.name}\n")
@@ -509,6 +534,7 @@ object AudioSegmentAnalyzer {
         // Decode full PCM from scratch.
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
         val scaledCbFull = progressCallback?.let { orig -> { pct: Int -> orig((pct * 95 / 100).coerceAtMost(95)) } }
+        checkCancelled()
         val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, progressCallback = scaledCbFull)
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
             progressCallback?.invoke(100)
@@ -518,6 +544,7 @@ object AudioSegmentAnalyzer {
 
         // v2.4.139: Clamp PCM to expected length and compute duration.
         val clampedFile = clampPcmToExpectedLength(decoded, mp4DurationMs, episodeId)
+        checkCancelled()
         val pcmDurationMs = clampedFile.length() / (16000 * 2) * 1000
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM generated: ${clampedFile.name} (${clampedFile.length()} bytes, ${pcmDurationMs}ms=${pcmDurationMs / 60000} min, expected ${mp4DurationMs}ms=${mp4DurationMs / 60000} min)\n")
 
@@ -1306,6 +1333,12 @@ object AudioSegmentAnalyzer {
         // v3.1.32: 清除分析取消标志，确保VAD不会因历史取消信号而立即失败
         resetCancellation()
 
+        // v3.1.41: 保存并设置当前线程引用，使取消操作能中断分析过程
+        val savedThread = currentAnalysisThread
+        if (savedThread == null) {
+            currentAnalysisThread = Thread.currentThread()
+        }
+        try {
         // v2.4.161: Reset object-level counters
         synchronized(this) {
             yamnetCallCount = 0
@@ -1424,6 +1457,11 @@ object AudioSegmentAnalyzer {
         } finally {
             yamnetInterpreter.close()
             try { vadModel.session.close() } catch (_: Exception) {}
+        }
+        } finally {
+            if (savedThread == null) {
+                currentAnalysisThread = null
+            }
         }
     }
 
