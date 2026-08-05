@@ -37,6 +37,19 @@
 
     </com.google.android.material.tabs.TabLayout>
 
+    <!-- v3.1.42: 指纹分组管理入口 -->
+    <TextView
+        android:id="@+id/tv_group_management"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="指纹分组管理"
+        android:textColor="?attr/appAccent"
+        android:textSize="15sp"
+        android:padding="12dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true" />
+
     <androidx.viewpager2.widget.ViewPager2
         android:id="@+id/view_pager"
         android:layout_width="match_parent"

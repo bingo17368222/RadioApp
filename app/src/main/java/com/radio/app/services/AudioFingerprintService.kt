@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -26,6 +29,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -91,6 +95,162 @@ class AudioFingerprintService : Service() {
                     }
                     LocalBroadcastManager.getInstance(context).sendBroadcast(errorIntent)
                 } catch (_: Exception) {}
+            }
+        }
+
+        // ===== v3.1.43: 指纹播放功能 =====
+        private const val SAMPLE_RATE = 16000
+        private const val PCM_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
+
+        @Volatile
+        private var playbackAudioTrack: AudioTrack? = null
+        @Volatile
+        private var isPlaying = false
+
+        /**
+         * 播放指纹音频（从水印PCM文件读取原始PCM数据，使用AudioTrack播放）。
+         */
+        @JvmStatic
+        fun playFingerprint(context: Context, episodeId: String, startMs: Long, endMs: Long) {
+            // 如果已经在播放，先停止
+            stopPlaybackInternal()
+
+            try {
+                val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(context, episodeId, startMs, endMs)
+                if (!pcmFile.exists() || pcmFile.length() <= 0) {
+                    Log.w(TAG, "playFingerprint: watermark PCM not found for $episodeId [$startMs, $endMs]")
+                    return
+                }
+
+                val bufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, PCM_FORMAT)
+                if (bufferSize <= 0) {
+                    Log.w(TAG, "playFingerprint: invalid buffer size=$bufferSize")
+                    return
+                }
+
+                val audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    AudioTrack.Builder()
+                        .setAudioAttributes(AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build())
+                        .setAudioFormat(AudioFormat.Builder()
+                            .setEncoding(PCM_FORMAT)
+                            .setSampleRate(SAMPLE_RATE)
+                            .setChannelMask(CHANNEL_CONFIG)
+                            .build())
+                        .setBufferSizeInBytes(bufferSize)
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build()
+                } else {
+                    AudioTrack(
+                        AudioAttributes.USAGE_MEDIA,
+                        SAMPLE_RATE, CHANNEL_CONFIG, PCM_FORMAT,
+                        bufferSize, AudioTrack.MODE_STREAM
+                    )
+                }
+
+                playbackAudioTrack = audioTrack
+                isPlaying = true
+                audioTrack.play()
+
+                // 在后台线程读取PCM数据并写入AudioTrack
+                Thread {
+                    try {
+                        val buffer = ByteArray(bufferSize)
+                        val fis = FileInputStream(pcmFile)
+                        var bytesRead = 0
+                        while (isPlaying && fis.read(buffer).also { bytesRead = it } > 0) {
+                            audioTrack.write(buffer, 0, bytesRead)
+                            // 如果写入失败或停止，退出循环
+                            if (!isPlaying) break
+                        }
+                        fis.close()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "playFingerprint: playback error: ${e.message}", e)
+                    } finally {
+                        // 播放完毕，自动清理
+                        if (isPlaying) {
+                            isPlaying = false
+                            try {
+                                audioTrack.stop()
+                                audioTrack.release()
+                            } catch (_: Exception) {}
+                            if (playbackAudioTrack == audioTrack) {
+                                playbackAudioTrack = null
+                            }
+                        }
+                    }
+                }.apply {
+                    name = "fingerprint-playback-${episodeId.take(8)}"
+                    start()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "playFingerprint failed: ${e.message}", e)
+                isPlaying = false
+                playbackAudioTrack = null
+            }
+        }
+
+        /**
+         * 停止指纹播放。
+         */
+        @JvmStatic
+        fun stopPlayback(context: Context) {
+            stopPlaybackInternal()
+        }
+
+        /**
+         * 内部停止播放逻辑，不依赖Context。
+         */
+        private fun stopPlaybackInternal() {
+            isPlaying = false
+            val track = playbackAudioTrack
+            if (track != null) {
+                try {
+                    track.stop()
+                    track.release()
+                } catch (_: Exception) {}
+                playbackAudioTrack = null
+            }
+        }
+
+        /**
+         * 测试指纹匹配：从水印PCM文件重新提取指纹，与数据库中的指纹比较相似度。
+         */
+        @JvmStatic
+        fun testFingerprint(context: Context, fingerprint: AudioFingerprint) {
+            try {
+                val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(
+                    context, fingerprint.episodeId, fingerprint.startMs, fingerprint.endMs
+                )
+                if (!pcmFile.exists() || pcmFile.length() <= 0) {
+                    Log.w(TAG, "testFingerprint: watermark PCM not found for ${fingerprint.episodeId}")
+                    return
+                }
+
+                val extractedFp = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
+                if (extractedFp.isNullOrBlank()) {
+                    Log.w(TAG, "testFingerprint: fingerprint extraction failed from ${pcmFile.name}")
+                    return
+                }
+
+                val similarity = ChromaprintExtractor.compareFingerprints(fingerprint.fingerprint, extractedFp)
+                Log.i(TAG, "testFingerprint: similarity=${String.format(Locale.US, "%.4f", similarity)} for ${fingerprint.episodeId} [${fingerprint.startMs}-${fingerprint.endMs}]")
+
+                // 发送广播通知UI
+                try {
+                    val intent = Intent(ACTION_FINGERPRINT_ADDED).apply {
+                        putExtra(EXTRA_FINGERPRINT_EPISODE_ID, fingerprint.episodeId)
+                        putExtra(EXTRA_FINGERPRINT_START_MS, fingerprint.startMs)
+                        putExtra(EXTRA_FINGERPRINT_END_MS, fingerprint.endMs)
+                        putExtra(EXTRA_FINGERPRINT_MESSAGE, "测试完成，相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%")
+                    }
+                    LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "testFingerprint failed: ${e.message}", e)
             }
         }
     }

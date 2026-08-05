@@ -97,6 +97,24 @@ class FingerprintListFragment : Fragment() {
             "manual" -> {
                 audioFingerprintAdapter = AudioFingerprintAdapter().apply {
                     setOnDeleteListener { fp -> confirmDeleteFingerprint(fp) }
+                    // v3.1.42: 恢复指纹播放功能
+                    setOnPlayListener { fp ->
+                        Toast.makeText(requireContext(), "播放指纹: ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]", Toast.LENGTH_SHORT).show()
+                        // 播放指纹音频 - 通过AudioFingerprintService播放
+                        com.radio.app.services.AudioFingerprintService.playFingerprint(
+                            requireContext(), fp.episodeId, fp.startMs, fp.endMs
+                        )
+                    }
+                    setOnStopListener {
+                        com.radio.app.services.AudioFingerprintService.stopPlayback(requireContext())
+                    }
+                    // v3.1.42: 恢复指纹测试功能
+                    setOnTestListener { fp ->
+                        Toast.makeText(requireContext(), "测试指纹匹配中...", Toast.LENGTH_SHORT).show()
+                        com.radio.app.services.AudioFingerprintService.testFingerprint(
+                            requireContext(), fp
+                        )
+                    }
                 }
                 recyclerView.adapter = audioFingerprintAdapter
             }

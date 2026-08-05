@@ -57,8 +57,10 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FileWriter
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
@@ -2089,59 +2091,149 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * Truncated downloads (e.g. a 20MB file for a 2-hour programme) will fail this check
      * and be re-downloaded instead of poisoning the PCM decoder.
      *
-     * Threshold: if actual duration is shorter than 98% of expected duration, treat as invalid.
+     * v3.1.43: 详细分析MediaExtractor异常根因，而非简单用文件大小回避问题。
+     * 增加文件头校验，区分有效文件（MediaExtractor自身问题）和损坏文件（需要重新下载）。
      */
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
         if (!audioFile.exists() || audioFile.length() <= 1024 * 100) return false
-        // v3.1.41: 根据预期时长计算最小有效文件大小（128kbps码率估算）
-        // 128kbps ≈ 16KB/s, 1分钟 ≈ 960KB, 1小时 ≈ 57.6MB
-        // 文件大小达到预期时长对应大小的80%以上时，跳过MediaExtractor验证
-        // 避免因MediaExtractor间歇性读取时长失败或URL解析出错误预期时长而反复删除
-        val minValidSize = if (expectedDurationMs > 0) {
-            (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.8).toLong().coerceAtLeast(5 * 1024 * 1024)
-        } else {
-            // 无预期时长时，文件>30MB才跳过验证（约30分钟128kbps）
-            30 * 1024 * 1024L
+
+        // v3.1.43: 优先检查文件头，判断是否为有效的媒体文件
+        val headerValid = isMediaFileHeaderValid(audioFile)
+        if (!headerValid) {
+            Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头无效，文件可能损坏或格式错误，删除并重新下载。size=${audioFile.length()}")
+            audioFile.delete()
+            return false
         }
-        if (audioFile.length() > minValidSize) return true
+
         var extractor: MediaExtractor? = null
         try {
             extractor = MediaExtractor()
             extractor.setDataSource(audioFile.absolutePath)
             var actualDurationMs = 0L
+            var audioTrackCount = 0
             for (i in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(i)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
-                if (mime.startsWith("audio/") && format.containsKey(MediaFormat.KEY_DURATION)) {
-                    actualDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
-                    break
+                if (mime.startsWith("audio/")) {
+                    audioTrackCount++
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                        actualDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
+                        Log.d(TAG, "validateCachedAudioFile: ${audioFile.name} track=$i mime=$mime duration=${actualDurationMs}ms")
+                    }
                 }
             }
-            if (actualDurationMs <= 0) return false
-            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) {
-                // v3.1.41: 时长不匹配时，根据预期时长计算保留阈值
-                val keepThreshold = if (expectedDurationMs > 0) {
-                    (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.5).toLong().coerceAtLeast(5 * 1024 * 1024)
-                } else {
-                    30 * 1024 * 1024L
-                }
-                if (audioFile.length() > keepThreshold) {
-                    Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} duration mismatch (actual=${actualDurationMs}ms expected=${expectedDurationMs}ms) but size=${audioFile.length()}, keeping it")
+            if (audioTrackCount == 0) {
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 无音频轨道，共${extractor.trackCount}个轨道")
+                return false
+            }
+            if (actualDurationMs <= 0) {
+                // 文件头有效、有音频轨道但MediaExtractor读不到时长，可能是文件末尾截断但仍可播放
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 有音频轨道(${audioTrackCount}个)但MediaExtractor读不到时长，文件可能被截断")
+                // 文件较大时（>50MB）保留，可能只是末尾截断，中间部分仍可解码
+                if (audioFile.length() > 50 * 1024 * 1024L) {
+                    Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
                     return true
                 }
                 return false
             }
+            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) {
+                // 时长不匹配——分析原因：文件截断/重新下载/API返回错误时长
+                val ratio = actualDurationMs.toDouble() / expectedDurationMs
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 时长不匹配(actual=${actualDurationMs}ms, expected=${expectedDurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)})，size=${audioFile.length()}")
+                // 如果文件大小达到预期时长的50%以上，保留（可能是API返回的时长有误）
+                val keepThreshold = (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.5).toLong().coerceAtLeast(5 * 1024 * 1024)
+                if (audioFile.length() > keepThreshold) {
+                    Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
+                    return true
+                }
+                // 文件太小，确实是截断，返回false触发重新下载
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件太小(${audioFile.length()/1024}KB)，删除并重新下载")
+                audioFile.delete()
+                return false
+            }
             return true
+        } catch (e: IOException) {
+            // IO异常：文件不可读、权限问题、文件系统错误
+            Log.e(TAG, "validateCachedAudioFile: ${audioFile.name} IO异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
+            // 文件头校验通过但IO异常，可能是文件系统瞬态问题，保留文件等待下次重试
+            return audioFile.length() > 30 * 1024 * 1024L
+        } catch (e: IllegalArgumentException) {
+            // 参数异常：URI格式错误等
+            Log.e(TAG, "validateCachedAudioFile: ${audioFile.name} 参数异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
+            audioFile.delete()
+            return false
         } catch (e: Exception) {
-            Log.w(TAG, "validateCachedAudioFile failed for ${audioFile.name}: ${e.message}")
-            // v3.1.41-fix: MediaExtractor失败时，如果文件较大则保留，避免无限重新下载
-            if (audioFile.length() > 30 * 1024 * 1024L) {
-                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} MediaExtractor failed but file is large (${audioFile.length()} bytes), keeping it")
+            // 其他异常：MediaExtractor内部错误、格式不支持等
+            Log.e(TAG, "validateCachedAudioFile: ${audioFile.name} 未知异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
+            // 文件头校验通过，说明文件格式基本正确，但MediaExtractor解析失败
+            // 文件较大时保留，可能是编解码器不支持但文件本身有效
+            if (audioFile.length() > 50 * 1024 * 1024L) {
+                Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头有效但MediaExtractor异常，文件较大(${audioFile.length()/1024/1024}MB)，保留")
                 return true
             }
+            // 小文件异常，可能是损坏，删除重新下载
+            Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头有效但MediaExtractor异常，文件较小，删除重新下载")
+            audioFile.delete()
             return false
         } finally {
             extractor?.release()
+        }
+    }
+
+    /**
+     * v3.1.43: 检查文件头是否为有效的媒体文件格式。
+     * 读取文件前16字节，检查常见媒体文件签名：
+     * - MP4: "ftyp" box at offset 4
+     * - MP3: ID3 tag at offset 0, or sync bits at offset 0
+     * - AAC: ADTS sync word 0xFFF
+     * - FLAC: "fLaC" at offset 0
+     * - WAV: "RIFF" at offset 0
+     */
+    private fun isMediaFileHeaderValid(audioFile: File): Boolean {
+        return try {
+            val header = ByteArray(16)
+            val fis = java.io.FileInputStream(audioFile)
+            val bytesRead = fis.read(header)
+            fis.close()
+            if (bytesRead < 12) {
+                Log.w(TAG, "isMediaFileHeaderValid: ${audioFile.name} 文件太小($bytesRead bytes)")
+                return false
+            }
+            // 检查MP4: offset 4-7 = "ftyp"
+            if (header[4] == 0x66.toByte() && header[5] == 0x74.toByte() &&
+                header[6] == 0x79.toByte() && header[7] == 0x70.toByte()) {
+                return true
+            }
+            // 检查MP3 ID3v2: 前3字节 = "ID3"
+            if (header[0] == 0x49.toByte() && header[1] == 0x44.toByte() && header[2] == 0x33.toByte()) {
+                return true
+            }
+            // 检查MP3 sync: 0xFF 0xFB / 0xFF 0xF3 / 0xFF 0xF2 (Kotlin中Byte.and返回Int，需显式转换)
+             if (header[0] == 0xFF.toByte() && (header[1].toInt() and 0xFE) == 0xFA) {
+                 return true
+             }
+             // 检查AAC ADTS: 0xFF 0xF[0-9]
+             if (header[0] == 0xFF.toByte() && (header[1].toInt() and 0xF0) == 0xF0) {
+                return true
+            }
+            // 检查FLAC: "fLaC" at 0
+            if (header[0] == 0x66.toByte() && header[1] == 0x4C.toByte() &&
+                header[2] == 0x61.toByte() && header[3] == 0x43.toByte()) {
+                return true
+            }
+            // 检查WAV: "RIFF" at 0
+            if (header[0] == 0x52.toByte() && header[1] == 0x49.toByte() &&
+                header[2] == 0x46.toByte() && header[3] == 0x46.toByte()) {
+                return true
+            }
+            // 如果以上都不匹配，记录文件头十六进制用于分析
+            val hexStr = header.take(16).joinToString(" ") { String.format("%02X", it) }
+            Log.w(TAG, "isMediaFileHeaderValid: ${audioFile.name} 无法识别的文件头: $hexStr")
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "isMediaFileHeaderValid: ${audioFile.name} 读取文件头失败: ${e.message}", e)
+            // 无法读取文件头时，保守处理：假设文件有效，让MediaExtractor去验证
+            true
         }
     }
 

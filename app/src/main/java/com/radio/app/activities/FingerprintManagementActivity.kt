@@ -1,5 +1,6 @@
 package com.radio.app.activities
 
+import android.content.Intent
 import android.os.Bundle
 import android.widget.ImageButton
 import android.widget.TextView
@@ -15,6 +16,7 @@ import com.radio.app.R
  * - 人工指纹（金标准）
  * - 候选指纹（观察池）
  * - 自动指纹（自动晋升，非金标准）
+ * v3.1.42: 增加指纹分组管理入口按钮。
  */
 class FingerprintManagementActivity : AppCompatActivity() {
 
@@ -26,6 +28,11 @@ class FingerprintManagementActivity : AppCompatActivity() {
         tvTitle.text = "指纹管理"
 
         findViewById<ImageButton>(R.id.btn_back).setOnClickListener { finish() }
+
+        // v3.1.42: 指纹分组管理入口
+        findViewById<TextView>(R.id.tv_group_management).setOnClickListener {
+            startActivity(Intent(this, FingerprintGroupActivity::class.java))
+        }
 
         val tabLayout = findViewById<TabLayout>(R.id.tab_layout)
         val viewPager = findViewById<ViewPager2>(R.id.view_pager)
