@@ -506,6 +506,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var downloadDoneBytes = 0L
     private val downloadActive = AtomicBoolean(false)
 
+    // v3.1.44: 记录最近被删除的预缓存文件（名称→时间戳），防止反复删除-下载循环
+    // 文件被删除后5分钟内不再重新下载同一个文件
+    private val recentlyDeletedPreCacheFiles = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     // 防抖标记：playback 正在初始化中，避免 Activity 重复启动播放
     @Volatile
     var playbackInitializing = false
@@ -1569,10 +1573,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
         val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
         val stationId = prefs.getString("station_id", null) ?: currentEpisode?.stationId
-        val startDate = prefs.getString("current_date", null) ?: currentEpisode?.broadcastAt?.take(10)
+        // v3.1.44: 强制从今天开始计算offset，避免因节目日期非今天导致跳过近期
+        val todayStr = prefs.getString("current_date", null)
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+        val startDate = todayStr ?: currentEpisode?.broadcastAt?.take(10) ?: today
+        // 如果startDate是过去日期，重置为今天确保预缓存从明天开始
+        val finalStartDate = if (startDate < today) today else startDate
         val daysFetched = prefs.getInt("days_fetched", 0)
 
-        if (stationId.isNullOrBlank() || startDate.isNullOrBlank()) {
+        if (stationId.isNullOrBlank() || finalStartDate.isNullOrBlank()) {
             writePreCacheLog("fetchMoreDaysForPreCache: missing stationId or startDate")
             return existingList
         }
@@ -1597,7 +1606,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            cal.time = dateFormat.parse(startDate) ?: return existingList
+            cal.time = dateFormat.parse(finalStartDate) ?: return existingList
             cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
             val targetDate = dateFormat.format(cal.time)
             // 始终向未来方向获取，current_date持续向前推进
@@ -1914,6 +1923,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
         val fileName = extractCacheFileName(url)
+        // v3.1.44: 检查冷却，避免反复删除-下载循环
+        if (isPreCacheFileRecentlyDeleted(fileName)) {
+            writePreCacheLog("DOWNLOAD: SKIP download for ${episode.title} (id=${episode.id}, file=$fileName, reason=文件在5分钟内被删除过，等待冷却)")
+            isPrecaching = false
+            Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
+            return
+        }
         // v3.1.37: 记录预缓存下载原因
         writePreCacheLog("DOWNLOAD: downloadPreCacheEpisode for ${episode.title} (id=${episode.id}, file=$fileName, reason=预缓存未来节目)")
         // [v2.1.0] Use centralized cache dir
@@ -2095,6 +2111,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
         if (!audioFile.exists() || audioFile.length() <= 1024 * 100) {
             Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 不存在或太小，返回false")
+            com.radio.app.utils.FileLogUtils.w(TAG, "validateCachedAudioFile: ${audioFile.name} 删除原因: 不存在或太小(${audioFile.length()})")
+            recordPreCacheFileDeleted(audioFile.name)
             return false
         }
 
@@ -2113,6 +2131,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 return validateWithExtractor(audioFile, expectedDurationMs)
             }
             Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 文件头无效且文件较小(${audioFile.length()/1024}KB)，删除并重新下载。size=${audioFile.length()}")
+            com.radio.app.utils.FileLogUtils.w(TAG, "validateCachedAudioFile: ${audioFile.name} 删除原因: 文件头无效，大小=${audioFile.length()}")
+            recordPreCacheFileDeleted(audioFile.name)
             audioFile.delete()
             return false
         }
@@ -2144,23 +2164,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (audioTrackCount == 0) {
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道，共${extractor.trackCount}个轨道，文件大小=${audioFile.length()}")
+                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 无音频轨道，大小=${audioFile.length()}")
                 // v3.1.44: 无音频轨道但文件较大时保留（可能是视频文件或其他格式）
                 if (audioFile.length() > 30 * 1024 * 1024L) {
                     Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道但文件较大(${audioFile.length()/1024/1024}MB)，保留")
                     return true
                 }
+                recordPreCacheFileDeleted(audioFile.name)
                 audioFile.delete()
                 return false
             }
             if (actualDurationMs <= 0) {
                 // 文件头有效、有音频轨道但MediaExtractor读不到时长，可能是文件末尾截断但仍可播放
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 有音频轨道(${audioTrackCount}个)但MediaExtractor读不到时长，文件可能被截断")
+                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 读不到时长，大小=${audioFile.length()}")
                 // 文件较大时（>30MB）保留，可能只是末尾截断，中间部分仍可解码
                 if (audioFile.length() > 30 * 1024 * 1024L) {
                     Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
                     return true
                 }
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较小(${audioFile.length()/1024}KB)，删除")
+                recordPreCacheFileDeleted(audioFile.name)
                 audioFile.delete()
                 return false
             }
@@ -2176,6 +2200,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 // 文件太小，确实是截断，返回false触发重新下载
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件太小(${audioFile.length()/1024}KB)，删除并重新下载")
+                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 时长不匹配，大小=${audioFile.length()}")
+                recordPreCacheFileDeleted(audioFile.name)
                 audioFile.delete()
                 return false
             }
@@ -2194,6 +2220,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 参数异常但文件较大(${audioFile.length()/1024/1024}MB)，保留")
                 return true
             }
+            com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 参数异常，大小=${audioFile.length()}")
+            recordPreCacheFileDeleted(audioFile.name)
             audioFile.delete()
             return false
         } catch (e: Exception) {
@@ -2206,6 +2234,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             // 小文件异常，可能是损坏，删除重新下载
             Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较小(${audioFile.length()/1024}KB)，删除重新下载")
+            com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 未知异常，大小=${audioFile.length()}")
+            recordPreCacheFileDeleted(audioFile.name)
             audioFile.delete()
             return false
         } finally {
@@ -2230,6 +2260,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             fis.close()
             if (bytesRead < 12) {
                 Log.w(TAG, "isMediaFileHeaderValid: ${audioFile.name} 文件太小($bytesRead bytes)")
+                com.radio.app.utils.FileLogUtils.w(TAG, "isMediaFileHeaderValid: ${audioFile.name} 文件太小($bytesRead bytes)")
                 return false
             }
             // 检查MP4: offset 4-7 = "ftyp"
@@ -2262,12 +2293,41 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 如果以上都不匹配，记录文件头十六进制用于分析
             val hexStr = header.take(16).joinToString(" ") { String.format("%02X", it) }
             Log.w(TAG, "isMediaFileHeaderValid: ${audioFile.name} 无法识别的文件头: $hexStr")
+            com.radio.app.utils.FileLogUtils.w(TAG, "isMediaFileHeaderValid: ${audioFile.name} 无效文件头: $hexStr")
             false
         } catch (e: Exception) {
             Log.e(TAG, "isMediaFileHeaderValid: ${audioFile.name} 读取文件头失败: ${e.message}", e)
+            com.radio.app.utils.FileLogUtils.e(TAG, "isMediaFileHeaderValid: ${audioFile.name} 读取文件头失败", e)
             // 无法读取文件头时，保守处理：假设文件有效，让MediaExtractor去验证
             true
         }
+    }
+
+    /**
+     * v3.1.44: 记录预缓存文件被删除，用于冷却检查防止反复删除-下载循环。
+     */
+    private fun recordPreCacheFileDeleted(fileName: String) {
+        recentlyDeletedPreCacheFiles[fileName] = System.currentTimeMillis()
+        // 清理超过5分钟的旧记录
+        val cutoff = System.currentTimeMillis() - 300_000L
+        recentlyDeletedPreCacheFiles.entries.removeAll { it.value < cutoff }
+        writePreCacheLog("recordPreCacheFileDeleted: $fileName (map size=${recentlyDeletedPreCacheFiles.size})")
+    }
+
+    /**
+     * v3.1.44: 检查预缓存文件是否在最近5分钟内被删除过。
+     * 如果是，跳过重新下载以避免无限循环。
+     */
+    private fun isPreCacheFileRecentlyDeleted(fileName: String): Boolean {
+        val deleteTime = recentlyDeletedPreCacheFiles[fileName] ?: return false
+        val elapsed = System.currentTimeMillis() - deleteTime
+        if (elapsed < 300_000L) {
+            writePreCacheLog("isPreCacheFileRecentlyDeleted: $fileName 在${elapsed/1000}秒前被删除，跳过重新下载")
+            return true
+        }
+        // 超过5分钟，允许重新下载
+        recentlyDeletedPreCacheFiles.remove(fileName)
+        return false
     }
 
     /**
@@ -2882,6 +2942,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         writeServiceLog("notification", "DELETING invalid audio cache: ${audioFile.absolutePath}, size=${audioFile.length()}, expected=${expectedDurationMs}ms")
                         try { audioFile.delete() } catch (_: Exception) {}
                         cleanupPcmFilesForEpisode(ep.id)
+                        // v3.1.44: 检查冷却，避免反复删除-下载循环
+                        if (isPreCacheFileRecentlyDeleted(fileName)) {
+                            writePreCacheLog("patrolSubtitle:  SKIP re-download for ${ep.id}, file=$fileName was recently deleted (cooldown)")
+                            continue
+                        }
                         if (!isPrecaching) {
                             try {
                                 serviceScope.launch { triggerPreCache() }

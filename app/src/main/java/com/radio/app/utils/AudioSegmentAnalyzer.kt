@@ -2605,7 +2605,8 @@ object AudioSegmentAnalyzer {
         var current = sorted[0]
         for (i in 1 until sorted.size) {
             val next = sorted[i]
-            if (current.label == next.label && next.start <= current.end + 1) {
+            // v3.1.44: 合并容差从1ms放宽至10ms，避免Silero VAD帧边界取整导致相邻同类型段未合并
+            if (current.label == next.label && next.start <= current.end + 10) {
                 current.end = maxOf(current.end, next.end)
             } else {
                 merged.add(current)
@@ -2630,6 +2631,7 @@ object AudioSegmentAnalyzer {
         if (segments.isEmpty()) return segments
 
         // Pass 1: merge same-type overlapping/adjacent segments
+        // v3.1.44: 合并容差从1ms放宽至10ms
         val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
         var changed = true
         while (changed) {
@@ -2637,7 +2639,7 @@ object AudioSegmentAnalyzer {
             for (i in 0 until sorted.size - 1) {
                 val curr = sorted[i]
                 val next = sorted[i + 1]
-                if (curr.label == next.label && next.start <= curr.end + 1) {
+                if (curr.label == next.label && next.start <= curr.end + 10) {
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
                     changed = true
@@ -2787,13 +2789,14 @@ object AudioSegmentAnalyzer {
         // Pass 7: v2.4.173 final merge of any adjacent same-type segments created by
         // earlier absorption passes (e.g. a short silence fragment absorbed into one of
         // two neighboring water segments, leaving two adjacent "水货" segments).
+        // v3.1.44: 合并容差从1ms放宽至10ms
         changed = true
         while (changed) {
             changed = false
             for (i in 0 until sorted.size - 1) {
                 val curr = sorted[i]
                 val next = sorted[i + 1]
-                if (curr.label == next.label && next.start <= curr.end + 1) {
+                if (curr.label == next.label && next.start <= curr.end + 10) {
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
                     changed = true
