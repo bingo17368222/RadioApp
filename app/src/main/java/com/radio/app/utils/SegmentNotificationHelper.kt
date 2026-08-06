@@ -74,6 +74,11 @@ object SegmentNotificationHelper {
     private const val UPDATE_DEBOUNCE_MS = 300L  // 同一层最小更新间隔300ms
     private const val PROGRESS_SIGNIFICANT_CHANGE = 5  // 进度变化超过5%才算有意义的变化
 
+    // v3.1.48: 防循环守卫——记录上次endSession的时间，防止startSession在短时间内被快速调用
+    @Volatile
+    private var lastEndSessionTimeMs: Long = 0
+    private const val MIN_SESSION_INTERVAL_MS = 2000L  // 两次会话之间至少间隔2秒，防止快速出现消失循环
+
     /**
      * v2.4.186: Begin a new notification session for [episodeId].
      * This becomes the active owner of the shared segment notification;
@@ -101,6 +106,16 @@ object SegmentNotificationHelper {
             if (priority < activePriority) return false
             if (priority == activePriority && activeSessionRunning) return false
         }
+        // v3.1.48: 防循环守卫——如果上次endSession距离现在太短（<2秒），拒绝新会话。
+        // 防止分段任务被反复触发导致通知栏快速出现消失循环+卡顿。
+        if (activeEpisodeId == null) {
+            val elapsedSinceLastEnd = System.currentTimeMillis() - lastEndSessionTimeMs
+            if (elapsedSinceLastEnd < MIN_SESSION_INTERVAL_MS) {
+                android.util.Log.w("SegmentNotificationHelper",
+                    "startSession: 拒绝快速重启会话，距上次endSession仅${elapsedSinceLastEnd}ms（episodeId=$episodeId）")
+                return false
+            }
+        }
         activeEpisodeId = episodeId
         activePriority = priority
         activeStartTime = System.currentTimeMillis()
@@ -124,6 +139,8 @@ object SegmentNotificationHelper {
     @Synchronized
     fun endSession(context: Context, episodeId: String) {
         if (episodeId == activeEpisodeId) {
+            // v3.1.48: 记录endSession时间，用于startSession的防循环守卫
+            lastEndSessionTimeMs = System.currentTimeMillis()
             activeEpisodeId = null
             activePriority = 0
             activeStartTime = 0
@@ -271,6 +288,8 @@ object SegmentNotificationHelper {
         // active session so stale progress callbacks cannot re-post it.
         if (episodeId != null && episodeId != activeEpisodeId) return
         if (episodeId == null) {
+            // v3.1.48: 记录endSession时间，用于startSession的防循环守卫
+            lastEndSessionTimeMs = System.currentTimeMillis()
             activeEpisodeId = null
             activePriority = 0
             activeStartTime = 0
