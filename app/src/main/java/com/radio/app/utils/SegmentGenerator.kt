@@ -28,6 +28,13 @@ object SegmentGenerator {
     // Without this, the shared segment notification flips between two progress values.
     private val segmentingEpisodes = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
+    // v3.1.50: 全局三层分段标志。generateJiuAiTingSegments 开始前设为 true，结束后设为 false。
+    // SegmentNotificationHelper.startSession 检查此标志，防止并发分段导致通知栏循环。
+    // 外部调用方（如 patrolSubtitleGeneration）也应先检查此标志。
+    @Volatile
+    var isThreeLayerSegmenting: Boolean = false
+        private set
+
     // Default keywords for content-based classification (就AI听 scheme)
     private val DEFAULT_DRY_KEYWORDS = listOf(
         "新闻", "资讯", "报道", "访谈", "评论", "分析", "数据", "调查",
@@ -763,6 +770,13 @@ object SegmentGenerator {
         audioUrl: String? = null,
         progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): JiuAiTingResult? {
+        // v3.1.50: 检查全局三层分段标志，防止并发分段导致通知栏循环
+        if (isThreeLayerSegmenting) {
+            Log.w(TAG, "generateJiuAiTingSegments: 全局三层分段中，拒绝并发请求 for episode=$episodeId")
+            return null
+        }
+        isThreeLayerSegmenting = true
+        try {
         val segStartTime = System.currentTimeMillis()
         // v3.1.46: 校验durationMs，如果为0或<=60000则使用默认值2小时
         // 避免因durationMs无效导致shouldRunLayer2=false（仅运行第1层）或瞬间完成
@@ -864,17 +878,14 @@ object SegmentGenerator {
             }
         }
 
-        // v3.1.32: 如果第1层处理期间用户取消了通知，重新建立通知会话
-        // 确保后续第2层和第3层的进度能正常显示
+        // v3.1.50: 如果第1层处理期间用户取消了通知，不清除取消标志，也不重建会话。
+        // 根因分析：原代码 resetCancellation + restartSession 导致通知栏出现消失循环。
+        // 用户取消通知意味着不想看到进度，后续第2/3层静默运行即可，无需恢复通知。
+        // 取消标志保持为true，后续层级的进度更新会被 SegmentNotificationHelper.update 中的 cancelled 检查拦截。
         if (AudioSegmentAnalyzer.isAnalysisCancelled()) {
-            AudioSegmentAnalyzer.resetCancellation()
-            SegmentNotificationHelper.reset()
-            val reSessionStarted = SegmentNotificationHelper.startSession(
-                context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL
-            )
-            val fpMsgReSession = "三层架构: 第1层期间收到取消信号，重新建立通知会话(reSessionStarted=$reSessionStarted) for episode=$episodeId"
-            Log.i(TAG, fpMsgReSession)
-            writeFingerprintLog(context, fpMsgReSession)
+            val fpMsgCancel = "三层架构: 第1层期间收到取消信号，后续层静默运行（不重建通知）for episode=$episodeId"
+            Log.i(TAG, fpMsgCancel)
+            writeFingerprintLog(context, fpMsgCancel)
         }
 
         if (mergedAfterLayer1.isEmpty()) {
@@ -1102,6 +1113,9 @@ object SegmentGenerator {
                 observationPoolNewCount = 0,
                 observationPoolHitCount = 0
             )
+        }
+        } finally {
+            isThreeLayerSegmenting = false
         }
     }
 

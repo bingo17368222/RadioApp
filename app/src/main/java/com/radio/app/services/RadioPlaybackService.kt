@@ -2915,11 +2915,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val settings = AppSettings.getInstance(this@RadioPlaybackService)
                 val targetCount = settings.preloadCacheCount
 
-                // v2.4.93: Only scan episodes AFTER the current one.
-                // Previously also scanned episodes before current — this wasted resources
-                // processing past episodes that the user has already moved past.
+                // v3.1.50: 同时扫描过去和未来未完成的节目，优先处理过去日期。
+                // 根因：原代码仅从 currentIdx+1 向前扫描，过去未处理的节目（如20241101的PCM/分段）
+                // 永远被跳过，导致"跳过近期处理远期"问题。
+                // 修复：扫描顺序 = 过去（从currentIdx-1向0递减）+ 未来（从currentIdx+1向末尾递增）
                 val scanOrder = if (currentIdx >= 0) {
-                    ((currentIdx + 1) until preCacheList.size).toList()
+                    val pastIndices = (0 until currentIdx).reversed()  // 过去：从近到远
+                    val futureIndices = ((currentIdx + 1) until preCacheList.size).toList()  // 未来
+                    pastIndices + futureIndices
                 } else {
                     writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
@@ -3140,15 +3143,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 var orphanFound = false
                 for (cachedName in cachedNames) {
                     if (cachedName in preCacheFileNames) continue
-                    // v2.4.93: Parse date from filename, skip if before current episode's date
-                    val fileDateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(cachedName)
-                    val fileDateStr = if (fileDateMatch != null) {
-                        "${fileDateMatch.groupValues[1]}-${fileDateMatch.groupValues[2]}-${fileDateMatch.groupValues[3]}"
-                    } else ""
-                    if (currentDateStr.isNotBlank() && fileDateStr.isNotBlank() && fileDateStr < currentDateStr) {
-                        writePreCacheLog("patrolSubtitle:  ORPHAN SKIP $cachedName: date $fileDateStr < current $currentDateStr (past episode)")
-                        continue
-                    }
+                    // v3.1.50: 移除过去日期过滤——过去未处理的节目也需要被处理。
+                    // 原代码过滤 fileDateStr < currentDateStr 导致过去未完成的PCM/分段永远被跳过。
                     // Try to find episode in DB by audio filename
                     val dbEp = try { dbHelper.getEpisodeByAudioFileName(cachedName) } catch (_: Exception) { null }
                     val episodeId = dbEp?.id ?: cachedName.substringBeforeLast(".")
@@ -3171,7 +3167,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val stationId = dbEp?.stationId ?: cachedName.substringBefore("_")
                     val episodeTitle = dbEp?.title ?: cachedName.substringBeforeLast(".")
                     val audioUrl = dbEp?.audioUrl ?: "https://placeholder/$cachedName"
-                    writePreCacheLog("patrolSubtitle:  ORPHAN FOUND: $cachedName (date=$fileDateStr) has no subtitles (id=$episodeId), triggering generation")
+                    writePreCacheLog("patrolSubtitle:  ORPHAN FOUND: $cachedName has no subtitles (id=$episodeId), triggering generation")
                     val orphanEp = Episode(
                         id = episodeId,
                         title = episodeTitle,
