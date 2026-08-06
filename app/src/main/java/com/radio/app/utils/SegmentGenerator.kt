@@ -776,9 +776,10 @@ object SegmentGenerator {
             return null
         }
         isThreeLayerSegmenting = true
-        // v3.1.51: 同时设置 SegmentNotificationHelper 的全局标志，阻止 startSession 接受新会话
-        // 之前此标志有 private set 导致从未被设置，通知栏循环未被阻止
-        SegmentNotificationHelper.isSegmenting = true
+        // v3.1.52: 修复关键bug——isSegmenting 必须在 startSession 成功之后设置。
+        // 根因：v3.1.51 在 startSession 之前设置 isSegmenting=true，导致自身的
+        // startSession 被 isSegmenting 检查拒绝（永远返回 false），通知栏永远不会启动。
+        // 现在先执行 startSession，成功后再设置 isSegmenting，阻止外部并发请求。
         try {
         val segStartTime = System.currentTimeMillis()
         // v3.1.46: 校验durationMs，如果为0或<=60000则使用默认值2小时
@@ -803,11 +804,18 @@ object SegmentGenerator {
         val dbHelper = RadioDatabaseHelper.getInstance(context)
 
         // v3.1.28: 启动通知会话，显示三层分段进度
+        // v3.1.52: 先启动通知会话，成功后再设置 isSegmenting 标志。
+        // 顺序不可颠倒——先设 isSegmenting 会导致自身的 startSession 被拒绝。
         val episodeInfo = try { dbHelper.getEpisodeInfo(episodeId) } catch (_: Exception) { null }
         val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
         val sessionStarted = SegmentNotificationHelper.startSession(
             context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL
         )
+        // v3.1.52: startSession 成功后设置全局标志，阻止外部并发请求（如 patrolSubtitleGeneration）
+        // 此时 startSession 已通过，不会再被自身拦截
+        if (sessionStarted) {
+            SegmentNotificationHelper.isSegmenting = true
+        }
         if (!sessionStarted) {
             Log.w(TAG, "generateJiuAiTingSegments: 通知会话未启动（已有更高优先级会话）")
         }

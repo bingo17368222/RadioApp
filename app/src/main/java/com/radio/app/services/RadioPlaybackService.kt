@@ -2954,19 +2954,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // 修复：扫描 episodesDir 中所有缓存文件，如果不在 preCacheList 中，
                 // 尝试从 DB 查找对应节目并加入 preCacheList。
                 // 这样后续的 scanOrder 和 main loop 能正确处理这些"孤儿"节目。
+                // v3.1.52: 当 DB 查找失败时，从文件名创建最小 Episode 对象。
+                // 根因：DB 记录可能被清理（如节目信息过期），此时 getEpisodeByAudioFileName
+                // 返回 null，孤儿文件被静默跳过，PCM/分段永远不会被生成。
+                // 修复：从文件名解析日期/时间/站名，构造最小 Episode 对象，确保巡逻循环能处理。
                 val preCacheUrls = preCacheList.mapNotNull { it.audioUrl }.toSet()
+                val preCacheIds = preCacheList.mapNotNull { it.id }.toSet()
                 val orphanFiles = episodesDir.listFiles()?.filter { file ->
                     if (!file.isFile || file.length() <= 1024) return@filter false
                     val fileName = file.name
                     // 提取文件名中的关键部分（不含扩展名），判断是否在 preCacheList 中
                     val fileKey = fileName.substringBeforeLast(".")
-                    preCacheUrls.none { url -> url.contains(fileKey) }
+                    // v3.1.52: 同时检查 URL 和 ID，避免因 URL 格式差异导致误判
+                    preCacheUrls.none { url -> url.contains(fileKey) } &&
+                        preCacheIds.none { id -> id.contains(fileKey) }
                 } ?: emptyList()
                 if (orphanFiles.isNotEmpty()) {
                     writePreCacheLog("patrolSubtitle: 发现 ${orphanFiles.size} 个孤儿缓存文件不在 preCacheList 中，尝试加入列表")
                     var addedCount = 0
                     val mutablePreCacheList = preCacheList.toMutableList()
                     var updatedUrls = preCacheUrls
+                    val fileKeyRegex = Regex("(\\d{4})(\\d{2})(\\d{2})")
                     for (orphanFile in orphanFiles) {
                         val fileName = orphanFile.name
                         val dbEp = try {
@@ -2977,6 +2985,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             updatedUrls = updatedUrls + dbEp.audioUrl
                             addedCount++
                             writePreCacheLog("patrolSubtitle:  加入孤儿文件 $fileName -> ep=${dbEp.id}, title=${dbEp.title}")
+                        } else {
+                            // v3.1.52: DB 查找失败，从文件名创建最小 Episode 对象
+                            // 文件名格式如: sijiache_20241101_0700_0900.mp4
+                            val fileKey = fileName.substringBeforeLast(".")
+                            val epId = fileKey  // 使用文件名作为 episode ID
+                            if (epId !in preCacheIds) {
+                                val localAudioUrl = "file://${orphanFile.absolutePath}"
+                                val dateMatch = fileKeyRegex.find(fileName)
+                                val broadcastAt = if (dateMatch != null) {
+                                    "${dateMatch.groupValues[1]}-${dateMatch.groupValues[2]}-${dateMatch.groupValues[3]}"
+                                } else ""
+                                val minimalEp = com.radio.app.models.Episode(
+                                    id = epId,
+                                    title = fileKey,
+                                    audioUrl = localAudioUrl,
+                                    broadcastAt = broadcastAt
+                                )
+                                mutablePreCacheList.add(minimalEp)
+                                updatedUrls = updatedUrls + localAudioUrl
+                                addedCount++
+                                writePreCacheLog("patrolSubtitle:  DB无记录，从文件名创建最小Episode: $fileKey")
+                            }
                         }
                     }
                     if (addedCount > 0) {
@@ -3006,6 +3036,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } else {
                     writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
+                }
+
+                // v3.1.52: 检查是否有分段正在进行中。如果在分段（generateJiuAiTingSegments 或 preSegmentAudio），
+                // 跳过本次巡逻，避免并发分段导致通知栏循环以及数据竞争。
+                // 根因：patrolSubtitleGeneration 每秒扫描节目并调用 preSegmentAudio，而 preSegmentAudio
+                // 内部调用 startSession 启动通知栏。如果多个节目连续触发 preSegmentAudio，通知栏会快速
+                // 出现消失（startSession/endSession 循环），造成闪烁。
+                // 之前的"2秒守护"只是降低闪烁频率，未解决根因——现在用全局标志直接阻止并发。
+                if (com.radio.app.utils.SegmentNotificationHelper.isSegmenting ||
+                    com.radio.app.utils.SegmentGenerator.isThreeLayerSegmenting) {
+                    writePreCacheLog("patrolSubtitle:  segmentation in progress (isSegmenting=true), skipping entire patrol")
+                    return@launch
                 }
 
                 // [v2.4.81] Better patrol logging: count what was scanned
