@@ -67,6 +67,10 @@ object SegmentNotificationHelper {
     private var lastUpdateTimeMs: Long = 0
     @Volatile
     private var lastProgressValue: Int = -1
+    // v3.1.47: 记录上次更新的层名，当层名变化时（如从第1层切换到第2层）跳过防抖，
+    // 确保进度通知栏在层切换时持续更新，不会因防抖而消失
+    @Volatile
+    private var lastLayerName: String = ""
     private const val UPDATE_DEBOUNCE_MS = 300L  // 同一层最小更新间隔300ms
     private const val PROGRESS_SIGNIFICANT_CHANGE = 5  // 进度变化超过5%才算有意义的变化
 
@@ -144,6 +148,8 @@ object SegmentNotificationHelper {
         // v3.1.41: 重置防抖状态，确保新会话的进度更新不因旧值被跳过
         lastUpdateTimeMs = 0
         lastProgressValue = -1
+        // v3.1.47: 重置层名，确保新会话的层名变化检测正确
+        lastLayerName = ""
     }
 
     @JvmStatic
@@ -164,11 +170,15 @@ object SegmentNotificationHelper {
 
         // v3.1.41: 防抖 - 同一层级的进度更新如果变化不大且更新间隔太短，则跳过
         // 解决三层分段过程中三个层级的进度快速循环显示的问题
+        // v3.1.47: 当层名变化时（如从第1层切换到第2层）跳过防抖，
+        // 确保进度通知栏在层切换时持续更新，不会因防抖而消失
         val now = System.currentTimeMillis()
-        if (progress == 1000 || progress == 0) {
-            // 完成(100%)或初始化(0%)的更新总是允许通过
+        val layerChanged = layerName.isNotEmpty() && layerName != lastLayerName
+        if (progress == 1000 || progress == 0 || layerChanged) {
+            // 完成(100%)、初始化(0%)或层名变化时的更新总是允许通过
             lastUpdateTimeMs = now
             lastProgressValue = progress
+            lastLayerName = layerName
         } else {
             if (now - lastUpdateTimeMs < UPDATE_DEBOUNCE_MS) {
                 // 更新间隔太短，跳过

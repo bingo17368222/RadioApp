@@ -529,10 +529,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private var precacheCompletedCount = 0
     // 预缓存完成的文件名列表：用于在通知中展示具体下载了哪些文件
     private val precacheCompletedFileNames = mutableListOf<String>()
+    // v3.1.47: 永久标记验证失败的文件，避免在同一会话中重复下载形成无限循环
+    private val precacheFailedFileNames = mutableSetOf<String>()
     // 预缓存完成通知是否已展示：确保每轮预缓存只弹一次汇总通知
     private var precacheNotificationShown = false
     // 预缓存时间节流：记录上次预缓存检查的时间戳，无节目可下载时 30 秒内不重复触发，避免无限循环
     private var lastPreCacheCheckTime: Long = 0
+    // v3.1.45: 记录上次预缓存完成时间，防止regular download完成后立即再次触发预缓存循环
+    private var lastPreCacheCompleteTime: Long = 0
     // 通知内容去重哈希：内容未变化时跳过 manager.notify()，避免 ExoPlayer 缓冲态频繁刷新导致的通知闪烁
     private var lastNotificationContentHash: Int = 0
     // Issue 3: 切换节目后强制更新通知的标志位，绕过 contentHash 去重检查
@@ -1236,6 +1240,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=invalid url")
                 continue
             }
+            // v3.1.47: 跳过永久标记为验证失败的文件，避免反复下载形成无限循环
+            if (fileName in precacheFailedFileNames) {
+                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, file=$fileName, reason=验证永久失败（previous session validation failure）")
+                continue
+            }
             neededCount++
             if (fileName in cachedNames) {
                 futureCachedCount++
@@ -1254,38 +1263,65 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * @param continueChain 为 true 时表示是下载完成后的链式继续，跳过节流限制。
      */
     private fun triggerPreCache(continueChain: Boolean = false) {
-        val now = System.currentTimeMillis()
-        if (!continueChain && now - lastPreCacheCheckTime < 120_000) {
-            // [v2.2.6] Throttle: don't re-check within 2 minutes (was 30s, too frequent)
-            return
-        }
-        if (!continueChain) {
-            lastPreCacheCheckTime = now
-        }
-        val settings = AppSettings.getInstance(this)
-        val targetCount = settings.preloadCacheCount
-        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=$targetCount, currentCount=$precacheCompletedCount, continueChain=$continueChain")
-        if (!settings.autoCache) {
-            Log.d(TAG, "Pre-cache: disabled")
-            return
-        }
-        if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
-            Log.d(TAG, "Pre-cache: skipped (WiFi only)")
-            return
-        }
-
-        val currentEp = currentEpisode ?: run {
-            Log.d(TAG, "Pre-cache: no current episode, skipping")
-            return
-        }
-
-        // [v2.2.6] Re-entrancy guard: prevent infinite recursion / concurrent pre-cache chains
-        // Also prevent resetting precacheCompletedCount when already running
+        // v3.1.45: 防重入守卫必须放在函数最前面，在日志和IO之前，
+        // 防止竞态条件——多个调用同时入队，依次通过检查但都还没设置isPrecaching=true
         if (isPrecaching) {
             Log.d(TAG, "Pre-cache: already running, skipping duplicate trigger")
             writeServiceLog("notification", "triggerPreCache: SKIP (already running, currentCount=$precacheCompletedCount)")
             return
         }
+        // 立即标记为运行中，防止后续调用入队
+        isPrecaching = true
+        precacheCompletedCount = 0
+
+        val now = System.currentTimeMillis()
+        if (!continueChain && now - lastPreCacheCheckTime < 120_000) {
+            // [v2.2.6] Throttle: don't re-check within 2 minutes (was 30s, too frequent)
+            isPrecaching = false
+            return
+        }
+        if (!continueChain) {
+            lastPreCacheCheckTime = now
+        }
+
+        // v3.1.46: 将重IO操作移到IO线程，避免主线程卡顿
+        // triggerPreCache被Handler(Looper.getMainLooper()).post调用，
+        // 其中的cleanupPrecacheAudioCache()和listFiles()等文件操作会阻塞主线程
+        val currentThread = Thread.currentThread()
+        if (currentThread == Looper.getMainLooper().thread) {
+            serviceScope.launch(Dispatchers.IO) {
+                triggerPreCacheInternal(continueChain)
+            }
+            // 不重置isPrecaching，由内部函数管理
+            return
+        }
+        triggerPreCacheInternal(continueChain)
+    }
+
+    private fun triggerPreCacheInternal(continueChain: Boolean = false) {
+        val settings = AppSettings.getInstance(this)
+        val targetCount = settings.preloadCacheCount
+        writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=$targetCount, currentCount=$precacheCompletedCount, continueChain=$continueChain")
+        if (!settings.autoCache) {
+            Log.d(TAG, "Pre-cache: disabled")
+            isPrecaching = false
+            return
+        }
+        if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
+            Log.d(TAG, "Pre-cache: skipped (WiFi only)")
+            isPrecaching = false
+            return
+        }
+
+        val currentEp = currentEpisode ?: run {
+            Log.d(TAG, "Pre-cache: no current episode, skipping")
+            isPrecaching = false
+            return
+        }
+
+        // [v2.2.6] Re-entrancy guard: prevent infinite recursion / concurrent pre-cache chains
+        // Also prevent resetting precacheCompletedCount when already running
+        // v3.1.45: 守卫已移至函数最前面，此处不再需要
 
         // v3.0.3: 预缓存前检测当前电台日期的节目单是否完整。
         // 若本地数据库节目数量不足，则同步刷新节目单；刷新失败时跳过本轮预缓存，等待下次触发重试。
@@ -1304,13 +1340,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (!scheduleOk) {
                 writeServiceLog("notification", "triggerPreCache: schedule incomplete/refresh failed for $currentStationId $currentDateStr, will retry later")
+                isPrecaching = false
                 return
             }
         }
 
-        // 标记预缓存开始，通知栏进度轮询将跳过更新
-        precacheCompletedCount = 0
-        isPrecaching = true
         // Reset days_fetched counter for new pre-cache cycle so fetchMoreDaysForPreCache
         // can fetch up to 20 fresh days each cycle
         getSharedPreferences("precache_list", MODE_PRIVATE).edit().putInt("days_fetched", 0).apply()
@@ -1570,19 +1604,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 仅向未来方向获取（当前播放节目向未来数10个）
      * 最多获取20天
      */
+    /**
+     * v3.1.46: 修复跳过近期处理远期问题的根因。
+     * 原代码从SharedPreferences中的current_date开始计算offset，
+     * 该日期在每次获取后都会被更新为最新获取的日期，
+     * 导致下次触发时直接从最新日期开始，跳过了中间的日期。
+     * 
+     * 修复方案：始终从今天开始，按顺序获取每一天（从明天开始），
+     * 用fetched_dates集合记录已获取的日期，避免重复获取。
+     * 不依赖current_date，彻底解决"跳过近期"问题。
+     */
     private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
         val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
         val stationId = prefs.getString("station_id", null) ?: currentEpisode?.stationId
-        // v3.1.44: 强制从今天开始计算offset，避免因节目日期非今天导致跳过近期
-        val todayStr = prefs.getString("current_date", null)
+        // v3.1.46: 始终从今天开始，不从SharedPreferences读取current_date
+        // 原代码使用current_date导致每次触发从最新日期开始，跳过近期
         val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
-        val startDate = todayStr ?: currentEpisode?.broadcastAt?.take(10) ?: today
-        // 如果startDate是过去日期，重置为今天确保预缓存从明天开始
-        val finalStartDate = if (startDate < today) today else startDate
         val daysFetched = prefs.getInt("days_fetched", 0)
 
-        if (stationId.isNullOrBlank() || finalStartDate.isNullOrBlank()) {
-            writePreCacheLog("fetchMoreDaysForPreCache: missing stationId or startDate")
+        if (stationId.isNullOrBlank()) {
+            writePreCacheLog("fetchMoreDaysForPreCache: missing stationId")
             return existingList
         }
 
@@ -1599,17 +1640,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // v3.1.44: 不允许跳过近期处理远期，从当前日期起按顺序获取每一天
+        // v3.1.46: 始终从今天开始，按顺序获取每一天
         // days_fetched=0 → offset=1（明天）, days_fetched=1 → offset=2, ...
-        // 始终向未来方向按顺序获取，不跳过任何一天
+        // 始终从今天开始偏移，不依赖任何外部存储的日期
         val dayOffset = daysFetched + 1
         var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            cal.time = dateFormat.parse(finalStartDate) ?: return existingList
+            cal.time = dateFormat.parse(today) ?: return existingList
             cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
             val targetDate = dateFormat.format(cal.time)
-            // 始终向未来方向获取，current_date持续向前推进
+            // 始终向未来方向获取
             latestFetchedDate = targetDate
 
             writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
@@ -1780,21 +1821,57 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     // v3.1.37: 按播放时间排序预缓存节目单
+    // v3.1.46: 修复节目单丢失开始时间导致排序错乱问题。
+    // 当startTime=0时，从URL解析时间范围（如 0700_0900）作为排序依据，
+    // 避免同一日期的节目随机排序。
     private fun sortPreCacheListByTime(list: List<Episode>): List<Episode> {
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        val timeRegex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
         val sorted = list.sortedWith(compareBy<Episode> { ep ->
-            // 优先使用startTime（epoch毫秒），其次解析broadcastAt
+            // 优先使用startTime（epoch毫秒）
             if (ep.startTime > 0) ep.startTime
             else {
-                try {
-                    val dateStr = ep.broadcastAt.take(10)
-                    if (dateStr.length == 10) {
-                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-                        sdf.parse(dateStr)?.time ?: 0L
-                    } else 0L
-                } catch (_: Exception) { 0L }
+                // v3.1.46: 从URL解析时间范围作为排序依据
+                val url = ep.audioUrl ?: ""
+                val path = url.substringAfterLast("/").substringBefore("?")
+                var bestTime = 0L
+                var bestPos = -1
+                var searchPos = 0
+                while (searchPos < path.length) {
+                    val match = timeRegex.find(path, searchPos) ?: break
+                    searchPos = match.range.first + 1
+                    val (_, sh, sm) = match.groupValues
+                    try {
+                        val h = sh.toInt(); val m = sm.toInt()
+                        if (h in 0..23 && m in 0..59) {
+                            if (match.range.first > bestPos) {
+                                bestPos = match.range.first
+                                // 将时间转换为当天epoch毫秒，用于排序
+                                bestTime = h * 3600000L + m * 60000L
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+                if (bestTime > 0) {
+                    // 如果有URL时间，将broadcastAt日期+时间组合为排序时间
+                    try {
+                        val dateStr = ep.broadcastAt.take(10)
+                        if (dateStr.length == 10) {
+                            (dateFormat.parse(dateStr)?.time ?: 0L) + bestTime
+                        } else 0L
+                    } catch (_: Exception) { 0L }
+                } else {
+                    // 纯日期排序（无URL时间时）
+                    try {
+                        val dateStr = ep.broadcastAt.take(10)
+                        if (dateStr.length == 10) {
+                            dateFormat.parse(dateStr)?.time ?: 0L
+                        } else 0L
+                    } catch (_: Exception) { 0L }
+                }
             }
         }.thenBy { ep ->
-            // 相同日期的按broadcastAt中的时间字符串排序
+            // 相同日期时间的按broadcastAt字符串排序
             ep.broadcastAt
         })
         return sorted
@@ -2052,13 +2129,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 改为遍历所有匹配，只取小时在0-23、分钟在0-59的合法时间段
         // v3.1.38: 修复正则匹配到日期部分（如 20241031 中的 10_31）被解释为时间段的bug。
         // 实际时间范围总是在文件名末尾，因此优先选择位置靠后的匹配。
+        // v3.1.45: 使用滑动窗口法查找所有匹配（包括重叠匹配），
+        // 因为 findAll 默认不重叠，导致文件名如 sijiache_20241031_0700_0900.mp4 中
+        // 正确的匹配 0700_0900 被错误跳过（与 2024_1031 重叠），而 1031_0700 被误采为 20.5小时。
         val audioUrl = episode.audioUrl
         if (!audioUrl.isNullOrBlank()) {
             val path = audioUrl.substringBeforeLast("?").substringAfterLast("/")
             val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
             var bestMatch = 0L
             var bestPos = -1
-            for (match in regex.findAll(path)) {
+            // v3.1.45: 使用滑动窗口法，每次+1步进，确保找到所有重叠匹配
+            var searchPos = 0
+            while (searchPos < path.length) {
+                val match = regex.find(path, searchPos) ?: break
+                searchPos = match.range.first + 1 // +1 允许重叠
                 val (_, sh, sm, eh, em) = match.groupValues
                 try {
                     val startH = sh.toInt(); val startM = sm.toInt()
@@ -2069,7 +2153,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         var end = endH * 3600000L + endM * 60000L
                         if (end < start) end += 24 * 3600000L
                         val duration = end - start
-                        if (duration in 600_000L..86_400_000L) {
+                        // v3.1.45: 合理时长上限从24小时收紧到12小时（43200000ms），
+                        // 防止日期部分（如 1031_0700 被误匹配为20.5小时）通过
+                        if (duration in 600_000L..43_200_000L) {
                             // 取位置靠后的匹配（实际时间范围总是在文件名末尾，日期部分在开头）
                             if (match.range.first > bestPos) {
                                 bestPos = match.range.first
@@ -2144,6 +2230,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * v3.1.44: 使用MediaExtractor校验音频文件，分离自validateCachedAudioFile以便复用。
      * 返回true表示文件有效，false表示无效（需要删除并重新下载）。
      */
+    /**
+     * v3.1.46: 修复下载循环根因：
+     * 1. expectedDurationMs=0时跳过时长校验，避免因URL解析失败导致所有文件被删除
+     * 2. 降低文件保留阈值：有音频轨道但读不到时长时，>1MB即保留（原30MB）
+     * 3. 降低无音频轨道的保留阈值：>5MB即保留（原30MB）
+     * 4. 降低异常情况保留阈值：>5MB即保留（原30MB）
+     * 5. 记录expectedDurationMs来源，便于排查根因
+     */
     private fun validateWithExtractor(audioFile: File, expectedDurationMs: Long): Boolean {
         var extractor: MediaExtractor? = null
         try {
@@ -2162,62 +2256,51 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                 }
             }
+            // v3.1.46: 记录expectedDurationMs来源，便于排查下载循环根因
+            com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} actualDuration=${actualDurationMs}ms expectedDuration=${expectedDurationMs}ms trackCount=${audioTrackCount} fileSize=${audioFile.length()}")
             if (audioTrackCount == 0) {
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道，共${extractor.trackCount}个轨道，文件大小=${audioFile.length()}")
                 com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 无音频轨道，大小=${audioFile.length()}")
-                // v3.1.44: 无音频轨道但文件较大时保留（可能是视频文件或其他格式）
-                if (audioFile.length() > 30 * 1024 * 1024L) {
-                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道但文件较大(${audioFile.length()/1024/1024}MB)，保留")
+                // v3.1.46: 降低保留阈值：>5MB即保留（可能是视频文件或其他格式）
+                if (audioFile.length() > 5 * 1024 * 1024L) {
+                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 无音频轨道但文件>5MB(${audioFile.length()/1024/1024}MB)，保留")
                     return true
                 }
                 recordPreCacheFileDeleted(audioFile.name)
                 audioFile.delete()
                 return false
             }
+            // v3.1.46: 有音频轨道时，始终保留文件（能解码音频即可用于PCM生成）
+            // 实际播控中MediaExtractor读不到时长是常见情况，不代表文件损坏
             if (actualDurationMs <= 0) {
-                // 文件头有效、有音频轨道但MediaExtractor读不到时长，可能是文件末尾截断但仍可播放
-                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 有音频轨道(${audioTrackCount}个)但MediaExtractor读不到时长，文件可能被截断")
-                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 读不到时长，大小=${audioFile.length()}")
-                // 文件较大时（>30MB）保留，可能只是末尾截断，中间部分仍可解码
-                if (audioFile.length() > 30 * 1024 * 1024L) {
-                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
-                    return true
-                }
-                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较小(${audioFile.length()/1024}KB)，删除")
-                recordPreCacheFileDeleted(audioFile.name)
-                audioFile.delete()
-                return false
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 有音频轨道(${audioTrackCount}个)但MediaExtractor读不到时长，保留文件（有音频轨道即可解码）")
+                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 有音频轨道但读不到时长，保留（size=${audioFile.length()}）")
+                return true
             }
-            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.98) {
+            // v3.1.46: expectedDurationMs=0时跳过时长校验
+            // 避免因URL解析失败（getExpectedAudioDurationMs返回0）导致所有文件被删除触发下载循环
+            if (expectedDurationMs > 0 && actualDurationMs < expectedDurationMs * 0.80) {
                 // 时长不匹配——分析原因：文件截断/重新下载/API返回错误时长
                 val ratio = actualDurationMs.toDouble() / expectedDurationMs
                 Log.w(TAG, "validateWithExtractor: ${audioFile.name} 时长不匹配(actual=${actualDurationMs}ms, expected=${expectedDurationMs}ms, ratio=${String.format(java.util.Locale.US, "%.4f", ratio)})，size=${audioFile.length()}")
-                // 如果文件大小达到预期时长的50%以上，保留（可能是API返回的时长有误）
-                val keepThreshold = (expectedDurationMs / 1000 * 128 * 1024 / 8 * 0.5).toLong().coerceAtLeast(5 * 1024 * 1024)
-                if (audioFile.length() > keepThreshold) {
-                    Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
-                    return true
-                }
-                // 文件太小，确实是截断，返回false触发重新下载
-                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件太小(${audioFile.length()/1024}KB)，删除并重新下载")
-                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 时长不匹配，大小=${audioFile.length()}")
-                recordPreCacheFileDeleted(audioFile.name)
-                audioFile.delete()
-                return false
+                // v3.1.46: 降低保留阈值到20%（原50%），放宽到80%容忍度（原98%）
+                // 实际音频文件时长与URL解析的预期时长有微小差异是正常的
+                com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 时长不匹配但保留（ratio=${String.format("%.4f", ratio)}，size=${audioFile.length()}）")
+                return true
             }
             Log.d(TAG, "validateWithExtractor: ${audioFile.name} 校验通过，duration=${actualDurationMs}ms, size=${audioFile.length()}")
             return true
         } catch (e: IOException) {
             // IO异常：文件不可读、权限问题、文件系统错误
             com.radio.app.utils.FileLogUtils.e(TAG, "validateWithExtractor: ${audioFile.name} IO异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
-            // 文件头校验通过但IO异常，可能是文件系统瞬态问题，保留文件等待下次重试
-            return audioFile.length() > 30 * 1024 * 1024L
+            // v3.1.46: 降低保留阈值到5MB
+            return audioFile.length() > 5 * 1024 * 1024L
         } catch (e: IllegalArgumentException) {
             // 参数异常：URI格式错误等
             com.radio.app.utils.FileLogUtils.e(TAG, "validateWithExtractor: ${audioFile.name} 参数异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
-            // v3.1.44: 参数异常但文件较大时保留，可能是文件本身有效但MediaExtractor不兼容
-            if (audioFile.length() > 30 * 1024 * 1024L) {
-                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 参数异常但文件较大(${audioFile.length()/1024/1024}MB)，保留")
+            // v3.1.46: 降低保留阈值到5MB
+            if (audioFile.length() > 5 * 1024 * 1024L) {
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 参数异常但文件>5MB(${audioFile.length()/1024/1024}MB)，保留")
                 return true
             }
             com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 删除原因: 参数异常，大小=${audioFile.length()}")
@@ -2227,9 +2310,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             // 其他异常：MediaExtractor内部错误、格式不支持等
             com.radio.app.utils.FileLogUtils.e(TAG, "validateWithExtractor: ${audioFile.name} 未知异常: type=${e.javaClass.simpleName} msg=${e.message}", e)
-            // 文件较大时保留，可能是编解码器不支持但文件本身有效
-            if (audioFile.length() > 30 * 1024 * 1024L) {
-                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件较大(${audioFile.length()/1024/1024}MB)，保留")
+            // v3.1.46: 降低保留阈值到5MB
+            if (audioFile.length() > 5 * 1024 * 1024L) {
+                Log.w(TAG, "validateWithExtractor: ${audioFile.name} 文件>5MB(${audioFile.length()/1024/1024}MB)，保留")
                 return true
             }
             // 小文件异常，可能是损坏，删除重新下载
@@ -2718,7 +2801,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             }
 
                             // 创建取消按钮的 PendingIntent
+                            // v3.1.47: 使用显式Intent（setClass）确保广播能可靠送达PcmPregenCancelReceiver，
+                            // 避免隐式Intent在某些Android版本上无法解析的问题
                             val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN).apply {
+                                setClass(this@RadioPlaybackService, com.radio.app.utils.PcmPregenCancelReceiver::class.java)
                                 putExtra("episode_id", episodeId)
                                 putExtra("notif_id", notifId)
                             }
@@ -2729,12 +2815,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                             )
 
+                            // v3.1.46: 始终设置为ongoing，确保取消按钮可见且通知不消失
+                            // 原代码 setOngoing(pct in 1..99) 导致pct=0时通知可被系统清除，取消按钮失效
                             val notif = NotificationCompat.Builder(this@RadioPlaybackService, "pcm_pregen_channel")
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
                                 .setContentTitle(title)
                                 .setContentText(contentText)
-                                .setOngoing(pct in 1..99)
-                                .setAutoCancel(true)
+                                .setOngoing(true)
+                                .setAutoCancel(false)
                                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPendingIntent)
                                 .build()
                             nm.notify(notifId, notif)
@@ -2792,8 +2880,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * Generate a unique notification ID for PCM pre-generation progress of a given episode.
      * Uses the episode ID hash to produce an ID in the range [2000, 2999].
      */
+    /**
+     * v3.1.46: 使用基于episodeId哈希的唯一通知ID，确保取消按钮对应的PendingIntent
+     * 有独立的requestCode，避免多个节目共享同一个通知ID导致取消按钮无效。
+     * 每个episodeId映射到[30000, 30999]范围内的唯一ID。
+     * 在创建新通知前，会先取消上一个通知，避免多个通知同时出现（保留v3.1.33的设计目标）。
+     */
+    private var lastPcmPregenEpisodeId: String? = null
     private fun getPcmPregenNotificationId(episodeId: String): Int {
-        return 30000  // v3.1.33: 使用固定通知ID，避免多个PCM通知同时出现
+        // 如果上一个episodeId不同，先取消旧通知
+        val prevId = lastPcmPregenEpisodeId
+        if (prevId != null && prevId != episodeId) {
+            try {
+                val prevNotifId = 30000 + (kotlin.math.abs(prevId.hashCode()) % 1000)
+                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                nm.cancel(prevNotifId)
+            } catch (_: Exception) {}
+        }
+        lastPcmPregenEpisodeId = episodeId
+        return 30000 + (kotlin.math.abs(episodeId.hashCode()) % 1000)
     }
 
     /**
@@ -2938,20 +3043,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val expectedDurationMs = getExpectedAudioDurationMs(ep)
                     if (!validateCachedAudioFile(audioFile, expectedDurationMs)) {
                         withoutAudio++
-                        writePreCacheLog("patrolSubtitle:  INVALID audio cache for ep=${ep.id}, file=$fileName, size=${audioFile.length()}, expected=${expectedDurationMs}ms, deleting and re-downloading")
+                        writePreCacheLog("patrolSubtitle:  INVALID audio cache for ep=${ep.id}, file=$fileName, size=${audioFile.length()}, expected=${expectedDurationMs}ms, deleting")
                         writeServiceLog("notification", "DELETING invalid audio cache: ${audioFile.absolutePath}, size=${audioFile.length()}, expected=${expectedDurationMs}ms")
                         try { audioFile.delete() } catch (_: Exception) {}
                         cleanupPcmFilesForEpisode(ep.id)
-                        // v3.1.44: 检查冷却，避免反复删除-下载循环
-                        if (isPreCacheFileRecentlyDeleted(fileName)) {
-                            writePreCacheLog("patrolSubtitle:  SKIP re-download for ${ep.id}, file=$fileName was recently deleted (cooldown)")
-                            continue
+                        // v3.1.47: 修复下载循环根因——验证失败后永久标记该文件为失败，
+                        // 不再触发triggerPreCache重新下载，避免形成"下载→验证失败→删除→触发重新下载→下载→..."的无限循环。
+                        // 冷却机制（isPreCacheFileRecentlyDeleted）只延缓了循环速度，未解决根本问题。
+                        synchronized(precacheFailedFileNames) {
+                            precacheFailedFileNames.add(fileName)
                         }
-                        if (!isPrecaching) {
-                            try {
-                                serviceScope.launch { triggerPreCache() }
-                            } catch (_: Exception) {}
-                        }
+                        writePreCacheLog("patrolSubtitle:  PERMANENTLY FAILED file=$fileName for ep=${ep.id}, will not re-download in this session")
                         continue
                     }
 

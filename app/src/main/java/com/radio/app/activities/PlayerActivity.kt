@@ -1561,6 +1561,9 @@ class PlayerActivity : AppCompatActivity() {
                 obj.put("audio_url", ep.audioUrl); obj.put("station_id", ep.stationId)
                 obj.put("station_name", ep.stationName); obj.put("duration", ep.duration)
                 obj.put("broadcast_at", ep.broadcastAt)
+                // v3.1.47: 保存startTime/endTime，确保节目单重建时排序正确
+                obj.put("start_time", ep.startTime)
+                obj.put("end_time", ep.endTime)
                 arr.put(obj)
             }
             getSharedPreferences("episode_list_cache", MODE_PRIVATE).edit()
@@ -2049,6 +2052,9 @@ class PlayerActivity : AppCompatActivity() {
                         stationName = obj.optString("station_name", "")
                         duration = obj.optLong("duration", 0)
                         broadcastAt = obj.optString("broadcast_at", "")
+                        // v3.1.47: 恢复startTime/endTime，确保节目单重建时排序正确
+                        startTime = obj.optLong("start_time", 0)
+                        endTime = obj.optLong("end_time", 0)
                     })
                 }
             }

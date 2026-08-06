@@ -76,6 +76,44 @@ object SegmentGenerator {
     }
 
     /**
+     * v3.1.46: 从音频URL解析节目时长（毫秒）。
+     * 解析URL中的时间范围（如 0700_0900），计算时长。
+     * 用于durationMs无效时的兜底。
+     */
+    private fun getDurationFromAudioUrl(audioUrl: String?): Long {
+        if (audioUrl.isNullOrBlank()) return 0L
+        try {
+            val path = audioUrl.substringAfterLast("/").substringBefore("?")
+            val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
+            var bestMatch = 0L
+            var bestPos = -1
+            var searchPos = 0
+            while (searchPos < path.length) {
+                val match = regex.find(path, searchPos) ?: break
+                searchPos = match.range.first + 1
+                val (_, sh, sm, eh, em) = match.groupValues
+                try {
+                    val startH = sh.toInt(); val startM = sm.toInt()
+                    val endH = eh.toInt(); val endM = em.toInt()
+                    if (startH in 0..23 && startM in 0..59 && endH in 0..23 && endM in 0..59) {
+                        var start = startH * 3600000L + startM * 60000L
+                        var end = endH * 3600000L + endM * 60000L
+                        if (end < start) end += 24 * 3600000L
+                        val duration = end - start
+                        if (duration in 600_000L..43_200_000L) {
+                            if (match.range.first > bestPos) {
+                                bestPos = match.range.first
+                                bestMatch = duration
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            return bestMatch
+        } catch (_: Exception) { return 0L }
+    }
+
+    /**
      * Generate fixed 15-minute segments for an episode.
      * Used before subtitles are available as placeholder segments.
      * All segments default to 干货 (hasVoice = true).
@@ -726,7 +764,18 @@ object SegmentGenerator {
         progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): JiuAiTingResult? {
         val segStartTime = System.currentTimeMillis()
-        val fpMsgStart = "generateJiuAiTingSegments: 就AI听三层架构方案 for episode=$episodeId"
+        // v3.1.46: 校验durationMs，如果为0或<=60000则使用默认值2小时
+        // 避免因durationMs无效导致shouldRunLayer2=false（仅运行第1层）或瞬间完成
+        // v3.1.47: 增加最小时长限制（900秒=15分钟），确保即使durationMs>60000但过小时，
+        // 也能生成足够的分段，避免"整个节目一个分段"的问题
+        val rawDuration = if (durationMs > 60000) durationMs else {
+            Log.w(TAG, "generateJiuAiTingSegments: durationMs=$durationMs 无效，使用默认值7200000ms(2小时) for episode=$episodeId")
+            // 尝试从URL解析实际时长
+            val urlDuration = getDurationFromAudioUrl(audioUrl)
+            if (urlDuration > 60000) urlDuration else 7200_000L
+        }
+        val effectiveDurationMs = maxOf(rawDuration, 900_000L) // 最少15分钟
+        val fpMsgStart = "generateJiuAiTingSegments: 就AI听三层架构方案 for episode=$episodeId, durationMs=$effectiveDurationMs(原=$durationMs)"
         Log.i(TAG, fpMsgStart)
         writeFingerprintLog(context, fpMsgStart)
 
@@ -777,10 +826,12 @@ object SegmentGenerator {
 
         if (pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // 滑动窗口指纹匹配，传递进度回调以更新通知
+            // v3.1.46: 修复第1层进度值错误——permille本身就是0-1000的千分比，不需要除以10
+            // 原代码 permille/10 导致进度始终限制在0-100（即0%-10%），用户看到的进度条永远走不完
             val slidingProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
-                SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille / 10, "第1层指纹快筛")
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "第1层指纹快筛")
             }
-            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, durationMs, formalLibrary, slidingProgressCallback)
+            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, effectiveDurationMs, formalLibrary, slidingProgressCallback)
             mergedAfterLayer1 = slidingResult
             layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
@@ -796,7 +847,7 @@ object SegmentGenerator {
             Log.w(TAG, "三层架构: 第一层滑动窗口跳过（$fallbackReason），运行全量VAD+YAMNet")
 
             val fullVadResult = try {
-                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, durationMs, audioUrl, progressCallback)
+                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, effectiveDurationMs, audioUrl, progressCallback)
             } catch (e: Exception) {
                 Log.w(TAG, "三层架构: 全量VAD+YAMNet失败: ${e.message}")
                 null
@@ -807,7 +858,7 @@ object SegmentGenerator {
                 Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${mergedAfterLayer1.size}个真实分段 for episode=$episodeId")
             } else {
                 // VAD也无结果，使用固定分段兜底
-                val fixedSegs = generateFixedSegments(durationMs)
+                val fixedSegs = generateFixedSegments(effectiveDurationMs)
                 mergedAfterLayer1 = fixedSegs
                 Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底 for episode=$episodeId")
             }
@@ -838,7 +889,7 @@ object SegmentGenerator {
         // v3.1.40: 允许跳过第2/3层的唯一条件是节目时长不足（<60秒）
         // 只要有足够的节目时长，始终运行全量VAD+YAMNet和第三层指纹召回
         // 如果PCM文件不存在，会在第2层运行时自动重新生成（见第二层VAD跳过逻辑）
-        val shouldRunLayer2 = durationMs > 60000
+        val shouldRunLayer2 = effectiveDurationMs > 60000
 
         if (shouldRunLayer2) {
         // ========== 第二层：对完整PCM运行VAD+YAMNet全量分析 ==========
@@ -855,7 +906,7 @@ object SegmentGenerator {
             try {
                 // 对完整PCM运行VAD+YAMNet分析（使用完整PCM文件，不逐片段提取）
                 val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
-                    context, pcmSourceFile, durationMs, { permille, elapsedMs, etaMs ->
+                    context, pcmSourceFile, effectiveDurationMs, { permille, elapsedMs, etaMs ->
                         val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析")
                     }
@@ -887,7 +938,7 @@ object SegmentGenerator {
             val audioFile = AudioSegmentAnalyzer.getCachedAudioFile(context, episodeId, audioUrl)
             if (audioFile != null && audioFile.exists() && audioFile.length() > 1024 * 100) {
                 val regenResult = AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    context, episodeId, audioUrl, durationMs, true,
+                    context, episodeId, audioUrl, effectiveDurationMs, true,
                     progressCallback = { pct ->
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50 + pct / 2, "重新生成PCM ${pct}%")
                     }
@@ -901,7 +952,7 @@ object SegmentGenerator {
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 100, "PCM生成完成，开始VAD分析")
                         try {
                             val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
-                                context, newFullPcm, durationMs, { permille, _, _ ->
+                                context, newFullPcm, effectiveDurationMs, { permille, _, _ ->
                                     val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
                                     SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析")
                                 }
@@ -958,10 +1009,13 @@ object SegmentGenerator {
         Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段）")
 
         // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
+        // v3.1.46: 添加第三层进度通知栏更新，确保三层分段全程都有进度显示
+        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 900, "第3层指纹漏判召回")
         val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
             layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer2.count { !it.hasVoice }
             Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 950, "第3层召回完成，合并结果")
             recalled
         } else {
             val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
@@ -985,7 +1039,7 @@ object SegmentGenerator {
         writeFingerprintLog(context, fpMsgStats)
 
         // v3.1.30: 验证结果异常时仅记录日志，不允许回退其他方案
-        val validationResult = validateThreeLayerResult(finalSegments, durationMs)
+        val validationResult = validateThreeLayerResult(finalSegments, effectiveDurationMs)
         if (validationResult != null) {
             val fpMsgAbnormal = "三层架构结果异常: $validationResult（已记录，使用当前结果，不执行回退）"
             Log.w(TAG, fpMsgAbnormal)
