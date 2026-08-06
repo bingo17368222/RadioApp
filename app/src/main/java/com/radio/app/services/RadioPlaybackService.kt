@@ -3027,29 +3027,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                 }
 
-                // v3.1.53: 修复优先处理近期节目，近期成功后再处理远期。
-                // 根因：v3.1.50 将过去节目放在 scanOrder 前面，导致 patrol 先处理过去节目
-                // （如20241015的PCM），processedCount 很快达到批量上限，近期节目（如20241102）
-                // 永远被跳过——"跳过近期处理远期"。
-                // 修复：先扫描未来（近期）节目，近期全部成功后，再扫描过去节目。
-                // 过去节目即使失败或跳过，也不影响近期节目的处理。
+                // v3.1.54: 用户要求取消过去节目扫描，只处理近期（未来）节目。
+                // 根因：用户明确要求"预生成pcm和预分段取消过去节目扫描"，过去节目不应再处理。
+                // 修复：只扫描未来（近期）节目，完全移除过去扫描逻辑。
                 //
-                // 两层扫描：
-                // 1. 未来扫描：从 currentIdx+1 向前，处理需要生成 PCM/分段/字幕的近期节目
-                // 2. 过去扫描：从 currentIdx-1 向 0 递减，处理过去遗留的未完成节目
+                // 扫描：从 currentIdx+1 向前，只处理需要生成 PCM/分段/字幕的近期节目
                 val futureScanOrder: List<Int> = if (currentIdx >= 0) {
                     ((currentIdx + 1) until preCacheList.size).toList()
                 } else {
                     writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
                 }
-                val pastScanOrder: List<Int> = if (currentIdx >= 0) {
-                    (0 until currentIdx).reversed().toList()  // 过去：从近到远
-                } else {
-                    emptyList()
-                }
-                // v3.1.53: 先处理未来（近期）节目，处理完后再处理过去节目
-                writePreCacheLog("patrolSubtitle:  scanOrder: future=${futureScanOrder.size} episodes, past=${pastScanOrder.size} episodes, processing future first")
+                writePreCacheLog("patrolSubtitle:  scanOrder: only future episodes (count=${futureScanOrder.size})")
 
                 // v3.1.52: 检查是否有分段正在进行中。如果在分段（generateJiuAiTingSegments 或 preSegmentAudio），
                 // 跳过本次巡逻，避免并发分段导致通知栏循环以及数据竞争。
@@ -3071,20 +3060,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 var validEpisodeCounter = 0
                 var processedCount = 0  // v3.1.4: 批量处理计数，每次巡逻最多处理 preloadCacheCount 个节目
 
-                // v3.1.53: 处理单个节目的辅助函数，返回 true 表示继续扫描，false 表示停止巡逻
+                // v3.1.54: 处理单个节目的辅助函数，返回 true 表示继续扫描，false 表示停止巡逻
                 // 注：声明在变量定义之后，因为在 Kotlin 局部函数中引用的变量需先声明。
-                fun processEpisode(epIdx: Int, isFutureScan: Boolean): Boolean {
+                // v3.1.54: 移除 isFutureScan 参数——用户要求只处理未来节目，不再区分未来/过去。
+                fun processEpisode(epIdx: Int): Boolean {
                     var ep = preCacheList[epIdx]
                     if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) return true
                     ep = enrichEpisodeFromDbIfNeeded(ep)
                     totalScanned++
 
                     if (settings.isNoPreprocess(ep.id)) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, noPreprocess${if(isFutureScan) " (future)" else " (past)"}")
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, noPreprocess")
                         return true
                     }
                     if (settings.isDisliked(ep.id) || (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title))) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked${if(isFutureScan) " (future)" else " (past)"}")
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked")
                         return true
                     }
 
@@ -3093,18 +3083,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) {
                         withoutAudio++
-                        if (isFutureScan && validEpisodeCounter <= targetCount) {
+                        if (validEpisodeCounter <= targetCount) {
                             writePreCacheLog("patrolSubtitle:  ep=${ep.id} ( #$validEpisodeCounter <= target $targetCount) audio NOT cached, triggering pre-cache")
                             if (!isPrecaching) {
                                 try { serviceScope.launch { triggerPreCache() } } catch (_: Exception) {}
                             }
                             return true
                         }
-                        if (isFutureScan) {
-                            writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target #$validEpisodeCounter > $targetCount)")
-                        } else {
-                            writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id} (past), audio NOT cached")
-                        }
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target #$validEpisodeCounter > $targetCount)")
                         return true
                     }
 
@@ -3216,19 +3202,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return false
                 }
 
-                // v3.1.53: 第一阶段：扫描未来（近期）节目
-                writePreCacheLog("patrolSubtitle:  phase 1: scanning future episodes (count=${futureScanOrder.size})")
+                // v3.1.54: 用户要求取消过去节目扫描，只处理未来（近期）节目。
+                // 已移除 phase 2 过去扫描逻辑。
+                writePreCacheLog("patrolSubtitle:  scanning future episodes (count=${futureScanOrder.size})")
                 for (i in futureScanOrder) {
-                    if (!processEpisode(i, isFutureScan = true)) return@launch
-                }
-
-                // v3.1.53: 第二阶段：未来节目全部扫描完毕，再扫描过去节目
-                // pastScanOrder 在 coroutine 的同一作用域中定义（第 3042-3046 行）
-                if (pastScanOrder.isNotEmpty()) {
-                    writePreCacheLog("patrolSubtitle:  phase 2: future episodes all processed, now scanning past episodes (count=${pastScanOrder.count()})")
-                    for (i in pastScanOrder) {
-                        if (!processEpisode(i, isFutureScan = false)) return@launch
-                    }
+                    if (!processEpisode(i)) return@launch
                 }
 
                 writePreCacheLog("patrolSubtitle:  patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
