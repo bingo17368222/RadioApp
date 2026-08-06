@@ -280,28 +280,102 @@ object SegmentGenerator {
      * v3.1.27: 分段合并条件改为 isWaterLabel 分类 + hasVoice 双层判断。
      * "待处理"与"指纹水货"/"水货"不合并，即使 hasVoice 相同。
      */
+    /**
+     * v3.1.44: 验证完整PCM时长是否与节目时长匹配（5%容差）。
+     * 读取 .info 文件，检查 pcmDurationMs 是否与 expectedDurationMs 相差不超过5%。
+     * @return true 如果时长匹配，false 如果缺少5%以上需要重新生成
+     */
+    private fun validatePcmDuration(pcmFile: File, infoFile: File, expectedDurationMs: Long): Boolean {
+        if (!pcmFile.exists() || pcmFile.length() <= 16000) return false
+        if (!infoFile.exists()) {
+            Log.w(TAG, "validatePcmDuration: ${infoFile.name} 不存在，无法验证时长")
+            return false
+        }
+        try {
+            val text = infoFile.readText()
+            fun longOf(name: String): Long = Regex("$name=(\\d+)").find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            fun intOf(name: String): Int = Regex("$name=(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val version = intOf("version")
+            val pcmDurationMs = longOf("pcmDurationMs")
+
+            if (version <= 0 || pcmDurationMs <= 0) {
+                Log.w(TAG, "validatePcmDuration: info文件无效 version=$version pcmDurationMs=$pcmDurationMs")
+                return false
+            }
+
+            val missingRatio = 1.0 - pcmDurationMs.toDouble() / expectedDurationMs
+            if (missingRatio > 0.05) {
+                Log.w(TAG, "validatePcmDuration: PCM时长不足 - pcm=${pcmDurationMs}ms, expected=${expectedDurationMs}ms, 缺少${String.format(java.util.Locale.US, "%.1f", missingRatio * 100)}% > 5%，需要重新生成")
+                return false
+            }
+            if (missingRatio > 0) {
+                Log.i(TAG, "validatePcmDuration: PCM时长略短 - pcm=${pcmDurationMs}ms, expected=${expectedDurationMs}ms, 缺少${String.format(java.util.Locale.US, "%.1f", missingRatio * 100)}%（在5%容差内）")
+            }
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "validatePcmDuration: 读取info文件异常: ${e.message}")
+            return false
+        }
+    }
+
     private fun isWaterLabel(label: String?): Boolean {
         return label == "指纹水货" || label == "水货" || label == "水货(漏判召回)"
     }
 
     private fun mergeAdjacentSegments(segments: List<VoiceSegment>): MutableList<VoiceSegment> {
-        val merged = mutableListOf<VoiceSegment>()
-        for (seg in segments) {
-            val last = merged.lastOrNull()
-            if (last != null && last.hasVoice == seg.hasVoice
-                    && isWaterLabel(last.label) == isWaterLabel(seg.label)) {
-                last.end = seg.end
-            } else {
-                merged.add(VoiceSegment().apply {
-                    this.start = seg.start
-                    this.end = seg.end
-                    this.hasVoice = seg.hasVoice
-                    this.label = seg.label
-                    this.isSimulated = false
-                })
+        if (segments.isEmpty()) return mutableListOf()
+        val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
+
+        // v3.1.44: 增强合并逻辑，处理连续水分片段被短间隔分隔未合并的问题
+        val MAX_WATER_MERGE_GAP_MS = 10000L // 10秒
+
+        // Pass 1: 合并相邻同类型片段（原有合并逻辑）
+        var changed = true
+        while (changed) {
+            changed = false
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                val next = sorted[i + 1]
+                if (curr.hasVoice == next.hasVoice
+                        && isWaterLabel(curr.label) == isWaterLabel(next.label)
+                        && next.start <= curr.end + 10) {
+                    curr.end = maxOf(curr.end, next.end)
+                    sorted.removeAt(i + 1)
+                    changed = true
+                    break
+                }
             }
         }
-        return merged
+
+        // Pass 2: 合并被短中间片段分隔的连续水分片段
+        // 场景：指纹水货 → 短静音/待处理 → 指纹水货，应合并为一个大水分段
+        changed = true
+        while (changed) {
+            changed = false
+            for (i in 0 until sorted.size - 1) {
+                val curr = sorted[i]
+                if (!isWaterLabel(curr.label)) continue
+                var gapMs = 0L
+                var j = i + 1
+                while (j < sorted.size) {
+                    val mid = sorted[j]
+                    if (isWaterLabel(mid.label)) {
+                        // 找到下一个水分片段，合并（跳过中间的非水分片段）
+                        curr.end = maxOf(curr.end, mid.end)
+                        repeat(j - i) { sorted.removeAt(i + 1) }
+                        changed = true
+                        break
+                    }
+                    // 非水分：累积间隔
+                    gapMs += mid.end - mid.start
+                    if (gapMs > MAX_WATER_MERGE_GAP_MS) break
+                    j++
+                }
+                if (changed) break
+            }
+        }
+
+        return sorted
     }
 
     /**
@@ -846,9 +920,20 @@ object SegmentGenerator {
         var audioEngineName = "就AI听"
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
-        val pcmSourceFile = when {
-            fullPcmFile.exists() && fullPcmFile.length() > 0 -> fullPcmFile
-            else -> null
+        val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
+
+        // v3.1.44: 检查完整PCM时长是否与节目时长匹配，缺少5%以上重新生成
+        val pcmSourceFile = if (fullPcmFile.exists() && fullPcmFile.length() > 16000) {
+            if (validatePcmDuration(fullPcmFile, fullInfoFile, effectiveDurationMs)) {
+                fullPcmFile
+            } else {
+                val fpMsgPcmDuration = "三层架构: 完整PCM时长不匹配，重新生成 for episode=$episodeId"
+                Log.w(TAG, fpMsgPcmDuration)
+                writeFingerprintLog(context, fpMsgPcmDuration)
+                null
+            }
+        } else {
+            null
         }
 
         val mergedAfterLayer1: List<VoiceSegment>

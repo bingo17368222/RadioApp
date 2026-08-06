@@ -844,7 +844,8 @@ object AudioSegmentAnalyzer {
         var pcmFile: File? = null
 
         if (fullPcmFile.exists() && fullPcmFile.length() > 16000) {
-            val validInfo = validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs)
+            // v3.1.44: 使用5%容差检查完整PCM时长，缺少5%以上重新生成
+            val validInfo = validatePcmWithInfo(fullPcmFile, fullInfoFile, mp4DurationMs, 0.05)
             if (validInfo != null) {
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: full PCM valid per .info for $episodeId (mp4=${validInfo.mp4DurationMs}ms, pcm=${validInfo.pcmDurationMs}ms)")
                 pcmFile = fullPcmFile

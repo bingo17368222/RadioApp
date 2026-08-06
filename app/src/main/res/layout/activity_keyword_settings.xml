@@ -145,6 +145,43 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
+            <!-- v3.1.44: 恢复指纹列表，每一条带播放/测试按钮 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="音频指纹素材列表"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="8dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:id="@+id/tv_fingerprints_empty"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_margin="16dp"
+                    android:text="暂无音频指纹素材"
+                    android:textColor="?attr/appTextMuted"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/recycler_audio_fingerprints"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="120dp"
+                    android:nestedScrollingEnabled="false" />
+            </LinearLayout>
+
             <!-- 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用） -->
             <TextView
                 android:layout_width="wrap_content"
