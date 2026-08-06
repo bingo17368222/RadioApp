@@ -17,18 +17,16 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.radio.app.R
-import com.radio.app.adapters.AudioFingerprintAdapter
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
@@ -58,13 +56,18 @@ class KeywordSettingsActivity : AppCompatActivity() {
     private lateinit var settings: AppSettings
     private lateinit var tvTitle: TextView
     private lateinit var btnBack: ImageButton
-    private lateinit var recyclerFingerprints: RecyclerView
-    private lateinit var fingerprintAdapter: AudioFingerprintAdapter
     private lateinit var tvFingerprintCount: TextView
-    private lateinit var tvFingerprintsEmpty: TextView
     private lateinit var btnTestAll: Button
     private lateinit var btnFingerprintGroups: Button
     private lateinit var btnFingerprintManagement: Button
+
+    // v3.1.55: 带进度条的播放控件
+    private lateinit var sbPlaybackProgress: SeekBar
+    private lateinit var tvPlaybackStatus: TextView
+    private lateinit var btnPlayback: Button
+    private var playingEpisodeId: String? = null
+    private var isPlaying = false
+    private var playbackFileSize: Long = 0L
 
     // 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用）
     private lateinit var etCombinationStart: EditText
@@ -79,6 +82,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
     // v3.0.4: PCM 播放
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
+    private var progressUpdater: Runnable? = null
 
     // v3.0.5: 接收指纹服务广播，自动刷新列表并提示结果
     private val fingerprintReceiver = object : BroadcastReceiver() {
@@ -133,7 +137,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
         prefMgr = PreferenceManager(this)
         settings = prefMgr.loadSettings()
 
-        initFingerprintList()
+        initPlaybackAndTest()
         initWaterCombinationManagement()
 
         try {
@@ -175,75 +179,23 @@ class KeywordSettingsActivity : AppCompatActivity() {
         } catch (_: Exception) {}
     }
 
-    // ==================== 音频指纹管理 ====================
+    // ==================== 音频指纹播放与测试（v3.1.55：移除列表，保留播放/测试功能） ====================
 
-    private fun initFingerprintList() {
-        recyclerFingerprints = findViewById(R.id.recycler_audio_fingerprints)
+    private fun initPlaybackAndTest() {
         tvFingerprintCount = findViewById(R.id.tv_fingerprint_count)
-        tvFingerprintsEmpty = findViewById(R.id.tv_fingerprints_empty)
         btnTestAll = findViewById(R.id.btn_test_all_fingerprints)
         btnFingerprintGroups = findViewById(R.id.btn_fingerprint_groups)
         btnFingerprintManagement = findViewById(R.id.btn_fingerprint_management)
+        sbPlaybackProgress = findViewById(R.id.sb_playback_progress)
+        tvPlaybackStatus = findViewById(R.id.tv_playback_status)
+        btnPlayback = findViewById(R.id.btn_playback_fingerprint)
 
-        fingerprintAdapter = AudioFingerprintAdapter()
-        recyclerFingerprints.layoutManager = LinearLayoutManager(this)
-        recyclerFingerprints.adapter = fingerprintAdapter
-
-        fingerprintAdapter.setOnDeleteListener { fp ->
-            AlertDialog.Builder(this)
-                .setTitle("删除音频指纹")
-                .setMessage("确定删除该水分音频指纹素材吗？")
-                .setPositiveButton("删除") { _, _ ->
-                    try {
-                        RadioDatabaseHelper.getInstance(this).deleteAudioFingerprint(fp.id)
-                        PcmSegmentExtractor.getWatermarkPcmFile(this, fp.episodeId, fp.startMs, fp.endMs).delete()
-                        Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "delete failed: ${e.message}")
-                        Toast.makeText(this, "删除失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                    loadFingerprints()
-                }
-                .setNegativeButton("取消", null)
-                .show()
-        }
-
-        fingerprintAdapter.setOnRefreshListener { fp ->
-            refreshFingerprintAsync(fp)
-        }
-
-        // v3.1.42: 指纹播放
-        fingerprintAdapter.setOnPlayListener { fp ->
-            val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(this, fp.episodeId, fp.startMs, fp.endMs)
-            if (pcmFile.exists() && pcmFile.length() > 0) {
-                playPcmFile(pcmFile)
+        // 播放按钮：播放第一条指纹的PCM，或停止播放
+        btnPlayback.setOnClickListener {
+            if (isPlaying) {
+                releaseAudioTrack()
             } else {
-                Toast.makeText(this, "水印PCM文件不存在，尝试从缓存重新生成...", Toast.LENGTH_SHORT).show()
-                regenerateWatermarkPcmAndPlay(fp)
-            }
-        }
-
-        // v3.1.42: 指纹停止播放
-        fingerprintAdapter.setOnStopListener {
-            releaseAudioTrack()
-        }
-
-        // v3.1.42: 指纹测试
-        fingerprintAdapter.setOnTestListener { fp ->
-            testFingerprint(fp)
-        }
-
-        // v3.1.0: 选中高亮 - 点击条目时选中
-        fingerprintAdapter.setOnItemClickListener { _, position ->
-            fingerprintAdapter.setSelectedPosition(position)
-        }
-
-        // v3.1.3: 备注更新
-        fingerprintAdapter.setOnNoteUpdateListener { fp, newNote ->
-            try {
-                RadioDatabaseHelper.getInstance(this).updateFingerprintNote(fp.id, newNote)
-            } catch (e: Exception) {
-                Log.e(TAG, "updateNote failed: ${e.message}")
+                playFirstFingerprint()
             }
         }
 
@@ -260,6 +212,34 @@ class KeywordSettingsActivity : AppCompatActivity() {
         // v3.2.3: 指纹分类管理
         btnFingerprintManagement.setOnClickListener {
             startActivity(Intent(this, FingerprintManagementActivity::class.java))
+        }
+    }
+
+    /**
+     * v3.1.55: 播放第一条指纹的水印PCM。
+     */
+    private fun playFirstFingerprint() {
+        try {
+            val db = RadioDatabaseHelper.getInstance(this)
+            val allFps = db.getAllAudioFingerprints()
+            if (allFps.isEmpty()) {
+                Toast.makeText(this, "没有指纹数据，请先在播放器中添加指纹", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val fp = allFps.first()
+            val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(this, fp.episodeId, fp.startMs, fp.endMs)
+            if (pcmFile.exists() && pcmFile.length() > 0) {
+                playingEpisodeId = fp.episodeId
+                tvPlaybackStatus.text = "正在播放: ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]"
+                btnPlayback.text = "停止"
+                playPcmFile(pcmFile)
+            } else {
+                Toast.makeText(this, "水印PCM文件不存在，尝试从缓存重新生成...", Toast.LENGTH_SHORT).show()
+                regenerateWatermarkPcmAndPlay(fp)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "playFirstFingerprint failed: ${e.message}")
+            Toast.makeText(this, "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -297,9 +277,12 @@ class KeywordSettingsActivity : AppCompatActivity() {
 
     /**
      * v3.0.4: 播放 PCM 文件（使用 AudioTrack）。
+     * v3.1.55: 添加 SeekBar 进度条跟踪。
      */
     private fun playPcmFile(pcmFile: File) {
         releaseAudioTrack()
+        playbackFileSize = pcmFile.length()
+        isPlaying = true
         try {
             val bufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val track = AudioTrack(
@@ -318,21 +301,42 @@ class KeywordSettingsActivity : AppCompatActivity() {
             )
             audioTrack = track
             track.play()
+
+            // 启动进度条更新
+            progressUpdater = Runnable {
+                updatePlaybackProgress()
+            }
+
             playbackThread = Thread {
                 try {
                     val buffer = ByteArray(bufferSize.coerceAtLeast(4096))
                     val fis = java.io.FileInputStream(pcmFile)
+                    var totalRead = 0L
                     var bytesRead: Int
-                    while (fis.read(buffer).also { bytesRead = it } > 0) {
+                    while (fis.read(buffer).also { bytesRead = it } > 0 && isPlaying) {
                         track.write(buffer, 0, bytesRead)
+                        totalRead += bytesRead
+                        // 更新进度条（每读取一块更新一次）
+                        val progress = ((totalRead.toFloat() / playbackFileSize) * 1000).toInt()
+                        uiHandler.post { sbPlaybackProgress.progress = progress.coerceIn(0, 1000) }
                     }
                     fis.close()
-                    track.stop()
+                    if (isPlaying) {
+                        track.stop()
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "playback error: ${e.message}")
                 } finally {
                     track.release()
                     if (audioTrack == track) audioTrack = null
+                    uiHandler.post {
+                        isPlaying = false
+                        sbPlaybackProgress.progress = 0
+                        btnPlayback.text = "播放选中指纹"
+                        tvPlaybackStatus.text = "播放完成"
+                        progressUpdater?.let { uiHandler.removeCallbacks(it) }
+                        progressUpdater = null
+                    }
                 }
             }.apply {
                 name = "fingerprint-playback"
@@ -340,12 +344,26 @@ class KeywordSettingsActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "playPcmFile failed: ${e.message}")
+            isPlaying = false
             audioTrack = null
+            btnPlayback.text = "播放选中指纹"
+            tvPlaybackStatus.text = "播放失败"
+            sbPlaybackProgress.progress = 0
         }
     }
 
     /**
+     * v3.1.55: 更新播放进度条。
+     */
+    private fun updatePlaybackProgress() {
+        if (!isPlaying) return
+        // 重新调度下次更新（每200ms刷新一次）
+        uiHandler.postDelayed({ updatePlaybackProgress() }, 200L)
+    }
+
+    /**
      * 释放 AudioTrack 资源。
+     * v3.1.55: 重置播放UI状态。
      */
     private fun releaseAudioTrack() {
         try {
@@ -357,6 +375,13 @@ class KeywordSettingsActivity : AppCompatActivity() {
             }
             audioTrack = null
         } catch (_: Exception) {}
+        isPlaying = false
+        playingEpisodeId = null
+        sbPlaybackProgress.progress = 0
+        btnPlayback.text = "播放选中指纹"
+        tvPlaybackStatus.text = "未播放"
+        progressUpdater?.let { uiHandler.removeCallbacks(it) }
+        progressUpdater = null
     }
 
     /**
@@ -400,10 +425,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
         try {
             val db = RadioDatabaseHelper.getInstance(this)
             val allFingerprints = db.getAllAudioFingerprints()
-            fingerprintAdapter.setItems(allFingerprints)
             tvFingerprintCount.text = "已保存 ${allFingerprints.size} 条指纹"
-            tvFingerprintsEmpty.visibility = if (allFingerprints.isEmpty()) TextView.VISIBLE else TextView.GONE
-            recyclerFingerprints.visibility = if (allFingerprints.isEmpty()) RecyclerView.GONE else RecyclerView.VISIBLE
         } catch (e: Exception) {
             Log.e(TAG, "loadFingerprints failed: ${e.message}")
         }

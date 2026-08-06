@@ -93,14 +93,38 @@ object FileLogUtils {
 
     /**
      * 当日志文件过大时，保留最近 N 行。
+     * v3.1.55: 使用逐行读取而非 readLines()，避免 OOM。
      */
     private fun trimLogFile(file: File) {
         try {
-            val lines = file.readLines()
-            if (lines.size > MAX_LOG_LINES) {
-                val keep = lines.takeLast(MAX_LOG_LINES)
-                file.writeText(keep.joinToString("\n") + "\n")
+            if (!file.exists()) return
+            // 先计算总行数（逐行读取，不加载到内存）
+            var totalLines = 0
+            file.useLines { lines ->
+                lines.forEach { totalLines++ }
             }
+            if (totalLines <= MAX_LOG_LINES) return
+
+            // 需要保留的行数
+            val linesToKeep = MAX_LOG_LINES
+            val skipLines = totalLines - linesToKeep
+
+            // 逐行写入临时文件
+            val tempFile = File(file.absolutePath + ".tmp")
+            var lineNum = 0
+            file.useLines { lines ->
+                tempFile.bufferedWriter().use { writer ->
+                    lines.forEach { line ->
+                        lineNum++
+                        if (lineNum > skipLines) {
+                            writer.write(line)
+                            writer.newLine()
+                        }
+                    }
+                }
+            }
+            // 替换原文件
+            tempFile.renameTo(file)
         } catch (_: Exception) {}
     }
 
