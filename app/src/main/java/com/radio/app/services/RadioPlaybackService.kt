@@ -2165,18 +2165,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.45: 使用滑动窗口法查找所有匹配（包括重叠匹配），
         // 因为 findAll 默认不重叠，导致文件名如 sijiache_20241031_0700_0900.mp4 中
         // 正确的匹配 0700_0900 被错误跳过（与 2024_1031 重叠），而 1031_0700 被误采为 20.5小时。
+        // v3.1.49: 修复根因——v3.1.45的滑动窗口法引入了重叠匹配问题，
+        // 1031_0700 与 2024_1031 重叠，滑动窗口强行找到此匹配并产生20.5小时结果，
+        // 再靠12小时上限过滤，这是回避问题的手段。
+        // 正确做法：findAll 返回非重叠匹配，1031_0700 与 2024_1031 重叠，
+        // 不会被 findAll 找到。而 0700_0900 与 2024_1031 不重叠，会被 findAll 正常返回。
+        // 取最后一个匹配（最右侧的匹配）即为正确的节目时间段。
+        // 同时移除12小时上限（43_200_000L），改用6小时上限（21_600_000L），
+        // 因为节目时长超过6小时跨午夜（如23:00-05:00=6h）不合理。
         val audioUrl = episode.audioUrl
         if (!audioUrl.isNullOrBlank()) {
             val path = audioUrl.substringBeforeLast("?").substringAfterLast("/")
             val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
+            // v3.1.49: 使用 findAll 获取所有非重叠匹配，取最后一个（最右侧）
+            // 滑动窗口法（searchPos=match.range.first+1）会找到重叠匹配如 1031_0700（20.5h），
+            // 而 findAll 只返回非重叠匹配，1031_0700 与 2024_1031 重叠，不会出现在结果中。
+            val matches = regex.findAll(path).toList()
             var bestMatch = 0L
             var bestPos = -1
-            // v3.1.45: 使用滑动窗口法，每次+1步进，确保找到所有重叠匹配
-            var searchPos = 0
-            while (searchPos < path.length) {
-                val match = regex.find(path, searchPos) ?: break
-                searchPos = match.range.first + 1 // +1 允许重叠
-                val (_, sh, sm, eh, em) = match.groupValues
+            for (matchResult in matches) {
+                val (_, sh, sm, eh, em) = matchResult.groupValues
                 try {
                     val startH = sh.toInt(); val startM = sm.toInt()
                     val endH = eh.toInt(); val endM = em.toInt()
@@ -2186,14 +2194,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         var end = endH * 3600000L + endM * 60000L
                         if (end < start) end += 24 * 3600000L
                         val duration = end - start
-                        // v3.1.45: 合理时长上限从24小时收紧到12小时（43200000ms），
-                        // 防止日期部分（如 1031_0700 被误匹配为20.5小时）通过
-                        if (duration in 600_000L..43_200_000L) {
-                            // 取位置靠后的匹配（实际时间范围总是在文件名末尾，日期部分在开头）
-                            if (match.range.first > bestPos) {
-                                bestPos = match.range.first
-                                bestMatch = duration
-                            }
+                        // v3.1.49: 合理时长上限从12小时收紧到6小时（21600000ms），
+                        // 文件名中日期部分如 2024_1031 被误匹配产生14.1小时，6小时上限可过滤。
+                        // 节目最长不超过6小时（跨午夜如23:00-05:00=6h上限合理）。
+                        // 取位置靠后的匹配（实际时间范围总是在文件名末尾，日期部分在开头）
+                        if (duration in 600_000L..21_600_000L && matchResult.range.first > bestPos) {
+                            bestPos = matchResult.range.first
+                            bestMatch = duration
                         }
                     }
                 } catch (_: Exception) {}

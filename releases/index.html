@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.39 安装</title>
+<title>RadioApp v3.1.49 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,19 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.39</div>
+  <div class="version">v3.1.49</div>
   <div class="changelog">
-    <h3>更新内容</h3>
+    <h3>更新内容 v3.1.49</h3>
     <ul>
-      <li>Fix: 节目单刷新不再覆盖已有预缓存列表（合并新节目到现有列表）</li>
-      <li>Fix: PCM .info校验失败时保留大PCM文件，避免反复删除重建</li>
-      <li>Fix: 三层架构在无PCM文件时也运行第2/3层（VAD+指纹召回）</li>
-      <li>Fix: 预生成PCM前检查音频文件是否已缓存，避免无效解码</li>
+      <li>Fix: 音频期待时长根因修复（文件大小不再与音频时长比较）</li>
+      <li>Fix: 预缓存检查机制（近期已缓存成功后再缓存远期）</li>
+      <li>Fix: 音频指纹恢复UI入口（播放测试功能）</li>
+      <li>Fix: 三层分段通知栏防循环守卫（防止快速出现消失循环+卡顿）</li>
+      <li>Fix: 移除永久失败标志和冷却机制</li>
+      <li>Fix: getExpectedAudioDurationMs正则算法彻底修复（findAll+6h上限）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.39.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.49.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -116,7 +118,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.39.apk",
+  text: window.location.href + "RadioApp-v3.1.48.apk",
   width: 180,
   height: 180
 });
