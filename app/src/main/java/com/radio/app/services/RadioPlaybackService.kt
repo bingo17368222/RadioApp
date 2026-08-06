@@ -78,7 +78,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         private const val TAG = "RadioPlaybackService"
         private const val MAX_ERROR_RETRY = 1  // [v2.3.6] Reduced from 3 to 1: faster recovery (2s instead of 18s)
         private const val NOTIFICATION_ID = 1
-        private const val POSITION_SAVE_INTERVAL = 5000L
+        // v3.1.53: 从 5s 增加到 15s，减少位置保存频率。
+        // 根因：每 5 秒保存一次位置，2 小时节目约 1440 次写入。每次写入涉及
+        // SharedPreferences 异步 I/O 和日志写入，导致 UI 线程卡顿（日志显示 1822 次）。
+        // 15 秒间隔在精度和性能之间取得平衡——即使 App 崩溃，最多丢失 15 秒进度。
+        private const val POSITION_SAVE_INTERVAL = 15000L
         // [v2.4.13] Subtitle patrol interval: 3 minutes
         private const val SUBTITLE_PATROL_INTERVAL_MS = 3L * 60 * 1000
 
@@ -3023,20 +3027,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                 }
 
-                // v3.1.50: 同时扫描过去和未来未完成的节目，优先处理过去日期。
-                // 根因：原代码仅从 currentIdx+1 向前扫描，过去未处理的节目（如20241101的PCM/分段）
-                // 永远被跳过，导致"跳过近期处理远期"问题。
-                // 修复：扫描顺序 = 过去（从currentIdx-1向0递减）+ 未来（从currentIdx+1向末尾递增）
-                // v3.1.51: 进一步增强——在构建 scanOrder 前已扫描孤儿文件并加入 preCacheList，
-                // 确保过去节目也被包含在扫描范围内。
-                val scanOrder = if (currentIdx >= 0) {
-                    val pastIndices = (0 until currentIdx).reversed()  // 过去：从近到远
-                    val futureIndices = ((currentIdx + 1) until preCacheList.size).toList()  // 未来
-                    pastIndices + futureIndices
+                // v3.1.53: 修复优先处理近期节目，近期成功后再处理远期。
+                // 根因：v3.1.50 将过去节目放在 scanOrder 前面，导致 patrol 先处理过去节目
+                // （如20241015的PCM），processedCount 很快达到批量上限，近期节目（如20241102）
+                // 永远被跳过——"跳过近期处理远期"。
+                // 修复：先扫描未来（近期）节目，近期全部成功后，再扫描过去节目。
+                // 过去节目即使失败或跳过，也不影响近期节目的处理。
+                //
+                // 两层扫描：
+                // 1. 未来扫描：从 currentIdx+1 向前，处理需要生成 PCM/分段/字幕的近期节目
+                // 2. 过去扫描：从 currentIdx-1 向 0 递减，处理过去遗留的未完成节目
+                val futureScanOrder: List<Int> = if (currentIdx >= 0) {
+                    ((currentIdx + 1) until preCacheList.size).toList()
                 } else {
                     writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
                 }
+                val pastScanOrder: List<Int> = if (currentIdx >= 0) {
+                    (0 until currentIdx).reversed().toList()  // 过去：从近到远
+                } else {
+                    emptyList()
+                }
+                // v3.1.53: 先处理未来（近期）节目，处理完后再处理过去节目
+                writePreCacheLog("patrolSubtitle:  scanOrder: future=${futureScanOrder.size} episodes, past=${pastScanOrder.size} episodes, processing future first")
 
                 // v3.1.52: 检查是否有分段正在进行中。如果在分段（generateJiuAiTingSegments 或 preSegmentAudio），
                 // 跳过本次巡逻，避免并发分段导致通知栏循环以及数据竞争。
@@ -3055,55 +3068,46 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 var withAudio = 0
                 var withSubtitles = 0
                 var withoutAudio = 0
-
-                // [v2.4.19] Also check for leftover _full.pcm (interrupted generation) - prioritize these
-                // v3.1.2: 优先补全最近的节目——遇到未缓存的近期节目时停止巡逻并触发预缓存，
-                // 避免跳过临近节目去处理更远的节目。
                 var validEpisodeCounter = 0
                 var processedCount = 0  // v3.1.4: 批量处理计数，每次巡逻最多处理 preloadCacheCount 个节目
-                for (i in scanOrder) {
-                    var ep = preCacheList[i]
-                    if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) continue
-                    // v2.4.148: The pre-cache list may contain only id+url. Enrich from the
-                    // episode_info DB so patrol notifications and skip-by-title work offline.
+
+                // v3.1.53: 处理单个节目的辅助函数，返回 true 表示继续扫描，false 表示停止巡逻
+                // 注：声明在变量定义之后，因为在 Kotlin 局部函数中引用的变量需先声明。
+                fun processEpisode(epIdx: Int, isFutureScan: Boolean): Boolean {
+                    var ep = preCacheList[epIdx]
+                    if (ep.id.isNullOrBlank() || ep.audioUrl.isBlank()) return true
                     ep = enrichEpisodeFromDbIfNeeded(ep)
                     totalScanned++
 
-                    // v3.1.2: 跳过不喜欢和无需预处理的节目，不计入有效节目计数
                     if (settings.isNoPreprocess(ep.id)) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, noPreprocess")
-                        continue
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, noPreprocess${if(isFutureScan) " (future)" else " (past)"}")
+                        return true
                     }
                     if (settings.isDisliked(ep.id) || (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title))) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked")
-                        continue
+                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked${if(isFutureScan) " (future)" else " (past)"}")
+                        return true
                     }
 
                     validEpisodeCounter++
 
-                    // Check if audio is cached
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) {
                         withoutAudio++
-                        // v3.1.2: 如果该未缓存节目在预缓存目标范围内，停止巡逻并触发预缓存，
-                        // 避免跳过临近节目去处理更远的已缓存节目。
-                        if (validEpisodeCounter <= targetCount) {
+                        if (isFutureScan && validEpisodeCounter <= targetCount) {
                             writePreCacheLog("patrolSubtitle:  ep=${ep.id} ( #$validEpisodeCounter <= target $targetCount) audio NOT cached, triggering pre-cache")
                             if (!isPrecaching) {
                                 try { serviceScope.launch { triggerPreCache() } } catch (_: Exception) {}
                             }
-                            // 触发预缓存后继续扫描已缓存的节目，不停止巡逻
-                            continue
+                            return true
                         }
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target range #$validEpisodeCounter > $targetCount)")
-                        continue
+                        if (isFutureScan) {
+                            writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target #$validEpisodeCounter > $targetCount)")
+                        } else {
+                            writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id} (past), audio NOT cached")
+                        }
+                        return true
                     }
 
-                    // v2.4.188: Validate cached audio file integrity. Truncated or corrupted
-                    // downloads (e.g. a 20MB file for a 2-hour programme) are seen as "cached"
-                    // by the simple length>1024 check above, but they poison the PCM decoder
-                    // and cause an endless loop of failed PCM generation. Detect these files
-                    // and delete them so the pre-cache flow re-downloads a valid copy.
                     val audioFile = File(episodesDir, fileName)
                     val expectedDurationMs = getExpectedAudioDurationMs(ep)
                     if (!validateCachedAudioFile(audioFile, expectedDurationMs)) {
@@ -3112,18 +3116,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         writeServiceLog("notification", "DELETING invalid audio cache: ${audioFile.absolutePath}, size=${audioFile.length()}, expected=${expectedDurationMs}ms")
                         try { audioFile.delete() } catch (_: Exception) {}
                         cleanupPcmFilesForEpisode(ep.id)
-                        // v3.1.48: 不设永久失败标志——根因已在validateWithExtractor中修复，
-                        // 不再比较文件大小与音频时长。文件被删除后会通过正常预缓存机制重新下载。
-                        continue
+                        return true
                     }
 
                     withAudio++
                     writePreCacheLog("patrolSubtitle:  ep=${ep.id}, audio cached ($fileName), checking subtitles...")
 
-                    // v3.1.2: noPreprocess/disliked checks moved earlier (before audio cache check)
-                    // to ensure valid episode counting is accurate.
-
-                    // v2.4.176: Pre-segment episodes that already have a full PCM file and no real segments yet.
                     if (settings.enablePreSegment && preprocessingEnabled) {
                         val fullPcmFile = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
                         if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
@@ -3134,15 +3132,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 val durMs = if (epDuration > 60000L) epDuration else 7200_000L
                                 writePreCacheLog("patrolSubtitle:  full PCM exists and no real segments, pre-segmenting ${ep.id}")
                                 val segmented = com.radio.app.utils.SegmentGenerator.preSegmentAudio(
-                                    this@RadioPlaybackService,
-                                    ep.id,
-                                    durMs,
-                                    ep.audioUrl
+                                    this@RadioPlaybackService, ep.id, durMs, ep.audioUrl
                                 )
                                 if (segmented) {
-                                    // v2.4.183: Refresh the in-memory segment list for the current
-                                    // episode so segment-button navigation reads from memory instead
-                                    // of competing with the DB writer.
                                     try {
                                         val freshSegments = dbHelper.getVoiceSegments(ep.id)
                                         synchronized(this@RadioPlaybackService) {
@@ -3154,63 +3146,49 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     LocalBroadcastManager.getInstance(this@RadioPlaybackService)
                                         .sendBroadcast(Intent(ACTION_SEGMENTS_UPDATED))
                                 }
-                                // 已预分段的节目数+1，继续扫描后续节目
                                 processedCount++
                                 if (processedCount >= settings.preloadCacheCount) {
                                     writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
-                                    return@launch
+                                    return false
                                 }
-                                continue
+                                return true
                             }
                         }
                     }
 
-                    // [v2.4.18] Check if subtitles are COMPLETE (not just existing)
-                    // [v2.4.19] Wrap in try-catch to prevent patrol abort on DB errors
-                    // v2.4.123: When subtitles are disabled but preprocessing is on,
-                    // check for PCM files instead of subtitles.
                     if (!subtitlesEnabled && preprocessingEnabled) {
-                        // v3.1.40: PCM-only mode: check if full PCM or 5-min PCM exists
                         val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
                         val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
                         val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
                         val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
-
                         if (hasPcmFull || hasPcm5min) {
-                            withSubtitles++ // count as "already processed"
-                            continue
+                            withSubtitles++
+                            return true
                         }
-
-                        // Found a cached episode without PCM — trigger PCM generation.
-                        // v2.4.149: Respect user setting. Default generates full PCM to preserve behavior;
-                        // disabling it generates only the lightweight 5-min preview PCM.
-                        val settings = com.radio.app.models.AppSettings.getInstance(this@RadioPlaybackService)
-                        val shouldGenerateFullPcm = settings.patrolGenerateFullPcm
+                        val pcmSettings = com.radio.app.models.AppSettings.getInstance(this@RadioPlaybackService)
+                        val shouldGenerateFullPcm = pcmSettings.patrolGenerateFullPcm
                         writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id}), generateFullPcm=${shouldGenerateFullPcm}")
                         val pcmStarted = startPreCachePcmGeneration(ep, generateFullPcm = shouldGenerateFullPcm)
                         if (!pcmStarted) {
                             writePreCacheLog("patrolSubtitle:  PCM generation already in progress for ${ep.id}, skipping")
-                            continue
+                            return true
                         }
-                        // v3.1.33: 移除冗余通知 — PCM预生成有自己的进度通知（在startPreCachePcmGeneration中）
                         processedCount++
                         if (processedCount >= settings.preloadCacheCount) {
                             writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
-                            // v3.2.1: 达到批量上限时，PCM生成完成后会通过链式触发继续巡逻
-                            return@launch
+                            return false
                         }
-                        continue
+                        return true
                     }
 
                     var isComplete = false
                     try {
                         isComplete = dbHelper.hasCompleteSubtitles(ep.id)
                     } catch (e: Exception) {
-                        writePreCacheLog("patrolSubtitle:  hasCompleteSubtitles failed for ${ep.id}: ${e.message}, treating as incomplete")
+                        writePreCacheLog("patrolSubtitle:  hasCompleteSubtitles failed for ${ep.id}: ${e.message}")
                     }
                     if (isComplete) {
                         withSubtitles++
-                        // v2.4.91: Auto-generate keyword-based segments after subtitles complete
                         try {
                             val existingSegs = dbHelper.getVoiceSegments(ep.id)
                             val hasRealSegs = existingSegs.any { !it.isSimulated }
@@ -3223,23 +3201,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         } catch (e: Exception) {
                             writePreCacheLog("patrolSubtitle:  auto-segment failed for ${ep.id}: ${e.message}")
                         }
-                        continue
+                        return true
                     }
 
-                    // [v2.4.14] Check if there's a leftover _full.pcm (interrupted generation)
-                    // If so, this episode needs resume — prioritize it
                     val fullPcmFile = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
                     if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                         writePreCacheLog("patrolSubtitle:  found leftover full PCM for ${ep.id}, resuming subtitle generation")
                         startPreCacheSubtitleGeneration(ep)
-                        return@launch
+                        return false
                     }
 
-                    // Found a cached episode without subtitles — trigger subtitle generation
                     writePreCacheLog("patrolSubtitle:  found cached episode without subtitles: ${ep.title} (${ep.id}), triggering generation")
                     startPreCacheSubtitleGeneration(ep)
-                    // v3.1.34: 移除冗余通知 — PCM预生成(30000)和巡逻总结(2002)已足够，无需额外"正在生成字幕"通知
-                    return@launch  // Only generate one at a time; next patrol will pick up the next one
+                    return false
+                }
+
+                // v3.1.53: 第一阶段：扫描未来（近期）节目
+                writePreCacheLog("patrolSubtitle:  phase 1: scanning future episodes (count=${futureScanOrder.size})")
+                for (i in futureScanOrder) {
+                    if (!processEpisode(i, isFutureScan = true)) return@launch
+                }
+
+                // v3.1.53: 第二阶段：未来节目全部扫描完毕，再扫描过去节目
+                // pastScanOrder 在 coroutine 的同一作用域中定义（第 3042-3046 行）
+                if (pastScanOrder.isNotEmpty()) {
+                    writePreCacheLog("patrolSubtitle:  phase 2: future episodes all processed, now scanning past episodes (count=${pastScanOrder.count()})")
+                    for (i in pastScanOrder) {
+                        if (!processEpisode(i, isFutureScan = false)) return@launch
+                    }
                 }
 
                 writePreCacheLog("patrolSubtitle:  patrol complete (scanned=$totalScanned, withAudio=$withAudio, withSubtitles=$withSubtitles, withoutAudio=$withoutAudio)")
@@ -5239,6 +5228,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * This ensures the notification shows title/date/time even when offline or the caller's
      * Episode object was created from a minimal intent/extra without full metadata.
      */
+    // v3.1.53: enrichEpisodeFromDb 内存缓存，避免每秒巡逻时重复查询数据库。
+    // 根因：patrolSubtitleGeneration 每秒扫描所有节目，每个节目都调用
+    // enrichEpisodeFromDbIfNeeded 查询数据库，导致大量重复 DB 查询（日志显示 2852 次）。
+    // 修复：缓存 enriched 结果 60 秒，同一节目在 60 秒内不再查询数据库。
+    // 60 秒后 patrol 重新扫描时会自动刷新缓存。
+    private val enrichCache = HashMap<String, Pair<Long, Episode>>()  // episodeId -> (timestamp, result)
+    private val ENRICH_CACHE_TTL_MS = 60_000L  // 60 seconds
+
     private fun enrichEpisodeFromDbIfNeeded(episode: Episode): Episode {
         if (episode.id.isNullOrBlank()) return episode
         val hasTitle = !episode.title.isNullOrBlank()
@@ -5246,6 +5243,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val hasDuration = episode.duration > 0
         val hasTimeRange = episode.startTime > 0 && episode.endTime > 0
         if (hasTitle && hasBroadcastAt && hasDuration && hasTimeRange) return episode
+        // v3.1.53: Check cache first
+        val now = System.currentTimeMillis()
+        val cachedEntry = enrichCache[episode.id]
+        if (cachedEntry != null && (now - cachedEntry.first) < ENRICH_CACHE_TTL_MS) {
+            return cachedEntry.second
+        }
         try {
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodeInfo(episode.id) ?: return episode
@@ -5268,6 +5271,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (!cached.audioUrl.isNullOrBlank() && episode.audioUrl.isNullOrBlank()) {
                 merged.audioUrl = cached.audioUrl
             }
+            // v3.1.53: Store in cache
+            enrichCache[episode.id] = Pair(now, merged)
             writeServiceLog("notification", " enrichEpisodeFromDb: episode=${episode.id}, filledTitle=${!hasTitle && !merged.title.isNullOrBlank()}, filledBroadcast=${!hasBroadcastAt && !merged.broadcastAt.isNullOrBlank()}, filledTimeRange=${!hasTimeRange && merged.startTime > 0 && merged.endTime > 0}")
             return merged
         } catch (e: Exception) {

@@ -605,6 +605,16 @@ object SegmentGenerator {
         durationMs: Long,
         audioUrl: String? = null
     ): Boolean {
+        // v3.1.53: 检查全局分段标志，防止并发分段导致通知栏循环。
+        // 根因：patrolSubtitleGeneration 每秒扫描节目并调用 preSegmentAudio，如果多个节目
+        // 连续触发，通知栏会快速出现消失（startSession/endSession 循环），造成闪烁。
+        // patrolSubtitleGeneration 外层已检查此标志，但 patrolSubtitleGeneration 检查后
+        // 到 preSegmentAudio 执行之间仍有竞态窗口，所以 preSegmentAudio 自身也要检查。
+        if (SegmentNotificationHelper.isSegmenting || isThreeLayerSegmenting) {
+            Log.w(TAG, "preSegmentAudio: global segmentation in progress (isSegmenting=true), rejecting request for episode=$episodeId")
+            return false
+        }
+
         // v2.4.185: Prevent concurrent analyses for the same episode. The shared segment
         // notification flips between two progress values when two tasks run at once.
         if (!segmentingEpisodes.add(episodeId)) {
