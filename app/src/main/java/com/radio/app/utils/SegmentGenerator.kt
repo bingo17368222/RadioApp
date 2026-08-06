@@ -776,6 +776,9 @@ object SegmentGenerator {
             return null
         }
         isThreeLayerSegmenting = true
+        // v3.1.51: 同时设置 SegmentNotificationHelper 的全局标志，阻止 startSession 接受新会话
+        // 之前此标志有 private set 导致从未被设置，通知栏循环未被阻止
+        SegmentNotificationHelper.isSegmenting = true
         try {
         val segStartTime = System.currentTimeMillis()
         // v3.1.46: 校验durationMs，如果为0或<=60000则使用默认值2小时
@@ -1116,6 +1119,8 @@ object SegmentGenerator {
         }
         } finally {
             isThreeLayerSegmenting = false
+            // v3.1.51: 同时清除全局标志，允许后续分段请求
+            SegmentNotificationHelper.isSegmenting = false
         }
     }
 

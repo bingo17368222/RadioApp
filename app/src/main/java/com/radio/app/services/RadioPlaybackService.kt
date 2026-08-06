@@ -2233,36 +2233,37 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      *
      * v3.1.43: 详细分析MediaExtractor异常根因，而非简单用文件大小回避问题。
      * 增加文件头校验，区分有效文件（MediaExtractor自身问题）和损坏文件（需要重新下载）。
-     */
-    /**
-     * v3.1.47: 简化校验逻辑——只检查文件存在和大小，其余交给MediaExtractor。
-     * 不再删除任何文件，不再记录删除原因，不再使用冷却机制。
-     * 文件大小（字节）与音频时长（毫秒）是两个概念，不应比较。
+     *
+     * v3.1.51: 恢复时长比较——getExpectedAudioDurationMs的regex已修复，期待时长可靠。
+     * 永远不要用文件大小与音频时长比较——这是根本错误，导致无效校验和无限下载循环。
      */
     private fun validateCachedAudioFile(audioFile: File, expectedDurationMs: Long): Boolean {
         if (!audioFile.exists() || audioFile.length() <= 1024 * 100) {
             Log.w(TAG, "validateCachedAudioFile: ${audioFile.name} 不存在或太小(${audioFile.length()})，判定为无效")
             return false
         }
-        // v3.1.47: 直接使用MediaExtractor校验，不删除文件、不比较时长
+        // v3.1.51: 用MediaExtractor校验，读取实际音频时长并与期待时长比较
         return validateWithExtractor(audioFile, expectedDurationMs)
     }
 
     /**
-     * v3.1.47: 修复下载循环根因——移除所有与expectedDurationMs的比较。
+     * v3.1.51: 恢复实际时长与期待时长的比较——检测截断下载。
      * 
      * 根因分析：getExpectedAudioDurationMs()从URL正则解析音频时长，但URL中的数字
-     * 可能被误匹配（如日期部分1041被解析为10:41），导致expectedDurationMs错误。
-     * 之前用"永久失败标志"、"冷却机制"等回避手段，未解决根本问题。
+     * 可能被误匹配（如日期部分1041被解析为10:41），导致expectedDurationMs错误
+     * （如2小时节目被误判为20小时）。之前用"永久失败标志"、"冷却机制"、"文件大小比较"
+     * 等回避手段，均未解决根本问题。
      * 
-     * 正确做法：MediaExtractor读到的actualDurationMs就是真实时长，文件有音频轨道
-     * 且能被MediaExtractor读取即为有效，不需要与任何期望值比较。
-     * 文件大小（字节）与音频时长（毫秒）是两个完全不同的概念，不应比较。
+     * 正确做法：
+     * 1. 修复getExpectedAudioDurationMs的regex（v3.1.49/v3.1.50已修复）
+     * 2. 用MediaExtractor获取实际音频时长
+     * 3. 比较实际时长与期待时长（允许10%容差），检测截断下载
+     * 4. 文件大小（字节）与音频时长（毫秒）是两个完全不同的概念，不应比较
      * 
-     * 判断标准简化为：
+     * 判断标准：
      * 1. 文件存在且>100KB
-     * 2. MediaExtractor能读取（有音频轨道或文件较大）
-     * 3. 不比较时长——MediaExtractor返回的时长就是真实时长
+     * 2. MediaExtractor能读取（有音频轨道）
+     * 3. 实际时长 >= 期待时长的90%（仅当期待时长有效时）
      */
     private fun validateWithExtractor(audioFile: File, expectedDurationMs: Long): Boolean {
         var extractor: MediaExtractor? = null
@@ -2277,9 +2278,40 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     audioTrackCount++
                 }
             }
-            // v3.1.47: 只要MediaExtractor能读取（不抛异常），文件即为有效。
-            // 不检查时长、不比较duration——MediaExtractor返回的时长就是真实时长，
-            // 不需要与任何期望值做比较。文件大小（字节）与音频时长（毫秒）不可比较。
+            // v3.1.51: 恢复实际时长与期待时长的比较——检测截断下载。
+            // getExpectedAudioDurationMs 的 regex 错误已在 v3.1.49/v3.1.50 修复，
+            // 现在期待时长是可靠的。MediaExtractor 返回的时长是真实时长。
+            // 如果实际时长明显小于期待时长（如只下载了5分钟而节目是2小时），
+            // 说明文件被截断（下载未完成），需要重新下载。
+            // 文件大小（字节）与音频时长（毫秒）不可比较——这是之前错误使用文件大小校验的原因。
+            if (expectedDurationMs > 60_000L) {
+                // 从音频轨道获取 MediaFormat 中的时长（微秒），MediaExtractor 自身无 duration 属性
+                var actualDurationUs = -1L
+                for (i in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("audio/")) {
+                        try {
+                            val trackDuration = format.getLong(MediaFormat.KEY_DURATION)
+                            if (trackDuration > 0 && trackDuration > actualDurationUs) {
+                                actualDurationUs = trackDuration
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+                if (actualDurationUs > 0) {
+                    val actualDurationMs = actualDurationUs / 1000
+                    // 允许10%的容差——实际时长 >= 期待时长的90%即为完整
+                    // 根因：getExpectedAudioDurationMs 已修复，不再产生20小时等错误结果
+                    val minTolerable = (expectedDurationMs * 0.9).toLong()
+                    if (actualDurationMs < minTolerable) {
+                        Log.w(TAG, "validateWithExtractor: ${audioFile.name} 实际时长(${actualDurationMs}ms) < 期待时长90%(${minTolerable}ms)，判定为截断下载")
+                        com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 截断下载: actual=${actualDurationMs}ms, expected=${expectedDurationMs}ms, minTolerable=${minTolerable}ms")
+                        return false
+                    }
+                    Log.d(TAG, "validateWithExtractor: ${audioFile.name} 时长校验通过: actual=${actualDurationMs}ms, expected=${expectedDurationMs}ms")
+                }
+            }
             Log.d(TAG, "validateWithExtractor: ${audioFile.name} 校验通过，trackCount=${extractor.trackCount}, audioTrackCount=${audioTrackCount}, fileSize=${audioFile.length()}")
             com.radio.app.utils.FileLogUtils.w(TAG, "validateWithExtractor: ${audioFile.name} 校验通过，audioTrackCount=${audioTrackCount}, fileSize=${audioFile.length()}")
             return true
@@ -2915,10 +2947,58 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val settings = AppSettings.getInstance(this@RadioPlaybackService)
                 val targetCount = settings.preloadCacheCount
 
+                // v3.1.51: 预扫描孤儿缓存文件，将其加入 preCacheList。
+                // 根因：preCacheList 由 API 填充，只包含未来节目。过去未处理的节目
+                // （如20241101的PCM/分段尚未生成）不在 preCacheList 中，即使 v3.1.50
+                // 修复了 scanOrder，也无法扫描到它们。
+                // 修复：扫描 episodesDir 中所有缓存文件，如果不在 preCacheList 中，
+                // 尝试从 DB 查找对应节目并加入 preCacheList。
+                // 这样后续的 scanOrder 和 main loop 能正确处理这些"孤儿"节目。
+                val preCacheUrls = preCacheList.mapNotNull { it.audioUrl }.toSet()
+                val orphanFiles = episodesDir.listFiles()?.filter { file ->
+                    if (!file.isFile || file.length() <= 1024) return@filter false
+                    val fileName = file.name
+                    // 提取文件名中的关键部分（不含扩展名），判断是否在 preCacheList 中
+                    val fileKey = fileName.substringBeforeLast(".")
+                    preCacheUrls.none { url -> url.contains(fileKey) }
+                } ?: emptyList()
+                if (orphanFiles.isNotEmpty()) {
+                    writePreCacheLog("patrolSubtitle: 发现 ${orphanFiles.size} 个孤儿缓存文件不在 preCacheList 中，尝试加入列表")
+                    var addedCount = 0
+                    val mutablePreCacheList = preCacheList.toMutableList()
+                    var updatedUrls = preCacheUrls
+                    for (orphanFile in orphanFiles) {
+                        val fileName = orphanFile.name
+                        val dbEp = try {
+                            dbHelper.getEpisodeByAudioFileName(fileName)
+                        } catch (_: Exception) { null }
+                        if (dbEp != null && dbEp.audioUrl != null && dbEp.audioUrl !in updatedUrls) {
+                            mutablePreCacheList.add(dbEp)
+                            updatedUrls = updatedUrls + dbEp.audioUrl
+                            addedCount++
+                            writePreCacheLog("patrolSubtitle:  加入孤儿文件 $fileName -> ep=${dbEp.id}, title=${dbEp.title}")
+                        }
+                    }
+                    if (addedCount > 0) {
+                        val sortedList = sortPreCacheListByTime(mutablePreCacheList)
+                        savePreCacheList(sortedList)
+                        writePreCacheLog("patrolSubtitle:  共加入 $addedCount 个孤儿节目到 preCacheList，列表大小=${sortedList.size}")
+                        // 重新加载更新后的列表重试巡逻（通过重新触发巡逻，简化控制流）
+                        Handler(Looper.getMainLooper()).post {
+                            if (::subtitlePatrolHandler.isInitialized) {
+                                patrolSubtitleGeneration()
+                            }
+                        }
+                        return@launch
+                    }
+                }
+
                 // v3.1.50: 同时扫描过去和未来未完成的节目，优先处理过去日期。
                 // 根因：原代码仅从 currentIdx+1 向前扫描，过去未处理的节目（如20241101的PCM/分段）
                 // 永远被跳过，导致"跳过近期处理远期"问题。
                 // 修复：扫描顺序 = 过去（从currentIdx-1向0递减）+ 未来（从currentIdx+1向末尾递增）
+                // v3.1.51: 进一步增强——在构建 scanOrder 前已扫描孤儿文件并加入 preCacheList，
+                // 确保过去节目也被包含在扫描范围内。
                 val scanOrder = if (currentIdx >= 0) {
                     val pastIndices = (0 until currentIdx).reversed()  // 过去：从近到远
                     val futureIndices = ((currentIdx + 1) until preCacheList.size).toList()  // 未来

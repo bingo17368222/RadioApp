@@ -78,10 +78,13 @@ object SegmentNotificationHelper {
      * v3.1.50: 全局分段中标志。当三层分段正在进行时，新的请求先检查此标志。
      * 由 SegmentGenerator 在 generateJiuAiTingSegments 开始/结束时设置。
      * 替代 v3.1.48 的 2秒防循环守卫（回避问题的手段），直接防止并发分段。
+     * 
+     * v3.1.51: 移除 private set——SegmentGenerator 需要设置此标志。
+     * 之前 private set 导致此标志永远为 false，检查被跳过，通知栏循环未被阻止。
      */
     @Volatile
+    @JvmField
     var isSegmenting: Boolean = false
-        private set
 
     /**
      * v2.4.186: Begin a new notification session for [episodeId].
