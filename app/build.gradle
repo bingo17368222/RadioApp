@@ -77,11 +77,12 @@ android {
         exclude 'META-INF/DEPENDENCIES'
     }
 
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-        }
-    }
+    // externalNativeBuild temporarily disabled - using pre-built .so from jniLibs
+    // externalNativeBuild {
+    //     cmake {
+    //         path "src/main/cpp/CMakeLists.txt"
+    //     }
+    // }
 
     sourceSets {
         main {

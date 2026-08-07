@@ -1222,13 +1222,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         var neededCount = 0
         var nextToDownload: Episode? = null
 
-        // v3.1.57: 先向后查找（当前节目之前），再向前查找（当前节目之后）
-        // 确保旧节目（如2024-11-07）也能被预缓存，而不是被后续节目跳过
-        val searchOrder = mutableListOf<Int>()
-        for (i in (currentIdx - 1) downTo 0) searchOrder.add(i)
-        for (i in (currentIdx + 1) until preCacheList.size) searchOrder.add(i)
-
-        for (i in searchOrder) {
+        for (i in (currentIdx + 1) until preCacheList.size) {
             val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
@@ -1272,11 +1266,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     ): Boolean {
         val settings = AppSettings.getInstance(this)
         var checkedCount = 0
-        // v3.1.57: 同时向前和向后验证缓存文件
-        val searchOrder = mutableListOf<Int>()
-        for (i in (currentIdx - 1) downTo 0) searchOrder.add(i)
-        for (i in (currentIdx + 1) until preCacheList.size) searchOrder.add(i)
-        for (i in searchOrder) {
+        for (i in (currentIdx + 1) until preCacheList.size) {
             val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
@@ -1311,6 +1301,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (isPrecaching) {
             Log.d(TAG, "Pre-cache: already running, skipping duplicate trigger")
             writeServiceLog("notification", "triggerPreCache: SKIP (already running, currentCount=$precacheCompletedCount)")
+            writePreCacheLog("triggerPreCache: SKIP (already running)")
             return
         }
         // 立即标记为运行中，防止后续调用入队
@@ -1320,6 +1311,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val now = System.currentTimeMillis()
         if (!continueChain && now - lastPreCacheCheckTime < 120_000) {
             // [v2.2.6] Throttle: don't re-check within 2 minutes (was 30s, too frequent)
+            writePreCacheLog("triggerPreCache: SKIP (throttle, last check ${(now - lastPreCacheCheckTime) / 1000}s ago)")
             isPrecaching = false
             return
         }
@@ -1347,17 +1339,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "triggerPreCache: START, isPrecaching=$isPrecaching, targetCount=$targetCount, currentCount=$precacheCompletedCount, continueChain=$continueChain")
         if (!settings.autoCache) {
             Log.d(TAG, "Pre-cache: disabled")
+            writePreCacheLog("triggerPreCache: SKIP (autoCache disabled)")
             isPrecaching = false
             return
         }
         if (settings.wifiOnlyPreCache && !NetworkUtils.isWifiConnected(this)) {
             Log.d(TAG, "Pre-cache: skipped (WiFi only)")
+            writePreCacheLog("triggerPreCache: SKIP (WiFi only)")
             isPrecaching = false
             return
         }
 
         val currentEp = currentEpisode ?: run {
             Log.d(TAG, "Pre-cache: no current episode, skipping")
+            writePreCacheLog("triggerPreCache: SKIP (no current episode)")
             isPrecaching = false
             return
         }
@@ -1590,8 +1585,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl } else -1
         val cachedCount = if (currentIdx >= 0) {
             var count = 0
-            // v3.1.57: 统计所有已缓存节目（包括当前节目之前的）
-            for (ep in preCacheList) {
+            for (i in (currentIdx + 1) until preCacheList.size) {
+                val ep = preCacheList[i]
                 val fileName = extractCacheFileName(ep.audioUrl)
                 if (fileName in cachedNames) count++
             }
