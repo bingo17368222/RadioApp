@@ -1221,7 +1221,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         var futureCachedCount = 0
         var neededCount = 0
         var nextToDownload: Episode? = null
-        for (i in (currentIdx + 1) until preCacheList.size) {
+
+        // v3.1.57: 先向后查找（当前节目之前），再向前查找（当前节目之后）
+        // 确保旧节目（如2024-11-07）也能被预缓存，而不是被后续节目跳过
+        val searchOrder = mutableListOf<Int>()
+        for (i in (currentIdx - 1) downTo 0) searchOrder.add(i)
+        for (i in (currentIdx + 1) until preCacheList.size) searchOrder.add(i)
+
+        for (i in searchOrder) {
             val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
@@ -1265,7 +1272,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     ): Boolean {
         val settings = AppSettings.getInstance(this)
         var checkedCount = 0
-        for (i in (currentIdx + 1) until preCacheList.size) {
+        // v3.1.57: 同时向前和向后验证缓存文件
+        val searchOrder = mutableListOf<Int>()
+        for (i in (currentIdx - 1) downTo 0) searchOrder.add(i)
+        for (i in (currentIdx + 1) until preCacheList.size) searchOrder.add(i)
+        for (i in searchOrder) {
             val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
@@ -1579,8 +1590,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl } else -1
         val cachedCount = if (currentIdx >= 0) {
             var count = 0
-            for (i in (currentIdx + 1) until preCacheList.size) {
-                val ep = preCacheList[i]
+            // v3.1.57: 统计所有已缓存节目（包括当前节目之前的）
+            for (ep in preCacheList) {
                 val fileName = extractCacheFileName(ep.audioUrl)
                 if (fileName in cachedNames) count++
             }
@@ -1661,8 +1672,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
         val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
         val stationId = prefs.getString("station_id", null) ?: currentEpisode?.stationId
-        // v3.1.46: 始终从今天开始，不从SharedPreferences读取current_date
-        // 原代码使用current_date导致每次触发从最新日期开始，跳过近期
         val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
         val daysFetched = prefs.getInt("days_fetched", 0)
 
@@ -1684,20 +1693,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // v3.1.46: 始终从今天开始，按顺序获取每一天
-        // days_fetched=0 → offset=1（明天）, days_fetched=1 → offset=2, ...
-        // 始终从今天开始偏移，不依赖任何外部存储的日期
-        val dayOffset = daysFetched + 1
+        // v3.1.57: 优先获取近期过去日期，再获取未来日期
+        // 分两阶段：阶段1（days_fetched 0-3）向后获取近期日期，阶段2（days_fetched 4+）向前获取未来日期
+        // 原方案：始终向未来方向获取，导致系统时间远在2026年时，2024年的节目永远不会被预缓存
+        val backwardDays = 4  // 向后获取4天（昨天、前天、大前天、大大前天）
+        val isBackwardPhase = daysFetched < backwardDays
+        val dayOffset = if (isBackwardPhase) {
+            -(daysFetched + 1)  // 向后：-1, -2, -3, -4
+        } else {
+            daysFetched - backwardDays + 1  // 向前：1, 2, 3, ...
+        }
         var latestFetchedDate = ""
         try {
             val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
             cal.time = dateFormat.parse(today) ?: return existingList
             cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
             val targetDate = dateFormat.format(cal.time)
-            // 始终向未来方向获取
+            // 避免重复获取当天
+            if (targetDate == today) {
+                writePreCacheLog("fetchMoreDaysForPreCache: skipping today (already in list)")
+                val editor = prefs.edit()
+                editor.putInt("days_fetched", daysFetched + 1)
+                editor.apply()
+                return resultList
+            }
+            val direction = if (isBackwardPhase) "向后" else "向前"
             latestFetchedDate = targetDate
 
-            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
+            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=$dayOffset, $direction)")
 
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)

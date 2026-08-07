@@ -45,7 +45,7 @@
                     android:lineSpacingMultiplier="1.2" />
             </LinearLayout>
 
-            <!-- v3.1.55: 移除指纹列表，替换为播放/测试功能区 -->
+            <!-- v3.1.47: 恢复指纹列表（每一条带播放/测试按钮），移除v3.1.55多余的顶部播放控件 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -57,7 +57,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="指纹播放"
+                    android:text="指纹管理与测试"
                     android:textColor="?attr/appTextPrimary"
                     android:textSize="15sp"
                     android:textStyle="bold"
@@ -70,45 +70,6 @@
                     android:text="已保存 0 条指纹"
                     android:textColor="?attr/appTextPrimary"
                     android:textSize="14sp"
-                    android:layout_marginBottom="8dp" />
-
-                <!-- 播放进度条 -->
-                <SeekBar
-                    android:id="@+id/sb_playback_progress"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginBottom="4dp"
-                    android:max="1000"
-                    android:progress="0" />
-
-                <TextView
-                    android:id="@+id/tv_playback_status"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="未播放"
-                    android:textColor="?attr/appTextSecondary"
-                    android:textSize="13sp"
-                    android:layout_marginBottom="8dp" />
-
-                <!-- 播放/停止按钮 -->
-                <Button
-                    android:id="@+id/btn_playback_fingerprint"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="播放选中指纹"
-                    android:textColor="@color/white"
-                    android:backgroundTint="?attr/appAccent"
-                    android:layout_marginBottom="8dp"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="测试功能"
-                    android:textColor="?attr/appTextPrimary"
-                    android:textSize="15sp"
-                    android:textStyle="bold"
-                    android:layout_marginTop="8dp"
                     android:layout_marginBottom="8dp" />
 
                 <!-- v3.1.2: 批量测试按钮 -->
