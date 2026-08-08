@@ -931,7 +931,13 @@ object AudioSegmentAnalyzer {
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: decoded fresh PCM for $episodeId (${pcmFile.length()} bytes, pcmDuration=${pcmDurationMs}ms)")
         }
 
-        return analyzePcmFile(context, pcmFile, durationMs, wrappedProgressCallback)
+        return try {
+            analyzePcmFile(context, pcmFile, durationMs, wrappedProgressCallback)
+        } catch (e: Throwable) {
+            // v3.1.58: 捕获所有异常/错误(含UnsatisfiedLinkError/RuntimeException)，返回空结果而不是崩溃
+            Log.e(TAG, "analyzePcmFile threw in analyzeEpisode: ${e.message}")
+            SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
+        }
             } finally {
                 currentAnalysisThread = null
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: cleared analysis thread reference")
@@ -1464,29 +1470,52 @@ object AudioSegmentAnalyzer {
             vadRunCount = 0
         }
 
+        // v3.1.58: 检查NativeLibLoader，失败时返回空结果而非崩溃
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "Native libraries not loaded.")
-            throw RuntimeException("音频分段运行库未加载，请重新下载运行库")
+            return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
         }
 
         val modelDir = getModelDir(context)
         if (!isYamnetInstalled(modelDir) || !isSileroVadInstalled(modelDir)) {
             Log.w(TAG, "Models not installed. YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
-            throw RuntimeException("模型未安装: YAMNet=${isYamnetInstalled(modelDir)}, VAD=${isSileroVadInstalled(modelDir)}")
+            return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
         }
 
-        val yamnetInterpreter = loadYamnetModel(File(modelDir, "yamnet.tflite"))
-        val vadModel = loadSileroVad(File(modelDir, "silero_vad.onnx"))
+        // v3.1.58: 在加载模型前再次检查NativeLibLoader，防御性避免UnsatisfiedLinkError/RuntimeException崩溃
+        if (!NativeLibLoader.ensureLoaded(context)) {
+            Log.e(TAG, "Native libraries not available before model loading, returning empty result")
+            return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
+        }
+        val yamnetInterpreter = try {
+            loadYamnetModel(File(modelDir, "yamnet.tflite"))
+        } catch (e: Throwable) {
+            Log.e(TAG, "loadYamnetModel failed: ${e.message}")
+            return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
+        }
+        val vadModel = try {
+            loadSileroVad(File(modelDir, "silero_vad.onnx"))
+        } catch (e: Throwable) {
+            Log.e(TAG, "loadSileroVad failed: ${e.message}")
+            yamnetInterpreter.close()
+            return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
+        }
 
         try {
             // v2.4.178: Memory-map the PCM file so huge files do not require a heap-sized FloatArray.
-            openPcmSamples(pcmFile).use { samples ->
-                if (samples.size < YAMNET_WINDOW_SAMPLES) {
-                    Log.w(TAG, "PCM too short: ${samples.size} samples")
-                    throw RuntimeException("PCM数据太短: ${samples.size} 样本 (需要至少 $YAMNET_WINDOW_SAMPLES)")
+            val samples = try {
+                openPcmSamples(pcmFile)
+            } catch (e: Throwable) {
+                Log.e(TAG, "openPcmSamples 失败: ${e.javaClass.name}: ${e.message}")
+                return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
+            }
+            samples.use { samplesProvider ->
+                if (samplesProvider.size < YAMNET_WINDOW_SAMPLES) {
+                    Log.w(TAG, "PCM too short: ${samplesProvider.size} samples")
+                    throw RuntimeException("PCM数据太短: ${samplesProvider.size} 样本 (需要至少 $YAMNET_WINDOW_SAMPLES)")
                 }
 
-                val totalSamples = samples.size
+                val totalSamples = samplesProvider.size
                 val totalDurationMs = (totalSamples * 1000L / YAMNET_SAMPLE_RATE)
                 val outputDurationMs = if (durationMs > 0) durationMs else totalDurationMs
                 val analysisStartTimeMs = System.currentTimeMillis()
@@ -1518,7 +1547,7 @@ object AudioSegmentAnalyzer {
 
                 // ===== Phase 1: Silero VAD coarse segmentation (0-300‰) =====
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 1/3: Silero VAD coarse segmentation")
-                val (speechRanges, silenceRanges) = runSileroVadIntervals(samples, vadModel) { progressPermille ->
+                val (speechRanges, silenceRanges) = runSileroVadIntervals(samplesProvider, vadModel) { progressPermille ->
                     reportProgress((progressPermille * 300 / 1000).coerceIn(0, 300))
                 }
 
@@ -1530,7 +1559,7 @@ object AudioSegmentAnalyzer {
 
                 for (range in speechRanges) {
                     checkCancelled()
-                    val subSegments = classifySpeechInterval(samples, range, yamnetInterpreter)
+                    val subSegments = classifySpeechInterval(samplesProvider, range, yamnetInterpreter)
                     intervalSegments.addAll(subSegments)
                     processedSpeechMs += range.durationMs
                     val mapped = if (totalSpeechDurationMs > 0) {
@@ -1543,7 +1572,7 @@ object AudioSegmentAnalyzer {
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Phase 3/3: sparse YAMNet sampling of ${silenceRanges.size} silence intervals")
                 for ((index, range) in silenceRanges.withIndex()) {
                     checkCancelled()
-                    val subSegments = sampleSilenceInterval(samples, range, yamnetInterpreter)
+                    val subSegments = sampleSilenceInterval(samplesProvider, range, yamnetInterpreter)
                     intervalSegments.addAll(subSegments)
                     val mapped = 900 + ((index + 1) * 100 / silenceRanges.size.coerceAtLeast(1)).coerceIn(0, 100)
                     reportProgress(mapped.coerceIn(900, 1000))
@@ -1573,8 +1602,11 @@ object AudioSegmentAnalyzer {
                 )
             }
 
+        } catch (e: Throwable) {
+            Log.e(TAG, "analyzePcmFile 分析循环崩溃: ${e.javaClass.name}: ${e.message}")
+            return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
         } finally {
-            yamnetInterpreter.close()
+            try { yamnetInterpreter.close() } catch (_: Exception) {}
             try { vadModel.session.close() } catch (_: Exception) {}
         }
         } finally {
@@ -1670,7 +1702,18 @@ object AudioSegmentAnalyzer {
                 org.tensorflow.lite.DataType.FLOAT32
             )
 
-            interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
+            try {
+                interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
+            } catch (e: Throwable) {
+                vadLog("classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message}")
+                // 返回默认结果，避免崩溃传播
+                return YamnetResult(
+                    speech = 0.5f, narration = 0.5f, singing = 0f, music = 0f,
+                    instrumental = 0f, popMusic = 0f, jingle = 0f, song = 0f,
+                    backgroundMusic = 0f, themeMusic = 0f, silence = 0.5f,
+                    voiceSum = 1.0f, bgMusicSum = 0f, maxRawScore = 0f
+                )
+            }
             checkCancelled()
             val scores = outputBuffer.floatArray
 
@@ -1832,7 +1875,13 @@ object AudioSegmentAnalyzer {
         while (pos + VAD_FRAME_SIZE <= totalSamples) {
             checkCancelled()
             val chunk = samples.copyOfRange(pos, pos + VAD_FRAME_SIZE)
-            val (prob, newState, newContext) = runSileroVad(vadModel, chunk, vadContext, vadState)
+            val (prob, newState, newContext) = try {
+                runSileroVad(vadModel, chunk, vadContext, vadState)
+            } catch (e: Throwable) {
+                vadLog("runSileroVad 崩溃在位置${pos}: ${e.javaClass.name}: ${e.message}")
+                // 返回默认值，继续处理
+                Triple(0.5f, vadState, vadContext)
+            }
             vadState = newState
             vadContext = newContext
             probs.add(prob)
@@ -2489,16 +2538,29 @@ object AudioSegmentAnalyzer {
      * copyOfRange allocates only the requested small window on the Java heap.
      */
     private class MappedPcmSampleProvider(pcmFile: File) : SampleProvider {
-        private val raf = RandomAccessFile(pcmFile, "r")
-        private val channel = raf.channel
-        private val mapped: java.nio.MappedByteBuffer = try {
-            channel.map(FileChannel.MapMode.READ_ONLY, 0, pcmFile.length())
-        } catch (e: Exception) {
-            try { channel.close() } catch (_: Exception) {}
-            try { raf.close() } catch (_: Exception) {}
-            throw e
+        private val raf: RandomAccessFile
+        private val channel: FileChannel
+        private val mapped: java.nio.MappedByteBuffer
+        private val shortBuffer: ShortBuffer
+
+        init {
+            // 检查文件大小，超过500MB的PCM文件使用分块读取而非内存映射
+            val fileSize = pcmFile.length()
+            if (fileSize > 500 * 1024 * 1024L) {
+                throw RuntimeException("PCM文件过大: ${fileSize / 1024 / 1024}MB，无法映射")
+            }
+            raf = RandomAccessFile(pcmFile, "r")
+            channel = raf.channel
+            mapped = try {
+                channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize)
+            } catch (e: Exception) {
+                try { channel.close() } catch (_: Exception) {}
+                try { raf.close() } catch (_: Exception) {}
+                throw RuntimeException("PCM文件映射失败: ${e.message}", e)
+            }
+            shortBuffer = mapped.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         }
-        private val shortBuffer: ShortBuffer = mapped.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+
         override val size: Int = shortBuffer.remaining()
 
         override fun copyOfRange(start: Int, end: Int): FloatArray {

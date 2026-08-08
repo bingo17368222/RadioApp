@@ -1800,8 +1800,27 @@ class PlayerActivity : AppCompatActivity() {
      */
     private fun ensureSegmentsForCurrentEpisode() {
         if (_binding == null) return
-        val dbSegments = loadSegmentsFromDb()
+        // v3.1.59: 防御性加载，防止DB异常导致闪退
+        val dbSegments = try {
+            loadSegmentsFromDb()
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerActivity", "ensureSegmentsForCurrentEpisode: loadSegmentsFromDb failed: ${e.message}")
+            writeJitterLog(" ensureSegmentsForCurrentEpisode: DB异常 ${e.message}")
+            emptyList()
+        }
         if (dbSegments.isNotEmpty()) {
+            // v3.1.59: 如果DB中已有真实分段，清除可能残留的segmentProcessing状态
+            if (segmentProcessing) {
+                segmentProcessing = false
+                segmentTaskEpisodeId = null
+                lastSegmentProgress = 0
+                saveProcessingState()
+                if (_binding != null) {
+                    binding.progressAi.visibility = View.GONE
+                    binding.btnAiSegment.isEnabled = true
+                }
+                writeJitterLog(" ensureSegmentsForCurrentEpisode: 清除残留的分段处理状态")
+            }
             // Update if currently empty/simulated or count changed (avoids flickering when identical).
             val shouldUpdate = voiceSegments.isEmpty() ||
                     voiceSegments.all { it.isSimulated } ||
@@ -4060,9 +4079,11 @@ class PlayerActivity : AppCompatActivity() {
                 val fixedSegments = com.radio.app.utils.SegmentGenerator.generateFixedSegments(durationMs.toLong())
                 // 直接对固定分段进行指纹审核（跳过关键词分类）
                 val waterFingerprints = try { dbHelper.getAllAudioFingerprints() } catch (_: Exception) { emptyList() }
+                // v3.1.58: 确保Chromaprint库可用后再进行指纹审核，避免UnsatisfiedLinkError崩溃
                 if (waterFingerprints.isNotEmpty() && com.radio.app.utils.ChromaprintExtractor.ensureLibraryLoaded(this)) {
                     return applyFingerprintWithMerge(episodeId, fixedSegments, waterFingerprints)
                 }
+                // v3.1.58: 库不可用时跳过指纹审核，直接返回固定分段
                 return fixedSegments
             }
 
@@ -4299,7 +4320,8 @@ class PlayerActivity : AppCompatActivity() {
                         break
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // v3.1.58: 捕获Throwable(含UnsatisfiedLinkError)，避免崩溃后闪退循环
                 writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒异常: ${e.message}")
             } finally {
                 try { tempPcmFile?.delete() } catch (_: Exception) {}

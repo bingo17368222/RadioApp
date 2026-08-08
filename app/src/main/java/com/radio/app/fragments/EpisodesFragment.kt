@@ -54,7 +54,10 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     private val dayFormat = SimpleDateFormat("M/d EEE", Locale.CHINA)
-    private val selectedDate: Calendar = Calendar.getInstance()
+    // v3.1.58: 初始化时优先使用最后播放节目日期，失败则回退到当前系统日期
+    private val selectedDate: Calendar by lazy {
+        getLastPlayedEpisodeDate() ?: Calendar.getInstance()
+    }
     private var selectedStationId: String? = null
     private var selectedStationName: String? = null
     private val dateButtons = mutableListOf<TextView>()
@@ -177,9 +180,10 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         val month = selectedDate.get(Calendar.MONTH)
         val day = selectedDate.get(Calendar.DAY_OF_MONTH)
 
-        val today = Calendar.getInstance()
-        val maxDate = today.clone() as Calendar
-        val minDate = today.clone() as Calendar
+        // v3.1.58: 基于最后播放节目日期设置maxDate，失败则回退到当前系统日期
+        val lastPlayedRef = getLastPlayedEpisodeDate() ?: Calendar.getInstance()
+        val maxDate = lastPlayedRef.clone() as Calendar
+        val minDate = lastPlayedRef.clone() as Calendar
         minDate.add(Calendar.YEAR, -10)
 
         val dialog = DatePickerDialog(requireContext(), { _, y, m, d ->
@@ -193,11 +197,43 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         dialog.show()
     }
 
+    // v3.1.58: 从SharedPreferences读取最后播放节目日期，作为"近期"基准点
+    private fun getLastPlayedEpisodeDate(): Calendar? {
+        try {
+            val prefs = requireContext().getSharedPreferences("last_episode", android.content.Context.MODE_PRIVATE)
+            val broadcastAt = prefs.getString("broadcast_at", null) ?: return null
+            // 尝试解析 "yyyy-MM-dd HH:mm:ss" 格式
+            try {
+                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                val date = sdf.parse(broadcastAt)
+                if (date != null) {
+                    val cal = Calendar.getInstance()
+                    cal.time = date
+                    return cal
+                }
+            } catch (_: Exception) {}
+            // 尝试解析 "yyyy-MM-dd" 格式
+            try {
+                val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+                val date = sdf.parse(broadcastAt)
+                if (date != null) {
+                    val cal = Calendar.getInstance()
+                    cal.time = date
+                    return cal
+                }
+            } catch (_: Exception) {}
+            return null
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
     private fun buildDatePills() {
         dateContainer?.removeAllViews()
         dateButtons.clear()
 
-        val today = Calendar.getInstance()
+        // v3.1.58: 使用最后播放节目日期作为"今天"参考，失败则回退到当前系统日期
+        val today = getLastPlayedEpisodeDate() ?: Calendar.getInstance()
 
         tvSelectedDate?.text = "${selectedDate.get(Calendar.YEAR)}年${selectedDate.get(Calendar.MONTH) + 1}月${selectedDate.get(Calendar.DAY_OF_MONTH)}日"
 

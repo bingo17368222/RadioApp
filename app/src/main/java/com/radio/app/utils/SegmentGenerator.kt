@@ -854,17 +854,17 @@ object SegmentGenerator {
         audioUrl: String? = null,
         progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): JiuAiTingResult? {
-        // v3.1.50: 检查全局三层分段标志，防止并发分段导致通知栏循环
-        if (isThreeLayerSegmenting) {
-            Log.w(TAG, "generateJiuAiTingSegments: 全局三层分段中，拒绝并发请求 for episode=$episodeId")
-            return null
-        }
-        isThreeLayerSegmenting = true
-        // v3.1.52: 修复关键bug——isSegmenting 必须在 startSession 成功之后设置。
-        // 根因：v3.1.51 在 startSession 之前设置 isSegmenting=true，导致自身的
-        // startSession 被 isSegmenting 检查拒绝（永远返回 false），通知栏永远不会启动。
-        // 现在先执行 startSession，成功后再设置 isSegmenting，阻止外部并发请求。
         try {
+            // v3.1.50: 检查全局三层分段标志，防止并发分段导致通知栏循环
+            if (isThreeLayerSegmenting) {
+                Log.w(TAG, "generateJiuAiTingSegments: 全局三层分段中，拒绝并发请求 for episode=$episodeId")
+                return null
+            }
+            isThreeLayerSegmenting = true
+            // v3.1.52: 修复关键bug——isSegmenting 必须在 startSession 成功之后设置。
+            // 根因：v3.1.51 在 startSession 之前设置 isSegmenting=true，导致自身的
+            // startSession 被 isSegmenting 检查拒绝（永远返回 false），通知栏永远不会启动。
+            // 现在先执行 startSession，成功后再设置 isSegmenting，阻止外部并发请求。
         val segStartTime = System.currentTimeMillis()
         // v3.1.46: 校验durationMs，如果为0或<=60000则使用默认值2小时
         // 避免因durationMs无效导致shouldRunLayer2=false（仅运行第1层）或瞬间完成
@@ -1163,24 +1163,35 @@ object SegmentGenerator {
             writeFingerprintLog(context, fpMsgAbnormal)
         }
 
-        // ========== 观察池处理 ==========
-        if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer2, goldStandardFingerprints)
-            val promoted = dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
-            for (candidate in promoted) {
-                try {
-                    dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
-                } catch (_: Exception) {}
-            }
-            dbHelper.cleanupExpiredObservationPool()
+        // ========== 观察池处理（v3.1.59: 整体try-catch防止DB异常导致崩溃） ==========
+        try {
+            if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                processObservationPoolForSegment(context, episodeId, finalSegments, mergedAfterLayer2, goldStandardFingerprints)
+                val promoted = try {
+                    dbHelper.getPromotableCandidates(POOL_PROMOTION_THRESHOLD_DEFAULT)
+                } catch (e: Exception) {
+                    Log.w(TAG, "观察池: getPromotableCandidates异常: ${e.message}")
+                    emptyList()
+                }
+                for (candidate in promoted) {
+                    try {
+                        dbHelper.incrementObservationPoolHit(candidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT)
+                    } catch (_: Exception) {}
+                }
+                try { dbHelper.cleanupExpiredObservationPool() } catch (_: Exception) {}
 
-            val fpMsgPool = "观察池: 当前共${dbHelper.getObservationPoolCount()}个候选"
-            Log.i(TAG, fpMsgPool)
-            writeFingerprintLog(context, fpMsgPool)
-        } else {
-            val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
-            Log.i(TAG, fpMsg)
-            writeFingerprintLog(context, fpMsg)
+                val fpMsgPool = "观察池: 当前共${try { dbHelper.getObservationPoolCount() } catch (_: Exception) { 0 }}个候选"
+                Log.i(TAG, fpMsgPool)
+                writeFingerprintLog(context, fpMsgPool)
+            } else {
+                val fpMsg = "观察池处理: 跳过（金标准库为空或指纹引擎未就绪）"
+                Log.i(TAG, fpMsg)
+                writeFingerprintLog(context, fpMsg)
+            }
+        } catch (e: Throwable) {
+            val fpMsgPoolError = "观察池处理异常: ${e.javaClass.name}: ${e.message}"
+            Log.w(TAG, fpMsgPoolError)
+            writeFingerprintLog(context, fpMsgPoolError)
         }
 
         // v3.1.28: 更新通知为100%完成
@@ -1220,10 +1231,20 @@ object SegmentGenerator {
                 observationPoolHitCount = 0
             )
         }
+        } catch (e: Throwable) {
+            Log.e(TAG, "generateJiuAiTingSegments 崩溃: ${e.message}")
+            val fpMsgCrash = "generateJiuAiTingSegments 崩溃: ${e.javaClass.name}: ${e.message}"
+            Log.e(TAG, fpMsgCrash)
+            writeFingerprintLog(context, fpMsgCrash)
+            // v3.1.59: 崩溃时确保通知会话结束，防止残留状态
+            try { SegmentNotificationHelper.endSession(context, episodeId) } catch (_: Exception) {}
+            return null
         } finally {
             isThreeLayerSegmenting = false
             // v3.1.51: 同时清除全局标志，允许后续分段请求
             SegmentNotificationHelper.isSegmenting = false
+            // v3.1.59: 崩溃后清除segmentingEpisodes条目，防止后续请求被永久拒绝
+            segmentingEpisodes.remove(episodeId)
         }
     }
 
@@ -1266,6 +1287,8 @@ object SegmentGenerator {
         var lastReportedPct = -1
 
         var pos = 0L
+        // v3.1.59: 外层循环用try-catch捕获Throwable，防止单次窗口异常导致整个分段崩溃
+        try {
         while (pos + WINDOW_MS <= durationMs) {
             totalWindows++
 
@@ -1285,7 +1308,18 @@ object SegmentGenerator {
             }
 
             try {
-                val pcmBytes = PcmSegmentExtractor.readSegmentBytes(pcmFile, pos, pos + WINDOW_MS)
+                if (!pcmFile.exists() || pcmFile.length() < 16000) {
+                    val fpMsg = "第一层滑动窗口: PCM文件不存在或太小: ${pcmFile.absolutePath}"
+                    Log.w(TAG, fpMsg)
+                    writeFingerprintLog(context, fpMsg)
+                    break
+                }
+                val pcmBytes = try {
+                    PcmSegmentExtractor.readSegmentBytes(pcmFile, pos, pos + WINDOW_MS)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "第一层滑动窗口: 位置${pos}ms读取PCM异常: ${e.javaClass.name}: ${e.message}")
+                    null
+                }
                 if (pcmBytes == null || pcmBytes.isEmpty()) {
                     pos += STEP_MS
                     continue
@@ -1326,6 +1360,11 @@ object SegmentGenerator {
                 Log.w(TAG, "第一层滑动窗口: 位置${pos}ms异常: ${e.message}")
             }
             pos += STEP_MS
+        }
+        } catch (e: Throwable) {
+            val fpMsg = "第一层滑动窗口: 循环异常中止: ${e.javaClass.name}: ${e.message}"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
         }
 
         // 合并重叠/相邻的匹配范围
@@ -1416,10 +1455,20 @@ object SegmentGenerator {
 
             var tempPcmFile: File? = null
             try {
-                tempPcmFile = PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
+                tempPcmFile = try {
+                    PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "第三层指纹漏判召回: 提取片段${seg.start/1000}秒PCM异常: ${e.message}")
+                    null
+                }
                 if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
 
-                val fingerprint = ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                val fingerprint = try {
+                    ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "第三层指纹漏判召回: 提取片段${seg.start/1000}秒指纹异常: ${e.message}")
+                    null
+                }
                 if (fingerprint.isNullOrBlank()) continue
 
                 var matched = false

@@ -49,6 +49,11 @@ object ChromaprintExtractor {
         }
         return try {
             nativeExtractFingerprint(pcmData, SAMPLE_RATE, CHANNELS)
+        } catch (e: UnsatisfiedLinkError) {
+            // v3.1.58: 捕获UnsatisfiedLinkError，重置jniLoaded标志位，避免进程重启后标志位失效导致崩溃
+            jniLoaded = false
+            Log.e(TAG, "extractFingerprint: JNI library unavailable, resetting jniLoaded: ${e.message}")
+            null
         } catch (e: Throwable) {
             Log.e(TAG, "extractFingerprint failed: ${e.message}")
             null
@@ -66,6 +71,11 @@ object ChromaprintExtractor {
         }
         return try {
             nativeExtractFingerprintFromFile(pcmFile.absolutePath, SAMPLE_RATE, CHANNELS)
+        } catch (e: UnsatisfiedLinkError) {
+            // v3.1.58: 捕获UnsatisfiedLinkError，重置jniLoaded标志位，避免进程重启后标志位失效导致崩溃
+            jniLoaded = false
+            Log.e(TAG, "extractFingerprintFromFile: JNI library unavailable, resetting jniLoaded: ${e.message}")
+            null
         } catch (e: Throwable) {
             Log.e(TAG, "extractFingerprintFromFile failed: ${e.message}")
             null
@@ -160,7 +170,13 @@ object ChromaprintExtractor {
      * 仅在长度差异显著（>20%）时施加惩罚，避免同时长音频因微小指纹长度差异被误判。
      */
     fun compareFingerprints(fp1: String, fp2: String): Float {
-        return compareFingerprintsDetailed(fp1, fp2).similarity
+        return try {
+            compareFingerprintsDetailed(fp1, fp2).similarity
+        } catch (e: UnsatisfiedLinkError) {
+            // v3.1.58: 捕获UnsatisfiedLinkError保护
+            Log.e(TAG, "compareFingerprints: UnsatisfiedLinkError: ${e.message}")
+            0f
+        }
     }
 
     /**
@@ -277,7 +293,13 @@ object ChromaprintExtractor {
      * @param threshold 相似度阈值，默认 0.70
      */
     fun isMatch(fp1: String, fp2: String, threshold: Float = 0.70f): Boolean {
-        return compareFingerprints(fp1, fp2) >= threshold
+        return try {
+            compareFingerprints(fp1, fp2) >= threshold
+        } catch (e: UnsatisfiedLinkError) {
+            // v3.1.58: 捕获UnsatisfiedLinkError保护
+            Log.e(TAG, "isMatch: UnsatisfiedLinkError: ${e.message}")
+            false
+        }
     }
 
     // ==================== v3.1.4: 指纹分组机制 ====================
