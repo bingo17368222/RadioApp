@@ -1224,21 +1224,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         cachedNames: Set<String>
     ): Pair<Episode?, Int> {
         val settings = AppSettings.getInstance(this)
-        // v3.1.59: 预缓存也使用近期优先策略
+        // v3.1.59: 优先处理近期节目，非近期节目也会被扫描（两遍扫描策略）
         val recentDateRange = getRecentDateRange()
         var futureCachedCount = 0
         var neededCount = 0
         var nextToDownload: Episode? = null
-        for (i in (currentIdx + 1) until preCacheList.size) {
-            val ep = preCacheList[i]
-            // v3.1.59: 近期范围过滤，只下载最后播放日期+1+2+3的节目
-            if (recentDateRange != null) {
+
+        // 构建扫描顺序：近期节目在前，非近期节目在后
+        val scanIndices = if (recentDateRange != null) {
+            val recent = mutableListOf<Int>()
+            val nonRecent = mutableListOf<Int>()
+            for (i in (currentIdx + 1) until preCacheList.size) {
+                val ep = preCacheList[i]
                 val epDate = ep.broadcastAt?.take(10) ?: ""
                 if (epDate.isNotBlank() && (epDate < recentDateRange.first || epDate > recentDateRange.second)) {
-                    writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, date=$epDate 不在近期范围[${recentDateRange.first}, ${recentDateRange.second}]")
-                    continue
+                    nonRecent.add(i)
+                } else {
+                    recent.add(i)
                 }
             }
+            recent + nonRecent  // 近期优先
+        } else {
+            ((currentIdx + 1) until preCacheList.size).toList()
+        }
+
+        for (i in scanIndices) {
+            val ep = preCacheList[i]
             val fileName = extractCacheFileName(ep.audioUrl)
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
             val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
@@ -1387,7 +1398,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (nextToDownload == null) {
             Log.d(TAG, "Pre-cache: no more future episodes in list, fetching more days (forward)")
             var fetchAttempts = 0
-            val maxFetchAttempts = 3  // v3.1.58: 近期策略，最多取3天
+            val maxFetchAttempts = 30  // v3.1.59: 增加取数尝试次数，优先处理近期但不限于近期
             while (nextToDownload == null && fetchAttempts < maxFetchAttempts) {
                 val listSizeBefore = preCacheList.size
                 val expandedList = fetchMoreDaysForPreCache(preCacheList, cachedFiles)
@@ -1599,7 +1610,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return existingList
         }
 
-        val maxDays = 3  // v3.1.58: 近期策略，只取最后播放节目日期+1+2+3
+        val maxDays = 30  // v3.1.59: 增加取数范围，优先处理近期但不限于近期
         if (daysFetched >= maxDays) {
             writePreCacheLog("fetchMoreDaysForPreCache: limit reached ($daysFetched days)")
             return existingList
@@ -2523,8 +2534,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v2.4.93: Only scan episodes AFTER the current one.
                 // Previously also scanned episodes before current — this wasted resources
                 // processing past episodes that the user has already moved past.
+                // v3.1.59: 优先处理近期节目，非近期节目也会被扫描（两遍扫描策略）
+                val recentDateRange = getRecentDateRange()
                 val scanOrder = if (currentIdx >= 0) {
-                    ((currentIdx + 1) until preCacheList.size).toList()
+                    if (recentDateRange != null) {
+                        val recent = mutableListOf<Int>()
+                        val nonRecent = mutableListOf<Int>()
+                        for (i in (currentIdx + 1) until preCacheList.size) {
+                            val ep = preCacheList[i]
+                            val epDate = ep.broadcastAt?.take(10) ?: ""
+                            if (epDate.isNotBlank() && (epDate < recentDateRange.first || epDate > recentDateRange.second)) {
+                                nonRecent.add(i)
+                            } else {
+                                recent.add(i)
+                            }
+                        }
+                        recent + nonRecent  // 近期优先
+                    } else {
+                        ((currentIdx + 1) until preCacheList.size).toList()
+                    }
                 } else {
                     writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
@@ -2536,12 +2564,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 var withSubtitles = 0
                 var withoutAudio = 0
 
-                // [v2.4.19] Also check for leftover _full.pcm (interrupted generation) - prioritize these
-                // v3.1.2: 优先补全最近的节目——遇到未缓存的近期节目时停止巡逻并触发预缓存，
-                // 避免跳过临近节目去处理更远的节目。
-                // v3.1.58: 近期策略，只处理最后播放节目日期+1+2+3的节目
-                // v3.1.59: 统一使用 getRecentDateRange 获取近期范围+下界过滤
-                val recentDateRange = getRecentDateRange()
                 var validEpisodeCounter = 0
                 var processedCount = 0  // v3.1.4: 批量处理计数，每次巡逻最多处理 preloadCacheCount 个节目
                 for (i in scanOrder) {
@@ -2550,14 +2572,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // v2.4.148: The pre-cache list may contain only id+url. Enrich from the
                     // episode_info DB so patrol notifications and skip-by-title work offline.
                     ep = enrichEpisodeFromDbIfNeeded(ep)
-                    // v3.1.59: 近期范围过滤（下界=最后播放日期，上界=最后播放日期+3天）
-                    if (recentDateRange != null) {
-                        val epDate = ep.broadcastAt?.take(10) ?: ""
-                        if (epDate.isNotBlank() && (epDate < recentDateRange.first || epDate > recentDateRange.second)) {
-                            writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, date=$epDate 不在近期范围[${recentDateRange.first}, ${recentDateRange.second}]")
-                            continue
-                        }
-                    }
                     totalScanned++
 
                     // v3.1.2: 跳过不喜欢和无需预处理的节目，不计入有效节目计数

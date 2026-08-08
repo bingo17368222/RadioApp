@@ -175,16 +175,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         } catch (_: Exception) {}
     }
 
+    // v3.1.59: 移除maxDate/minDate限制，允许选择任何日期（包括未来日期）
     private fun showDatePickerDialog() {
         val year = selectedDate.get(Calendar.YEAR)
         val month = selectedDate.get(Calendar.MONTH)
         val day = selectedDate.get(Calendar.DAY_OF_MONTH)
-
-        // v3.1.58: 基于最后播放节目日期设置maxDate，失败则回退到当前系统日期
-        val lastPlayedRef = getLastPlayedEpisodeDate() ?: Calendar.getInstance()
-        val maxDate = lastPlayedRef.clone() as Calendar
-        val minDate = lastPlayedRef.clone() as Calendar
-        minDate.add(Calendar.YEAR, -10)
 
         val dialog = DatePickerDialog(requireContext(), { _, y, m, d ->
             selectedDate.set(y, m, d)
@@ -192,8 +187,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time)) }
         }, year, month, day)
 
-        dialog.datePicker.maxDate = maxDate.timeInMillis
-        dialog.datePicker.minDate = minDate.timeInMillis
+        // 不设置maxDate/minDate，允许选择任何日期
         dialog.show()
     }
 
@@ -232,8 +226,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         dateContainer?.removeAllViews()
         dateButtons.clear()
 
-        // v3.1.58: 使用最后播放节目日期作为"今天"参考，失败则回退到当前系统日期
-        val today = getLastPlayedEpisodeDate() ?: Calendar.getInstance()
+        // v3.1.59: 使用实际系统日期作为"今天"参考，不再基于最后播放节目日期
+        val today = Calendar.getInstance()
 
         tvSelectedDate?.text = "${selectedDate.get(Calendar.YEAR)}年${selectedDate.get(Calendar.MONTH) + 1}月${selectedDate.get(Calendar.DAY_OF_MONTH)}日"
 
@@ -247,8 +241,6 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                     cal.get(Calendar.YEAR) == today.get(Calendar.YEAR)
             val isSelected = cal.get(Calendar.DAY_OF_YEAR) == selectedDate.get(Calendar.DAY_OF_YEAR) &&
                     cal.get(Calendar.YEAR) == selectedDate.get(Calendar.YEAR)
-            val isFuture = cal.timeInMillis > today.timeInMillis
-
             val pill = TextView(context).apply {
                 text = "${dayFormat.format(cal.time)}"
                 textSize = 11f
@@ -261,9 +253,6 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                 } else if (isToday) {
                     setTextColor(getColorPrimary())
                     setBackgroundColor(Color.parseColor("#E8F5E9"))
-                } else if (isFuture) {
-                    setTextColor(Color.parseColor("#CCCCCC"))
-                    setBackgroundColor(Color.parseColor("#F5F5F5"))
                 } else {
                     setTextColor(Color.parseColor("#666666"))
                     setBackgroundColor(Color.parseColor("#F0F0F0"))
@@ -276,11 +265,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                     marginEnd = 2
                 }
             }
+            // v3.1.59: 移除未来日期禁用，所有日期都可点击选择
             pill.setOnClickListener {
-                if (cal.timeInMillis > today.timeInMillis) {
-                    Toast.makeText(context, "无法选择未来日期", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
                 selectedDate.timeInMillis = cal.timeInMillis
                 buildDatePills()
                 selectedStationId?.let { loadEpisodes(it, dateFormat.format(selectedDate.time)) }
