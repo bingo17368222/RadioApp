@@ -1,6 +1,12 @@
 package com.radio.app.activities
 
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -19,9 +25,12 @@ import com.radio.app.adapters.CandidateFingerprintAdapter
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.database.RadioDatabaseHelper.ObservationPoolCandidate
+import com.radio.app.RadioApplication
+import com.radio.app.utils.PcmSegmentExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * v3.2.3: 指纹列表 Fragment。
@@ -30,6 +39,7 @@ import kotlinx.coroutines.withContext
  * - "candidate"：候选指纹（观察池）
  * - "automatic"：自动指纹（自动晋升，isGoldStandard=false）
  *
+ * v3.1.62: 修复手动/候选指纹播放进度条，支持带SeekBar的PCM播放对话框。
  * 支持删除操作，在 onResume 中自动刷新数据。
  */
 class FingerprintListFragment : Fragment() {
@@ -37,6 +47,7 @@ class FingerprintListFragment : Fragment() {
     companion object {
         private const val ARG_TYPE = "fingerprint_type"
         private const val TAG = "FingerprintListFragment"
+        private const val SAMPLE_RATE = 16000
 
         fun newInstance(type: String): FingerprintListFragment {
             return FingerprintListFragment().apply {
@@ -57,6 +68,17 @@ class FingerprintListFragment : Fragment() {
     private var audioFingerprintAdapter: AudioFingerprintAdapter? = null
     private var candidateAdapter: CandidateFingerprintAdapter? = null
     private var automaticAdapter: AutomaticFingerprintAdapter? = null
+
+    // ===== PCM 播放状态 =====
+    private var playbackAudioTrack: AudioTrack? = null
+    private var playbackThread: Thread? = null
+    @Volatile
+    private var playbackSeekRequested: Long = -1L
+    @Volatile
+    private var playbackCurrentPositionMs: Long = 0L
+    private var playbackTotalMs: Long = 0L
+    private val seekBarHandler = Handler(Looper.getMainLooper())
+    private var seekBarUpdateRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,6 +109,13 @@ class FingerprintListFragment : Fragment() {
         loadData()
     }
 
+    override fun onDestroyView() {
+        super.onDestroyView()
+        releaseAudioTrack()
+        seekBarUpdateRunnable?.let { seekBarHandler.removeCallbacks(it) }
+        seekBarUpdateRunnable = null
+    }
+
     /**
      * 根据指纹类型初始化 RecyclerView 和适配器。
      */
@@ -97,16 +126,13 @@ class FingerprintListFragment : Fragment() {
             "manual" -> {
                 audioFingerprintAdapter = AudioFingerprintAdapter().apply {
                     setOnDeleteListener { fp -> confirmDeleteFingerprint(fp) }
-                    // v3.1.42: 恢复指纹播放功能
+                    // v3.1.62: 带进度条的PCM播放
                     setOnPlayListener { fp ->
-                        Toast.makeText(requireContext(), "播放指纹: ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]", Toast.LENGTH_SHORT).show()
-                        // 播放指纹音频 - 通过AudioFingerprintService播放
-                        com.radio.app.services.AudioFingerprintService.playFingerprint(
-                            requireContext(), fp.episodeId, fp.startMs, fp.endMs
-                        )
+                        playFingerprintPcm(fp.episodeId, fp.startMs, fp.endMs, fp.durationMs)
                     }
                     setOnStopListener {
-                        com.radio.app.services.AudioFingerprintService.stopPlayback(requireContext())
+                        releaseAudioTrack()
+                        audioFingerprintAdapter?.stopPlaying()
                     }
                     // v3.1.42: 恢复指纹测试功能
                     setOnTestListener { fp ->
@@ -121,6 +147,14 @@ class FingerprintListFragment : Fragment() {
             "candidate" -> {
                 candidateAdapter = CandidateFingerprintAdapter().apply {
                     setOnDeleteListener { candidate -> confirmDeleteCandidate(candidate) }
+                    // v3.1.62: 带进度条的候选指纹播放（候选无startMs/endMs，按episodeId搜索PCM）
+                    setOnPlayListener { candidate ->
+                        playCandidateFingerprintPcm(candidate.episodeId, candidate.durationMs)
+                    }
+                    setOnStopListener {
+                        releaseAudioTrack()
+                        candidateAdapter?.stopPlaying()
+                    }
                 }
                 recyclerView.adapter = candidateAdapter
             }
@@ -131,6 +165,245 @@ class FingerprintListFragment : Fragment() {
                 recyclerView.adapter = automaticAdapter
             }
         }
+    }
+
+    // ===== PCM 播放 =====
+
+    /**
+     * v3.1.62: 播放候选指纹PCM（候选无startMs/endMs，按episodeId搜索PCM文件）。
+     */
+    private fun playCandidateFingerprintPcm(episodeId: String, durationMs: Long) {
+        val watermarkDir = RadioApplication.getWatermarkPcmDir(requireContext())
+        if (!watermarkDir.exists()) {
+            Toast.makeText(requireContext(), "PCM目录不存在", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // 搜索以episodeId开头的PCM文件
+        val pcmFiles = watermarkDir.listFiles { file ->
+            file.name.startsWith(episodeId) && file.name.endsWith(".pcm")
+        }
+        if (pcmFiles.isNullOrEmpty()) {
+            Toast.makeText(requireContext(), "未找到该节目的PCM文件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // 取第一个匹配的PCM文件
+        val pcmFile = pcmFiles[0]
+        val totalMs = if (durationMs > 0) durationMs else pcmFile.length() / (SAMPLE_RATE * 2) * 1000
+        playPcmFileWithSeekBar(pcmFile, totalMs)
+    }
+
+    /**
+     * v3.1.62: 播放指纹PCM，带进度条对话框。
+     */
+    private fun playFingerprintPcm(episodeId: String, startMs: Long, endMs: Long, durationMs: Long) {
+        val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(requireContext(), episodeId, startMs, endMs)
+        if (pcmFile.exists() && pcmFile.length() > 0) {
+            val totalMs = if (durationMs > 0) durationMs else pcmFile.length() / (SAMPLE_RATE * 2) * 1000
+            playPcmFileWithSeekBar(pcmFile, totalMs)
+            return
+        }
+
+        // PCM 不存在，尝试重新生成
+        Toast.makeText(requireContext(), "PCM 已删除，正在重新生成...", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val regenerated = withContext(Dispatchers.IO) {
+                PcmSegmentExtractor.extractWatermarkPcm(requireContext(), episodeId, startMs, endMs)
+            }
+            if (regenerated != null && regenerated.exists() && regenerated.length() > 0) {
+                val totalMs = if (durationMs > 0) durationMs else regenerated.length() / (SAMPLE_RATE * 2) * 1000
+                playPcmFileWithSeekBar(regenerated, totalMs)
+            } else {
+                Toast.makeText(requireContext(), "重新生成 PCM 失败（缺少原始缓存）", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * v3.1.62: 带可拖动进度条的PCM播放对话框。
+     */
+    private fun playPcmFileWithSeekBar(pcmFile: File, totalDurationMs: Long) {
+        releaseAudioTrack()
+        playbackTotalMs = totalDurationMs
+        playbackCurrentPositionMs = 0L
+        playbackSeekRequested = -1L
+
+        val ctx = requireContext()
+
+        // 构建SeekBar对话框
+        val dialogBuilder = AlertDialog.Builder(ctx)
+        val dialogLayout = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 24)
+        }
+
+        val timeLayout = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val tvCurrent = android.widget.TextView(ctx).apply {
+            text = "00:00"
+            textSize = 12f
+        }
+        val tvTotal = android.widget.TextView(ctx).apply {
+            text = formatMs(totalDurationMs)
+            textSize = 12f
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = android.view.Gravity.END }
+        }
+        val spacer = android.widget.Space(ctx).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, 0, 1f)
+        }
+        timeLayout.addView(tvCurrent)
+        timeLayout.addView(spacer)
+        timeLayout.addView(tvTotal)
+        dialogLayout.addView(timeLayout)
+
+        val seekBar = android.widget.SeekBar(ctx).apply {
+            max = totalDurationMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            progress = 0
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        tvCurrent.text = formatMs(progress.toLong())
+                    }
+                }
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {
+                    val seekPos = sb?.progress?.toLong() ?: return
+                    playbackSeekRequested = seekPos
+                }
+            })
+        }
+        dialogLayout.addView(seekBar)
+
+        val btnClose = android.widget.Button(ctx).apply {
+            text = "停止"
+            setOnClickListener {
+                releaseAudioTrack()
+                seekBarUpdateRunnable?.let { seekBarHandler.removeCallbacks(it) }
+                seekBarUpdateRunnable = null
+            }
+        }
+        dialogLayout.addView(btnClose)
+
+        dialogBuilder.setTitle("PCM播放")
+        dialogBuilder.setView(dialogLayout)
+        dialogBuilder.setCancelable(false)
+        val dialog = dialogBuilder.show()
+
+        // 启动播放
+        try {
+            val minBufferSize = AudioTrack.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val bufferSize = (minBufferSize * 2).coerceAtLeast(8192)
+            playbackAudioTrack = AudioTrack(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+                AudioFormat.Builder()
+                    .setSampleRate(SAMPLE_RATE)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+                bufferSize,
+                AudioTrack.MODE_STREAM,
+                AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+            playbackAudioTrack?.play()
+
+            playbackThread = Thread {
+                try {
+                    var currentSeek = playbackSeekRequested
+                    playbackSeekRequested = -1L
+                    var fis = java.io.FileInputStream(pcmFile)
+                    if (currentSeek > 0) {
+                        val seekBytes = (currentSeek * SAMPLE_RATE.toLong() * 2L / 1000L).coerceAtMost(pcmFile.length())
+                        fis.skip(seekBytes)
+                        playbackCurrentPositionMs = currentSeek
+                    }
+                    val buffer = ByteArray(8192)
+                    var totalBytesRead = 0L
+                    while (!Thread.currentThread().isInterrupted) {
+                        val seekReq = playbackSeekRequested
+                        if (seekReq >= 0) {
+                            playbackSeekRequested = -1L
+                            currentSeek = seekReq
+                            fis.close()
+                            fis = java.io.FileInputStream(pcmFile)
+                            val seekBytes = (seekReq * SAMPLE_RATE.toLong() * 2L / 1000L).coerceAtMost(pcmFile.length())
+                            fis.skip(seekBytes)
+                            playbackCurrentPositionMs = seekReq
+                            totalBytesRead = 0L
+                            try { playbackAudioTrack?.pause() } catch (_: Exception) {}
+                            try { playbackAudioTrack?.flush() } catch (_: Exception) {}
+                            try { playbackAudioTrack?.play() } catch (_: Exception) {}
+                        }
+                        val read = fis.read(buffer)
+                        if (read <= 0) break
+                        playbackAudioTrack?.write(buffer, 0, read)
+                        totalBytesRead += read
+                        playbackCurrentPositionMs = currentSeek + totalBytesRead * 1000L / (SAMPLE_RATE.toLong() * 2L)
+                    }
+                    fis.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "PCM playback error: ${e.message}")
+                } finally {
+                    try { playbackAudioTrack?.stop() } catch (_: Exception) {}
+                    try { playbackAudioTrack?.release() } catch (_: Exception) {}
+                    playbackAudioTrack = null
+                    // 更新播放状态
+                    activity?.runOnUiThread {
+                        when (fingerprintType) {
+                            "manual" -> audioFingerprintAdapter?.stopPlaying()
+                            "candidate" -> candidateAdapter?.stopPlaying()
+                        }
+                        if (dialog.isShowing) dialog.dismiss()
+                    }
+                }
+            }.apply { start() }
+
+            // 定期更新SeekBar
+            seekBarUpdateRunnable = object : Runnable {
+                override fun run() {
+                    if (dialog.isShowing) {
+                        val pos = playbackCurrentPositionMs.coerceAtMost(totalDurationMs)
+                        seekBar.progress = pos.toInt()
+                        tvCurrent.text = formatMs(pos)
+                        seekBarUpdateRunnable?.let { seekBarHandler.postDelayed(this, 500) }
+                    }
+                }
+            }
+            seekBarHandler.postDelayed(seekBarUpdateRunnable!!, 500)
+        } catch (e: Exception) {
+            Log.e(TAG, "playPcmFileWithSeekBar failed: ${e.message}", e)
+            Toast.makeText(ctx, "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            releaseAudioTrack()
+            if (dialog.isShowing) dialog.dismiss()
+        }
+    }
+
+    /**
+     * v3.1.62: 释放AudioTrack资源。
+     */
+    private fun releaseAudioTrack() {
+        playbackThread?.interrupt()
+        playbackThread = null
+        try { playbackAudioTrack?.stop() } catch (_: Exception) {}
+        try { playbackAudioTrack?.release() } catch (_: Exception) {}
+        playbackAudioTrack = null
     }
 
     /**

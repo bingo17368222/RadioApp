@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.radio.app.R
@@ -217,40 +218,52 @@ class AudioFingerprintService : Service() {
         }
 
         /**
-         * 测试指纹匹配：从水印PCM文件重新提取指纹，与数据库中的指纹比较相似度。
+         * v3.1.62: 测试指纹匹配。
+         * 先检查 Chromaprint 库是否加载，从水印PCM文件重新提取指纹，与数据库中的指纹比较相似度。
+         * 结果直接通过 Toast 显示给用户。
          */
         @JvmStatic
         fun testFingerprint(context: Context, fingerprint: AudioFingerprint) {
             try {
+                // 1. 检查Chromaprint库是否加载
+                if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                    val msg = "Chromaprint 指纹库未加载，请先在离线引擎管理中下载"
+                    Log.w(TAG, "testFingerprint: $msg")
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    return
+                }
+
+                // 2. 获取水印PCM文件
                 val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(
                     context, fingerprint.episodeId, fingerprint.startMs, fingerprint.endMs
                 )
                 if (!pcmFile.exists() || pcmFile.length() <= 0) {
-                    Log.w(TAG, "testFingerprint: watermark PCM not found for ${fingerprint.episodeId}")
+                    val msg = "水印PCM文件不存在: ${fingerprint.episodeId} [${fingerprint.startMs}-${fingerprint.endMs}]"
+                    Log.w(TAG, "testFingerprint: $msg")
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     return
                 }
 
+                // 3. 从PCM文件提取指纹
                 val extractedFp = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
                 if (extractedFp.isNullOrBlank()) {
-                    Log.w(TAG, "testFingerprint: fingerprint extraction failed from ${pcmFile.name}")
+                    val msg = "从PCM提取指纹失败"
+                    Log.w(TAG, "testFingerprint: $msg")
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     return
                 }
 
+                // 4. 比较指纹相似度
                 val similarity = ChromaprintExtractor.compareFingerprints(fingerprint.fingerprint, extractedFp)
-                Log.i(TAG, "testFingerprint: similarity=${String.format(Locale.US, "%.4f", similarity)} for ${fingerprint.episodeId} [${fingerprint.startMs}-${fingerprint.endMs}]")
+                val resultMsg = "测试完成，相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%"
+                Log.i(TAG, "testFingerprint: $resultMsg for ${fingerprint.episodeId} [${fingerprint.startMs}-${fingerprint.endMs}]")
 
-                // 发送广播通知UI
-                try {
-                    val intent = Intent(ACTION_FINGERPRINT_ADDED).apply {
-                        putExtra(EXTRA_FINGERPRINT_EPISODE_ID, fingerprint.episodeId)
-                        putExtra(EXTRA_FINGERPRINT_START_MS, fingerprint.startMs)
-                        putExtra(EXTRA_FINGERPRINT_END_MS, fingerprint.endMs)
-                        putExtra(EXTRA_FINGERPRINT_MESSAGE, "测试完成，相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%")
-                    }
-                    LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
-                } catch (_: Exception) {}
+                // 5. 直接显示结果到UI
+                Toast.makeText(context, "$resultMsg (${fingerprint.episodeId})", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
-                com.radio.app.utils.FileLogUtils.e(TAG, "testFingerprint failed: ${e.message}", e)
+                val msg = "测试异常: ${e.message}"
+                Log.e(TAG, "testFingerprint failed: ${e.message}", e)
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             }
         }
     }
