@@ -223,18 +223,29 @@ object SegmentNotificationHelper {
                 nm.createNotificationChannel(channel)
             }
 
-            // v3.1.61: 移除百分比和ETA，简化通知文本
+            // progress is 0-1000 permille; show as x.x%.
+            val percentText = String.format(java.util.Locale.US, "%.1f", progress / 10f)
+
+            // 计算已用时间和ETA
             val elapsedMs = System.currentTimeMillis() - activeStartTime
             val elapsedStr = formatDurationMmSs(elapsedMs)
+            val etaStr = if (progress > 0 && progress < 1000) {
+                val remainingMs = ((elapsedMs * 1000L) / progress - elapsedMs).toLong().coerceAtLeast(0L)
+                formatDurationMmSs(remainingMs)
+            } else {
+                ""
+            }
 
             val infoText = buildString {
-                append("AI分段")
+                append("AI分段: ${percentText}%")
                 if (layerName.isNotEmpty()) {
                     append(" ($layerName")
                     append("，已用 $elapsedStr")
+                    if (etaStr.isNotEmpty()) append("，预计剩余 $etaStr")
                     append(")")
                 } else {
                     append(" (已用 $elapsedStr")
+                    if (etaStr.isNotEmpty()) append("，预计剩余 $etaStr")
                     append(")")
                 }
             }

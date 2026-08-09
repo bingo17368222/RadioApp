@@ -2382,11 +2382,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 else -> ""
                             }
                             val elapsedMs = System.currentTimeMillis() - pcmStartTime
-                            val elapsedStr = formatDurationMmSs(elapsedMs)
-                            val contentText = if (pct >= 100) {
-                                "$epDateStr · PCM生成完成"
+                            val elapsedStr = if (pct > 0) {
+                                val estTotalMs = (elapsedMs * 100L) / pct
+                                val etaMs = (estTotalMs - elapsedMs).coerceAtLeast(0L)
+                                val elapsed = formatDurationMmSs(elapsedMs)
+                                val eta = formatDurationMmSs(etaMs)
+                                "已用 $elapsed，预计剩余 $eta"
                             } else {
-                                "$epDateStr · 正在解码... ($elapsedStr)"
+                                "已用 ${formatDurationMmSs(elapsedMs)}"
+                            }
+                            val contentText = if (pct >= 100) {
+                                "$epDateStr · PCM生成完成 ($elapsedStr)"
+                            } else {
+                                "$epDateStr · 正在解码... ${pct}% ($elapsedStr)"
                             }
 
                             // 创建取消按钮的 PendingIntent
