@@ -310,27 +310,49 @@ class KeywordSettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * v3.1.42: 测试指纹匹配（从水印PCM重新提取指纹，与数据库对比相似度）。
+     * v3.1.41: 测试指纹匹配（从水印PCM重新提取指纹，与数据库对比相似度）。
+     * v3.1.60: 恢复v3.1.41方案，水印PCM不存在时自动从完整PCM缓存重新生成。
      */
     private fun testFingerprint(fp: AudioFingerprint) {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(
+                    var pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(
                         this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs
                     )
                     if (!pcmFile.exists() || pcmFile.length() <= 0) {
-                        return@runCatching Pair(-1f, "水印PCM文件不存在")
+                        // 自动从完整PCM缓存重新生成水印PCM
+                        val regenerated = PcmSegmentExtractor.extractWatermarkPcm(
+                            this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs
+                        )
+                        if (regenerated != null && regenerated.exists() && regenerated.length() > 0) {
+                            pcmFile = regenerated
+                        } else {
+                            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
+                            val fullPcm = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
+                            if (fullPcm.exists() && fullPcm.length() > 0) {
+                                val segmentFile = PcmSegmentExtractor.extractSegmentFromFile(fullPcm, fp.startMs, fp.endMs)
+                                if (segmentFile != null && segmentFile.exists() && segmentFile.length() > 0) {
+                                    val targetFile = PcmSegmentExtractor.getWatermarkPcmFile(this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs)
+                                    segmentFile.copyTo(targetFile, overwrite = true)
+                                    segmentFile.delete()
+                                    pcmFile = targetFile
+                                }
+                            }
+                        }
+                        if (!pcmFile.exists() || pcmFile.length() <= 0) {
+                            return@runCatching "水印PCM文件不存在（无法从完整PCM缓存重新生成，请先在播放器中播放该节目以生成完整PCM）"
+                        }
                     }
                     val extractedFp = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
                     if (extractedFp.isNullOrBlank()) {
-                        return@runCatching Pair(-1f, "从PCM提取指纹失败")
+                        return@runCatching "从PCM提取指纹失败（原生指纹库可能未加载）"
                     }
                     val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, extractedFp)
-                    Pair(similarity, "相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%")
-                }.getOrElse { Pair(-1f, "测试异常: ${it.message}") }
+                    "相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%"
+                }.getOrElse { "测试异常: ${it.message}" }
             }
-            val msg = "${result.second} (${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}])"
+            val msg = "$result (${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}])"
             Toast.makeText(this@KeywordSettingsActivity, msg, Toast.LENGTH_LONG).show()
         }
     }
@@ -380,9 +402,9 @@ class KeywordSettingsActivity : AppCompatActivity() {
             releaseAudioTrack()
         }
 
-        // 测试按钮：弹出测试选择对话框
+        // 测试按钮：直接运行指纹匹配测试（v3.1.41 方案）
         fingerprintAdapter.setOnTestListener { fp ->
-            showFingerprintTestDialog(fp)
+            testFingerprint(fp)
         }
 
         // 删除、修正
@@ -423,200 +445,6 @@ class KeywordSettingsActivity : AppCompatActivity() {
             Log.e(TAG, "playFingerprintPcm failed: ${e.message}")
             Toast.makeText(this, "播放失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    /**
-     * 显示指纹测试选择对话框：指纹vs自身 / 指纹vs完整PCM / 指纹vs所有完整PCM
-     */
-    private fun showFingerprintTestDialog(fp: AudioFingerprint) {
-        val options = arrayOf(
-            "指纹 vs 自身（提取→对比）",
-            "指纹 vs 本节目完整PCM",
-            "指纹 vs 所有完整PCM（滑动搜索）"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("测试指纹 - ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> testFingerprintVsSelf(fp)
-                    1 -> testFingerprintVsEpisodePcm(fp)
-                    2 -> testFingerprintVsAllPcm(fp)
-                }
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    /**
-     * 测试1：指纹 vs 自身（重新提取指纹并对比相似度）
-     * v3.1.56: 水印PCM不存在时自动从完整PCM缓存重新生成，避免因PCM缺失导致测试失败
-     */
-    private fun testFingerprintVsSelf(fp: AudioFingerprint) {
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    // 尝试获取水印PCM，如果不存在则自动从完整PCM缓存重新生成
-                    var pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(
-                        this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs
-                    )
-                    if (!pcmFile.exists() || pcmFile.length() <= 0) {
-                        // 方法1: 使用extractWatermarkPcm（优先使用完整PCM）
-                        val regenerated = PcmSegmentExtractor.extractWatermarkPcm(
-                            this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs
-                        )
-                        if (regenerated != null && regenerated.exists() && regenerated.length() > 0) {
-                            pcmFile = regenerated
-                        } else {
-                            // 方法2: 直接从完整PCM文件截取
-                            val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
-                            val fullPcm = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
-                            if (fullPcm.exists() && fullPcm.length() > 0) {
-                                val segmentFile = PcmSegmentExtractor.extractSegmentFromFile(fullPcm, fp.startMs, fp.endMs)
-                                if (segmentFile != null && segmentFile.exists() && segmentFile.length() > 0) {
-                                    val targetFile = PcmSegmentExtractor.getWatermarkPcmFile(this@KeywordSettingsActivity, fp.episodeId, fp.startMs, fp.endMs)
-                                    segmentFile.copyTo(targetFile, overwrite = true)
-                                    segmentFile.delete()
-                                    pcmFile = targetFile
-                                }
-                            }
-                        }
-                        if (!pcmFile.exists() || pcmFile.length() <= 0) {
-                            return@runCatching "水印PCM文件不存在（无法从完整PCM缓存重新生成，请先在播放器中播放该节目以生成完整PCM）"
-                        }
-                    }
-                    val extractedFp = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
-                    if (extractedFp.isNullOrBlank()) {
-                        return@runCatching "从PCM提取指纹失败（原生指纹库可能未加载）"
-                    }
-                    // 确保指纹引擎已加载
-                    if (!ChromaprintExtractor.ensureLibraryLoaded(this@KeywordSettingsActivity)) {
-                        return@runCatching "指纹引擎未就绪，请检查Chromaprint原生库"
-                    }
-                    val similarity = ChromaprintExtractor.compareFingerprints(fp.fingerprint, extractedFp)
-                    "相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%（指纹点数: ${ChromaprintExtractor.parseFingerprint(fp.fingerprint).size} vs ${ChromaprintExtractor.parseFingerprint(extractedFp).size}）"
-                }.getOrElse { "测试异常: ${it.message}" }
-            }
-            showTestResultDialog("指纹 vs 自身（${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]）", result, null, null, null)
-        }
-    }
-
-    /**
-     * 测试2：指纹 vs 本节目完整PCM（滑动窗口搜索匹配位置）
-     */
-    private fun testFingerprintVsEpisodePcm(fp: AudioFingerprint) {
-        lifecycleScope.launch {
-            val result: Triple<String, File?, Long?> = withContext(Dispatchers.IO) {
-                runCatching {
-                    val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
-                    val fullPcm = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
-                    if (!fullPcm.exists() || fullPcm.length() <= 0) {
-                        return@runCatching Triple("本节目完整PCM文件不存在", null as File?, null)
-                    }
-                    val pcmResult = ChromaprintExtractor.searchFingerprintInPcm(
-                        fingerprint = fp.fingerprint,
-                        pcmFile = fullPcm,
-                        searchDurationMs = fp.durationMs,
-                        threshold = 0.70f,
-                        originalStartMs = fp.startMs
-                    )
-                    if (pcmResult != null && pcmResult.similarity >= 0.70f) {
-                        val msg = "匹配成功! 相似度: ${String.format(Locale.US, "%.1f", pcmResult.similarity * 100)}% @ ${formatMs(pcmResult.bestMatchStartMs)}-${formatMs(pcmResult.bestMatchEndMs)}"
-                        Triple(msg, fullPcm, pcmResult.bestMatchStartMs)
-                    } else {
-                        val simStr = if (pcmResult != null) String.format(Locale.US, "%.1f", pcmResult.similarity * 100) else "N/A"
-                        Triple("匹配失败（相似度: $simStr%）", null, null)
-                    }
-                }.getOrElse { Triple("测试异常: ${it.message}", null, null) }
-            }
-            val (msg, pcmFile, matchStartMs) = result
-            showTestResultDialog("指纹 vs 本节目完整PCM（${fp.episodeId}）", msg, fp, matchStartMs, pcmFile)
-        }
-    }
-
-    /**
-     * 测试3：指纹 vs 所有完整PCM（滑动窗口搜索所有节目）
-     */
-    private fun testFingerprintVsAllPcm(fp: AudioFingerprint) {
-        lifecycleScope.launch {
-            val results = withContext(Dispatchers.IO) {
-                runCatching {
-                    val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
-                    val pcmFiles = pcmCacheDir.listFiles()?.filter { it.name.endsWith("_full.pcm") && it.length() > 16000 } ?: emptyList()
-                    if (pcmFiles.isEmpty()) return@runCatching "没有完整PCM文件"
-
-                    val matchResults = mutableListOf<Pair<String, File?>>()
-                    for (pcmFile in pcmFiles) {
-                        val epId = pcmFile.name.removeSuffix("_full.pcm")
-                        val pcmResult = ChromaprintExtractor.searchFingerprintInPcm(
-                            fingerprint = fp.fingerprint,
-                            pcmFile = pcmFile,
-                            searchDurationMs = fp.durationMs,
-                            threshold = 0.70f,
-                            originalStartMs = if (epId == fp.episodeId) fp.startMs else null
-                        )
-                        if (pcmResult != null && pcmResult.similarity >= 0.70f) {
-                            matchResults.add("★ $epId: ${String.format(Locale.US, "%.1f", pcmResult.similarity * 100)}% @ ${formatMs(pcmResult.bestMatchStartMs)}" to pcmFile)
-                        } else if (pcmResult != null && pcmResult.similarity > 0.5f) {
-                            matchResults.add("~ $epId: ${String.format(Locale.US, "%.1f", pcmResult.similarity * 100)}%" to null)
-                        }
-                    }
-                    if (matchResults.isEmpty()) return@runCatching "所有PCM中均未找到匹配（相似度>50%也无）"
-                    matchResults.joinToString("\n") { it.first }
-                }.getOrElse { "测试异常: ${it.message}" }
-            }
-            showTestResultDialog("指纹 vs 所有完整PCM（${fp.episodeId}）", results, null, null, null)
-        }
-    }
-
-    /**
-     * 显示测试结果对话框，匹配项下方附带播放按钮。
-     */
-    private fun showTestResultDialog(
-        title: String,
-        message: String,
-        matchFp: AudioFingerprint?,
-        matchStartMs: Long?,
-        matchPcmFile: File?
-    ) {
-        val scrollView = android.widget.ScrollView(this)
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 16, 32, 16)
-        }
-
-        val tvMsg = android.widget.TextView(this).apply {
-            text = message
-            textSize = 13f
-            setTextIsSelectable(true)
-            setLineSpacing(0f, 1.2f)
-        }
-        container.addView(tvMsg)
-
-        if (matchPcmFile != null && matchPcmFile.exists()) {
-            val playStart = matchStartMs ?: (matchFp?.startMs ?: 0L)
-            val playEnd = if (matchStartMs != null && matchFp != null) {
-                matchStartMs + (matchFp.endMs - matchFp.startMs)
-            } else {
-                matchFp?.endMs ?: 0L
-            }
-            if (playEnd > playStart) {
-                val btnPlay = Button(this).apply {
-                    text = "▶ 播放匹配位置 PCM（${formatMs(playStart)}-${formatMs(playEnd)}）"
-                    setOnClickListener {
-                        playPcmSegment(matchPcmFile, playStart, playEnd)
-                    }
-                    textSize = 12f
-                }
-                container.addView(btnPlay)
-            }
-        }
-
-        scrollView.addView(container)
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(scrollView)
-            .setPositiveButton("确定", null)
-            .show()
     }
 
     // ==================== 批量测试 ====================

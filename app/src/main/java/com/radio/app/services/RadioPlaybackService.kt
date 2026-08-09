@@ -2382,19 +2382,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 else -> ""
                             }
                             val elapsedMs = System.currentTimeMillis() - pcmStartTime
-                            val elapsedStr = if (pct > 0) {
-                                val estTotalMs = (elapsedMs * 100L) / pct
-                                val etaMs = (estTotalMs - elapsedMs).coerceAtLeast(0L)
-                                val elapsed = formatDurationMmSs(elapsedMs)
-                                val eta = formatDurationMmSs(etaMs)
-                                "已用 $elapsed，预计剩余 $eta"
-                            } else {
-                                "已用 ${formatDurationMmSs(elapsedMs)}"
-                            }
+                            val elapsedStr = formatDurationMmSs(elapsedMs)
                             val contentText = if (pct >= 100) {
-                                "$epDateStr · PCM生成完成 ($elapsedStr)"
+                                "$epDateStr · PCM生成完成"
                             } else {
-                                "$epDateStr · 正在解码... ${pct}% ($elapsedStr)"
+                                "$epDateStr · 正在解码... ($elapsedStr)"
                             }
 
                             // 创建取消按钮的 PendingIntent
@@ -2464,16 +2456,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun patrolSubtitleGeneration() {
         val appSettings = AppSettings.getInstance(this)
-        // v2.4.96: Check independent pre-generate subtitles toggle
-        // v2.4.123: When subtitles are OFF but preprocessing is ON, still patrol to generate PCM.
+        // v3.1.61: 是否预生成PCM由预处理开关和预生成开关共同决定。
+        // 两个开关都关闭时，不生成PCM，但巡逻本身继续执行（检查缓存等）。
         val subtitlesEnabled = appSettings.enablePreGenerateSubtitles
         val preprocessingEnabled = appSettings.enablePreprocessing
         if (!subtitlesEnabled && !preprocessingEnabled) {
-            writePreCacheLog("patrolSubtitle:  both subtitles and preprocessing disabled, skipping patrol")
-            return
-        }
-        if (!subtitlesEnabled && preprocessingEnabled) {
-            writePreCacheLog("patrolSubtitle:  subtitles OFF but preprocessing ON, running PCM-only patrol")
+            writePreCacheLog("patrolSubtitle:  both subtitles/preprocessing disabled, PCM generation skipped")
+        } else if (!subtitlesEnabled && preprocessingEnabled) {
+            writePreCacheLog("patrolSubtitle:  subtitles OFF but preprocessing ON, PCM generation enabled")
         }
         // [v2.4.13] Check if subtitle service is busy (cross-process via flag file)
         val busyFlag = java.io.File(
@@ -2673,25 +2663,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                     }
 
-                    // [v2.4.18] Check if subtitles are COMPLETE (not just existing)
-                    // [v2.4.19] Wrap in try-catch to prevent patrol abort on DB errors
-                    // v2.4.123: When subtitles are disabled but preprocessing is on,
-                    // check for PCM files instead of subtitles.
-                    if (!subtitlesEnabled && preprocessingEnabled) {
-                        // PCM-only mode: check if both 5-min PCM and full PCM exist
-                        val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
-                        val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
-                        val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
-                        val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
+                    // 检查设置开关：两个开关都关闭时，不生成PCM
+                    if (!preprocessingEnabled && !subtitlesEnabled) {
+                        writePreCacheLog("patrolSubtitle:  both preprocessing and subtitles disabled, skipping PCM generation for ${ep.id}")
+                        continue
+                    }
+                    // 检查节目是否已有PCM文件，没有则触发生成。
+                    val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
+                    val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
+                    val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
+                    val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
 
-                        if (hasPcm5min) {
-                            withSubtitles++ // count as "already processed"
-                            continue
-                        }
-
+                    if (hasPcm5min) {
+                        withSubtitles++ // count as "already processed"
+                    } else {
                         // Found a cached episode without PCM — trigger PCM generation.
-                        // v2.4.149: Respect user setting. Default generates full PCM to preserve behavior;
-                        // disabling it generates only the lightweight 5-min preview PCM.
                         val settings = com.radio.app.models.AppSettings.getInstance(this@RadioPlaybackService)
                         val shouldGenerateFullPcm = settings.patrolGenerateFullPcm
                         writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id}), generateFullPcm=${shouldGenerateFullPcm}")
@@ -2703,8 +2689,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
                                 }
                             }
-                            // v2.4.148: Prefer DB-cached startTime/endTime for patrol notification.
-                            // This keeps the date/time visible even when offline.
                             val epDateStr = when {
                                 ep.startTime > 0 && ep.endTime > ep.startTime -> {
                                     val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
@@ -2735,6 +2719,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
                             return@launch
                         }
+                        continue
+                    }
+
+                    // v2.4.123: When subtitles are disabled, skip subtitle-specific checks.
+                    if (!subtitlesEnabled) {
                         continue
                     }
 
