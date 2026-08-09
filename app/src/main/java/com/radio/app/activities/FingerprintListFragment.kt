@@ -26,11 +26,14 @@ import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.database.RadioDatabaseHelper.ObservationPoolCandidate
 import com.radio.app.RadioApplication
+import com.radio.app.utils.AudioSegmentAnalyzer
 import com.radio.app.utils.PcmSegmentExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * v3.2.3: 指纹列表 Fragment。
@@ -170,26 +173,131 @@ class FingerprintListFragment : Fragment() {
     // ===== PCM 播放 =====
 
     /**
-     * v3.1.62: 播放候选指纹PCM（候选无startMs/endMs，按episodeId搜索PCM文件）。
+     * v3.1.63: 播放候选指纹PCM（候选无startMs/endMs，按episodeId搜索PCM文件）。
+     * 如果PCM不存在，自动从PCM缓存重新生成；如果MP4不存在，自动下载并重新生成PCM。
      */
     private fun playCandidateFingerprintPcm(episodeId: String, durationMs: Long) {
         val watermarkDir = RadioApplication.getWatermarkPcmDir(requireContext())
-        if (!watermarkDir.exists()) {
-            Toast.makeText(requireContext(), "PCM目录不存在", Toast.LENGTH_SHORT).show()
-            return
-        }
-        // 搜索以episodeId开头的PCM文件
+        if (!watermarkDir.exists()) watermarkDir.mkdirs()
+
+        // 1. 搜索以episodeId开头的PCM文件
         val pcmFiles = watermarkDir.listFiles { file ->
             file.name.startsWith(episodeId) && file.name.endsWith(".pcm")
         }
-        if (pcmFiles.isNullOrEmpty()) {
-            Toast.makeText(requireContext(), "未找到该节目的PCM文件", Toast.LENGTH_SHORT).show()
+        if (!pcmFiles.isNullOrEmpty()) {
+            // 找到已有PCM，直接播放
+            val pcmFile = pcmFiles[0]
+            val totalMs = if (durationMs > 0) durationMs else pcmFile.length() / (SAMPLE_RATE * 2) * 1000
+            playPcmFileWithSeekBar(pcmFile, totalMs)
             return
         }
-        // 取第一个匹配的PCM文件
-        val pcmFile = pcmFiles[0]
-        val totalMs = if (durationMs > 0) durationMs else pcmFile.length() / (SAMPLE_RATE * 2) * 1000
-        playPcmFileWithSeekBar(pcmFile, totalMs)
+
+        // 2. PCM不存在，尝试自动生成
+        Toast.makeText(requireContext(), "PCM不存在，正在自动生成...", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                generatePcmAndPlay(episodeId, durationMs)
+            }
+            if (result != null) {
+                activity?.runOnUiThread {
+                    playPcmFileWithSeekBar(result, if (durationMs > 0) durationMs else result.length() / (SAMPLE_RATE * 2) * 1000)
+                }
+            }
+        }
+    }
+
+    /**
+     * v3.1.63: 生成候选指纹PCM：先尝试从现有PCM缓存提取，再尝试下载MP4生成。
+     * @return PCM文件，失败返回null
+     */
+    private fun generatePcmAndPlay(episodeId: String, durationMs: Long): File? {
+        return try {
+            // 2a. 检查是否有完整PCM缓存
+            val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
+            val fullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
+            val min5Pcm = File(pcmCacheDir, "${episodeId}_5min.pcm")
+            val sourceFile = when {
+                fullPcm.exists() && fullPcm.length() > 0 -> fullPcm
+                min5Pcm.exists() && min5Pcm.length() > 0 -> min5Pcm
+                else -> null
+            }
+
+            if (sourceFile != null) {
+                // 有PCM缓存，直接播放完整PCM
+                Log.d(TAG, "generatePcmAndPlay: using existing PCM cache: ${sourceFile.name}")
+                return sourceFile
+            }
+
+            // 2b. 检查是否有MP4缓存
+            val episodesDir = RadioApplication.getEpisodesCacheDir(requireContext())
+            var mp4File = episodesDir.listFiles { f ->
+                f.name.contains(episodeId) && f.name.endsWith(".mp4") && f.length() > 1024
+            }?.firstOrNull()
+
+            // 2c. 如果MP4不存在，从网络下载
+            if (mp4File == null) {
+                Log.d(TAG, "generatePcmAndPlay: MP4 not found, downloading for $episodeId")
+                mp4File = downloadMp4ForEpisode(episodeId)
+            }
+
+            // 2d. 用MP4生成PCM
+            if (mp4File != null && mp4File.length() > 1024) {
+                AudioSegmentAnalyzer.preGeneratePcmFiles(
+                    requireContext(), episodeId, mp4File.absolutePath
+                )
+                // 检查PCM是否生成成功
+                val fullPcm2 = File(pcmCacheDir, "${episodeId}_full.pcm")
+                if (fullPcm2.exists() && fullPcm2.length() > 0) return fullPcm2
+                val min5Pcm2 = File(pcmCacheDir, "${episodeId}_5min.pcm")
+                if (min5Pcm2.exists() && min5Pcm2.length() > 0) return min5Pcm2
+            }
+
+            Log.w(TAG, "generatePcmAndPlay: failed to generate PCM for $episodeId")
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "generatePcmAndPlay failed: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * v3.1.63: 下载MP4用于PCM生成。
+     */
+    private fun downloadMp4ForEpisode(episodeId: String): File? {
+        return try {
+            val episodesDir = RadioApplication.getEpisodesCacheDir(requireContext())
+            // 从数据库获取音频URL
+            val episode = dbHelper.getEpisodeInfo(episodeId)
+            val audioUrl = episode?.audioUrl ?: return null
+            if (audioUrl.isBlank() || !audioUrl.startsWith("http")) return null
+
+            val fileName = try {
+                URL(audioUrl).path.substringAfterLast('/')
+            } catch (e: Exception) {
+                "${episodeId}.mp4"
+            }
+            val targetFile = File(episodesDir, fileName)
+            if (targetFile.exists() && targetFile.length() > 1024) return targetFile
+
+            val connection = URL(audioUrl).openConnection() as HttpURLConnection
+            connection.connectTimeout = 15000
+            connection.readTimeout = 60000
+            connection.connect()
+            if (connection.responseCode == 200) {
+                connection.inputStream.use { input ->
+                    targetFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (targetFile.exists() && targetFile.length() > 1024) targetFile else null
+            } else {
+                Log.e(TAG, "downloadMp4ForEpisode: HTTP ${connection.responseCode} for $episodeId")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "downloadMp4ForEpisode failed: ${e.message}", e)
+            null
+        }
     }
 
     /**

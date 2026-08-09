@@ -61,11 +61,12 @@ object ChromaprintExtractor {
     }
 
     /**
-     * 从 PCM 文件中提取指纹。
+     * v3.1.63: 从 PCM 文件中提取指纹。
+     * 如果 JNI 库未加载，自动尝试加载，兼容 v3.1.41 的不需要提前 ensureLibraryLoaded 的方案。
      */
     fun extractFingerprintFromFile(pcmFile: File): String? {
         if (!pcmFile.exists() || pcmFile.length() <= 0) return null
-        if (!jniLoaded) {
+        if (!jniLoaded && !loadJniLibrary()) {
             Log.e(TAG, "extractFingerprintFromFile: chromaprint_jni not loaded")
             return null
         }

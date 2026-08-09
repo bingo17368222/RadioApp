@@ -151,10 +151,12 @@ class KeywordSettingsActivity : AppCompatActivity() {
         }
 
         // v3.1.8: 注册指纹测试取消广播
+        // v3.1.63: 改为系统广播接收器（取消按钮的PendingIntent发送系统广播，与LocalBroadcastManager不匹配）
         try {
-            LocalBroadcastManager.getInstance(this).registerReceiver(
+            this.registerReceiver(
                 fingerprintTestCancelReceiver,
-                IntentFilter(FingerprintTestNotificationHelper.CANCEL_ACTION)
+                IntentFilter(FingerprintTestNotificationHelper.CANCEL_ACTION),
+                Context.RECEIVER_NOT_EXPORTED
             )
         } catch (e: Exception) {
             Log.e(TAG, "register fingerprintTestCancelReceiver failed: ${e.message}")
@@ -174,7 +176,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
             LocalBroadcastManager.getInstance(this).unregisterReceiver(fingerprintReceiver)
         } catch (_: Exception) {}
         try {
-            LocalBroadcastManager.getInstance(this).unregisterReceiver(fingerprintTestCancelReceiver)
+            this.unregisterReceiver(fingerprintTestCancelReceiver)
         } catch (_: Exception) {}
     }
 

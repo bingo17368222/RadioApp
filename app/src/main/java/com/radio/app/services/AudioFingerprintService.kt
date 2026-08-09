@@ -218,22 +218,15 @@ class AudioFingerprintService : Service() {
         }
 
         /**
-         * v3.1.62: 测试指纹匹配。
-         * 先检查 Chromaprint 库是否加载，从水印PCM文件重新提取指纹，与数据库中的指纹比较相似度。
-         * 结果直接通过 Toast 显示给用户。
+         * v3.1.63: 测试指纹匹配（恢复v3.1.41方案）。
+         * 从水印PCM文件重新提取指纹，与数据库中的指纹比较相似度。
+         * extractFingerprintFromFile 会自动加载JNI库，无需手动 ensureLibraryLoaded。
+         * 结果通过 Toast 显示给用户。
          */
         @JvmStatic
         fun testFingerprint(context: Context, fingerprint: AudioFingerprint) {
             try {
-                // 1. 检查Chromaprint库是否加载
-                if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
-                    val msg = "Chromaprint 指纹库未加载，请先在离线引擎管理中下载"
-                    Log.w(TAG, "testFingerprint: $msg")
-                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                    return
-                }
-
-                // 2. 获取水印PCM文件
+                // 1. 获取水印PCM文件
                 val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(
                     context, fingerprint.episodeId, fingerprint.startMs, fingerprint.endMs
                 )
@@ -244,21 +237,21 @@ class AudioFingerprintService : Service() {
                     return
                 }
 
-                // 3. 从PCM文件提取指纹
+                // 2. 从PCM文件提取指纹（extractFingerprintFromFile 内部自动加载JNI）
                 val extractedFp = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
                 if (extractedFp.isNullOrBlank()) {
-                    val msg = "从PCM提取指纹失败"
+                    val msg = "从PCM提取指纹失败，请确认已下载Chromaprint指纹库"
                     Log.w(TAG, "testFingerprint: $msg")
                     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     return
                 }
 
-                // 4. 比较指纹相似度
+                // 3. 比较指纹相似度
                 val similarity = ChromaprintExtractor.compareFingerprints(fingerprint.fingerprint, extractedFp)
                 val resultMsg = "测试完成，相似度: ${String.format(Locale.US, "%.1f", similarity * 100)}%"
                 Log.i(TAG, "testFingerprint: $resultMsg for ${fingerprint.episodeId} [${fingerprint.startMs}-${fingerprint.endMs}]")
 
-                // 5. 直接显示结果到UI
+                // 4. 直接显示结果到UI
                 Toast.makeText(context, "$resultMsg (${fingerprint.episodeId})", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 val msg = "测试异常: ${e.message}"
