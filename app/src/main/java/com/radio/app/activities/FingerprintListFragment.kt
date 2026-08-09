@@ -208,9 +208,17 @@ class FingerprintListFragment : Fragment() {
 
     /**
      * v3.1.63: 生成候选指纹PCM：先尝试从现有PCM缓存提取，再尝试下载MP4生成。
+     * v3.1.65: 增加进度通知，使用FingerprintTestNotificationHelper显示PCM生成进度。
      * @return PCM文件，失败返回null
      */
     private fun generatePcmAndPlay(episodeId: String, durationMs: Long): File? {
+        val fpLabel = episodeId.take(30)
+        val pcmGenStartTime = System.currentTimeMillis()
+        // v3.1.65: 显示PCM生成进度通知栏
+        com.radio.app.utils.FingerprintTestNotificationHelper.resetCancel()
+        com.radio.app.utils.FingerprintTestNotificationHelper.showProgress(
+            requireContext(), fpLabel, "正在生成PCM...", 0, 0
+        )
         return try {
             // 2a. 检查是否有完整PCM缓存
             val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
@@ -225,6 +233,7 @@ class FingerprintListFragment : Fragment() {
             if (sourceFile != null) {
                 // 有PCM缓存，直接播放完整PCM
                 Log.d(TAG, "generatePcmAndPlay: using existing PCM cache: ${sourceFile.name}")
+                com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
                 return sourceFile
             }
 
@@ -237,25 +246,42 @@ class FingerprintListFragment : Fragment() {
             // 2c. 如果MP4不存在，从网络下载
             if (mp4File == null) {
                 Log.d(TAG, "generatePcmAndPlay: MP4 not found, downloading for $episodeId")
+                com.radio.app.utils.FingerprintTestNotificationHelper.showProgress(
+                    requireContext(), fpLabel, "正在下载MP4...", 0, 0
+                )
                 mp4File = downloadMp4ForEpisode(episodeId)
             }
 
             // 2d. 用MP4生成PCM
             if (mp4File != null && mp4File.length() > 1024) {
                 AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    requireContext(), episodeId, mp4File.absolutePath
+                    requireContext(), episodeId, mp4File.absolutePath,
+                    progressCallback = { pct ->
+                        val elapsed = System.currentTimeMillis() - pcmGenStartTime
+                        com.radio.app.utils.FingerprintTestNotificationHelper.showProgress(
+                            requireContext(), fpLabel, "正在生成PCM...", pct, elapsed
+                        )
+                    }
                 )
                 // 检查PCM是否生成成功
                 val fullPcm2 = File(pcmCacheDir, "${episodeId}_full.pcm")
-                if (fullPcm2.exists() && fullPcm2.length() > 0) return fullPcm2
+                if (fullPcm2.exists() && fullPcm2.length() > 0) {
+                    com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
+                    return fullPcm2
+                }
                 val min5Pcm2 = File(pcmCacheDir, "${episodeId}_5min.pcm")
-                if (min5Pcm2.exists() && min5Pcm2.length() > 0) return min5Pcm2
+                if (min5Pcm2.exists() && min5Pcm2.length() > 0) {
+                    com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
+                    return min5Pcm2
+                }
             }
 
             Log.w(TAG, "generatePcmAndPlay: failed to generate PCM for $episodeId")
+            com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
             null
         } catch (e: Exception) {
             Log.e(TAG, "generatePcmAndPlay failed: ${e.message}", e)
+            com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
             null
         }
     }

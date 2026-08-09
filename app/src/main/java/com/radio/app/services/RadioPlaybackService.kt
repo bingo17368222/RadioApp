@@ -2341,6 +2341,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         pcmPregenCancelFlags[episodeId] = false
         val notifId = getPcmPregenNotificationId(episodeId)
+        // v3.1.65: 提前创建通知通道，确保通知栏正常显示
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                if (nm.getNotificationChannel("pcm_pregen_channel") == null) {
+                    nm.createNotificationChannel(android.app.NotificationChannel(
+                        "pcm_pregen_channel", "PCM预生成", NotificationManager.IMPORTANCE_LOW
+                    ))
+                }
+            }
+        } catch (_: Exception) {}
         Thread {
             try {
                 // 检查取消标志，如果已被取消则提前返回
@@ -2352,6 +2363,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                 writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
                 val pcmStartTime = System.currentTimeMillis()
+                // v3.1.65: 先显示初始通知（0%），确保通知栏立即出现
+                try {
+                    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                    val title = "预生成PCM [${episode.title ?: episodeId}]"
+                    val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN)
+                        .setClass(this@RadioPlaybackService, com.radio.app.utils.PcmPregenCancelReceiver::class.java)
+                        .apply {
+                            putExtra("episode_id", episodeId)
+                            putExtra("notif_id", notifId)
+                        }
+                    val cancelPendingIntent = PendingIntent.getBroadcast(
+                        this@RadioPlaybackService, notifId, cancelIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    val initialNotif = NotificationCompat.Builder(this@RadioPlaybackService, "pcm_pregen_channel")
+                        .setSmallIcon(android.R.drawable.ic_media_ff)
+                        .setContentTitle(title)
+                        .setContentText("正在准备解码...")
+                        .setOngoing(true)
+                        .setOnlyAlertOnce(true)
+                        .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPendingIntent)
+                        .build()
+                    nm.notify(notifId, initialNotif)
+                } catch (_: Exception) {}
                 // v2.4.139: Pass episode metadata duration so the analyzer can fall back when
                 // MediaExtractor fails to read the MP4 duration (a common cause of mp4DurationMs=0
                 // in .info files).
