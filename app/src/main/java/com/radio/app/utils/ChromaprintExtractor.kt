@@ -19,6 +19,19 @@ object ChromaprintExtractor {
     @Volatile
     private var jniLoaded = false
 
+    // v3.1.64: 恢复v3.1.41的init块方案，在类初始化时加载libchromaprint_jni.so。
+    // 这样 extractFingerprintFromFile 等native方法无需前置 ensureLibraryLoaded 即可工作。
+    // 移除后（v3.1.57）导致所有指纹测试都提示"指纹库未加载"。
+    init {
+        try {
+            System.loadLibrary("chromaprint_jni")
+            jniLoaded = true
+            Log.i(TAG, "chromaprint_jni loaded in init block")
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "init: Failed to load chromaprint_jni: ${e.message}")
+        }
+    }
+
     /**
      * v3.1.56: 尝试加载 libchromaprint_jni.so（CMake 构建的 JNI 桥接库）。
      * 该库通过 dlopen 加载外部 libchromaprint.so 实现指纹提取。
@@ -61,8 +74,10 @@ object ChromaprintExtractor {
     }
 
     /**
-     * v3.1.63: 从 PCM 文件中提取指纹。
-     * 如果 JNI 库未加载，自动尝试加载，兼容 v3.1.41 的不需要提前 ensureLibraryLoaded 的方案。
+     * v3.1.64: 从 PCM 文件中提取指纹。
+     * 恢复v3.1.41方案：init块已加载JNI，此处不再调用 ChromaprintLoader.ensureLoaded，
+     * 因为调用者应通过 ensureLibraryLoaded(context) 先确保 libchromaprint.so 已加载。
+     * 如果 JNI 库未加载（init块失败），自动尝试加载。
      */
     fun extractFingerprintFromFile(pcmFile: File): String? {
         if (!pcmFile.exists() || pcmFile.length() <= 0) return null

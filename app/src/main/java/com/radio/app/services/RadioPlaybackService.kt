@@ -2398,9 +2398,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             }
 
                             // 创建取消按钮的 PendingIntent
-                            val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN).apply {
-                                putExtra("episode_id", episodeId)
-                            }
+                            // v3.1.64: 显式设置接收器类名（Android 12+ 要求显式广播），
+                            // 同时传递 notif_id 以便接收器立即取消通知。
+                            val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN)
+                                .setClass(this@RadioPlaybackService, com.radio.app.utils.PcmPregenCancelReceiver::class.java)
+                                .apply {
+                                    putExtra("episode_id", episodeId)
+                                    putExtra("notif_id", notifId)
+                                }
                             val cancelPendingIntent = PendingIntent.getBroadcast(
                                 this@RadioPlaybackService,
                                 notifId,
@@ -2412,8 +2417,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 .setSmallIcon(android.R.drawable.ic_media_ff)
                                 .setContentTitle(title)
                                 .setContentText(contentText)
-                                .setOngoing(pct in 1..99)
-                                .setAutoCancel(true)
+                                // v3.1.64: 全程设为ongoing（0-99%），确保取消按钮始终可见
+                                .setOngoing(pct < 100)
+                                .setAutoCancel(false)
+                                .setOnlyAlertOnce(true)
                                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPendingIntent)
                                 .build()
                             nm.notify(notifId, notif)

@@ -149,15 +149,3 @@ object FingerprintTestNotificationHelper {
     }
 }
 
-/**
- * v3.1.8: 指纹测试取消广播接收器。
- * 处理指纹匹配测试通知栏的取消按钮点击。
- */
-class FingerprintTestCancelReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent?) {
-        if (intent?.action == FingerprintTestNotificationHelper.CANCEL_ACTION) {
-            FingerprintTestNotificationHelper.setCancelled()
-            FingerprintTestNotificationHelper.cancel(context)
-        }
-    }
-}
