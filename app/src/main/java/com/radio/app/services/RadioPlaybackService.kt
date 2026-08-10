@@ -2805,12 +2805,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         continue
                     }
                     // 检查节目是否已有PCM文件，没有则触发生成。
+                    // v3.1.68: 修复巡逻逻辑：全量PCM已存在时不应重复生成。
+                    // 之前只检查5分钟PCM，但v3.1.40已不再自动生成5分钟PCM，
+                    // 导致全量PCM即使存在也被反复触发重新生成。
                     val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
                     val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
                     val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
                     val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
 
-                    if (hasPcm5min) {
+                    if (hasPcm5min || hasPcmFull) {
                         withSubtitles++ // count as "already processed"
                     } else {
                         // Found a cached episode without PCM — trigger PCM generation.

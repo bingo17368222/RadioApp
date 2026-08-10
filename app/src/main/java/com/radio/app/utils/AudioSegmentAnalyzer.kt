@@ -612,12 +612,13 @@ object AudioSegmentAnalyzer {
             return true
         }
 
-        // v2.4.148: If we still don't know the MP4 duration but both PCM files already exist,
+        // v2.4.148: If we still don't know the MP4 duration but PCM files already exist,
         // keep them. Deleting valid, large PCM just because MediaExtractor returned 0 is the root
         // cause of repeated full-PCM regeneration and 100MB+ file accumulation.
-        if (mp4DurationMs <= 0 && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100 &&
-            min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] keeping existing PCM for $episodeId because MediaExtractor duration is 0 but files exist (full=${fullPcmFile.length()}, min5=${min5PcmFile.length()}).\n")
+        // v3.1.68: 不再要求5分钟PCM必须存在——v3.1.40已不再自动生成5分钟版PCM，
+        // 只要全量PCM存在且足够大即可保留，避免PCM被反复删除重建。
+        if (mp4DurationMs <= 0 && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] keeping existing PCM for $episodeId because MediaExtractor duration is 0 but full PCM exists (${fullPcmFile.length()} bytes).\n")
             return true
         }
 
@@ -671,14 +672,35 @@ object AudioSegmentAnalyzer {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] ERROR: PCM duration (${pcmDurationMs}ms) still < 85% of MP4 duration (${mp4DurationMs}ms). Keeping file but marking unreliable.\n")
         }
 
-        // v3.1.40: 不再自动生成5分钟版PCM（手动测试字幕用），仅写入.info文件。
+        // v3.1.68: 恢复5分钟PCM自动生成（从全量PCM截取前5分钟）。
+        // v3.1.40 曾停止自动生成5分钟PCM，但巡逻逻辑依赖它判断PCM是否已存在，
+        // 且手动生成字幕时也需要5分钟PCM，因此恢复自动生成。
         if (mp4DurationMs > 0) {
             writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
-            // 删除遗留的5分钟PCM文件，避免手动生成字幕时误用
+            // 从全量PCM截取前5分钟（16kHz mono 16bit: 5*60*16000*2 = 9,600,000 bytes）
             try {
-                if (min5PcmFile.exists()) min5PcmFile.delete()
-                if (min5InfoFile.exists()) min5InfoFile.delete()
-            } catch (_: Exception) {}
+                val fiveMinBytes = 5 * 60 * 16000 * 2L
+                if (clampedFile.length() >= fiveMinBytes) {
+                    val raf = java.io.RandomAccessFile(clampedFile, "r")
+                    val channel = raf.channel
+                    val mapped = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, fiveMinBytes)
+                    val buf = ByteArray(fiveMinBytes.toInt())
+                    mapped.get(buf)
+                    channel.close()
+                    raf.close()
+                    min5PcmFile.writeBytes(buf)
+                    val min5DurationMs = fiveMinBytes / (16000 * 2) * 1000
+                    writePcmInfo(min5InfoFile, mp4DurationMs, min5DurationMs, 16000, 1)
+                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated from full PCM for $episodeId (${min5PcmFile.length()} bytes, ${min5DurationMs}ms)\n")
+                } else {
+                    // 全量PCM不足5分钟，直接用全量PCM作为5分钟PCM
+                    clampedFile.copyTo(min5PcmFile, overwrite = true)
+                    writePcmInfo(min5InfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
+                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM = full PCM (insufficient length) for $episodeId (${min5PcmFile.length()} bytes, ${pcmDurationMs}ms)\n")
+                }
+            } catch (e: Exception) {
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generation failed: ${e.message}\n")
+            }
         } else {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: mp4DurationMs is 0, skipping .info write for $episodeId to avoid invalid info files.\n")
         }
