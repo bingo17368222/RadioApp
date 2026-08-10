@@ -1113,9 +1113,7 @@ object AudioSegmentAnalyzer {
                             outputBuffer.get(chunk)
 
                             if (needResample) {
-                                // v2.4.132: Use continuous-phase linear interpolation resampling
-                                // (same algorithm as SubtitleGeneratorService.resampleChunkContinuousSG).
-                                // This properly handles non-integer ratios (e.g., 44100/16000=2.75625).
+                                // v3.1.70: 优化重采样性能，消除ArrayList<Short>装箱开销
                                 val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
                                 val inFrames = pcmShort.remaining() / channelCount
 
@@ -1136,7 +1134,10 @@ object AudioSegmentAnalyzer {
                                 System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
                                 val availableInputRange = extendedInput.size - 1
                                 var currentPhase = resamplePhase
-                                val outputSamples = ArrayList<Short>(512)
+
+                                // v3.1.70: 预分配ByteBuffer，直接写入，消除ArrayList<Short>装箱
+                                val estimatedOutFrames = ((monoInput.size - currentPhase) / ratio).toInt() + 1
+                                val outBuf = java.nio.ByteBuffer.allocate(estimatedOutFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
 
                                 while (currentPhase < availableInputRange) {
                                     val srcIdx = currentPhase.toInt()
@@ -1144,7 +1145,7 @@ object AudioSegmentAnalyzer {
                                     val s0 = extendedInput[srcIdx].toInt()
                                     val s1 = extendedInput[srcIdx + 1].toInt()
                                     val interpolated = s0 + ((s1 - s0) * frac).toInt()
-                                    outputSamples.add(interpolated.toShort())
+                                    outBuf.putShort(interpolated.toShort())
                                     currentPhase += ratio
                                 }
 
@@ -1152,9 +1153,7 @@ object AudioSegmentAnalyzer {
                                 resamplePhase = currentPhase - availableInputRange
                                 lastSample = if (monoInput.isNotEmpty()) monoInput[monoInput.size - 1] else lastSample
 
-                                // Write output
-                                val outBuf = java.nio.ByteBuffer.allocate(outputSamples.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                for (s in outputSamples) outBuf.putShort(s)
+                                // Write output directly
                                 val outBytes = ByteArray(outBuf.position())
                                 outBuf.rewind()
                                 outBuf.get(outBytes)
@@ -1243,9 +1242,12 @@ object AudioSegmentAnalyzer {
             }
             extractor.selectTrack(audioTrackIndex)
             val inputFormat = extractor.getTrackFormat(audioTrackIndex)
-            val sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
-            val channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+            // v3.1.71: 使用var使sampleRate/channelCount可变——HE-AAC v2解码后格式会变化
+            // 容器格式可能是22050Hz/1ch，但解码器实际输出44100Hz/2ch（SBR+PS之后）
+            var sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+            var channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
             val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+            Log.i(TAG, "decodeUrlToPcm: container format: ${sampleRate}Hz ${channelCount}ch mime=$mime")
 
             val decoder = android.media.MediaCodec.createDecoderByType(mime)
             decoder.configure(inputFormat, null, null, 0)
@@ -1255,7 +1257,10 @@ object AudioSegmentAnalyzer {
             var totalPcmBytes = 0
             // v2.4.149: Raise max PCM size to 600MB (~5.2 hours) for long episodes.
             val maxPcmBytes = 600 * 1024 * 1024
-            val needResample = sampleRate != 16000 || channelCount != 1
+            // v3.1.71: 连续相位重采样状态（跨chunk），与decodeAudioToPcm保持一致
+            var resamplePhase = 0.0
+            var lastSample: Short = 0
+            var needResample = sampleRate != 16000 || channelCount != 1
             val fos = java.io.FileOutputStream(outputFile)
 
             // v2.4.148: Progress reporting for URL decode (streaming fallback).
@@ -1293,6 +1298,20 @@ object AudioSegmentAnalyzer {
                     }
 
                     val outputBufferIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000)
+                    // v3.1.71: 处理INFO_OUTPUT_FORMAT_CHANGED——解码器实际输出格式可能与容器不同
+                    // HE-AAC v2：容器说22050Hz/1ch，但解码器输出44100Hz/2ch（SBR+PS之后）
+                    if (outputBufferIndex == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val newFormat = decoder.outputFormat
+                        try {
+                            sampleRate = newFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                            channelCount = newFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+                            needResample = sampleRate != 16000 || channelCount != 1
+                            Log.i(TAG, "decodeUrlToPcm: FORMAT_CHANGED: actual sampleRate=$sampleRate, channels=$channelCount, needResample=$needResample")
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: FORMAT_CHANGED: ${sampleRate}Hz ${channelCount}ch (was container format)")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "decodeUrlToPcm: FORMAT_CHANGED but failed to read format: ${e.message}")
+                        }
+                    }
                     if (outputBufferIndex >= 0) {
                         val outputBuffer = decoder.getOutputBuffer(outputBufferIndex)
                         if (outputBuffer != null && bufferInfo.size > 0) {
@@ -1300,27 +1319,47 @@ object AudioSegmentAnalyzer {
                             outputBuffer.get(chunk)
 
                             if (needResample) {
-                                // v2.4.130: FIXED resampling — linear interpolation instead of integer division
+                                // v3.1.71: 优化重采样方案——连续相位线性插值+ByteBuffer直接写入，与decodeAudioToPcm一致
                                 val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
                                 val inFrames = pcmShort.remaining() / channelCount
-                                val outFrames = (inFrames.toLong() * 16000 / sampleRate).toInt()
-                                val outBuf = java.nio.ByteBuffer.allocate(outFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                val ratioFloat = sampleRate.toFloat() / 16000f
-                                for (outIdx in 0 until outFrames) {
-                                    val srcPos = outIdx * ratioFloat
-                                    val srcIdx = srcPos.toInt()
-                                    val frac = srcPos - srcIdx
-                                    var sample0 = 0
-                                    var sample1 = 0
+
+                                // Mix to mono first
+                                val monoInput = ShortArray(inFrames)
+                                for (i in 0 until inFrames) {
+                                    var sum = 0
                                     for (c in 0 until channelCount) {
-                                        sample0 += if (srcIdx * channelCount + c < pcmShort.remaining()) pcmShort.get(srcIdx * channelCount + c) else 0
-                                        sample1 += if ((srcIdx + 1) * channelCount + c < pcmShort.remaining()) pcmShort.get((srcIdx + 1) * channelCount + c) else 0
+                                        sum += pcmShort.get(i * channelCount + c).toInt()
                                     }
-                                    sample0 /= channelCount
-                                    sample1 /= channelCount
-                                    val interpolated = sample0 + ((sample1 - sample0) * frac).toInt()
-                                    outBuf.putShort(interpolated.toShort())
+                                    monoInput[i] = (sum / channelCount).toShort()
                                 }
+
+                                // Continuous-phase linear interpolation
+                                val ratio = sampleRate.toDouble() / 16000.0
+                                val extendedInput = ShortArray(monoInput.size + 1)
+                                extendedInput[0] = lastSample
+                                System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
+                                val availableInputRange = extendedInput.size - 1
+                                var currentPhase = resamplePhase
+
+                                // 预分配ByteBuffer，直接写入，消除ArrayList<Short>装箱
+                                val estimatedOutFrames = ((monoInput.size - currentPhase) / ratio).toInt() + 1
+                                val outBuf = java.nio.ByteBuffer.allocate(estimatedOutFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+
+                                while (currentPhase < availableInputRange) {
+                                    val srcIdx = currentPhase.toInt()
+                                    val frac = currentPhase - srcIdx
+                                    val s0 = extendedInput[srcIdx].toInt()
+                                    val s1 = extendedInput[srcIdx + 1].toInt()
+                                    val interpolated = s0 + ((s1 - s0) * frac).toInt()
+                                    outBuf.putShort(interpolated.toShort())
+                                    currentPhase += ratio
+                                }
+
+                                // Update phase state for next chunk
+                                resamplePhase = currentPhase - availableInputRange
+                                lastSample = if (monoInput.isNotEmpty()) monoInput[monoInput.size - 1] else lastSample
+
+                                // Write output directly
                                 val outBytes = ByteArray(outBuf.position())
                                 outBuf.rewind()
                                 outBuf.get(outBytes)
