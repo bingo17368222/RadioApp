@@ -3463,6 +3463,8 @@ class SubtitleGeneratorService : Service() {
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
+            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] decoder name=${codec.name}")
 
             // [v2.4.15] Fix: Use var for sample rate/channels — they may change after INFO_OUTPUT_FORMAT_CHANGED
             // (e.g. HE-AAC v2: container says 22050Hz/1ch, but codec outputs 44100Hz/2ch after SBR+PS)
@@ -3654,6 +3656,8 @@ class SubtitleGeneratorService : Service() {
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(audioFormat, null, null, 0)
             codec.start()
+            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            ctx.log("Decode: decoder name=${codec.name}")
 
             val bufferInfo = MediaCodec.BufferInfo()
             // v3.1.74: 使用BufferedOutputStream减少文件写入系统调用次数

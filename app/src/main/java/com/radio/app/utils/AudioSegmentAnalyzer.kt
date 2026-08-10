@@ -1121,6 +1121,10 @@ object AudioSegmentAnalyzer {
             val decoder = android.media.MediaCodec.createDecoderByType(mime)
             decoder.configure(inputFormat, null, null, 0)
             decoder.start()
+            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            val decoderName = decoder.name
+            Log.i(TAG, "decodeAudioToPcm: decoder name=$decoderName")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: decoder name=$decoderName")
 
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             val outputDirFile = outputFile
@@ -1352,6 +1356,9 @@ object AudioSegmentAnalyzer {
             val decoder = android.media.MediaCodec.createDecoderByType(mime)
             decoder.configure(inputFormat, null, null, 0)
             decoder.start()
+            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            val decoderName = decoder.name
+            Log.i(TAG, "decodeUrlToPcm: decoder name=$decoderName")
 
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             var totalPcmBytes = 0
