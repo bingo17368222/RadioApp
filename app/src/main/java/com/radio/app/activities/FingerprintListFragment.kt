@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
+import com.radio.app.activities.FingerprintGroupActivity
 import com.radio.app.adapters.AudioFingerprintAdapter
 import com.radio.app.adapters.AutomaticFingerprintAdapter
 import com.radio.app.adapters.CandidateFingerprintAdapter
@@ -27,6 +29,7 @@ import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.database.RadioDatabaseHelper.ObservationPoolCandidate
 import com.radio.app.RadioApplication
 import com.radio.app.utils.AudioSegmentAnalyzer
+import com.radio.app.utils.ChromaprintExtractor
 import com.radio.app.utils.PcmSegmentExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -137,12 +140,9 @@ class FingerprintListFragment : Fragment() {
                         releaseAudioTrack()
                         audioFingerprintAdapter?.stopPlaying()
                     }
-                    // v3.1.42: 恢复指纹测试功能
+                    // v3.1.65: 改为音频指纹素材列表的测试组菜单
                     setOnTestListener { fp ->
-                        Toast.makeText(requireContext(), "测试指纹匹配中...", Toast.LENGTH_SHORT).show()
-                        com.radio.app.services.AudioFingerprintService.testFingerprint(
-                            requireContext(), fp
-                        )
+                        showFingerprintTestDialog(fp)
                     }
                 }
                 recyclerView.adapter = audioFingerprintAdapter
@@ -692,6 +692,244 @@ class FingerprintListFragment : Fragment() {
     private fun formatMs(ms: Long): String {
         val s = (ms / 1000).toInt()
         return String.format("%02d:%02d", s / 60, s % 60)
+    }
+
+    // ===== 音频指纹素材列表测试组菜单 =====
+
+    /**
+     * v3.1.65: 显示音频指纹素材列表测试组菜单，与 KeywordSettingsActivity 保持一致。
+     */
+    private fun showFingerprintTestDialog(fp: AudioFingerprint) {
+        val options = arrayOf("指纹 vs 自身 PCM", "指纹 vs 完整节目 PCM(滑动搜索)", "指纹 vs 所有完整 PCM(滑动搜索)", "所有指纹 vs 所有完整 PCM(滑动搜索)", "跨节目指纹直接对比", "指纹分组测试(≥95%)", "指纹分组管理(独立页面)")
+        AlertDialog.Builder(requireContext())
+            .setTitle("音频指纹匹配测试")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> runFingerprintSelfTest(fp)
+                    1 -> runFingerprintFullEpisodeTest(fp)
+                    2 -> runFingerprintVsAllPcmTest(fp)
+                    3 -> runAllFingerprintsVsAllPcmTest()
+                    4 -> runCrossEpisodeFingerprintTest(fp)
+                    5 -> runFingerprintGroupTest()
+                    6 -> startActivity(Intent(requireContext(), FingerprintGroupActivity::class.java))
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun runFingerprintSelfTest(fp: AudioFingerprint) {
+        val pcmFile = PcmSegmentExtractor.getWatermarkPcmFile(requireContext(), fp.episodeId, fp.startMs, fp.endMs)
+        if (!pcmFile.exists() || pcmFile.length() <= 0) {
+            Toast.makeText(requireContext(), "自身 PCM 不存在，请先播放或重新生成", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val refingerprint = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
+                        ?: return@withContext "从自身 PCM 提取指纹失败"
+                    val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, refingerprint)
+                    val match = detail.similarity >= 0.70f
+                    "自身 PCM 重提指纹相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\n重提指纹长度: %d\n最佳偏移: %d\n原始相似度(不含长度惩罚): %.2f%%\n位误差: %d/%d bits\n长度惩罚: %.2f".format(
+                        detail.similarity * 100, if (match) "是" else "否",
+                        detail.len1, detail.len2, detail.bestOffset,
+                        detail.rawSimilarity * 100, detail.minErrors, detail.totalBits, detail.lengthPenalty
+                    )
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("指纹 vs 自身 PCM")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .setNeutralButton("播放指纹片段") { _, _ -> playPcmFileWithSeekBar(pcmFile, fp.durationMs) }
+                .show()
+        }
+    }
+
+    /**
+     * v3.1.7: 升级为完整PCM滑动搜索。
+     */
+    private fun runFingerprintFullEpisodeTest(fp: AudioFingerprint) {
+        lifecycleScope.launch {
+            val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
+            val fullPcm = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
+            val min5Pcm = File(pcmCacheDir, "${fp.episodeId}_5min.pcm")
+            val pcmSource = if (fullPcm.exists() && fullPcm.length() > 1024 * 100) fullPcm
+            else if (min5Pcm.exists() && min5Pcm.length() > 16000) min5Pcm
+            else null
+            if (pcmSource == null) {
+                Toast.makeText(requireContext(), "完整节目 PCM 不存在", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val detail = ChromaprintExtractor.searchFingerprintInPcm(pcmSource, fp.fingerprint)
+                    val match = detail.similarity >= 0.70f
+                    "节目 PCM 滑动搜索匹配结果:\n相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\nPCM 指纹长度: %d\n最佳偏移: ${detail.bestOffset} samples (约 %.1f 秒)\n原始相似度(不含长度惩罚): %.2f%%\n位误差: %d/%d bits\n长度惩罚: %.2f".format(
+                        detail.similarity * 100, if (match) "是" else "否",
+                        detail.len1, detail.len2, detail.bestOffset * 1000.0 / 16000.0,
+                        detail.rawSimilarity * 100, detail.minErrors, detail.totalBits, detail.lengthPenalty
+                    )
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("指纹 vs 完整节目 PCM")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    private fun runFingerprintVsAllPcmTest(fp: AudioFingerprint) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
+                    val allPcmFiles = pcmCacheDir.listFiles { f -> f.name.endsWith("_full.pcm") && f.length() > 1024 * 100 }?.toList() ?: emptyList()
+                    if (allPcmFiles.isEmpty()) return@withContext "没有找到任何完整 PCM 文件"
+                    val sb = StringBuilder("共扫描 ${allPcmFiles.size} 个完整 PCM 文件:\n\n")
+                    var bestMatch = ""
+                    var bestSimilarity = 0f
+                    for (pcmFile in allPcmFiles) {
+                        val detail = ChromaprintExtractor.searchFingerprintInPcm(pcmFile, fp.fingerprint)
+                        if (detail.similarity > bestSimilarity) {
+                            bestSimilarity = detail.similarity
+                            bestMatch = pcmFile.name
+                        }
+                        sb.append("${pcmFile.name}: ${"%.1f".format(detail.similarity * 100)}% (${if (detail.similarity >= 0.70f) "匹配" else "不匹配"})\n")
+                    }
+                    sb.append("\n最佳匹配: $bestMatch (${"%.1f".format(bestSimilarity * 100)}%)")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("指纹 vs 所有完整 PCM")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    private fun runAllFingerprintsVsAllPcmTest() {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val allFps = dbHelper.getAllAudioFingerprints().filter { it.isGoldStandard }
+                    if (allFps.isEmpty()) return@withContext "没有金标准指纹"
+                    val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
+                    val allPcmFiles = pcmCacheDir.listFiles { f -> f.name.endsWith("_full.pcm") && f.length() > 1024 * 100 }?.toList() ?: emptyList()
+                    if (allPcmFiles.isEmpty()) return@withContext "没有找到任何完整 PCM 文件"
+                    val sb = StringBuilder("指纹库: ${allFps.size} 条, PCM 文件: ${allPcmFiles.size} 个\n\n")
+                    var matchCount = 0
+                    for (fp in allFps) {
+                        for (pcmFile in allPcmFiles) {
+                            val detail = ChromaprintExtractor.searchFingerprintInPcm(pcmFile, fp.fingerprint)
+                            if (detail.similarity >= 0.70f) {
+                                matchCount++
+                                sb.append("匹配: ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}] → ${pcmFile.name} (${"%.1f".format(detail.similarity * 100)}%)\n")
+                            }
+                        }
+                    }
+                    sb.append("\n共 $matchCount 个匹配")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("所有指纹 vs 所有完整 PCM")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    private fun runCrossEpisodeFingerprintTest(fp: AudioFingerprint) {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val allFps = dbHelper.getAllAudioFingerprints().filter { it.isGoldStandard && it.id != fp.id }
+                    if (allFps.isEmpty()) return@withContext "没有其他指纹可对比"
+                    val sb = StringBuilder("当前指纹: ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]\n\n对比结果:\n")
+                    var bestMatch = ""
+                    var bestSimilarity = 0f
+                    for (other in allFps) {
+                        val detail = ChromaprintExtractor.compareFingerprintsDetailed(fp.fingerprint, other.fingerprint)
+                        if (detail.similarity > bestSimilarity) {
+                            bestSimilarity = detail.similarity
+                            bestMatch = "${other.episodeId} [${formatMs(other.startMs)}-${formatMs(other.endMs)}]"
+                        }
+                        sb.append("${other.episodeId} [${formatMs(other.startMs)}-${formatMs(other.endMs)}]: ${"%.1f".format(detail.similarity * 100)}% (${if (detail.similarity >= 0.70f) "匹配" else "不匹配"})\n")
+                    }
+                    sb.append("\n最佳匹配: $bestMatch (${"%.1f".format(bestSimilarity * 100)}%)")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("跨节目指纹直接对比")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
+    }
+
+    private fun runFingerprintGroupTest() {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
+                        return@withContext "Chromaprint 库未加载"
+                    }
+                    val allFps = dbHelper.getAllAudioFingerprints().filter { it.isGoldStandard }
+                    if (allFps.isEmpty()) return@withContext "没有金标准指纹"
+                    val groups = mutableListOf<MutableList<AudioFingerprint>>()
+                    for (fp in allFps) {
+                        var added = false
+                        for (group in groups) {
+                            val ref = group[0]
+                            val detail = ChromaprintExtractor.compareFingerprintsDetailed(ref.fingerprint, fp.fingerprint)
+                            if (detail.similarity >= 0.95f) {
+                                group.add(fp)
+                                added = true
+                                break
+                            }
+                        }
+                        if (!added) {
+                            groups.add(mutableListOf(fp))
+                        }
+                    }
+                    val sb = StringBuilder("指纹分组测试结果 (≥95% 相似度分组):\n\n")
+                    for ((i, group) in groups.withIndex()) {
+                        sb.append("组${i + 1} (${group.size}条):\n")
+                        for (fp in group) {
+                            sb.append("  ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}]\n")
+                        }
+                        sb.append("\n")
+                    }
+                    sb.append("共 ${groups.size} 组")
+                    sb.toString()
+                }.getOrElse { "测试异常: ${it.message}" }
+            }
+            AlertDialog.Builder(requireContext())
+                .setTitle("指纹分组测试")
+                .setMessage(result)
+                .setPositiveButton("确定", null)
+                .show()
+        }
     }
 
     // ===== 内部数据封装 =====
