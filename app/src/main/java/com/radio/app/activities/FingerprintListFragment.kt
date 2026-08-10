@@ -770,12 +770,11 @@ class FingerprintListFragment : Fragment() {
                     if (!ChromaprintExtractor.ensureLibraryLoaded(requireContext())) {
                         return@withContext "Chromaprint 库未加载"
                     }
-                    val detail = ChromaprintExtractor.searchFingerprintInPcm(pcmSource, fp.fingerprint)
+                    val detail = ChromaprintExtractor.searchFingerprintInPcm(fp.fingerprint, pcmSource, 0L)
+                    if (detail == null) return@withContext "滑动搜索返回空（PCM 文件可能过短或无效）"
                     val match = detail.similarity >= 0.70f
-                    "节目 PCM 滑动搜索匹配结果:\n相似度: %.2f%%\n是否匹配: %s\n原始指纹长度: %d\nPCM 指纹长度: %d\n最佳偏移: ${detail.bestOffset} samples (约 %.1f 秒)\n原始相似度(不含长度惩罚): %.2f%%\n位误差: %d/%d bits\n长度惩罚: %.2f".format(
-                        detail.similarity * 100, if (match) "是" else "否",
-                        detail.len1, detail.len2, detail.bestOffset * 1000.0 / 16000.0,
-                        detail.rawSimilarity * 100, detail.minErrors, detail.totalBits, detail.lengthPenalty
+                    "节目 PCM 滑动搜索匹配结果:\n相似度: %.2f%%\n是否匹配: %s\n最佳匹配位置: ${detail.bestMatchStartMs}ms - ${detail.bestMatchEndMs}ms\n扫描位置数: ${detail.totalPositionsScanned}\n高于阈值位置数: ${detail.positionsAboveThreshold}\nPCM 时长: ${detail.pcmDurationMs}ms\n搜索耗时: ${detail.searchDurationMs}ms".format(
+                        detail.similarity * 100, if (match) "是" else "否"
                     )
                 }.getOrElse { "测试异常: ${it.message}" }
             }
@@ -801,7 +800,8 @@ class FingerprintListFragment : Fragment() {
                     var bestMatch = ""
                     var bestSimilarity = 0f
                     for (pcmFile in allPcmFiles) {
-                        val detail = ChromaprintExtractor.searchFingerprintInPcm(pcmFile, fp.fingerprint)
+                        val detail = ChromaprintExtractor.searchFingerprintInPcm(fp.fingerprint, pcmFile, 0L)
+                        if (detail == null) continue
                         if (detail.similarity > bestSimilarity) {
                             bestSimilarity = detail.similarity
                             bestMatch = pcmFile.name
@@ -836,7 +836,8 @@ class FingerprintListFragment : Fragment() {
                     var matchCount = 0
                     for (fp in allFps) {
                         for (pcmFile in allPcmFiles) {
-                            val detail = ChromaprintExtractor.searchFingerprintInPcm(pcmFile, fp.fingerprint)
+                            val detail = ChromaprintExtractor.searchFingerprintInPcm(fp.fingerprint, pcmFile, 0L)
+                            if (detail == null) continue
                             if (detail.similarity >= 0.70f) {
                                 matchCount++
                                 sb.append("匹配: ${fp.episodeId} [${formatMs(fp.startMs)}-${formatMs(fp.endMs)}] → ${pcmFile.name} (${"%.1f".format(detail.similarity * 100)}%)\n")

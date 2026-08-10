@@ -1153,6 +1153,40 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
+     * v3.1.67: 记录PCM生成失败原因到 pcm_failure.log，方便后续排查。
+     * 记录时间、版本、节目ID、URL、文件大小、期望时长、实际时长、失败原因等详细信息。
+     */
+    private fun writePcmFailureLog(
+        episodeId: String,
+        episodeTitle: String?,
+        audioUrl: String?,
+        failureReason: String,
+        extraInfo: String? = null
+    ) {
+        try {
+            logExecutor.execute {
+                try {
+                    val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "pcm_failure")
+                    if (!logDir.exists()) logDir.mkdirs()
+                    val logFile = File(logDir, "pcm_failure.log")
+                    val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                    val title = episodeTitle ?: "unknown"
+                    val url = audioUrl ?: "null"
+                    val extra = extraInfo ?: ""
+                    FileWriter(logFile, true).use { it.append("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] ep=$episodeId title=$title url=$url reason=$failureReason $extra\n") }
+                    Log.w(TAG, "[PcmFailure] ep=$episodeId reason=$failureReason")
+                    // Limit file size to 500KB
+                    if (logFile.length() > 500_000) {
+                        val lines = logFile.readLines()
+                        val keep = lines.takeLast(500)
+                        logFile.writeText(keep.joinToString("\n") + "\n")
+                    }
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
      * v2.4.175: 按总容量自动清理预缓存音频文件（类似 PCM 缓存清理）。
      * 当 episodes 缓存目录总大小超过设置上限时，删除最旧的文件，直到容量达标。
      * 始终保留当前正在播放的节目文件，以及 10 分钟内刚写入的文件。
@@ -1964,11 +1998,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val metaDuration = episode.duration?.let { if (it in 60..100000) it * 1000L else 0L } ?: 0L
         if (metaDuration > 0) return metaDuration
 
-        // 2. Parse URL path for HHMM_HHMM pattern
+        // 2. Parse URL path for HHMM_HHMM pattern at end of filename
+        // v3.1.67: FIXED: regex now anchors at end of filename (\\.\\w+$) to avoid matching
+        // date digits (e.g. "20241126_0700" instead of "0700_0900" in "sijiache_20241126_0700_0900.mp4").
+        // The old regex `(\\d{2})(\\d{2})_(\\d{2})(\\d{2})` matched the first occurrence of 4digits_4digits
+        // in the path, which could incorrectly match date parts like "41126_0700" → "1126_0700" (startHour=11,
+        // startMin=26, endHour=07, endMin=00), producing a wildly wrong expected duration (~70440000ms for
+        // a 2-hour segment) and causing validateCachedAudioFile to delete valid audio files.
         val audioUrl = episode.audioUrl
         if (!audioUrl.isNullOrBlank()) {
             val path = audioUrl.substringBeforeLast("?").substringAfterLast("/")
-            val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})")
+            val regex = Regex("(\\d{2})(\\d{2})_(\\d{2})(\\d{2})\\.\\w+$")
             val match = regex.find(path)
             if (match != null) {
                 val (_, startHour, startMin, endHour, endMin) = match.groupValues
@@ -2465,6 +2505,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (success) {
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation SUCCESS for $episodeId")
                 } else {
+                    // v3.1.67: 记录PCM生成失败原因到专用日志
+                    val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
+                    val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
+                    val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+                    val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+                    val audioFile = episodesDir.listFiles()?.find { it.name.contains(episodeId) && it.length() > 1024 }
+                    val pcmExists = fullPcmFile.exists().let { if (it) "fullPCM=${fullPcmFile.length()}" else "noFullPCM" }
+                    val min5Exists = min5PcmFile.exists().let { if (it) "5minPCM=${min5PcmFile.length()}" else "no5minPCM" }
+                    val audioInfo = if (audioFile != null) "audioExist=${audioFile.length()}" else "audioMissing"
+                    val extraInfo = "$pcmExists $min5Exists $audioInfo"
+                    writePcmFailureLog(
+                        episodeId = episodeId,
+                        episodeTitle = episode.title,
+                        audioUrl = audioUrl,
+                        failureReason = "decodeAudioToPcm_failed",
+                        extraInfo = extraInfo
+                    )
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation FAILED for $episodeId (audio file may not be cached)")
                 }
                 // 完成后清除取消标志并取消进度通知
@@ -2475,6 +2532,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } catch (_: Exception) {}
             } catch (e: Exception) {
                 writePreCacheLog("startPreCachePcmGeneration:  PCM generation exception: ${e.message}")
+                writePcmFailureLog(
+                    episodeId = episodeId,
+                    episodeTitle = episode.title,
+                    audioUrl = audioUrl,
+                    failureReason = "decodeAudioToPcm_exception",
+                    extraInfo = "exception=${e.message}"
+                )
                 pcmPregenCancelFlags.remove(episodeId)
                 try {
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2653,6 +2717,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val expectedDurationMs = getExpectedAudioDurationMs(ep)
                     if (!validateCachedAudioFile(audioFile, expectedDurationMs)) {
                         withoutAudio++
+                        // v3.1.67: 记录PCM失败原因到专用日志
+                        val actualDurationMs = try {
+                            val extractor = android.media.MediaExtractor()
+                            extractor.setDataSource(audioFile.absolutePath)
+                            var dur = 0L
+                            for (i in 0 until extractor.trackCount) {
+                                val fmt = extractor.getTrackFormat(i)
+                                if ((fmt.getString(android.media.MediaFormat.KEY_MIME) ?: "").startsWith("audio/") && fmt.containsKey(android.media.MediaFormat.KEY_DURATION)) {
+                                    dur = fmt.getLong(android.media.MediaFormat.KEY_DURATION) / 1000
+                                    break
+                                }
+                            }
+                            extractor.release()
+                            dur
+                        } catch (_: Exception) { -1L }
+                        writePcmFailureLog(
+                            episodeId = ep.id,
+                            episodeTitle = ep.title,
+                            audioUrl = ep.audioUrl,
+                            failureReason = "validateCachedAudioFile_failed",
+                            extraInfo = "file=$fileName size=${audioFile.length()} expected=${expectedDurationMs}ms actual=${actualDurationMs}ms threshold=${(expectedDurationMs * 0.98).toLong()}ms"
+                        )
                         writePreCacheLog("patrolSubtitle:  INVALID audio cache for ep=${ep.id}, file=$fileName, size=${audioFile.length()}, expected=${expectedDurationMs}ms, deleting and re-downloading")
                         writeServiceLog("notification", "DELETING invalid audio cache: ${audioFile.absolutePath}, size=${audioFile.length()}, expected=${expectedDurationMs}ms")
                         try { audioFile.delete() } catch (_: Exception) {}

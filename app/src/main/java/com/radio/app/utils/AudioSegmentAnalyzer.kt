@@ -1028,7 +1028,13 @@ object AudioSegmentAnalyzer {
                     Log.i(TAG, "decodeAudioToPcm: no cached file, trying URL: $audioUrl")
                     return decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"), durationMs, maxDecodeDurationMs, progressCallback)
                 }
-                Log.e(TAG, "decodeAudioToPcm: no cached audio file found for $episodeId, files in episodes dir: ${cachedFiles.map { it.name }}")
+                // v3.1.67: 详细记录失败原因，包括缓存文件列表和搜索过程
+                val cachedFileNames = cachedFiles.map { "${it.name}=${it.length()}" }
+                Log.e(TAG, "decodeAudioToPcm: FAILED for $episodeId — no cached audio file found via any strategy")
+                Log.e(TAG, "decodeAudioToPcm:   search strategies attempted: URL filename, episodeId prefix, most recent")
+                Log.e(TAG, "decodeAudioToPcm:   audioUrl=$audioUrl")
+                Log.e(TAG, "decodeAudioToPcm:   cached files in episodes dir: ${cachedFileNames.joinToString(", ")}")
+                Log.e(TAG, "decodeAudioToPcm:   episodes dir path: ${episodesDir.absolutePath}")
                 return null
             }
             Log.i(TAG, "decodeAudioToPcm: decoding ${audioFile.name} to PCM")
@@ -1256,6 +1262,7 @@ object AudioSegmentAnalyzer {
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
             Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
+            Log.e(TAG, "decodeAudioToPcm:   episodeId=$episodeId audioUrl=$audioUrl durationMs=$durationMs")
             return null
         }
     }
