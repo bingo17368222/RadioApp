@@ -970,7 +970,14 @@ object AudioSegmentAnalyzer {
                 // v2.4.101: No cached file — try streaming from URL directly via MediaExtractor
                 if (audioUrl != null && audioUrl.startsWith("http")) {
                     Log.i(TAG, "decodeAudioToPcm: no cached file, trying URL: $audioUrl")
-                    return decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"), durationMs, maxDecodeDurationMs, progressCallback)
+                    // v3.1.72: 记录流式解码尝试，便于区分"无缓存文件"和"流式解码失败"
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: no cached audio for $episodeId, falling back to streaming URL decode")
+                    val urlResult = decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"), durationMs, maxDecodeDurationMs, progressCallback)
+                    if (urlResult == null) {
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: streaming URL decode FAILED for $episodeId, url=$audioUrl")
+                        Log.e(TAG, "decodeAudioToPcm: streaming URL decode failed for $episodeId, url=$audioUrl")
+                    }
+                    return urlResult
                 }
                 // v3.1.67: 详细记录失败原因，包括缓存文件列表和搜索过程
                 val cachedFileNames = cachedFiles.map { "${it.name}=${it.length()}" }
@@ -1221,6 +1228,7 @@ object AudioSegmentAnalyzer {
         maxDecodeDurationMs: Long = 0,
         progressCallback: ((Int) -> Unit)? = null
     ): File? {
+        val decodeStartTime = System.currentTimeMillis()
         try {
             Log.i(TAG, "decodeUrlToPcm: downloading and decoding from $audioUrl")
             val extractor = android.media.MediaExtractor()
@@ -1261,7 +1269,8 @@ object AudioSegmentAnalyzer {
             var resamplePhase = 0.0
             var lastSample: Short = 0
             var needResample = sampleRate != 16000 || channelCount != 1
-            val fos = java.io.FileOutputStream(outputFile)
+            // v3.1.72: 使用BufferedOutputStream减少文件写入系统调用次数，大幅提升写入性能
+            val bos = java.io.BufferedOutputStream(java.io.FileOutputStream(outputFile), 256 * 1024)
 
             // v2.4.148: Progress reporting for URL decode (streaming fallback).
             val expectedPcmBytes = if (durationMs > 0) (durationMs * 16000L * 2L / 1000L).coerceAtLeast(1L) else 1L
@@ -1363,11 +1372,11 @@ object AudioSegmentAnalyzer {
                                 val outBytes = ByteArray(outBuf.position())
                                 outBuf.rewind()
                                 outBuf.get(outBytes)
-                                fos.write(outBytes)
+                                bos.write(outBytes)
                                 totalPcmBytes += outBytes.size
                                 reportDecodeProgressIfNeeded()
                             } else {
-                                fos.write(chunk)
+                                bos.write(chunk)
                                 totalPcmBytes += chunk.size
                                 reportDecodeProgressIfNeeded()
                             }
@@ -1395,7 +1404,8 @@ object AudioSegmentAnalyzer {
                     }
                 }
             } finally {
-                fos.close()
+                bos.flush()
+                bos.close()
                 decoder.stop()
                 decoder.release()
                 extractor.release()
@@ -1403,12 +1413,20 @@ object AudioSegmentAnalyzer {
 
             val finalDurationMs = totalPcmBytes * 1000L / (16000L * 2L)
             val completenessRatio = if (expectedPcmBytes > 1) totalPcmBytes.toDouble() / expectedPcmBytes.toDouble() else 1.0
+            val decodeElapsedMs = System.currentTimeMillis() - decodeStartTime
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm: DONE totalPcmBytes=$totalPcmBytes, finalDurationMs=$finalDurationMs, expectedPcmBytes=$expectedPcmBytes, completeness=${String.format("%.2f", completenessRatio)}")
-            Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes ($finalDurationMs ms) to ${outputFile.name}")
+            Log.i(TAG, "decodeUrlToPcm: decoded $totalPcmBytes bytes ($finalDurationMs ms) to ${outputFile.name}, elapsed=${decodeElapsedMs}ms")
             // v2.4.138: .info file with duration metadata is now written by the caller.
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
-            Log.e(TAG, "decodeUrlToPcm failed: ${e.message}")
+            val elapsedMs = System.currentTimeMillis() - decodeStartTime
+            Log.e(TAG, "decodeUrlToPcm failed after ${elapsedMs}ms: ${e.message}")
+            Log.e(TAG, "decodeUrlToPcm:   url=$audioUrl durationMs=$durationMs")
+            // v3.1.72: 记录完整异常堆栈，便于定位流式解码失败原因
+            val sw = java.io.StringWriter()
+            e.printStackTrace(java.io.PrintWriter(sw))
+            Log.e(TAG, "decodeUrlToPcm:   stacktrace: ${sw.toString()}")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeUrlToPcm FAILED after ${elapsedMs}ms: ${e.javaClass.simpleName}: ${e.message}")
             return null
         }
     }

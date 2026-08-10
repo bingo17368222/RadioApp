@@ -2399,6 +2399,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@Thread
                 }
 
+                // v3.1.72: 在开始解码前检查音频文件是否已缓存。
+                // 如果音频文件未缓存，流式解码速度极慢且容易失败。
+                // 应等待预缓存完成后再生成PCM。
+                val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
+                val audioFileName = extractCacheFileName(audioUrl)
+                val cachedAudioFile = File(episodesDir, audioFileName)
+                if (!cachedAudioFile.exists() || cachedAudioFile.length() <= 1024) {
+                    writePreCacheLog("startPreCachePcmGeneration:  SKIP — audio file not cached for $episodeId (file=$audioFileName), will wait for pre-cache to complete")
+                    pcmPregenCancelFlags.remove(episodeId)
+                    try {
+                        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                        nm.cancel(notifId)
+                    } catch (_: Exception) {}
+                    return@Thread
+                }
+
                 writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
                 val pcmStartTime = System.currentTimeMillis()
                 // v3.1.65: 先显示初始通知（0%），确保通知栏立即出现
@@ -2510,7 +2526,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val audioFile = episodesDir.listFiles()?.find { it.name.contains(episodeId) && it.length() > 1024 }
                     val pcmExists = fullPcmFile.exists().let { if (it) "fullPCM=${fullPcmFile.length()}" else "noFullPCM" }
                     val audioInfo = if (audioFile != null) "audioExist=${audioFile.length()}" else "audioMissing"
-                    val extraInfo = "$pcmExists $audioInfo"
+                    // v3.1.72: 记录PCM生成失败时的详细状态，包括是否尝试了流式解码
+                    val streamingAttempted = if (audioFile == null && audioUrl.startsWith("http")) "streamingAttempted" else "noStreamingAttempt"
+                    val extraInfo = "$pcmExists $audioInfo $streamingAttempted"
                     writePcmFailureLog(
                         episodeId = episodeId,
                         episodeTitle = episode.title,
