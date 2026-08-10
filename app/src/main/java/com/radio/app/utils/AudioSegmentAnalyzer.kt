@@ -1118,7 +1118,11 @@ object AudioSegmentAnalyzer {
             var sampleRate = inputFormat.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
             var channelCount = inputFormat.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
             val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
-            Log.i(TAG, "decodeAudioToPcm: container format: ${sampleRate}Hz ${channelCount}ch mime=$mime")
+            // v3.1.78: 从MediaExtractor读取真实音频轨道时长，用于进度计算
+            // 不依赖调用者传入的durationMs——该参数可能为0或来自错误的数据源（如节目元数据仅30分钟）
+            val trackDurationUs = if (inputFormat.containsKey(android.media.MediaFormat.KEY_DURATION))
+                inputFormat.getLong(android.media.MediaFormat.KEY_DURATION) else 0L
+            Log.i(TAG, "decodeAudioToPcm: container format: ${sampleRate}Hz ${channelCount}ch mime=$mime trackDuration=${trackDurationUs}us (${trackDurationUs/1000000}s)")
 
             // v2.4.130: If resuming from truncated PCM, seek the extractor to the
             // corresponding position in the source audio. This skips already-decoded content.
@@ -1160,20 +1164,23 @@ object AudioSegmentAnalyzer {
             // episodes are not silently truncated to "only tens of MB".
             val maxPcmBytes = 600 * 1024 * 1024  // 600MB max
 
-            // v2.4.148: Estimate expected PCM size for progress reporting.
-            // 16kHz mono 16-bit = 32000 bytes/sec. Use duration if known, else rough file-size estimate.
+            // v3.1.78: 优先使用MediaExtractor读取的真实音频轨道时长计算expectedPcmBytes
+            // 不依赖调用者传入的durationMs——该参数可能为0或来自错误的数据源（如节目元数据仅30分钟）
+            // 16kHz mono 16-bit = 32000 bytes/sec
             val expectedPcmBytes = when {
+                trackDurationUs > 0 -> (trackDurationUs * 16000L * 2L / 1_000_000L).coerceAtLeast(1L)
                 durationMs > 0 -> (durationMs * 16000L * 2L / 1000L).coerceAtLeast(1L)
                 audioFile.length() > 1024 -> (audioFile.length() * 10).coerceAtLeast(1L)
                 else -> 1L
             }
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: START episode=$episodeId, audioFile=${audioFile.name} (${audioFile.length()} bytes), durationMs=$durationMs, expectedPcmBytes=$expectedPcmBytes, maxPcmBytes=$maxPcmBytes, maxDecodeDurationMs=$maxDecodeDurationMs")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: START episode=$episodeId, audioFile=${audioFile.name} (${audioFile.length()} bytes), durationMs=$durationMs, trackDurationUs=$trackDurationUs expectedPcmBytes=$expectedPcmBytes, maxPcmBytes=$maxPcmBytes, maxDecodeDurationMs=$maxDecodeDurationMs")
             var lastReportedDecodeProgress = -1
             var lastDecodeProgressTimeMs = 0L
             fun reportDecodeProgressIfNeeded() {
                 if (progressCallback == null) return
                 val nowMs = System.currentTimeMillis()
-                val pct = (totalPcmBytes * 20 / expectedPcmBytes).toInt().coerceIn(0, 20)
+                // v3.1.78: 进度直接映射0-100，不再经过0-20→0-95的奇怪缩放
+                val pct = (totalPcmBytes * 100 / expectedPcmBytes).toInt().coerceIn(0, 100)
                 // v2.4.151: Also report once per second so elapsed/ETA keep refreshing.
                 if (pct != lastReportedDecodeProgress || nowMs - lastDecodeProgressTimeMs >= 1000) {
                     lastReportedDecodeProgress = pct
