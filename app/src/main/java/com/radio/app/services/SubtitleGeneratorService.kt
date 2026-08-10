@@ -3530,13 +3530,10 @@ class SubtitleGeneratorService : Service() {
                 if (outIdx >= 0) {
                     val buffer = codec.getOutputBuffer(outIdx)
                     if (buffer != null && bufferInfo.size > 0) {
+                        // v3.1.75: 直接从outputBuffer读取ShortArray，避免中间ByteArray分配和拷贝
+                        val chunkShorts = ShortArray(bufferInfo.size / 2)
                         buffer.position(bufferInfo.offset)
-                        buffer.limit(bufferInfo.offset + bufferInfo.size)
-                        val pcmBytes = ByteArray(buffer.remaining())
-                        buffer.get(pcmBytes)
-
-                        val chunkShorts = ShortArray(pcmBytes.size / 2)
-                        java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
+                        buffer.asShortBuffer().get(chunkShorts)
                         val resampledTriple = resampleChunkContinuousSG(
                             chunkShorts, inSampleRate, inChannels,
                             outSampleRate, 1, resamplePhase, lastSample
@@ -3762,12 +3759,10 @@ class SubtitleGeneratorService : Service() {
                         outIdx >= 0 -> {
                             val buffer = codec.getOutputBuffer(outIdx)!!
                             if (bufferInfo.size > 0 && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                                val pcmBytes = ByteArray(bufferInfo.size)
+                                // v3.1.75: 直接从outputBuffer读取ShortArray，避免中间ByteArray分配和拷贝
+                                val chunkShorts = ShortArray(bufferInfo.size / 2)
                                 buffer.position(bufferInfo.offset)
-                                buffer.get(pcmBytes)
-                                // [v2.1.1] Use continuous resampling with phase carry-over
-                                val chunkShorts = ShortArray(pcmBytes.size / 2)
-                                java.nio.ByteBuffer.wrap(pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(chunkShorts)
+                                buffer.asShortBuffer().get(chunkShorts)
                                 val resampledTriple = resampleChunkContinuousSG(
                                     chunkShorts, actualInSampleRate, actualInChannels,
                                     SAMPLE_RATE, 1, resamplePhase, lastSample
@@ -3883,30 +3878,28 @@ class SubtitleGeneratorService : Service() {
             return Triple(ByteArray(0), prevPhase, prevLastSample)
         }
 
-        val extendedInput = ShortArray(monoInput.size + 1)
-        extendedInput[0] = prevLastSample
-        System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
-
-        val availableInputRange = extendedInput.size - 1
+        // v3.1.75: 使用ByteBuffer替代ArrayList<Short>，消除装箱开销
         var currentPhase = prevPhase
-        val outputSamples = ArrayList<Short>(512)
+        val estimatedOutFrames = ((monoInput.size - currentPhase) / ratio).toInt() + 1
+        val outBuf = java.nio.ByteBuffer.allocate(estimatedOutFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
 
-        while (currentPhase < availableInputRange) {
+        while (currentPhase < monoInput.size) {
             val srcIdx = currentPhase.toInt()
             val frac = currentPhase - srcIdx
-            if (srcIdx + 1 < extendedInput.size) {
-                val sample = (extendedInput[srcIdx] * (1.0 - frac) + extendedInput[srcIdx + 1] * frac).toInt().toShort()
-                outputSamples.add(sample)
-            }
+            // 边界检查替代extendedInput: srcIdx==0时用prevLastSample
+            val s0 = if (srcIdx == 0) prevLastSample.toInt() else monoInput[srcIdx - 1].toInt()
+            val s1 = monoInput[srcIdx].toInt()
+            val interpolated = s0 + ((s1 - s0) * frac).toInt()
+            outBuf.putShort(interpolated.toShort())
             currentPhase += ratio
         }
 
-        val newPhase = currentPhase - availableInputRange
+        val newPhase = currentPhase - monoInput.size
         val newLastSample = monoInput[monoInput.size - 1]
 
-        val outShorts = outputSamples.toShortArray()
-        val outBytes = ByteArray(outShorts.size * 2)
-        java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outShorts)
+        val outBytes = ByteArray(outBuf.position())
+        outBuf.rewind()
+        outBuf.get(outBytes)
         return Triple(outBytes, newPhase, newLastSample)
     }
 

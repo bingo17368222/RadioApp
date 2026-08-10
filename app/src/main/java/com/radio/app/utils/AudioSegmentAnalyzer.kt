@@ -1205,13 +1205,16 @@ object AudioSegmentAnalyzer {
                     if (outputBufferIndex >= 0) {
                         val outputBuffer = decoder.getOutputBuffer(outputBufferIndex)
                         if (outputBuffer != null && bufferInfo.size > 0) {
-                            val chunk = ByteArray(bufferInfo.size)
-                            outputBuffer.get(chunk)
-
                             if (needResample) {
-                                // v3.1.70: 优化重采样性能，消除ArrayList<Short>装箱开销
-                                val pcmShort = java.nio.ByteBuffer.wrap(chunk).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                                val inFrames = pcmShort.remaining() / channelCount
+                                // v3.1.75: 大幅优化重采样性能
+                                // 1. 直接从outputBuffer读取，避免ByteArray分配和拷贝
+                                // 2. 移除extendedInput，用边界检查替代
+                                // 3. 移除outBytes中间数组，直接用array()写入
+                                outputBuffer.position(bufferInfo.offset)
+                                outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                                val pcmShort = outputBuffer.asShortBuffer()
+                                val totalSamples = bufferInfo.size / 2
+                                val inFrames = totalSamples / channelCount
 
                                 // Mix to mono first
                                 val monoInput = ShortArray(inFrames)
@@ -1223,40 +1226,37 @@ object AudioSegmentAnalyzer {
                                     monoInput[i] = (sum / channelCount).toShort()
                                 }
 
-                                // Continuous-phase linear interpolation
+                                // Continuous-phase linear interpolation (无extendedInput)
                                 val ratio = sampleRate.toDouble() / 16000.0
-                                val extendedInput = ShortArray(monoInput.size + 1)
-                                extendedInput[0] = lastSample
-                                System.arraycopy(monoInput, 0, extendedInput, 1, monoInput.size)
-                                val availableInputRange = extendedInput.size - 1
                                 var currentPhase = resamplePhase
-
-                                // v3.1.70: 预分配ByteBuffer，直接写入，消除ArrayList<Short>装箱
-                                val estimatedOutFrames = ((monoInput.size - currentPhase) / ratio).toInt() + 1
+                                val estimatedOutFrames = ((inFrames - currentPhase) / ratio).toInt() + 1
                                 val outBuf = java.nio.ByteBuffer.allocate(estimatedOutFrames * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
 
-                                while (currentPhase < availableInputRange) {
+                                while (currentPhase < inFrames) {
                                     val srcIdx = currentPhase.toInt()
                                     val frac = currentPhase - srcIdx
-                                    val s0 = extendedInput[srcIdx].toInt()
-                                    val s1 = extendedInput[srcIdx + 1].toInt()
+                                    // 边界检查替代extendedInput: srcIdx==0时用lastSample
+                                    val s0 = if (srcIdx == 0) lastSample.toInt() else monoInput[srcIdx - 1].toInt()
+                                    val s1 = monoInput[srcIdx].toInt()
                                     val interpolated = s0 + ((s1 - s0) * frac).toInt()
                                     outBuf.putShort(interpolated.toShort())
                                     currentPhase += ratio
                                 }
 
                                 // Update state for next chunk
-                                resamplePhase = currentPhase - availableInputRange
-                                lastSample = if (monoInput.isNotEmpty()) monoInput[monoInput.size - 1] else lastSample
+                                resamplePhase = currentPhase - inFrames
+                                if (inFrames > 0) {
+                                    lastSample = monoInput[inFrames - 1]
+                                }
 
-                                // Write output directly
-                                val outBytes = ByteArray(outBuf.position())
-                                outBuf.rewind()
-                                outBuf.get(outBytes)
-                                fos.write(outBytes)
-                                totalPcmBytes += outBytes.size
+                                // 直接写入，避免outBytes中间数组
+                                fos.write(outBuf.array(), 0, outBuf.position())
+                                totalPcmBytes += outBuf.position()
                                 reportDecodeProgressIfNeeded()
                             } else {
+                                val chunk = ByteArray(bufferInfo.size)
+                                outputBuffer.position(bufferInfo.offset)
+                                outputBuffer.get(chunk)
                                 fos.write(chunk)
                                 totalPcmBytes += chunk.size
                                 reportDecodeProgressIfNeeded()
