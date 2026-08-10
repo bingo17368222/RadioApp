@@ -1156,6 +1156,56 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * v3.1.67: 记录PCM生成失败原因到 pcm_failure.log，方便后续排查。
      * 记录时间、版本、节目ID、URL、文件大小、期望时长、实际时长、失败原因等详细信息。
      */
+    // v3.1.73: 下载音频文件到缓存目录，用于PCM生成前确保音频文件存在
+    private fun downloadAudioFile(url: String, targetFile: File): Boolean {
+        val downloadStartTime = System.currentTimeMillis()
+        try {
+            Log.i(TAG, "downloadAudioFile: downloading $url to ${targetFile.absolutePath}")
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.connectTimeout = 30000
+            connection.readTimeout = 180000
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
+            connection.setRequestProperty("Referer", "https://www.hndt.com/")
+            connection.connect()
+            if (connection.responseCode != 200) {
+                Log.e(TAG, "downloadAudioFile: HTTP ${connection.responseCode} for $url")
+                connection.disconnect()
+                return false
+            }
+            val expectedSize = connection.contentLengthLong
+            val input = connection.inputStream
+            val output = FileOutputStream(targetFile)
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            var totalRead = 0L
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                output.write(buffer, 0, bytesRead)
+                totalRead += bytesRead
+            }
+            output.close()
+            input.close()
+            connection.disconnect()
+
+            if (expectedSize > 0 && totalRead < expectedSize * 0.99) {
+                Log.e(TAG, "downloadAudioFile: incomplete download: $totalRead / $expectedSize bytes")
+                targetFile.delete()
+                return false
+            }
+
+            val elapsedMs = System.currentTimeMillis() - downloadStartTime
+            Log.i(TAG, "downloadAudioFile: downloaded ${targetFile.length()} bytes to ${targetFile.name} in ${elapsedMs}ms")
+            writePreCacheLog("downloadAudioFile: success, file=${targetFile.name}, size=${targetFile.length()}, elapsed=${elapsedMs}ms")
+            return true
+        } catch (e: Exception) {
+            val elapsedMs = System.currentTimeMillis() - downloadStartTime
+            Log.e(TAG, "downloadAudioFile: failed after ${elapsedMs}ms: ${e.message}")
+            if (targetFile.exists()) {
+                try { targetFile.delete() } catch (_: Exception) {}
+            }
+            return false
+        }
+    }
+
     private fun writePcmFailureLog(
         episodeId: String,
         episodeTitle: String?,
@@ -1176,6 +1226,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     FileWriter(logFile, true).use { it.append("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] ep=$episodeId title=$title url=$url reason=$failureReason $extra\n") }
                     Log.w(TAG, "[PcmFailure] ep=$episodeId reason=$failureReason")
                     // Limit file size to 500KB
+                    if (logFile.length() > 500_000) {
+                        val lines = logFile.readLines()
+                        val keep = lines.takeLast(500)
+                        logFile.writeText(keep.joinToString("\n") + "\n")
+                    }
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    // v3.1.73: 写入PCM生成日志到独立文件 /sdcard/RadioApp/logs/pcm_gen/pcm_gen.log
+    private fun writePcmGenLog(episodeId: String, audioUrl: String?, totalTimeMs: Long, pcmSizeBytes: Long, success: Boolean, detail: String? = null) {
+        try {
+            logExecutor.execute {
+                try {
+                    val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this@RadioPlaybackService), "pcm_gen")
+                    if (!logDir.exists()) logDir.mkdirs()
+                    val logFile = java.io.File(logDir, "pcm_gen.log")
+                    val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+                    val url = audioUrl?.substringAfterLast("/") ?: "null"
+                    val detailStr = if (detail != null) " detail=$detail" else ""
+                    val result = if (success) "SUCCESS" else "FAILED"
+                    logFile.appendText("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] ep=$episodeId url=$url result=$result totalTimeMs=$totalTimeMs pcmSizeBytes=$pcmSizeBytes${detailStr}\n")
+                    Log.i(TAG, "[PcmGen] ep=$episodeId result=$result totalTimeMs=${totalTimeMs}ms pcmSizeBytes=$pcmSizeBytes")
                     if (logFile.length() > 500_000) {
                         val lines = logFile.readLines()
                         val keep = lines.takeLast(500)
@@ -2391,6 +2465,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         } catch (_: Exception) {}
         Thread {
+            var pcmStartTime = System.currentTimeMillis()
             try {
                 // 检查取消标志，如果已被取消则提前返回
                 if (pcmPregenCancelFlags[episodeId] == true) {
@@ -2399,24 +2474,40 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     return@Thread
                 }
 
-                // v3.1.72: 在开始解码前检查音频文件是否已缓存。
-                // 如果音频文件未缓存，流式解码速度极慢且容易失败。
-                // 应等待预缓存完成后再生成PCM。
+                // v3.1.73: 在开始解码前检查音频文件是否已缓存。
+                // 如果未缓存，下载MP4再解码，替代流式解码。
+                // 即使重新下载mp4再解码，总时间也远少于流式解码。
                 val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
                 val audioFileName = extractCacheFileName(audioUrl)
                 val cachedAudioFile = File(episodesDir, audioFileName)
                 if (!cachedAudioFile.exists() || cachedAudioFile.length() <= 1024) {
-                    writePreCacheLog("startPreCachePcmGeneration:  SKIP — audio file not cached for $episodeId (file=$audioFileName), will wait for pre-cache to complete")
-                    pcmPregenCancelFlags.remove(episodeId)
+                    writePreCacheLog("startPreCachePcmGeneration:  audio file not cached for $episodeId (file=$audioFileName), downloading MP4 first...")
+                    // v3.1.73: 下载MP4文件到缓存目录
                     try {
-                        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                        nm.cancel(notifId)
-                    } catch (_: Exception) {}
-                    return@Thread
+                        val downloadSuccess = downloadAudioFile(audioUrl, cachedAudioFile)
+                        if (downloadSuccess && cachedAudioFile.exists() && cachedAudioFile.length() > 1024) {
+                            writePreCacheLog("startPreCachePcmGeneration:  MP4 downloaded for $episodeId: ${cachedAudioFile.length()} bytes")
+                        } else {
+                            writePreCacheLog("startPreCachePcmGeneration:  MP4 download FAILED for $episodeId")
+                            pcmPregenCancelFlags.remove(episodeId)
+                            try {
+                                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                                nm.cancel(notifId)
+                            } catch (_: Exception) {}
+                            return@Thread
+                        }
+                    } catch (e: Exception) {
+                        writePreCacheLog("startPreCachePcmGeneration:  MP4 download exception for $episodeId: ${e.message}")
+                        pcmPregenCancelFlags.remove(episodeId)
+                        try {
+                            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                            nm.cancel(notifId)
+                        } catch (_: Exception) {}
+                        return@Thread
+                    }
                 }
 
                 writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
-                val pcmStartTime = System.currentTimeMillis()
                 // v3.1.65: 先显示初始通知（0%），确保通知栏立即出现
                 try {
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2523,7 +2614,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
                     val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                     val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
-                    val audioFile = episodesDir.listFiles()?.find { it.name.contains(episodeId) && it.length() > 1024 }
+                    // v3.1.73: 按URL文件名搜索而非episodeId，因为缓存文件名是URL文件名而非episodeId
+                    val audioFileName = extractCacheFileName(audioUrl)
+                    val audioFile = if (audioFileName.isNotBlank()) {
+                        File(episodesDir, audioFileName).takeIf { it.exists() && it.length() > 1024 }
+                    } else {
+                        episodesDir.listFiles()?.find { it.name.contains(episodeId) && it.length() > 1024 }
+                    }
                     val pcmExists = fullPcmFile.exists().let { if (it) "fullPCM=${fullPcmFile.length()}" else "noFullPCM" }
                     val audioInfo = if (audioFile != null) "audioExist=${audioFile.length()}" else "audioMissing"
                     // v3.1.72: 记录PCM生成失败时的详细状态，包括是否尝试了流式解码
@@ -2536,6 +2633,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         failureReason = "decodeAudioToPcm_failed",
                         extraInfo = extraInfo
                     )
+                    // v3.1.73: 记录失败到pcm_gen.log
+                    val failTimeMs = System.currentTimeMillis() - pcmStartTime
+                    writePcmGenLog(episodeId, audioUrl, failTimeMs, 0L, false, "preGeneratePcmFiles_failed audioFile=$audioInfo")
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation FAILED for $episodeId (audio file may not be cached)")
                 }
                 // 完成后清除取消标志并取消进度通知
@@ -2553,6 +2653,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     failureReason = "decodeAudioToPcm_exception",
                     extraInfo = "exception=${e.message}"
                 )
+                // v3.1.73: 记录异常到pcm_gen.log
+                val failTimeMs = System.currentTimeMillis() - pcmStartTime
+                writePcmGenLog(episodeId, audioUrl, failTimeMs, 0L, false, "exception=${e.message}")
                 pcmPregenCancelFlags.remove(episodeId)
                 try {
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager

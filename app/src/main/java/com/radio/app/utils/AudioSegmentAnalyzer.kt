@@ -300,6 +300,27 @@ object AudioSegmentAnalyzer {
         }
     }
 
+    // v3.1.73: 写入PCM生成日志到独立文件 /sdcard/RadioApp/logs/pcm_gen/pcm_gen.log
+    private fun writePcmGenLog(context: Context, episodeId: String, audioUrl: String?, totalTimeMs: Long, pcmSizeBytes: Long, success: Boolean, detail: String? = null) {
+        try {
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "pcm_gen")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "pcm_gen.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            val url = audioUrl?.substringAfterLast("/") ?: "null"
+            val detailStr = if (detail != null) " detail=$detail" else ""
+            val result = if (success) "SUCCESS" else "FAILED"
+            logFile.appendText("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] ep=$episodeId url=$url result=$result totalTimeMs=$totalTimeMs pcmSizeBytes=$pcmSizeBytes${detailStr}\n")
+            Log.i(TAG, "[PcmGen] ep=$episodeId result=$result totalTimeMs=${totalTimeMs}ms pcmSizeBytes=$pcmSizeBytes")
+            // 限制文件大小到500KB
+            if (logFile.length() > 500_000) {
+                val lines = logFile.readLines()
+                val keep = lines.takeLast(500)
+                logFile.writeText(keep.joinToString("\n") + "\n")
+            }
+        } catch (_: Exception) {}
+    }
+
     /**
      * v2.4.138: Determine whether cached PCM is valid by comparing its info-file durations
      * with the source MP4 duration. Returns the matching PcmInfo if valid, null otherwise.
@@ -449,6 +470,56 @@ object AudioSegmentAnalyzer {
         }
     }
 
+    // v3.1.73: 下载音频文件到缓存目录，用于替代流式解码
+    private fun downloadAudioFile(url: String, targetFile: java.io.File): Boolean {
+        val downloadStartTime = System.currentTimeMillis()
+        try {
+            Log.i(TAG, "downloadAudioFile: downloading $url to ${targetFile.absolutePath}")
+            val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            connection.connectTimeout = 30000
+            connection.readTimeout = 180000
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
+            connection.setRequestProperty("Referer", "https://www.hndt.com/")
+            connection.connect()
+            if (connection.responseCode != 200) {
+                Log.e(TAG, "downloadAudioFile: HTTP ${connection.responseCode} for $url")
+                connection.disconnect()
+                return false
+            }
+            val expectedSize = connection.contentLengthLong
+            val input = connection.inputStream
+            val output = java.io.FileOutputStream(targetFile)
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            var totalRead = 0L
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                output.write(buffer, 0, bytesRead)
+                totalRead += bytesRead
+            }
+            output.close()
+            input.close()
+            connection.disconnect()
+
+            // 检查下载是否完整
+            if (expectedSize > 0 && totalRead < expectedSize * 0.99) {
+                Log.e(TAG, "downloadAudioFile: incomplete download: $totalRead / $expectedSize bytes")
+                targetFile.delete()
+                return false
+            }
+
+            val elapsedMs = System.currentTimeMillis() - downloadStartTime
+            Log.i(TAG, "downloadAudioFile: downloaded ${targetFile.length()} bytes to ${targetFile.name} in ${elapsedMs}ms")
+            return true
+        } catch (e: Exception) {
+            val elapsedMs = System.currentTimeMillis() - downloadStartTime
+            Log.e(TAG, "downloadAudioFile: failed after ${elapsedMs}ms: ${e.message}")
+            if (targetFile.exists()) {
+                try { targetFile.delete() } catch (_: Exception) {}
+            }
+            return false
+        }
+    }
+
     /**
      * v2.4.138: Get the audio track duration of a cached media file in milliseconds.
      * KEY_DURATION is in microseconds.
@@ -502,11 +573,8 @@ object AudioSegmentAnalyzer {
         expectedDurationMs: Long = 0,
         progressCallback: ((Int) -> Unit)? = null
     ): Boolean {
-        // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
-        if (!pcmGenerateLock.tryLock()) {
-            Log.w(TAG, "preGeneratePcmFiles: 另一个PCM生成正在进行中，跳过 episode=$episodeId")
-            return false
-        }
+        // v3.1.73: PCM生成锁，等待锁而非跳过，避免因锁竞争导致PCM生成失败
+        pcmGenerateLock.lock()
         try {
             // v3.1.41: 保存并设置当前线程引用，使取消操作能中断PCM解码过程
             // preGeneratePcmFiles可能从协程或三层分段流程中调用，此时currentAnalysisThread为null
@@ -619,8 +687,11 @@ object AudioSegmentAnalyzer {
         checkCancelled()
         val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, progressCallback = scaledCbFull)
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
+            val failTimeMs = System.currentTimeMillis() - pcmGenStartTime
             progressCallback?.invoke(100)
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode full PCM for $episodeId\n")
+            // v3.1.73: 记录失败到pcm_gen.log
+            writePcmGenLog(context, episodeId, audioUrl, failTimeMs, 0L, false, "decode_failed audioFile=${audioFile?.name} audioUrl=$audioUrl")
             return false
         }
 
@@ -646,6 +717,9 @@ object AudioSegmentAnalyzer {
         val pcmGenTotalMs = System.currentTimeMillis() - pcmGenStartTime
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] PCM generation completed for $episodeId, total time=${pcmGenTotalMs}ms (${pcmGenTotalMs/1000}s), pcmSize=${clampedFile.length()/1024/1024}MB\n")
         Log.i(TAG, "preGeneratePcmFiles: PCM generation completed for $episodeId, total time=${pcmGenTotalMs}ms (${pcmGenTotalMs/1000}s)")
+        // v3.1.73: 记录成功到pcm_gen.log
+        val audioFileLog = audioFile?.let { "${it.name}(${it.length()})" } ?: "none"
+        writePcmGenLog(context, episodeId, audioUrl, pcmGenTotalMs, clampedFile.length(), true, "audioFile=$audioFileLog mp4DurationMs=$mp4DurationMs")
 
         // v2.4.149: Enforce the user-configurable PCM cache size limit after generating a full PCM.
         val settings = com.radio.app.models.AppSettings.getInstance(context)
@@ -967,26 +1041,38 @@ object AudioSegmentAnalyzer {
             }
 
             if (audioFile == null) {
-                // v2.4.101: No cached file — try streaming from URL directly via MediaExtractor
+                // v3.1.73: 音频缺失时，下载MP4再解码，替代流式解码
                 if (audioUrl != null && audioUrl.startsWith("http")) {
-                    Log.i(TAG, "decodeAudioToPcm: no cached file, trying URL: $audioUrl")
-                    // v3.1.72: 记录流式解码尝试，便于区分"无缓存文件"和"流式解码失败"
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: no cached audio for $episodeId, falling back to streaming URL decode")
-                    val urlResult = decodeUrlToPcm(audioUrl, File(outputDir, "${episodeId}_full.pcm"), durationMs, maxDecodeDurationMs, progressCallback)
-                    if (urlResult == null) {
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: streaming URL decode FAILED for $episodeId, url=$audioUrl")
-                        Log.e(TAG, "decodeAudioToPcm: streaming URL decode failed for $episodeId, url=$audioUrl")
+                    Log.i(TAG, "decodeAudioToPcm: no cached audio file for $episodeId, downloading MP4 from URL: $audioUrl")
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: no cached audio for $episodeId, downloading MP4 instead of streaming")
+                    val urlFileName = try {
+                        val path = java.net.URL(audioUrl).path
+                        path.substringAfterLast("/")
+                    } catch (e: Exception) {
+                        audioUrl.substringAfterLast("/")
                     }
-                    return urlResult
+                    if (urlFileName.isNotBlank()) {
+                        val downloadedFile = File(episodesDir, urlFileName)
+                        val downloadSuccess = downloadAudioFile(audioUrl, downloadedFile)
+                        if (downloadSuccess && downloadedFile.exists() && downloadedFile.length() > 1024) {
+                            Log.i(TAG, "decodeAudioToPcm: downloaded ${downloadedFile.length()} bytes to ${downloadedFile.name}, now decoding locally")
+                            audioFile = downloadedFile
+                        } else {
+                            Log.e(TAG, "decodeAudioToPcm: download failed for $episodeId, url=$audioUrl")
+                            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: download FAILED for $episodeId, url=$audioUrl")
+                        }
+                    }
                 }
-                // v3.1.67: 详细记录失败原因，包括缓存文件列表和搜索过程
-                val cachedFileNames = cachedFiles.map { "${it.name}=${it.length()}" }
-                Log.e(TAG, "decodeAudioToPcm: FAILED for $episodeId — no cached audio file found via any strategy")
-                Log.e(TAG, "decodeAudioToPcm:   search strategies attempted: URL filename, episodeId prefix, most recent")
-                Log.e(TAG, "decodeAudioToPcm:   audioUrl=$audioUrl")
-                Log.e(TAG, "decodeAudioToPcm:   cached files in episodes dir: ${cachedFileNames.joinToString(", ")}")
-                Log.e(TAG, "decodeAudioToPcm:   episodes dir path: ${episodesDir.absolutePath}")
-                return null
+                // v3.1.73: 如果下载后仍无音频文件，记录详细失败原因
+                if (audioFile == null) {
+                    val cachedFileNames = cachedFiles.map { "${it.name}=${it.length()}" }
+                    Log.e(TAG, "decodeAudioToPcm: FAILED for $episodeId — no cached audio file found via any strategy after download attempt")
+                    Log.e(TAG, "decodeAudioToPcm:   search strategies attempted: URL filename, episodeId prefix, most recent")
+                    Log.e(TAG, "decodeAudioToPcm:   audioUrl=$audioUrl")
+                    Log.e(TAG, "decodeAudioToPcm:   cached files in episodes dir: ${cachedFileNames.joinToString(", ")}")
+                    Log.e(TAG, "decodeAudioToPcm:   episodes dir path: ${episodesDir.absolutePath}")
+                    return null
+                }
             }
             Log.i(TAG, "decodeAudioToPcm: decoding ${audioFile.name} to PCM")
 
