@@ -43,7 +43,8 @@ class PhantomSafeImageButton @JvmOverloads constructor(
         if (debugLogEnabled) {
             Log.i(TAG, msg)
             try {
-                val logDir = File(context.getExternalFilesDir(null), "logs/jitter")
+                // v3.1.77: 使用getLogDir()确保日志路径统一
+                val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "jitter")
                 if (!logDir.exists()) logDir.mkdirs()
                 val logFile = File(logDir, "jitter.log")
                 val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())

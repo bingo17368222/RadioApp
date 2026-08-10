@@ -190,12 +190,11 @@ class SubtitleGeneratorService : Service() {
 
         // 确保日志目录存在（外部存储，用户可访问）
         try {
-            val logDir = getExternalFilesDir("logs")
-            if (logDir != null) {
-                val subtitleDir = File(logDir, "subtitle")
-                if (!subtitleDir.exists()) {
-                    subtitleDir.mkdirs()
-                }
+            // v3.1.77: 使用getLogDir()确保日志路径统一
+            val logDir = com.radio.app.RadioApplication.getLogDir(this)
+            val subtitleDir = File(logDir, "subtitle")
+            if (!subtitleDir.exists()) {
+                subtitleDir.mkdirs()
             }
         } catch (_: Exception) {}
 
@@ -439,7 +438,8 @@ class SubtitleGeneratorService : Service() {
      */
     private fun writeVoskLog(message: String) {
         try {
-            val logDir = java.io.File(getExternalFilesDir(null), "logs/vosk")
+            // v3.1.77: 使用getLogDir()确保日志路径统一
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "vosk")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "vosk.log")
             val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
@@ -969,19 +969,13 @@ class SubtitleGeneratorService : Service() {
     }
 
     private fun prepareTaskLogFile(taskType: String, episodeId: String): File {
-        val logDir = getExternalFilesDir("logs")
-        if (logDir != null) {
-            val subtitleDir = File(logDir, "subtitle")
-            if (!subtitleDir.exists()) subtitleDir.mkdirs()
-            val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val file = File(subtitleDir, "${taskType}_${Math.abs(episodeId.hashCode())}_$ts.log")
-            if (!file.exists()) file.createNewFile()
-            return file
-        }
-        // Fallback to cache dir
-        val fallbackDir = File(cacheDir, "logs/subtitle")
-        if (!fallbackDir.exists()) fallbackDir.mkdirs()
-        return File(fallbackDir, "${taskType}_${Math.abs(episodeId.hashCode())}.log")
+        // v3.1.77: 使用getLogDir()确保日志路径统一
+        val logDir = File(com.radio.app.RadioApplication.getLogDir(this), "subtitle")
+        if (!logDir.exists()) logDir.mkdirs()
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val file = File(logDir, "${taskType}_${Math.abs(episodeId.hashCode())}_$ts.log")
+        if (!file.exists()) file.createNewFile()
+        return file
     }
 
     /**

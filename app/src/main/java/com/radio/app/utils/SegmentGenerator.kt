@@ -532,7 +532,7 @@ object SegmentGenerator {
             if (existing.isNotEmpty()) {
                 Log.i(TAG, "preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping")
                 // v2.4.124: Write to precache log for visibility
-                val logFile = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+                val logFile = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "precache/precache.log")
                 logFile.parentFile?.mkdirs()
                 logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping (durationMs=$durationMs)\n")
                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "预分段(已存在)")

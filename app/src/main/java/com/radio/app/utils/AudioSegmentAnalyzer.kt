@@ -124,6 +124,13 @@ object AudioSegmentAnalyzer {
     private fun vadLog(msg: String) {
         Log.i(TAG, msg)
         try {
+            // v3.1.77: 懒初始化logFile，确保即使setLogContext未调用也能写入日志
+            if (logFile == null && logContext != null) {
+                val baseLogDir = com.radio.app.RadioApplication.getLogDir(logContext!!)
+                val logDir = File(baseLogDir, "audio_segment")
+                if (!logDir.exists()) logDir.mkdirs()
+                logFile = File(logDir, "audio_segment.log")
+            }
             val timestamp = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
             logFile?.let { f ->
                 f.appendText("[$timestamp] $msg\n")
@@ -605,7 +612,8 @@ object AudioSegmentAnalyzer {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
-        val precacheLog = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+        // v3.1.77: 使用getLogDir()确保日志路径统一，均在logs目录下
+        val precacheLog = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "precache/precache.log")
         precacheLog.parentFile?.mkdirs()
         val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
         val pcmGenStartTime = System.currentTimeMillis()
@@ -685,13 +693,18 @@ object AudioSegmentAnalyzer {
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
         val scaledCbFull = progressCallback?.let { orig -> { pct: Int -> orig((pct * 95 / 100).coerceAtMost(95)) } }
         checkCancelled()
-        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, progressCallback = scaledCbFull)
+        // v3.1.77: 通过onDecoderName回调记录解码器名称到precache日志
+        var decoderName = "unknown"
+        val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs,
+            progressCallback = scaledCbFull,
+            onDecoderName = { name -> decoderName = name; precacheLog.appendText("[$ts] decodeAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] decoder name=$name\n") }
+        )
         if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
             val failTimeMs = System.currentTimeMillis() - pcmGenStartTime
             progressCallback?.invoke(100)
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode full PCM for $episodeId\n")
             // v3.1.73: 记录失败到pcm_gen.log
-            writePcmGenLog(context, episodeId, audioUrl, failTimeMs, 0L, false, "decode_failed audioFile=${audioFile?.name} audioUrl=$audioUrl")
+            writePcmGenLog(context, episodeId, audioUrl, failTimeMs, 0L, false, "decode_failed audioFile=${audioFile?.name} audioUrl=$audioUrl decoder=$decoderName")
             return false
         }
 
@@ -719,7 +732,7 @@ object AudioSegmentAnalyzer {
         Log.i(TAG, "preGeneratePcmFiles: PCM generation completed for $episodeId, total time=${pcmGenTotalMs}ms (${pcmGenTotalMs/1000}s)")
         // v3.1.73: 记录成功到pcm_gen.log
         val audioFileLog = audioFile?.let { "${it.name}(${it.length()})" } ?: "none"
-        writePcmGenLog(context, episodeId, audioUrl, pcmGenTotalMs, clampedFile.length(), true, "audioFile=$audioFileLog mp4DurationMs=$mp4DurationMs")
+        writePcmGenLog(context, episodeId, audioUrl, pcmGenTotalMs, clampedFile.length(), true, "audioFile=$audioFileLog mp4DurationMs=$mp4DurationMs decoder=$decoderName")
 
         // v2.4.149: Enforce the user-configurable PCM cache size limit after generating a full PCM.
         val settings = com.radio.app.models.AppSettings.getInstance(context)
@@ -760,7 +773,7 @@ object AudioSegmentAnalyzer {
                 }
             }
             if (deletedCount > 0) {
-                val precacheLog = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
+                val precacheLog = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "precache/precache.log")
                 precacheLog.parentFile?.mkdirs()
                 val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
                 precacheLog.appendText("[$ts] cleanupPcmCache: deleted $deletedCount files, freed ${deleted / 1024 / 1024}MB (remaining ${(totalBytes - deleted) / 1024 / 1024}MB)\n")
@@ -1003,7 +1016,8 @@ object AudioSegmentAnalyzer {
         durationMs: Long = 0,
         startOffsetBytes: Long = 0,
         maxDecodeDurationMs: Long = 0,
-        progressCallback: ((Int) -> Unit)? = null
+        progressCallback: ((Int) -> Unit)? = null,
+        onDecoderName: ((String) -> Unit)? = null  // v3.1.77: 解码器名称回调，用于日志
     ): File? {
         val pcmGenStartTime = System.currentTimeMillis()
         try {
@@ -1125,6 +1139,8 @@ object AudioSegmentAnalyzer {
             val decoderName = decoder.name
             Log.i(TAG, "decodeAudioToPcm: decoder name=$decoderName")
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: decoder name=$decoderName")
+            // v3.1.77: 通过回调将解码器名称传递给调用者（preGeneratePcmFilesInner写入日志）
+            onDecoderName?.invoke(decoderName)
 
             val bufferInfo = android.media.MediaCodec.BufferInfo()
             val outputDirFile = outputFile
