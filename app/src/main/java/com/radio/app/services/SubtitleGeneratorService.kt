@@ -3475,7 +3475,9 @@ class SubtitleGeneratorService : Service() {
 
             logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] input: ${inSampleRate}Hz ${inChannels}ch -> output: ${outSampleRate}Hz ${outChannels}ch")
 
+            // v3.1.74: 使用BufferedOutputStream减少文件写入系统调用次数
             fos = FileOutputStream(pcmFile)
+            val bos = java.io.BufferedOutputStream(fos, 256 * 1024)
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
@@ -3543,7 +3545,7 @@ class SubtitleGeneratorService : Service() {
                         resamplePhase = resampledTriple.second
                         lastSample = resampledTriple.third
                         if (outBytes.isNotEmpty()) {
-                            fos.write(outBytes)
+                            bos.write(outBytes)
                             resampledBytes += outBytes.size
                         }
                     }
@@ -3555,8 +3557,8 @@ class SubtitleGeneratorService : Service() {
                 }
             }
 
-            fos.flush()
-            fos.close()
+            bos.flush()
+            bos.close()
             fos = null
 
             // Write info file
@@ -3657,7 +3659,9 @@ class SubtitleGeneratorService : Service() {
             codec.start()
 
             val bufferInfo = MediaCodec.BufferInfo()
+            // v3.1.74: 使用BufferedOutputStream减少文件写入系统调用次数
             fos = FileOutputStream(pcmFile)
+            val bos = java.io.BufferedOutputStream(fos, 256 * 1024)
             val sampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             val channelCount = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             // [v2.1.1] Mutable: will be updated on INFO_OUTPUT_FORMAT_CHANGED
@@ -3771,7 +3775,7 @@ class SubtitleGeneratorService : Service() {
                                 resamplePhase = resampledTriple.second
                                 lastSample = resampledTriple.third
                                 val resampled = resampledTriple.first
-                                fos.write(resampled)
+                                bos.write(resampled)
                                 decodedBytes += resampled.size
                                 // [v2.0.72] Progress based on expected bytes, not hardcoded 60MB
                                 val pct = if (EXPECTED_PCM_BYTES > 0) {
@@ -3830,7 +3834,7 @@ class SubtitleGeneratorService : Service() {
                 logToFile("decodeToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] failed to write .info file: ${e.message}")
             }
             try { codec.stop(); codec.release() } catch (_: Exception) {}
-            try { fos.close() } catch (_: Exception) {}
+            try { bos.close() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
         } catch (e: Exception) {
             Log.e(TAG, "decodeToPcm failed", e)

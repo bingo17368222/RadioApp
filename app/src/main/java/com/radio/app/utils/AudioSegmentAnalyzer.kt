@@ -1005,6 +1005,7 @@ object AudioSegmentAnalyzer {
         maxDecodeDurationMs: Long = 0,
         progressCallback: ((Int) -> Unit)? = null
     ): File? {
+        val pcmGenStartTime = System.currentTimeMillis()
         try {
             val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
             val cachedFiles = episodesDir.listFiles()?.filter {
@@ -1126,12 +1127,14 @@ object AudioSegmentAnalyzer {
             // v2.4.130: Support append mode for continuing truncated PCM.
             // If startOffsetBytes > 0, we're resuming from a truncated PCM file.
             // Open in append mode and skip already-decoded bytes.
+            // v3.1.74: 使用BufferedOutputStream减少文件写入系统调用次数，大幅提升写入性能
             val appendMode = startOffsetBytes > 0
-            val fos = if (appendMode) {
+            val rawFos = if (appendMode) {
                 java.io.FileOutputStream(outputDirFile, true)  // append
             } else {
                 java.io.FileOutputStream(outputDirFile)  // overwrite
             }
+            val fos = java.io.BufferedOutputStream(rawFos, 256 * 1024)
             var totalPcmBytes = if (appendMode) startOffsetBytes else 0
             // v2.4.149: Raise max PCM size to 600MB (~5.2 hours at 16kHz mono 16-bit) so 3-4 hour
             // episodes are not silently truncated to "only tens of MB".
@@ -1290,14 +1293,17 @@ object AudioSegmentAnalyzer {
 
             val finalDurationMs = totalPcmBytes * 1000L / (16000L * 2L)
             val completenessRatio = if (expectedPcmBytes > 1) totalPcmBytes.toDouble() / expectedPcmBytes.toDouble() else 1.0
+            val decodeElapsedMs = System.currentTimeMillis() - pcmGenStartTime
+            val speedMBps = if (decodeElapsedMs > 0) String.format("%.2f", totalPcmBytes.toDouble() / 1024 / 1024 / (decodeElapsedMs / 1000.0)) else "?"
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: DONE episode=$episodeId, totalPcmBytes=$totalPcmBytes, finalDurationMs=$finalDurationMs, expectedPcmBytes=$expectedPcmBytes, completeness=${String.format("%.2f", completenessRatio)}")
-            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes ($finalDurationMs ms) to ${outputFile.name} (final rate: ${sampleRate}Hz ${channelCount}ch -> 16kHz mono)")
+            Log.i(TAG, "decodeAudioToPcm: decoded $totalPcmBytes bytes ($finalDurationMs ms) to ${outputFile.name}, elapsed=${decodeElapsedMs}ms, speed=${speedMBps}MB/s (final rate: ${sampleRate}Hz ${channelCount}ch -> 16kHz mono)")
             // v2.4.138: .info file with duration metadata is now written by the caller
             // (preGeneratePcmFiles / analyzeEpisode) so that mp4DurationMs and pcmDurationMs
             // can be validated together.
             return if (totalPcmBytes > 16000) outputFile else null
         } catch (e: Exception) {
-            Log.e(TAG, "decodeAudioToPcm failed: ${e.message}")
+            val elapsedMs = System.currentTimeMillis() - pcmGenStartTime
+            Log.e(TAG, "decodeAudioToPcm failed after ${elapsedMs}ms: ${e.message}")
             Log.e(TAG, "decodeAudioToPcm:   episodeId=$episodeId audioUrl=$audioUrl durationMs=$durationMs")
             return null
         }
