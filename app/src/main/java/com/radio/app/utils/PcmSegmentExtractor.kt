@@ -37,17 +37,15 @@ object PcmSegmentExtractor {
 
     /**
      * 从 episode 的完整 PCM 缓存中截取 [startMs, endMs] 片段。
-     * 优先使用 _full.pcm，其次 _5min.pcm。
+     * 优先使用 _full.pcm。
      * 返回临时 PCM 文件，调用方负责删除。
      */
     fun extractSegmentPcm(context: Context, episodeId: String, startMs: Long, endMs: Long): File? {
         val pcmCacheDir = RadioApplication.getPcmCacheDir(context)
         val fullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
-        val min5Pcm = File(pcmCacheDir, "${episodeId}_5min.pcm")
 
         val sourceFile = when {
             fullPcm.exists() && fullPcm.length() > 0 -> fullPcm
-            min5Pcm.exists() && min5Pcm.length() > 0 -> min5Pcm
             else -> {
                 Log.w(TAG, "extractSegmentPcm: no PCM cache found for $episodeId")
                 return null
@@ -73,10 +71,8 @@ object PcmSegmentExtractor {
 
         val pcmCacheDir = RadioApplication.getPcmCacheDir(context)
         val fullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
-        val min5Pcm = File(pcmCacheDir, "${episodeId}_5min.pcm")
         val sourceFile = when {
             fullPcm.exists() && fullPcm.length() > 0 -> fullPcm
-            min5Pcm.exists() && min5Pcm.length() > 0 -> min5Pcm
             else -> {
                 Log.w(TAG, "extractWatermarkPcm: no PCM cache found for $episodeId")
                 return null

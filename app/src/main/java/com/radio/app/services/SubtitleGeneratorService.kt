@@ -2772,7 +2772,6 @@ class SubtitleGeneratorService : Service() {
                             }
                             return result
                         } else {
-                            logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM decode failed, falling back to 5min PCM")
                             fullPcmFile.delete()
                             // [v2.4.16] Fix: Also delete corresponding info file on failure
                             val failInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
@@ -2785,14 +2784,6 @@ class SubtitleGeneratorService : Service() {
                     val errInfoFile = java.io.File(fullPcmFile.parentFile, fullPcmFile.nameWithoutExtension + ".info")
                     if (errInfoFile.exists()) errInfoFile.delete()
                 }
-            // v3.1.40: Fallback — try 5-min PCM (legacy files) if full PCM path failed
-            val pcm5minFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcm5minFile.exists() && pcm5minFile.length() > 1024 * 500) {
-                val sizeMB = pcm5minFile.length() / 1024 / 1024
-                ctx.log("使用5分钟PCM缓存 (${sizeMB}MB)")
-                logToFile("generateWithWhisper: [${com.radio.app.RadioApplication.appVersionTag()}] using 5-min PCM cache (${sizeMB}MB)")
-                return processWhisperInChunks(pcm5minFile, whisperModel, callback, ctx, episodeId, 0, 0L, 0L)
-            }
 
             // No PCM cache — download and decode to full PCM
             val audioData = getAudioDataForProcessing(episodeId, audioUrl, ctx)
@@ -3370,7 +3361,7 @@ class SubtitleGeneratorService : Service() {
      */
     private fun find16kHzPcmCache(episodeId: String): File? {
         try {
-            // [v3.1.40] Use centralized cache dir, prefer full PCM, fallback to 5-min PCM
+            // [v3.1.40] Use centralized cache dir, use full PCM only
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this)
             val minValid = 500 * 1024  // ~15s of 16kHz mono audio
             // Try full PCM first
@@ -3381,15 +3372,6 @@ class SubtitleGeneratorService : Service() {
             } else if (fullPcmFile.exists()) {
                 logToFile("find16kHzPcmCache: [${com.radio.app.RadioApplication.appVersionTag()}] full PCM too small (${fullPcmFile.length()} bytes), deleting")
                 try { fullPcmFile.delete() } catch (_: Exception) {}
-            }
-            // Fallback to legacy 5-min PCM
-            val pcm5minFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            if (pcm5minFile.exists() && pcm5minFile.length() >= minValid) {
-                logToFile("find16kHzPcmCache: found 5-min PCM cache: ${pcm5minFile.absolutePath} (${pcm5minFile.length()} bytes)")
-                return pcm5minFile
-            } else if (pcm5minFile.exists()) {
-                logToFile("find16kHzPcmCache: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM too small (${pcm5minFile.length()} bytes), deleting")
-                try { pcm5minFile.delete() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             logToFile("find16kHzPcmCache: error: ${e.message}")

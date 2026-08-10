@@ -2072,9 +2072,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         try {
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
             listOf(
-                "${episodeId}_5min.pcm",
                 "${episodeId}_full.pcm",
-                "${episodeId}_5min.info",
                 "${episodeId}_full.info"
             ).forEach { name ->
                 File(pcmCacheDir, name).takeIf { it.exists() }?.delete()
@@ -2097,7 +2095,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // [v2.1.0] Use centralized cache dir from RadioApplication
                 val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
                 if (!pcmCacheDir.exists()) pcmCacheDir.mkdirs()
-                val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+                val pcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
                 if (pcmFile.exists() && pcmFile.length() > 1024) {
                     // Validate format - must have .info file with version=3 (original rate, no resampling)
                     val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
@@ -2183,7 +2181,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 检查PCM是否已解码
         // [v2.1.0] Use centralized cache dir from RadioApplication
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
-        val pcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
+        val pcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
         if (pcmFile.exists() && pcmFile.length() > 1024) {
             // Check if existing PCM needs regeneration (format changed in v2.0.5: original rate, version=3)
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
@@ -2348,13 +2346,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * This generates 5-min PCM and full PCM without generating subtitles.
      * Used when pre-generate subtitles is OFF but preprocessing is ON.
      */
-    private fun startPreCachePcmGeneration(episode: Episode, generateFullPcm: Boolean = true) {
+    private fun startPreCachePcmGeneration(episode: Episode) {
         val episodeId = episode.id ?: return
         if (episodeId.isBlank()) return
         val audioUrl = episode.audioUrl ?: return
         if (audioUrl.isBlank()) return
 
-        writePreCacheLog("startPreCachePcmGeneration:  starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl, generateFullPcm=$generateFullPcm)")
+        writePreCacheLog("startPreCachePcmGeneration:  starting PCM + fixed 15-min segment generation for $episodeId (url=$audioUrl)")
 
         // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {
@@ -2432,7 +2430,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // in .info files).
                 val expectedDurationMs = episode.duration?.let { if (it > 0) it * 1000L else 0L } ?: 0L
                 val success = com.radio.app.utils.AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    this, episodeId, audioUrl, expectedDurationMs, generateFullPcm,
+                    this, episodeId, audioUrl, expectedDurationMs,
                     progressCallback = { pct ->
                         try {
                             // 每次回调时检查取消标志
@@ -2508,13 +2506,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // v3.1.67: 记录PCM生成失败原因到专用日志
                     val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@RadioPlaybackService)
                     val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
-                    val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
                     val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
                     val audioFile = episodesDir.listFiles()?.find { it.name.contains(episodeId) && it.length() > 1024 }
                     val pcmExists = fullPcmFile.exists().let { if (it) "fullPCM=${fullPcmFile.length()}" else "noFullPCM" }
-                    val min5Exists = min5PcmFile.exists().let { if (it) "5minPCM=${min5PcmFile.length()}" else "no5minPCM" }
                     val audioInfo = if (audioFile != null) "audioExist=${audioFile.length()}" else "audioMissing"
-                    val extraInfo = "$pcmExists $min5Exists $audioInfo"
+                    val extraInfo = "$pcmExists $audioInfo"
                     writePcmFailureLog(
                         episodeId = episodeId,
                         episodeTitle = episode.title,
@@ -2808,19 +2804,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // v3.1.68: 修复巡逻逻辑：全量PCM已存在时不应重复生成。
                     // 之前只检查5分钟PCM，但v3.1.40已不再自动生成5分钟PCM，
                     // 导致全量PCM即使存在也被反复触发重新生成。
-                    val pcm5min = java.io.File(pcmCacheDir, "${ep.id}_5min.pcm")
                     val pcmFull = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
-                    val hasPcm5min = pcm5min.exists() && pcm5min.length() > 1024
                     val hasPcmFull = pcmFull.exists() && pcmFull.length() > 1024 * 100
 
-                    if (hasPcm5min || hasPcmFull) {
+                    if (hasPcmFull) {
                         withSubtitles++ // count as "already processed"
                     } else {
                         // Found a cached episode without PCM — trigger PCM generation.
-                        val settings = com.radio.app.models.AppSettings.getInstance(this@RadioPlaybackService)
-                        val shouldGenerateFullPcm = settings.patrolGenerateFullPcm
-                        writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id}), generateFullPcm=${shouldGenerateFullPcm}")
-                        startPreCachePcmGeneration(ep, generateFullPcm = shouldGenerateFullPcm)
+                        writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id})")
+                        startPreCachePcmGeneration(ep)
                         try {
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -3095,8 +3087,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             continue
                         }
 
-                        val pcmFile = File(pcmCacheDir, "${ep.id}_5min.pcm")
-                        val infoFile = File(pcmCacheDir, "${ep.id}_5min.info")
+                        val pcmFile = File(pcmCacheDir, "${ep.id}_full.pcm")
+                        val infoFile = File(pcmCacheDir, "${ep.id}_full.info")
 
                         val pcmValid = pcmFile.exists() && pcmFile.length() > minValidPcmBytes
                         val infoValid = infoFile.exists() && infoFile.readText().contains("version=3")
@@ -3431,7 +3423,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("decodeToPcmForPreCache: PCM file size=${pcmFile.length()} bytes, expected duration=${pcmFile.length() / (outSampleRate * 2 * outChannels)}s")
 
             // After decode loop, write sample rate info
-            // [v2.0.99] _5min.pcm is now always 16kHz mono (outSampleRate=16000, outChannels=1).
+            // [v3.1.69] PCM is now always 16kHz mono (outSampleRate=16000, outChannels=1).
             // No need to generate a separate _16k file - the main file IS the 16kHz file.
             val infoFile = File(pcmFile.parentFile, pcmFile.nameWithoutExtension + ".info")
             infoFile.writeText("sampleRate=$outSampleRate\nchannels=$outChannels\nversion=3")
@@ -3440,9 +3432,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // [v2.1.2] WAV generation removed per user request. PCM file is sufficient.
             // generateWavFromPcm(pcmFile, outSampleRate, outChannels)
 
-            // [v2.0.99] Removed: duplicate _16k.pcm generation (lines 1833-1871).
+            // [v3.1.69] Removed: duplicate _16k.pcm generation (lines 1833-1871).
             // Previously this code created a second PCM file with _16k suffix by re-reading
-            // and re-resampling the already-16kHz _5min.pcm. This was redundant (v2.0.97
+            // and re-resampling the already-16kHz PCM. This was redundant (v2.0.97
             // already forces 16kHz output) and the resample used wrong source rate (44100
             // instead of 16000), producing a corrupt 6MB file alongside the correct 9MB file.
         } catch (e: Exception) {

@@ -223,12 +223,7 @@ class FingerprintListFragment : Fragment() {
             // 2a. 检查是否有完整PCM缓存
             val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
             val fullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
-            val min5Pcm = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            val sourceFile = when {
-                fullPcm.exists() && fullPcm.length() > 0 -> fullPcm
-                min5Pcm.exists() && min5Pcm.length() > 0 -> min5Pcm
-                else -> null
-            }
+            val sourceFile = if (fullPcm.exists() && fullPcm.length() > 0) fullPcm else null
 
             if (sourceFile != null) {
                 // 有PCM缓存，直接播放完整PCM
@@ -269,11 +264,7 @@ class FingerprintListFragment : Fragment() {
                     com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
                     return fullPcm2
                 }
-                val min5Pcm2 = File(pcmCacheDir, "${episodeId}_5min.pcm")
-                if (min5Pcm2.exists() && min5Pcm2.length() > 0) {
-                    com.radio.app.utils.FingerprintTestNotificationHelper.cancel(requireContext())
-                    return min5Pcm2
-                }
+                
             }
 
             Log.w(TAG, "generatePcmAndPlay: failed to generate PCM for $episodeId")
@@ -757,10 +748,7 @@ class FingerprintListFragment : Fragment() {
         lifecycleScope.launch {
             val pcmCacheDir = RadioApplication.getPcmCacheDir(requireContext())
             val fullPcm = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
-            val min5Pcm = File(pcmCacheDir, "${fp.episodeId}_5min.pcm")
-            val pcmSource = if (fullPcm.exists() && fullPcm.length() > 1024 * 100) fullPcm
-            else if (min5Pcm.exists() && min5Pcm.length() > 16000) min5Pcm
-            else null
+            val pcmSource = if (fullPcm.exists() && fullPcm.length() > 1024 * 100) fullPcm else null
             if (pcmSource == null) {
                 Toast.makeText(requireContext(), "完整节目 PCM 不存在", Toast.LENGTH_SHORT).show()
                 return@launch

@@ -500,7 +500,6 @@ object AudioSegmentAnalyzer {
         episodeId: String,
         audioUrl: String?,
         expectedDurationMs: Long = 0,
-        generateFullPcm: Boolean = true,
         progressCallback: ((Int) -> Unit)? = null
     ): Boolean {
         // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
@@ -516,7 +515,7 @@ object AudioSegmentAnalyzer {
                 currentAnalysisThread = Thread.currentThread()
             }
             try {
-                return preGeneratePcmFilesInner(context, episodeId, audioUrl, expectedDurationMs, generateFullPcm, progressCallback)
+                return preGeneratePcmFilesInner(context, episodeId, audioUrl, expectedDurationMs, progressCallback)
             } finally {
                 // v3.1.41: 恢复之前保存的线程引用
                 if (savedThread == null) {
@@ -533,17 +532,15 @@ object AudioSegmentAnalyzer {
         episodeId: String,
         audioUrl: String?,
         expectedDurationMs: Long = 0,
-        generateFullPcm: Boolean = true,
         progressCallback: ((Int) -> Unit)? = null
     ): Boolean {
         val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
         val fullPcmFile = File(pcmCacheDir, "${episodeId}_full.pcm")
-        val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
         val fullInfoFile = File(pcmCacheDir, "${episodeId}_full.info")
-        val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
         val precacheLog = java.io.File(context.getExternalFilesDir(null), "RadioApp/logs/precache/precache.log")
         precacheLog.parentFile?.mkdirs()
         val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+        val pcmGenStartTime = System.currentTimeMillis()
 
         // v2.4.139: Resolve MP4 duration from multiple sources, never trust a 0 value.
         val audioFile = getCachedAudioFile(context, episodeId, audioUrl)
@@ -572,36 +569,7 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // v2.4.148: Lightweight mode — patrol only needs the 5-min preview PCM.
-        // Validate the 5-min preview independently; it does not require a full-duration check.
-        if (!generateFullPcm) {
-            val min5Valid = min5PcmFile.exists() &&
-                    min5PcmFile.length() >= 4 * 60 * 16000 * 2 && // at least 4 minutes
-                    min5PcmFile.length() <= 6 * 60 * 16000 * 2     // at most 6 minutes
-            if (min5Valid) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM already valid for $episodeId (${min5PcmFile.length()} bytes). Skipping decode.\n")
-                return true
-            }
-            // v2.4.148: Delete only the stale 5-min preview, never the full PCM, when in lightweight mode.
-            if (min5PcmFile.exists()) min5PcmFile.delete()
-            if (min5InfoFile.exists()) min5InfoFile.delete()
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] generating 5-min PCM only for $episodeId\n")
-            val fiveMinMs = 5 * 60 * 1000L
-            val scaledCb5 = progressCallback?.let { orig -> { pct: Int -> orig((pct * 5).coerceAtMost(90)) } }
-            val decoded = decodeAudioToPcm(context, episodeId, pcmCacheDir, audioUrl, mp4DurationMs, maxDecodeDurationMs = fiveMinMs, progressCallback = scaledCb5)
-            if (decoded == null || !decoded.exists() || decoded.length() <= 16000) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] FAILED to decode 5-min PCM for $episodeId\n")
-                return false
-            }
-            // Rename decoded file to the 5-min target name.
-            if (decoded.absolutePath != min5PcmFile.absolutePath) {
-                decoded.renameTo(min5PcmFile)
-            }
-            val min5DurationMs = min5PcmFile.length() / (16000 * 2) * 1000
-            writePcmInfo(min5InfoFile, mp4DurationMs.coerceAtLeast(min5DurationMs), min5DurationMs, 16000, 1)
-            precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated for $episodeId (${min5PcmFile.length()} bytes, ${min5DurationMs}ms)\n")
-            return min5PcmFile.exists() && min5PcmFile.length() > 16000
-        }
+        // v3.1.69: 已取消5分钟PCM自动生成，只生成完整PCM。
 
         // v2.4.139: Validate using .info file. If valid and durations match, skip all decoding.
         // v3.1.41-fix: 不再要求5分钟版PCM必须存在（v3.1.40已不再自动生成5分钟版PCM），
@@ -630,9 +598,6 @@ object AudioSegmentAnalyzer {
             if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                 return true
             }
-            if (min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-                return true
-            }
             // 无PCM文件且无解码源，继续尝试流式解码
         }
 
@@ -646,9 +611,7 @@ object AudioSegmentAnalyzer {
         } else { "不存在" }
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] PCM/info异常，删除前状态: pcmExists=$pcmExists pcmSize=${pcmSize/1024/1024}MB infoExists=$infoExists infoContent=[$infoContent] mp4DurationMs=$mp4DurationMs episode=$episodeId\n")
         if (fullPcmFile.exists()) fullPcmFile.delete()
-        if (min5PcmFile.exists()) min5PcmFile.delete()
         if (fullInfoFile.exists()) fullInfoFile.delete()
-        if (min5InfoFile.exists()) min5InfoFile.delete()
 
         // Decode full PCM from scratch.
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
@@ -672,38 +635,17 @@ object AudioSegmentAnalyzer {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] ERROR: PCM duration (${pcmDurationMs}ms) still < 85% of MP4 duration (${mp4DurationMs}ms). Keeping file but marking unreliable.\n")
         }
 
-        // v3.1.68: 恢复5分钟PCM自动生成（从全量PCM截取前5分钟）。
-        // v3.1.40 曾停止自动生成5分钟PCM，但巡逻逻辑依赖它判断PCM是否已存在，
-        // 且手动生成字幕时也需要5分钟PCM，因此恢复自动生成。
+        // v3.1.69: 已取消5分钟PCM自动生成，只记录完整PCM的info文件。
         if (mp4DurationMs > 0) {
             writePcmInfo(fullInfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
-            // 从全量PCM截取前5分钟（16kHz mono 16bit: 5*60*16000*2 = 9,600,000 bytes）
-            try {
-                val fiveMinBytes = 5 * 60 * 16000 * 2L
-                if (clampedFile.length() >= fiveMinBytes) {
-                    val raf = java.io.RandomAccessFile(clampedFile, "r")
-                    val channel = raf.channel
-                    val mapped = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, fiveMinBytes)
-                    val buf = ByteArray(fiveMinBytes.toInt())
-                    mapped.get(buf)
-                    channel.close()
-                    raf.close()
-                    min5PcmFile.writeBytes(buf)
-                    val min5DurationMs = fiveMinBytes / (16000 * 2) * 1000
-                    writePcmInfo(min5InfoFile, mp4DurationMs, min5DurationMs, 16000, 1)
-                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generated from full PCM for $episodeId (${min5PcmFile.length()} bytes, ${min5DurationMs}ms)\n")
-                } else {
-                    // 全量PCM不足5分钟，直接用全量PCM作为5分钟PCM
-                    clampedFile.copyTo(min5PcmFile, overwrite = true)
-                    writePcmInfo(min5InfoFile, mp4DurationMs, pcmDurationMs, 16000, 1)
-                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM = full PCM (insufficient length) for $episodeId (${min5PcmFile.length()} bytes, ${pcmDurationMs}ms)\n")
-                }
-            } catch (e: Exception) {
-                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 5-min PCM generation failed: ${e.message}\n")
-            }
         } else {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: mp4DurationMs is 0, skipping .info write for $episodeId to avoid invalid info files.\n")
         }
+
+        // v3.1.69: 记录PCM生成总耗时
+        val pcmGenTotalMs = System.currentTimeMillis() - pcmGenStartTime
+        precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] PCM generation completed for $episodeId, total time=${pcmGenTotalMs}ms (${pcmGenTotalMs/1000}s), pcmSize=${clampedFile.length()/1024/1024}MB\n")
+        Log.i(TAG, "preGeneratePcmFiles: PCM generation completed for $episodeId, total time=${pcmGenTotalMs}ms (${pcmGenTotalMs/1000}s)")
 
         // v2.4.149: Enforce the user-configurable PCM cache size limit after generating a full PCM.
         val settings = com.radio.app.models.AppSettings.getInstance(context)
@@ -785,9 +727,8 @@ object AudioSegmentAnalyzer {
      *
      * PCM file search order:
      * 1. Pre-decoded full PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_full.pcm
-     * 2. Pre-decoded 5-min PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_5min.pcm
-     * 3. Whisper chunk PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_chunk_*.pcm
-     * 4. Decode from cached audio file (mp4/m4a) to PCM on-the-fly
+     * 2. Whisper chunk PCM: /sdcard/RadioApp/pcm_cache/{episodeId}_chunk_*.pcm
+     * 3. Decode from cached audio file (mp4/m4a) to PCM on-the-fly
      *
      * @param context Application context
      * @param episodeId Episode ID
@@ -879,26 +820,7 @@ object AudioSegmentAnalyzer {
             } else {
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: full PCM .info mismatch for $episodeId. Deleting and regenerating.")
                 fullPcmFile.delete()
-                File(pcmCacheDir, "${episodeId}_5min.pcm").takeIf { it.exists() }?.delete()
                 fullInfoFile.delete()
-                File(pcmCacheDir, "${episodeId}_5min.info").takeIf { it.exists() }?.delete()
-            }
-        }
-
-        // v2.4.138: If no valid full PCM, try 5-min PCM (also validated by .info).
-        if (pcmFile == null) {
-            val min5PcmFile = File(pcmCacheDir, "${episodeId}_5min.pcm")
-            val min5InfoFile = File(pcmCacheDir, "${episodeId}_5min.info")
-            if (min5PcmFile.exists() && min5PcmFile.length() > 16000) {
-                val validInfo = validatePcmWithInfo(min5PcmFile, min5InfoFile, mp4DurationMs)
-                if (validInfo != null) {
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: 5-min PCM valid per .info for $episodeId")
-                    pcmFile = min5PcmFile
-                } else {
-                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] analyzeEpisode: 5-min PCM .info mismatch for $episodeId. Deleting.")
-                    min5PcmFile.delete()
-                    min5InfoFile.delete()
-                }
             }
         }
 

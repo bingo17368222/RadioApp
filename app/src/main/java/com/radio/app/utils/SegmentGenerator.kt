@@ -1055,7 +1055,7 @@ object SegmentGenerator {
             val audioFile = AudioSegmentAnalyzer.getCachedAudioFile(context, episodeId, audioUrl)
             if (audioFile != null && audioFile.exists() && audioFile.length() > 1024 * 100) {
                 val regenResult = AudioSegmentAnalyzer.preGeneratePcmFiles(
-                    context, episodeId, audioUrl, effectiveDurationMs, true,
+                    context, episodeId, audioUrl, effectiveDurationMs,
                     progressCallback = { pct ->
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50 + pct / 2, "重新生成PCM ${pct}%")
                     }

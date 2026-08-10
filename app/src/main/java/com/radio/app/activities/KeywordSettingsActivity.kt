@@ -638,10 +638,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(this@KeywordSettingsActivity)
             val fullPcm = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
-            val min5Pcm = File(pcmCacheDir, "${fp.episodeId}_5min.pcm")
             val sourceFile = when {
                 fullPcm.exists() && fullPcm.length() > 0 -> fullPcm
-                min5Pcm.exists() && min5Pcm.length() > 0 -> min5Pcm
                 else -> null
             }
 
@@ -677,10 +675,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
                 }
                 // 重新检查PCM文件
                 val fullPcm2 = File(pcmCacheDir, "${fp.episodeId}_full.pcm")
-                val min5Pcm2 = File(pcmCacheDir, "${fp.episodeId}_5min.pcm")
                 resolvedSource = when {
                     fullPcm2.exists() && fullPcm2.length() > 0 -> fullPcm2
-                    min5Pcm2.exists() && min5Pcm2.length() > 0 -> min5Pcm2
                     else -> null
                 }
                 FingerprintTestNotificationHelper.cancel(this@KeywordSettingsActivity)
