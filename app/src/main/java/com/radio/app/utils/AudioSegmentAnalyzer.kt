@@ -38,6 +38,71 @@ import java.util.concurrent.locks.ReentrantLock
  * - silero_vad.onnx (model file)
  * - yamnet.tflite (model file)
  */
+/**
+ * v3.1.79: 选择首选的音频解码器，优先使用MTK硬件解码器以缩短PCM生成时间。
+ *
+ * 策略：
+ * 1. 列举所有支持指定MIME类型的解码器
+ * 2. 优先选择MTK硬件解码器（c2.mtk. 或 omx.mtk. 前缀）
+ * 3. 其次选择其他硬件加速解码器
+ * 4. 回退到null（调用者使用createDecoderByType默认选择）
+ */
+fun selectPreferredAudioDecoder(mime: String): String? {
+    val codecList = android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS)
+    val decoderInfos = mutableListOf<android.media.MediaCodecInfo>()
+
+    for (info in codecList.codecInfos) {
+        if (info.isEncoder) continue
+        for (type in info.supportedTypes) {
+            if (type.equals(mime, ignoreCase = true)) {
+                decoderInfos.add(info)
+                break
+            }
+        }
+    }
+
+    // 优先MTK硬件解码器（c2.mtk. 或 omx.mtk. 前缀）
+    val mtkDecoder = decoderInfos.find { info ->
+        val name = info.name.lowercase()
+        (name.contains("c2.mtk.") || name.contains("omx.mtk.")) && isHardwareDecoder(info)
+    }
+    if (mtkDecoder != null) {
+        android.util.Log.i("AudioSegmentAnalyzer", "selectPreferredAudioDecoder: selected MTK HW decoder: ${mtkDecoder.name}")
+        return mtkDecoder.name
+    }
+
+    // 其次其他硬件加速解码器
+    val hwDecoder = decoderInfos.find { isHardwareDecoder(it) }
+    if (hwDecoder != null) {
+        android.util.Log.i("AudioSegmentAnalyzer", "selectPreferredAudioDecoder: selected HW decoder: ${hwDecoder.name}")
+        return hwDecoder.name
+    }
+
+    // 回退到null（使用系统默认）
+    val fallbackName = decoderInfos.firstOrNull()?.name
+    android.util.Log.i("AudioSegmentAnalyzer", "selectPreferredAudioDecoder: no HW decoder found, fallback to default (first=${fallbackName})")
+    return null
+}
+
+/**
+ * v3.1.79: 判断解码器是否为硬件解码器。
+ * API 29+ 使用 isSoftwareOnly() 判断；
+ * API 29以下通过解码器名称前缀判断（非Google/Android解码器视为硬件）。
+ */
+private fun isHardwareDecoder(info: android.media.MediaCodecInfo): Boolean {
+    return if (android.os.Build.VERSION.SDK_INT >= 29) {
+        try {
+            !info.isSoftwareOnly()
+        } catch (e: Exception) {
+            val name = info.name.lowercase()
+            !name.startsWith("omx.google.") && !name.startsWith("c2.android.")
+        }
+    } else {
+        val name = info.name.lowercase()
+        !name.startsWith("omx.google.") && !name.startsWith("c2.android.")
+    }
+}
+
 object AudioSegmentAnalyzer {
     private const val TAG = "AudioSegmentAnalyzer"
 
@@ -1135,11 +1200,21 @@ object AudioSegmentAnalyzer {
                 extractor.seekTo(seekToUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             }
 
-            // Create decoder
-            val decoder = android.media.MediaCodec.createDecoderByType(mime)
+            // v3.1.79: 优先选择MTK硬件解码器，缩短解码耗时
+            val preferredName = selectPreferredAudioDecoder(mime)
+            val decoder = if (preferredName != null) {
+                try {
+                    android.media.MediaCodec.createByCodecName(preferredName)
+                } catch (e: Exception) {
+                    Log.w(TAG, "decodeAudioToPcm: failed to create preferred decoder $preferredName, falling back to default: ${e.message}")
+                    android.media.MediaCodec.createDecoderByType(mime)
+                }
+            } else {
+                android.media.MediaCodec.createDecoderByType(mime)
+            }
             decoder.configure(inputFormat, null, null, 0)
             decoder.start()
-            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            // v3.1.79: 记录实际使用的解码器名称
             val decoderName = decoder.name
             Log.i(TAG, "decodeAudioToPcm: decoder name=$decoderName")
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: decoder name=$decoderName")
@@ -1376,10 +1451,21 @@ object AudioSegmentAnalyzer {
             val mime = inputFormat.getString(android.media.MediaFormat.KEY_MIME) ?: ""
             Log.i(TAG, "decodeUrlToPcm: container format: ${sampleRate}Hz ${channelCount}ch mime=$mime")
 
-            val decoder = android.media.MediaCodec.createDecoderByType(mime)
+            // v3.1.79: 优先选择MTK硬件解码器，缩短解码耗时
+            val preferredName = selectPreferredAudioDecoder(mime)
+            val decoder = if (preferredName != null) {
+                try {
+                    android.media.MediaCodec.createByCodecName(preferredName)
+                } catch (e: Exception) {
+                    Log.w(TAG, "decodeUrlToPcm: failed to create preferred decoder $preferredName, falling back to default: ${e.message}")
+                    android.media.MediaCodec.createDecoderByType(mime)
+                }
+            } else {
+                android.media.MediaCodec.createDecoderByType(mime)
+            }
             decoder.configure(inputFormat, null, null, 0)
             decoder.start()
-            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            // v3.1.79: 记录实际使用的解码器名称
             val decoderName = decoder.name
             Log.i(TAG, "decodeUrlToPcm: decoder name=$decoderName")
 

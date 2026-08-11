@@ -22,6 +22,7 @@ import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.models.Transcript
 import com.radio.app.models.VoiceSegment
+import com.radio.app.utils.selectPreferredAudioDecoder
 import java.io.File
 import java.io.FileOutputStream
 import java.io.FileWriter
@@ -3454,10 +3455,21 @@ class SubtitleGeneratorService : Service() {
             } catch (e: Exception) {
                 logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] failed to read KEY_DURATION: ${e.message}")
             }
-            codec = MediaCodec.createDecoderByType(mime)
+            // v3.1.79: 优先选择MTK硬件解码器，缩短解码耗时
+            val fullPreferredName = selectPreferredAudioDecoder(mime)
+            codec = if (fullPreferredName != null) {
+                try {
+                    MediaCodec.createByCodecName(fullPreferredName)
+                } catch (e: Exception) {
+                    logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] failed to create preferred decoder $fullPreferredName, falling back: ${e.message}")
+                    MediaCodec.createDecoderByType(mime)
+                }
+            } else {
+                MediaCodec.createDecoderByType(mime)
+            }
             codec.configure(format, null, null, 0)
             codec.start()
-            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
+            // v3.1.79: 记录实际使用的解码器名称
             logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] decoder name=${codec.name}")
 
             // [v2.4.15] Fix: Use var for sample rate/channels — they may change after INFO_OUTPUT_FORMAT_CHANGED
@@ -3647,11 +3659,22 @@ class SubtitleGeneratorService : Service() {
             val stopAtUs = if (startUs > 0) actualStartUs + durationUs else durationUs
             val mime = audioFormat.getString(MediaFormat.KEY_MIME)!!
             ctx.log("Decode: [v2.0.72] audio mime=$mime, durationUs=$durationUs, stopAtUs=${stopAtUs / 1000000}s, startUs=${actualStartUs / 1000000}s")
-            codec = MediaCodec.createDecoderByType(mime)
+            // v3.1.79: 优先选择MTK硬件解码器，缩短解码耗时
+            val segPreferredName = selectPreferredAudioDecoder(mime)
+            codec = if (segPreferredName != null) {
+                try {
+                    MediaCodec.createByCodecName(segPreferredName)
+                } catch (e: Exception) {
+                    ctx.log("Decode: [${com.radio.app.RadioApplication.appVersionTag()}] failed to create preferred decoder $segPreferredName, falling back: ${e.message}")
+                    MediaCodec.createDecoderByType(mime)
+                }
+            } else {
+                MediaCodec.createDecoderByType(mime)
+            }
             codec.configure(audioFormat, null, null, 0)
             codec.start()
-            // v3.1.76: 打印解码器名称，排查是否使用MTK硬件解码器，或自动降级软解
-            ctx.log("Decode: decoder name=${codec.name}")
+            // v3.1.79: 记录实际使用的解码器名称
+            ctx.log("Decode: [${com.radio.app.RadioApplication.appVersionTag()}] decoder name=${codec.name}")
 
             val bufferInfo = MediaCodec.BufferInfo()
             // v3.1.74: 使用BufferedOutputStream减少文件写入系统调用次数
