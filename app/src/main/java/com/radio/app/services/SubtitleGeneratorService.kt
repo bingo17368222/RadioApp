@@ -3455,8 +3455,10 @@ class SubtitleGeneratorService : Service() {
             } catch (e: Exception) {
                 logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] failed to read KEY_DURATION: ${e.message}")
             }
-            // v3.1.79: 优先选择MTK硬件解码器，缩短解码耗时
-            val fullPreferredName = selectPreferredAudioDecoder(mime)
+            // v3.1.80: 优先选择MTK硬件解码器，缩短解码耗时
+            val fullPreferredName = selectPreferredAudioDecoder(mime) { msg ->
+                logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] $msg")
+            }
             codec = if (fullPreferredName != null) {
                 try {
                     MediaCodec.createByCodecName(fullPreferredName)
@@ -3469,7 +3471,7 @@ class SubtitleGeneratorService : Service() {
             }
             codec.configure(format, null, null, 0)
             codec.start()
-            // v3.1.79: 记录实际使用的解码器名称
+            // v3.1.80: 记录实际使用的解码器名称
             logToFile("decodeFullAudioToPcm: [${com.radio.app.RadioApplication.appVersionTag()}] decoder name=${codec.name}")
 
             // [v2.4.15] Fix: Use var for sample rate/channels — they may change after INFO_OUTPUT_FORMAT_CHANGED
@@ -3659,8 +3661,10 @@ class SubtitleGeneratorService : Service() {
             val stopAtUs = if (startUs > 0) actualStartUs + durationUs else durationUs
             val mime = audioFormat.getString(MediaFormat.KEY_MIME)!!
             ctx.log("Decode: [v2.0.72] audio mime=$mime, durationUs=$durationUs, stopAtUs=${stopAtUs / 1000000}s, startUs=${actualStartUs / 1000000}s")
-            // v3.1.79: 优先选择MTK硬件解码器，缩短解码耗时
-            val segPreferredName = selectPreferredAudioDecoder(mime)
+            // v3.1.80: 优先选择MTK硬件解码器，缩短解码耗时
+            val segPreferredName = selectPreferredAudioDecoder(mime) { msg ->
+                ctx.log("[${com.radio.app.RadioApplication.appVersionTag()}] $msg")
+            }
             codec = if (segPreferredName != null) {
                 try {
                     MediaCodec.createByCodecName(segPreferredName)
@@ -3673,7 +3677,7 @@ class SubtitleGeneratorService : Service() {
             }
             codec.configure(audioFormat, null, null, 0)
             codec.start()
-            // v3.1.79: 记录实际使用的解码器名称
+            // v3.1.80: 记录实际使用的解码器名称
             ctx.log("Decode: [${com.radio.app.RadioApplication.appVersionTag()}] decoder name=${codec.name}")
 
             val bufferInfo = MediaCodec.BufferInfo()

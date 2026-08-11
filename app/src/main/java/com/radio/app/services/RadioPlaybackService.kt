@@ -2508,10 +2508,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
 
                 writePreCacheLog("startPreCachePcmGeneration:  starting PCM decode for $episodeId")
-                // v3.1.65: 先显示初始通知（0%），确保通知栏立即出现
+                // v3.1.80: 先显示初始通知（0%），加上日期和标题
                 try {
                     val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                     val title = "预生成PCM [${episode.title ?: episodeId}]"
+                    val epDateStr = when {
+                        episode.startTime > 0 && episode.endTime > episode.startTime -> {
+                            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                            fmt.format(java.util.Date(episode.startTime))
+                        }
+                        episode.broadcastAt.length >= 10 -> episode.broadcastAt.substring(0, 10)
+                        else -> ""
+                    }
+                    val initialContent = if (epDateStr.isNotEmpty()) {
+                        "$epDateStr · 正在准备解码..."
+                    } else {
+                        "正在准备解码..."
+                    }
                     val cancelIntent = Intent(ACTION_CANCEL_PCM_PREGEN)
                         .setClass(this@RadioPlaybackService, com.radio.app.utils.PcmPregenCancelReceiver::class.java)
                         .apply {
@@ -2525,7 +2538,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val initialNotif = NotificationCompat.Builder(this@RadioPlaybackService, "pcm_pregen_channel")
                         .setSmallIcon(android.R.drawable.ic_media_ff)
                         .setContentTitle(title)
-                        .setContentText("正在准备解码...")
+                        .setContentText(initialContent)
                         .setOngoing(true)
                         .setOnlyAlertOnce(true)
                         .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPendingIntent)
