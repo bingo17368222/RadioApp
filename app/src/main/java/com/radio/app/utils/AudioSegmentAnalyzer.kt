@@ -691,7 +691,7 @@ object AudioSegmentAnalyzer {
 
         // Decode full PCM from scratch.
         precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] decoding full PCM for $episodeId (audioUrl=$audioUrl, mp4DurationMs=$mp4DurationMs)\n")
-        val scaledCbFull = progressCallback?.let { orig -> { pct: Int -> orig((pct * 95 / 100).coerceAtMost(95)) } }
+        val scaledCbFull = progressCallback
         checkCancelled()
         // v3.1.77: 通过onDecoderName回调记录解码器名称到precache日志
         var decoderName = "unknown"
@@ -1402,7 +1402,7 @@ object AudioSegmentAnalyzer {
             fun reportDecodeProgressIfNeeded() {
                 if (progressCallback == null) return
                 val nowMs = System.currentTimeMillis()
-                val pct = (totalPcmBytes * 20 / expectedPcmBytes).toInt().coerceIn(0, 20)
+                val pct = (totalPcmBytes * 100 / expectedPcmBytes).toInt().coerceIn(0, 100)
                 // v2.4.151: Also report once per second so elapsed/ETA keep refreshing.
                 if (pct != lastReportedDecodeProgress || nowMs - lastDecodeProgressTimeMs >= 1000) {
                     lastReportedDecodeProgress = pct
