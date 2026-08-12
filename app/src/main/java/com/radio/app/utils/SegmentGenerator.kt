@@ -926,14 +926,33 @@ object SegmentGenerator {
         // v3.1.44: 检查完整PCM时长是否与节目时长匹配，缺少5%以上重新生成
         val pcmSourceFile = if (fullPcmFile.exists() && fullPcmFile.length() > 16000) {
             if (validatePcmDuration(fullPcmFile, fullInfoFile, effectiveDurationMs)) {
-                // v3.1.85: 输出PCM信息到日志，便于排查采样率问题
+                // v3.1.86: 输出PCM信息到日志，验证采样率是否16kHz
                 try {
                     val infoLines = if (fullInfoFile.exists()) fullInfoFile.readLines() else emptyList()
                     val sampleRateLine = infoLines.find { it.startsWith("sampleRate=") }
+                    val pcmDurationLine = infoLines.find { it.startsWith("pcmDurationMs=") }
                     if (sampleRateLine != null) {
                         Log.i(TAG, "三层架构: PCM信息: $sampleRateLine for episode=$episodeId")
+                        val sampleRate = sampleRateLine.substringAfter("sampleRate=").toIntOrNull()
+                        if (sampleRate != null && sampleRate != 16000) {
+                            Log.w(TAG, "三层架构: PCM采样率异常! 期望16000Hz, 实际${sampleRate}Hz for episode=$episodeId")
+                        }
                     } else {
                         Log.w(TAG, "三层架构: PCM信息文件缺少sampleRate字段 for episode=$episodeId, content=${infoLines.joinToString(";")}")
+                    }
+                    // 验证PCM文件大小与实际时长是否匹配16kHz
+                    val pcmBytes = fullPcmFile.length()
+                    val pcmDurationMsAt16kHz = pcmBytes * 1000L / (16000L * 2L)
+                    if (pcmDurationLine != null) {
+                        val infoDurationMs = pcmDurationLine.substringAfter("pcmDurationMs=").toLongOrNull()
+                        if (infoDurationMs != null && infoDurationMs > 0) {
+                            val durationRatio = pcmDurationMsAt16kHz.toDouble() / infoDurationMs.toDouble()
+                            if (durationRatio < 0.9 || durationRatio > 1.1) {
+                                Log.w(TAG, "三层架构: PCM时长异常! 文件大小推算=${pcmDurationMsAt16kHz}ms, info文件=${infoDurationMs}ms, ratio=$durationRatio for episode=$episodeId")
+                            } else {
+                                Log.i(TAG, "三层架构: PCM时长验证通过: 文件推算=${pcmDurationMsAt16kHz}ms, info=${infoDurationMs}ms for episode=$episodeId")
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "三层架构: 读取PCM信息文件失败: ${e.message}")
@@ -1076,7 +1095,22 @@ object SegmentGenerator {
                     yamnetIntervals = listOf(rawIntervals.maxByOrNull { it.second - it.first }!!)
                 }
 
-                Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段，YAMNet待处理${yamnetIntervals.size}个区间(原始${rawIntervals.size}个) for episode=$episodeId")
+                // v3.1.86: 详细日志，输出VAD活动段和YAMNet区间的详细信息
+                val vadDetail = if (speechRanges.size <= 10) {
+                    speechRanges.joinToString("; ") { "${it.startMs}~${it.endMs}ms(${it.durationMs}ms)" }
+                } else {
+                    "首段[${speechRanges.first().startMs}~${speechRanges.first().endMs}ms], 末段[${speechRanges.last().startMs}~${speechRanges.last().endMs}ms]"
+                }
+                Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段: $vadDetail for episode=$episodeId")
+                Log.i(TAG, "三层架构: YAMNet待处理${yamnetIntervals.size}个区间(原始${rawIntervals.size}个) for episode=$episodeId")
+                if (yamnetIntervals.isNotEmpty()) {
+                    val intervalDetail = if (yamnetIntervals.size <= 10) {
+                        yamnetIntervals.joinToString("; ") { "${it.first}~${it.second}ms(${it.second - it.first}ms)" }
+                    } else {
+                        "首区间[${yamnetIntervals.first().first}~${yamnetIntervals.first().second}ms], 末区间[${yamnetIntervals.last().first}~${yamnetIntervals.last().second}ms]"
+                    }
+                    Log.i(TAG, "三层架构: YAMNet区间详情: $intervalDetail for episode=$episodeId")
+                }
 
                 if (yamnetIntervals.isEmpty()) {
                     Log.w(TAG, "三层架构: 无YAMNet待处理区间(pending为空)，使用第1层结果 for episode=$episodeId")
@@ -1178,7 +1212,16 @@ object SegmentGenerator {
                             mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
                             audioEngineName = "VAD+YAMNet+三层(优化)"
 
-                            Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                            // v3.1.86: 详细日志，输出YAMNet子段产出的干/水分类统计
+                            val yamnetDryCount = yamnetAllSegments.count { it.hasVoice }
+                            val yamnetWaterCount = yamnetAllSegments.count { !it.hasVoice }
+                            val yamnetDetail = if (yamnetAllSegments.size <= 15) {
+                                yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                            } else {
+                                "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
+                            }
+                            Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                            Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail for episode=$episodeId")
                         } finally {
                             try { yamnetInterpreter.close() } catch (_: Exception) {}
                         }
@@ -1248,7 +1291,22 @@ object SegmentGenerator {
                                 yamnetIntervals = listOf(rawIntervals.maxByOrNull { it.second - it.first }!!)
                             }
 
-                            Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段，YAMNet待处理${yamnetIntervals.size}个区间(原始${rawIntervals.size}个) for episode=$episodeId")
+                            // v3.1.86: 详细日志
+                            val vadDetail2 = if (speechRanges.size <= 10) {
+                                speechRanges.joinToString("; ") { "${it.startMs}~${it.endMs}ms(${it.durationMs}ms)" }
+                            } else {
+                                "首段[${speechRanges.first().startMs}~${speechRanges.first().endMs}ms], 末段[${speechRanges.last().startMs}~${speechRanges.last().endMs}ms]"
+                            }
+                            Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段: $vadDetail2 for episode=$episodeId")
+                            Log.i(TAG, "三层架构: YAMNet待处理${yamnetIntervals.size}个区间(原始${rawIntervals.size}个) for episode=$episodeId")
+                            if (yamnetIntervals.isNotEmpty()) {
+                                val intervalDetail2 = if (yamnetIntervals.size <= 10) {
+                                    yamnetIntervals.joinToString("; ") { "${it.first}~${it.second}ms(${it.second - it.first}ms)" }
+                                } else {
+                                    "首区间[${yamnetIntervals.first().first}~${yamnetIntervals.first().second}ms], 末区间[${yamnetIntervals.last().first}~${yamnetIntervals.last().second}ms]"
+                                }
+                                Log.i(TAG, "三层架构: YAMNet区间详情: $intervalDetail2 for episode=$episodeId")
+                            }
 
                             if (yamnetIntervals.isEmpty()) {
                                 Log.w(TAG, "三层架构: 无YAMNet待处理区间(pending为空)，使用第1层结果 for episode=$episodeId")
@@ -1309,7 +1367,17 @@ object SegmentGenerator {
                                         jigsawSegments.sortBy { it.start }
                                         mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
                                         audioEngineName = "VAD+YAMNet+三层(优化-PCM重新生成)"
-                                        Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+
+                                        // v3.1.86: 详细日志
+                                        val yamnetDryCount2 = yamnetAllSegments.count { it.hasVoice }
+                                        val yamnetWaterCount2 = yamnetAllSegments.count { !it.hasVoice }
+                                        val yamnetDetail2 = if (yamnetAllSegments.size <= 15) {
+                                            yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                                        } else {
+                                            "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
+                                        }
+                                        Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                                        Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail2 for episode=$episodeId")
                                     } finally {
                                         try { yamnetInterpreter.close() } catch (_: Exception) {}
                                     }

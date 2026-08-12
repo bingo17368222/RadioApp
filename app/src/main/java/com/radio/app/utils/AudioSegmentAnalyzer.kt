@@ -268,9 +268,9 @@ object AudioSegmentAnalyzer {
     private const val YAMNET_IDX_JINGLE = 264           // Jingle
     private const val YAMNET_IDX_SILENCE = 494          // Silence
 
-    // v2.4.170: Sparse YAMNet hop in speech intervals (2.0s = 32000 samples at 16kHz)
-    // to keep segmentation fast while still getting a representative majority vote.
-    private const val YAMNET_SPEECH_HOP_SAMPLES = 32000
+    // v3.1.86: 密集YAMNet跳步，从2.0s降低到1.0s，提高子段检测精度
+    // 原值32000(2.0s)导致大量音频未被检测，容易漏判干货片段
+    private const val YAMNET_SPEECH_HOP_SAMPLES = 16000
 
     // v2.4.161: Sparse sampling in silence intervals
     private const val SILENCE_SAMPLE_INTERVAL_MS = 3000L
@@ -282,12 +282,12 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v2.4.171: Coarsen Silero VAD even more to reduce the total segment count.
-    // 3s speech / 3.5s silence keeps host monologues as one block and ignores
-    // breath-pauses, short jingles, and background noise bursts.
+    // v3.1.86: 降低静音合并阈值，使VAD能检测到主持人句间停顿
+    // 原值3500ms导致节目内所有语音被合并成1个连续段，第2层只产出1个片段
+    // 降低到800ms，保持合理的静音合并，同时允许VAD产生多个活动段
     private const val VAD_THRESHOLD = 0.55f
     private const val VAD_MIN_SPEECH_DURATION_MS = 3000L
-    private const val VAD_MIN_SILENCE_DURATION_MS = 3500L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 800L
 
     // v2.4.168/v2.4.173: YAMNet decision thresholds
     // Host speech is the primary dry signal. Music must be prominent relative to voice
@@ -3177,6 +3177,17 @@ object AudioSegmentAnalyzer {
             return emptyList()
         }
 
+        // v3.1.86: 验证PCM采样率 - 检查文件大小与预期时长是否匹配16kHz
+        val pcmBytes = pcmFile.length()
+        val expectedBytesAt16kHz = (durationMs * 16000L * 2L / 1000L)
+        val actualDurationMsAt16kHz = pcmBytes * 1000L / (16000L * 2L)
+        val ratio = pcmBytes.toDouble() / expectedBytesAt16kHz.toDouble()
+        Log.i(TAG, "runVadOnly: PCM采样率验证: pcmBytes=$pcmBytes, expectedBytesAt16kHz=$expectedBytesAt16kHz, " +
+                "actualDurationMsAt16kHz=$actualDurationMsAt16kHz, durationMs=$durationMs, ratio=$ratio")
+        if (ratio < 0.5 || ratio > 2.0) {
+            Log.w(TAG, "runVadOnly: PCM采样率异常! ratio=$ratio, 预期16kHz但实际可能不是16kHz for ${pcmFile.name}")
+        }
+
         if (!NativeLibLoader.ensureLoaded(context)) {
             Log.e(TAG, "runVadOnly: Native libraries not loaded.")
             return emptyList()
@@ -3211,6 +3222,16 @@ object AudioSegmentAnalyzer {
                 val (speechRanges, _) = runSileroVadIntervals(samplesProvider, vadModel) { permille ->
                     progressCallback?.invoke(permille)
                 }
+
+                // v3.1.86: 详细日志输出VAD活动段信息
+                val totalSpeechMs = speechRanges.sumOf { it.durationMs }
+                val speechDetail = if (speechRanges.size <= 10) {
+                    speechRanges.joinToString("; ") { "${it.startMs}~${it.endMs}ms(${it.durationMs}ms)" }
+                } else {
+                    "${speechRanges.size}个段, 总时长${totalSpeechMs}ms, 首段[${speechRanges.first().startMs}~${speechRanges.first().endMs}ms], 末段[${speechRanges.last().startMs}~${speechRanges.last().endMs}ms]"
+                }
+                Log.i(TAG, "runVadOnly: VAD产出${speechRanges.size}个活动段, 总${totalSpeechMs}ms: $speechDetail")
+
                 return speechRanges
             }
         } finally {
@@ -3244,7 +3265,14 @@ object AudioSegmentAnalyzer {
             return emptyList()
         }
 
+        // v3.1.86: 验证PCM采样率
+        val pcmBytes = pcmFile.length()
+        val pcmDurationMsAt16kHz = pcmBytes * 1000L / (16000L * 2L)
         val intervalDurationMs = intervalEndMs - intervalStartMs
+        if (intervalStartMs > pcmDurationMsAt16kHz) {
+            Log.w(TAG, "classifyPcmInterval: 区间起始时间(${intervalStartMs}ms)超过PCM时长(${pcmDurationMsAt16kHz}ms)，可能采样率不匹配 for ${pcmFile.name}")
+        }
+
         if (intervalDurationMs < 1500) {
             Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalDurationMs}ms)，跳过")
             return emptyList()
