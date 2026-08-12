@@ -292,8 +292,14 @@ object AudioSegmentAnalyzer {
     // v2.4.168/v2.4.173: YAMNet decision thresholds
     // Host speech is the primary dry signal. Music must be prominent relative to voice
     // before a frame is treated as water (ad / song), so light BGM under talking stays dry.
-    private const val VOICE_SUM_THRESHOLD = 0.10f
-    private const val BG_MUSIC_SUM_THRESHOLD = 0.90f
+    // v3.1.88: 降低语音检测阈值，让电台节目中的背景音乐不覆盖人声检测
+    // 原值0.10要求语音概率>0.60，但电台节目背景音乐会降低人声检测概率
+    // 降低到0.05使更多音频被识别为语音，再通过music阈值判断是否水货
+    private const val VOICE_SUM_THRESHOLD = 0.05f
+    // v3.1.88: 提高音乐覆盖语音的阈值，电台节目背景音乐常见但不应该覆盖人声
+    // 原值0.90（音乐>=90%语音即水货），电台节目背景音乐常达到30-50%语音
+    // 提高到1.50（音乐需>=150%语音才视为水货），保护主持人语音不被背景音乐覆盖
+    private const val BG_MUSIC_SUM_THRESHOLD = 1.50f
     private const val SINGING_RATIO_THRESHOLD = 0.35f
     private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f

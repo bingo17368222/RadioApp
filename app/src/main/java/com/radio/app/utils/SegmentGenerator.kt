@@ -351,6 +351,9 @@ object SegmentGenerator {
         // Pass 2: 合并被短中间片段分隔的连续水分片段
         // 场景：指纹水货 → 短静音/待处理 → 指纹水货，应合并为一个大水分段
         // v3.1.87: 不合并通过干货（hasVoice=true且非水分）片段，保护YAMNet产出的干货不被吞没
+        // v3.1.88: 限制合并总跨度，防止YAMNet全水货时无限合并为1个分段
+        // 当所有中间片段都是水货时，gapMs始终为0，合并永不停止
+        // 限制最大合并跨度60秒，超过则不合并，保留分段边界
         changed = true
         while (changed) {
             changed = false
@@ -364,6 +367,11 @@ object SegmentGenerator {
                     val mid = sorted[j]
                     if (isWaterLabel(mid.label)) {
                         if (!hasDryInGap) {
+                            // v3.1.88: 检查合并总跨度，超过60秒不合并
+                            val mergeSpan = mid.end - curr.start
+                            if (mergeSpan > 60000L) {
+                                break
+                            }
                             // 找到下一个水分片段，且中间没有干货，合并（跳过中间的非水分片段）
                             curr.end = maxOf(curr.end, mid.end)
                             repeat(j - i) { sorted.removeAt(i + 1) }
