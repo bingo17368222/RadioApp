@@ -1039,15 +1039,8 @@ object SegmentGenerator {
 
                 if (speechRanges.isEmpty()) {
                     Log.w(TAG, "三层架构: VAD未检测到活动段，仅使用指纹段 for episode=$episodeId")
-                    mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
-                        for (pending in pendingSegments) {
-                            segs.add(VoiceSegment().apply {
-                                start = pending.start; end = pending.end; hasVoice = false
-                                label = "水货"; isSimulated = false
-                            })
-                        }
-                        segs.sortBy { it.start }
-                    }
+                    // v3.1.84: 直接使用第一层指纹结果，避免所有段被标记为水货后被mergeAdjacentSegments合并成1段
+                    mergedAfterLayer2 = mergedAfterLayer1
                     audioEngineName = "VAD+YAMNet+三层(优化-VAD无活动)"
                 } else {
                     // ===== 计算交集：指纹未覆盖区间 ∩ VAD活动段 =====
@@ -1065,16 +1058,9 @@ object SegmentGenerator {
                     Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段，交集后${yamnetIntervals.size}个YAMNet区间 for episode=$episodeId")
 
                     if (yamnetIntervals.isEmpty()) {
-                        // 无YAMNet待处理区间，仅使用指纹段
-                        mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
-                            for (pending in pendingSegments) {
-                                segs.add(VoiceSegment().apply {
-                                    start = pending.start; end = pending.end; hasVoice = false
-                                    label = "水货"; isSimulated = false
-                                })
-                            }
-                            segs.sortBy { it.start }
-                        }
+                        // 无YAMNet待处理区间，直接使用第一层指纹结果
+                        // v3.1.84: 避免pending段被标记为水货后被mergeAdjacentSegments合并成1段
+                        mergedAfterLayer2 = mergedAfterLayer1
                         audioEngineName = "VAD+YAMNet+三层(优化-无YAMNet区间)"
                     } else {
                         // ===== 加载YAMNet模型（所有区间共用） =====
@@ -1217,15 +1203,8 @@ object SegmentGenerator {
                             }
 
                             if (speechRanges.isEmpty()) {
-                                mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
-                                    for (pending in pendingSegments) {
-                                        segs.add(VoiceSegment().apply {
-                                            start = pending.start; end = pending.end; hasVoice = false
-                                            label = "水货"; isSimulated = false
-                                        })
-                                    }
-                                    segs.sortBy { it.start }
-                                }
+                                // v3.1.84: 直接使用第一层指纹结果，避免mergeAdjacentSegments合并成1段
+                                mergedAfterLayer2 = mergedAfterLayer1
                                 audioEngineName = "VAD+YAMNet+三层(优化-VAD无活动)"
                             } else {
                                 val yamnetIntervals = mutableListOf<Pair<Long, Long>>()
@@ -1240,15 +1219,8 @@ object SegmentGenerator {
                                 }
 
                                 if (yamnetIntervals.isEmpty()) {
-                                    mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
-                                        for (pending in pendingSegments) {
-                                            segs.add(VoiceSegment().apply {
-                                                start = pending.start; end = pending.end; hasVoice = false
-                                                label = "水货"; isSimulated = false
-                                            })
-                                        }
-                                        segs.sortBy { it.start }
-                                    }
+                                    // v3.1.84: 直接使用第一层指纹结果，避免mergeAdjacentSegments合并成1段
+                                    mergedAfterLayer2 = mergedAfterLayer1
                                     audioEngineName = "VAD+YAMNet+三层(优化-无YAMNet区间)"
                                 } else {
                                     val yamnetInterpreter = AudioSegmentAnalyzer.loadYamnetInterpreter(context)
