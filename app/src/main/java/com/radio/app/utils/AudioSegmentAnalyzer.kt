@@ -71,9 +71,9 @@ fun selectPreferredAudioDecoder(mime: String, logger: ((String) -> Unit)? = null
         }
     }
 
-    // 策略2：通过MediaCodecList查找所有支持该MIME的解码器
-    // 优先选择非Google硬件加速解码器
-    val codecList = android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS)
+    // 策略2：使用ALL_CODECS查找所有解码器（包括隐藏的secure变体）
+    // REGULAR_CODECS可能不包含某些隐藏的硬件解码器
+    val codecList = android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS)
     val decoderInfos = mutableListOf<android.media.MediaCodecInfo>()
 
     for (info in codecList.codecInfos) {
@@ -91,20 +91,43 @@ fun selectPreferredAudioDecoder(mime: String, logger: ((String) -> Unit)? = null
         logMsg("available decoder: ${info.name} (isSoftwareOnly=${tryOrNull { info.isSoftwareOnly() } ?: "N/A"})")
     }
 
-    // 优先选择非Google硬件解码器（名称不包含c2.android.或omx.google.的硬件解码器）
-    val hwDecoder = decoderInfos.find { info ->
+    // 策略2a：尝试直接创建每个非Google解码器，跳过isSoftwareOnly检查
+    // 因为某些MTK硬件解码器可能错误地报告isSoftwareOnly=true
+    // 并且MediaCodecList可能包含隐藏的硬件解码器（如c2.mtk.aac.decoder.secure）
+    for (info in decoderInfos) {
         val name = info.name.lowercase()
-        !name.contains("c2.android.") && !name.contains("omx.google.") &&
-            (tryOrNull { !info.isSoftwareOnly() } ?: true)
+        if (name.contains("c2.android.") || name.contains("omx.google.")) {
+            continue  // 跳过Google软件解码器
+        }
+        try {
+            val testDecoder = android.media.MediaCodec.createByCodecName(info.name)
+            testDecoder.release()
+            logMsg("selected HW decoder by direct creation: ${info.name}")
+            return info.name
+        } catch (e: Exception) {
+            logMsg("decoder ${info.name} creation failed: ${e.message}")
+        }
     }
-    if (hwDecoder != null) {
-        logMsg("selected alternate HW decoder: ${hwDecoder.name}")
-        return hwDecoder.name
+
+    // 策略2b：兜底策略——尝试所有可用解码器（包括Google），优先选非软件解码器
+    // 按isSoftwareOnly排序，非软件解码器优先
+    val sortedInfos = decoderInfos.sortedBy { info ->
+        try { if (info.isSoftwareOnly()) 1 else 0 } catch (_: Exception) { 1 }
+    }
+    for (info in sortedInfos) {
+        try {
+            val testDecoder = android.media.MediaCodec.createByCodecName(info.name)
+            testDecoder.release()
+            logMsg("selected decoder by direct creation (fallback): ${info.name}")
+            return info.name
+        } catch (e: Exception) {
+            logMsg("decoder ${info.name} creation failed: ${e.message}")
+        }
     }
 
     // 回退到null（使用系统默认）
     val fallbackName = decoderInfos.firstOrNull()?.name
-    logMsg("no HW decoder found, fallback to default (first=$fallbackName)")
+    logMsg("no decoder could be created directly, fallback to default (first=$fallbackName)")
     return null
 }
 

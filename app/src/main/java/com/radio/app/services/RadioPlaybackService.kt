@@ -2465,7 +2465,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         } catch (_: Exception) {}
         Thread {
+            // v3.1.83: 计时器在Thread开始时初始化，但首次进度回调时重置为实际解码开始时间
+            // 不包含队列等待、文件检查等前置操作，只统计当前文件解码时间，与pcm_gen.log记录一致
             var pcmStartTime = System.currentTimeMillis()
+            var pcmDecodeStartMs = 0L  // v3.1.83: 首次进度回调时设为实际解码开始时间
             try {
                 // 检查取消标志，如果已被取消则提前返回
                 if (pcmPregenCancelFlags[episodeId] == true) {
@@ -2559,6 +2562,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 return@preGeneratePcmFiles
                             }
 
+                            // v3.1.83: 首次进度回调标记解码开始时间，排除文件检查等前置操作
+                            // 与pcm_gen.log记录方案一致：只统计实际解码时间，不包含队列等待、文件检查
+                            if (pcmDecodeStartMs == 0L) {
+                                pcmDecodeStartMs = System.currentTimeMillis()
+                            }
+
                             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 if (nm.getNotificationChannel("pcm_pregen_channel") == null) {
@@ -2574,7 +2583,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 episode.broadcastAt.length >= 10 -> episode.broadcastAt.substring(0, 10)
                                 else -> ""
                             }
-                            val elapsedMs = System.currentTimeMillis() - pcmStartTime
+                            val elapsedMs = System.currentTimeMillis() - pcmDecodeStartMs
                             val elapsedStr = if (pct > 0) {
                                 val estTotalMs = (elapsedMs * 100L) / pct
                                 val etaMs = (estTotalMs - elapsedMs).coerceAtLeast(0L)
