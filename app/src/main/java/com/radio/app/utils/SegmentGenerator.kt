@@ -1151,27 +1151,33 @@ object SegmentGenerator {
                             // 记录每个区间内YAMNet覆盖的范围（用于填充未覆盖间隙）
                             val coveredRanges = mutableListOf<Pair<Long, Long>>()
 
-                            for ((intervalStart, intervalEnd) in yamnetIntervals) {
-                                if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+                            // v3.1.92: 打开PCM文件一次，避免重复打开316次
+                            val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
+                            try {
+                                for ((intervalStart, intervalEnd) in yamnetIntervals) {
+                                    if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
 
-                                val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
-                                    context, pcmSourceFile, intervalStart, intervalEnd,
-                                    yamnetInterpreter
-                                ) { permille ->
-                                    val baseProgress = 350 + (processedCount * 500 / totalIntervals)
-                                    val intervalProgress = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
-                                    val mapped = (baseProgress + intervalProgress).coerceIn(350, 900)
-                                    SegmentNotificationHelper.update(
-                                        context, episodeId, episodeTitle, mapped,
-                                        "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals"
-                                    )
-                                }
+                                    val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                        pcmSamples, intervalStart, intervalEnd,
+                                        yamnetInterpreter
+                                    ) { permille ->
+                                        val baseProgress = 350 + (processedCount * 500 / totalIntervals)
+                                        val intervalProgress = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
+                                        val mapped = (baseProgress + intervalProgress).coerceIn(350, 900)
+                                        SegmentNotificationHelper.update(
+                                            context, episodeId, episodeTitle, mapped,
+                                            "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals"
+                                        )
+                                    }
 
-                                for (seg in subSegments) {
-                                    coveredRanges.add(seg.start to seg.end)
+                                    for (seg in subSegments) {
+                                        coveredRanges.add(seg.start to seg.end)
+                                    }
+                                    yamnetAllSegments.addAll(subSegments)
+                                    processedCount++
                                 }
-                                yamnetAllSegments.addAll(subSegments)
-                                processedCount++
+                            } finally {
+                                try { pcmSamples.close() } catch (_: Exception) {}
                             }
 
                             // ===== 拼图式合并：指纹段 + YAMNet段 =====
@@ -1350,18 +1356,28 @@ object SegmentGenerator {
                                         val totalIntervals = yamnetIntervals.size
                                         val coveredRanges = mutableListOf<Pair<Long, Long>>()
 
-                                        for ((intervalStart, intervalEnd) in yamnetIntervals) {
-                                            if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
-                                            val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
-                                                context, newFullPcm, intervalStart, intervalEnd, yamnetInterpreter
-                                            ) { permille ->
-                                                val base = 250 + (processedCount * 500 / totalIntervals)
-                                                val inc = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
-                                                SegmentNotificationHelper.update(context, episodeId, episodeTitle, (base + inc).coerceIn(250, 800), "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals")
+                                        // v3.1.92: 打开PCM文件一次
+                                        val pcmSamples2 = AudioSegmentAnalyzer.openPcmSamples(newFullPcm)
+                                        try {
+                                            for ((intervalStart, intervalEnd) in yamnetIntervals) {
+                                                if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+
+                                                val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                                    pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
+                                                ) { permille ->
+                                                    val base = 250 + (processedCount * 550 / totalIntervals)
+                                                    val inc = (permille * 550 / (totalIntervals * 1000)).coerceIn(0, 550 / totalIntervals.coerceAtLeast(1))
+                                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, (base + inc).coerceIn(250, 800), "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals")
+                                                }
+
+                                                for (seg in subSegments) {
+                                                    coveredRanges.add(seg.start to seg.end)
+                                                }
+                                                yamnetAllSegments.addAll(subSegments)
+                                                processedCount++
                                             }
-                                            for (seg in subSegments) coveredRanges.add(seg.start to seg.end)
-                                            yamnetAllSegments.addAll(subSegments)
-                                            processedCount++
+                                        } finally {
+                                            try { pcmSamples2.close() } catch (_: Exception) {}
                                         }
 
                                         val jigsawSegments = mutableListOf<VoiceSegment>()

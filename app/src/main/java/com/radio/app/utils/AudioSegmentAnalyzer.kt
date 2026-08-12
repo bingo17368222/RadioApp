@@ -2269,17 +2269,17 @@ object AudioSegmentAnalyzer {
         val intervalEndMs = (intervalEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
         val intervalDurationMs = intervalEndMs - range.startMs
 
-        // v2.4.170: Short speech intervals are almost certainly host speech. Skip YAMNet
+        // v2.4.170: Short speech intervals default to water. Skip YAMNet
         // to save time and avoid tiny water fragments inside continuous host talking.
         if (intervalDurationMs < 5000) {
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: short (${intervalDurationMs}ms), defaulting to dry")
-            return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: short (${intervalDurationMs}ms), defaulting to water")
+            return listOf(createSegment(range.startMs, range.endMs, FrameType.WATER))
         }
 
-        // Interval too short for a full YAMNet window: VAD already marked it as speech, default to dry.
+        // Interval too short for a full YAMNet window: VAD already marked it as speech, default to water.
         if (intervalEndSample - startSample < YAMNET_WINDOW_SAMPLES) {
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${intervalEndSample - startSample} samples), defaulting to dry")
-            return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${intervalEndSample - startSample} samples), defaulting to water")
+            return listOf(createSegment(range.startMs, range.endMs, FrameType.WATER))
         }
 
         val typeVotes = mutableMapOf<FrameType, Int>()
@@ -2297,11 +2297,11 @@ object AudioSegmentAnalyzer {
         val dryVotes = typeVotes.getOrDefault(FrameType.DRY, 0)
         val waterVotes = typeVotes.getOrDefault(FrameType.WATER, 0)
         val dominantType = when {
-            // Very short speech intervals are almost certainly host speech; avoid tiny water fragments.
-            intervalDurationMs < 5000 -> FrameType.DRY
+            // Short speech intervals default to water.
+            intervalDurationMs < 5000 -> FrameType.WATER
             // Tie or dry lead keeps host talking continuous; water must clearly win.
             dryVotes >= waterVotes -> FrameType.DRY
-            else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
+            else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.WATER
         }
         val segment = createSegment(range.startMs, intervalEndMs, dominantType)
         vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: votes=$typeVotes -> $dominantType")
@@ -2802,7 +2802,7 @@ object AudioSegmentAnalyzer {
      * whole FloatArray into the Java heap. The default implementation memory-maps the PCM file
      * and converts 16-bit little-endian samples to floats on demand.
      */
-    private interface SampleProvider : Closeable {
+    internal interface SampleProvider : Closeable {
         val size: Int
         fun copyOfRange(start: Int, end: Int): FloatArray
     }
@@ -2812,7 +2812,7 @@ object AudioSegmentAnalyzer {
      * via NIO, so files much larger than the Java heap limit can be analyzed. Each call to
      * copyOfRange allocates only the requested small window on the Java heap.
      */
-    private class MappedPcmSampleProvider(pcmFile: File) : SampleProvider {
+    internal class MappedPcmSampleProvider(pcmFile: File) : SampleProvider {
         private val raf: RandomAccessFile
         private val channel: FileChannel
         private val mapped: java.nio.MappedByteBuffer
@@ -2860,7 +2860,7 @@ object AudioSegmentAnalyzer {
         }
     }
 
-    private fun openPcmSamples(pcmFile: File): SampleProvider {
+    internal fun openPcmSamples(pcmFile: File): SampleProvider {
         // v2.4.178: Use memory-mapped sample provider to support large PCM files without OOM.
         return MappedPcmSampleProvider(pcmFile)
     }
@@ -3277,7 +3277,7 @@ object AudioSegmentAnalyzer {
         try {
             val samples = openPcmSamples(pcmFile)
             samples.use { samplesProvider ->
-                return classifyPcmIntervalInner(samplesProvider, intervalStartMs, intervalEndMs, yamnetInterpreter, progressCallback)
+                return classifyPcmInterval(samplesProvider, intervalStartMs, intervalEndMs, yamnetInterpreter, progressCallback)
             }
         } catch (e: Throwable) {
             Log.e(TAG, "classifyPcmInterval failed: ${e.message}")
@@ -3286,10 +3286,34 @@ object AudioSegmentAnalyzer {
     }
 
     /**
+     * v3.1.92: classifyPcmInterval的重载版本，使用已打开的SampleProvider，避免重复打开PCM文件。
+     * 调用者负责关闭SampleProvider。
+     */
+    fun classifyPcmInterval(
+        samples: SampleProvider,
+        intervalStartMs: Long,
+        intervalEndMs: Long,
+        yamnetInterpreter: Interpreter,
+        progressCallback: ((Int) -> Unit)? = null
+    ): List<VoiceSegment> {
+        val intervalDurationMs = intervalEndMs - intervalStartMs
+        if (intervalDurationMs < 1500) {
+            Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalDurationMs}ms)，跳过")
+            return emptyList()
+        }
+        try {
+            return classifyPcmIntervalInner(samples, intervalStartMs, intervalEndMs, yamnetInterpreter, progressCallback)
+        } catch (e: Throwable) {
+            Log.e(TAG, "classifyPcmInterval(samples) failed: ${e.message}")
+            return emptyList()
+        }
+    }
+
+    /**
      * v3.1.83: classifyPcmInterval的内部实现，使用已打开的SampleProvider。
      * 前后各加0.5s缓冲padding，零拷贝切片，推理完成后裁回原始边界。
      */
-    private fun classifyPcmIntervalInner(
+    internal fun classifyPcmIntervalInner(
         samples: SampleProvider,
         intervalStartMs: Long,
         intervalEndMs: Long,
@@ -3314,10 +3338,9 @@ object AudioSegmentAnalyzer {
         if (endSample - startSample < YAMNET_WINDOW_SAMPLES) {
             // 尝试用无padding的样本
             if (origEndSample - origStartSample < YAMNET_WINDOW_SAMPLES) {
-                Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalEndMs - intervalStartMs}ms)，无法执行YAMNet")
+                Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalEndMs - intervalStartMs}ms)，无法执行YAMNet，totalSamples=$totalSamples, origRange=${origEndSample - origStartSample}")
                 return emptyList()
             }
-            // 使用无padding的原始区间
             return classifyIntervalRange(samples, origStartSample, origEndSample, intervalStartMs, yamnetInterpreter)
         }
 
@@ -3382,8 +3405,6 @@ object AudioSegmentAnalyzer {
             frameTypes.add(windowCenterMs to type)
             pos += YAMNET_SPEECH_HOP_SAMPLES
         }
-
-        if (frameTypes.isEmpty()) return emptyList()
 
         // 将帧级结果合并为子段
         // 窗口覆盖范围：每个窗口覆盖 [windowCenterMs - halfWindowMs, windowCenterMs + halfWindowMs]
