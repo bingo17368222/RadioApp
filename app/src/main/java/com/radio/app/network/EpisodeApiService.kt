@@ -392,6 +392,8 @@ class EpisodeApiService private constructor() {
                 hasVoice = true
                 label = "节目内容"
                 isManuallyMarked = false
+                // v3.1.87: 标记为模拟分段，防止getSegmentList()跳过DB查询返回旧分段
+                isSimulated = true
             }
             segments.add(seg)
         }
