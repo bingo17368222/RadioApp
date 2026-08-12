@@ -268,9 +268,8 @@ object AudioSegmentAnalyzer {
     private const val YAMNET_IDX_JINGLE = 264           // Jingle
     private const val YAMNET_IDX_SILENCE = 494          // Silence
 
-    // v3.1.86: 密集YAMNet跳步，从2.0s降低到1.0s，提高子段检测精度
-    // 原值32000(2.0s)导致大量音频未被检测，容易漏判干货片段
-    private const val YAMNET_SPEECH_HOP_SAMPLES = 16000
+    // v2.4.161: Sparse sampling in silence intervals
+    private const val YAMNET_SPEECH_HOP_SAMPLES = 32000
 
     // v2.4.161: Sparse sampling in silence intervals
     private const val SILENCE_SAMPLE_INTERVAL_MS = 3000L
@@ -282,24 +281,15 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    // v3.1.86: 降低静音合并阈值，使VAD能检测到主持人句间停顿
-    // 原值3500ms导致节目内所有语音被合并成1个连续段，第2层只产出1个片段
-    // 降低到800ms，保持合理的静音合并，同时允许VAD产生多个活动段
     private const val VAD_THRESHOLD = 0.55f
     private const val VAD_MIN_SPEECH_DURATION_MS = 3000L
-    private const val VAD_MIN_SILENCE_DURATION_MS = 800L
+    private const val VAD_MIN_SILENCE_DURATION_MS = 3500L
 
     // v2.4.168/v2.4.173: YAMNet decision thresholds
     // Host speech is the primary dry signal. Music must be prominent relative to voice
     // before a frame is treated as water (ad / song), so light BGM under talking stays dry.
-    // v3.1.88: 降低语音检测阈值，让电台节目中的背景音乐不覆盖人声检测
-    // 原值0.10要求语音概率>0.60，但电台节目背景音乐会降低人声检测概率
-    // 降低到0.05使更多音频被识别为语音，再通过music阈值判断是否水货
-    private const val VOICE_SUM_THRESHOLD = 0.05f
-    // v3.1.88: 提高音乐覆盖语音的阈值，电台节目背景音乐常见但不应该覆盖人声
-    // 原值0.90（音乐>=90%语音即水货），电台节目背景音乐常达到30-50%语音
-    // 提高到1.50（音乐需>=150%语音才视为水货），保护主持人语音不被背景音乐覆盖
-    private const val BG_MUSIC_SUM_THRESHOLD = 1.50f
+    private const val VOICE_SUM_THRESHOLD = 0.10f
+    private const val BG_MUSIC_SUM_THRESHOLD = 0.90f
     private const val SINGING_RATIO_THRESHOLD = 0.35f
     private const val SINGING_FORCE_THRESHOLD = 0.25f
     private const val MUSIC_AD_THRESHOLD = 0.25f
