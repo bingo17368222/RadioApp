@@ -3289,7 +3289,7 @@ object AudioSegmentAnalyzer {
      * v3.1.92: classifyPcmInterval的重载版本，使用已打开的SampleProvider，避免重复打开PCM文件。
      * 调用者负责关闭SampleProvider。
      */
-    fun classifyPcmInterval(
+    internal fun classifyPcmInterval(
         samples: SampleProvider,
         intervalStartMs: Long,
         intervalEndMs: Long,
