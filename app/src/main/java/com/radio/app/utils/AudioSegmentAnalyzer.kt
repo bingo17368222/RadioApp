@@ -2269,17 +2269,20 @@ object AudioSegmentAnalyzer {
         val intervalEndMs = (intervalEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
         val intervalDurationMs = intervalEndMs - range.startMs
 
-        // v2.4.170: Short speech intervals default to water. Skip YAMNet
-        // to save time and avoid tiny water fragments inside continuous host talking.
+        // v2.4.170/v3.1.93: Short speech intervals default to dry. Skip YAMNet
+        // to save time and avoid tiny fragments inside continuous host talking.
+        // DRY short intervals merge with adjacent DRY segments via post-processing
+        // (Pass 4/5), reducing total segment count. WATER short intervals form blocks
+        // that survive merge and increase segment count, as observed in v3.1.92 (72→90).
         if (intervalDurationMs < 5000) {
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: short (${intervalDurationMs}ms), defaulting to water")
-            return listOf(createSegment(range.startMs, range.endMs, FrameType.WATER))
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: short (${intervalDurationMs}ms), defaulting to dry")
+            return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
         }
 
-        // Interval too short for a full YAMNet window: VAD already marked it as speech, default to water.
+        // Interval too short for a full YAMNet window: VAD already marked it as speech, default to dry.
         if (intervalEndSample - startSample < YAMNET_WINDOW_SAMPLES) {
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${intervalEndSample - startSample} samples), defaulting to water")
-            return listOf(createSegment(range.startMs, range.endMs, FrameType.WATER))
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${intervalEndSample - startSample} samples), defaulting to dry")
+            return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
         }
 
         val typeVotes = mutableMapOf<FrameType, Int>()
@@ -2297,11 +2300,11 @@ object AudioSegmentAnalyzer {
         val dryVotes = typeVotes.getOrDefault(FrameType.DRY, 0)
         val waterVotes = typeVotes.getOrDefault(FrameType.WATER, 0)
         val dominantType = when {
-            // Short speech intervals default to water.
-            intervalDurationMs < 5000 -> FrameType.WATER
+            // Short speech intervals default to dry.
+            intervalDurationMs < 5000 -> FrameType.DRY
             // Tie or dry lead keeps host talking continuous; water must clearly win.
             dryVotes >= waterVotes -> FrameType.DRY
-            else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.WATER
+            else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
         }
         val segment = createSegment(range.startMs, intervalEndMs, dominantType)
         vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: votes=$typeVotes -> $dominantType")
@@ -3341,11 +3344,13 @@ object AudioSegmentAnalyzer {
                 Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalEndMs - intervalStartMs}ms)，无法执行YAMNet，totalSamples=$totalSamples, origRange=${origEndSample - origStartSample}")
                 return emptyList()
             }
-            return classifyIntervalRange(samples, origStartSample, origEndSample, intervalStartMs, yamnetInterpreter)
+            // v3.1.93: refStartMs=0L，因为PCM文件从时间0开始，样本索引直接对应绝对时间
+            return classifyIntervalRange(samples, origStartSample, origEndSample, 0L, yamnetInterpreter)
         }
 
         // 使用带padding的区间执行YAMNet推理
-        val segments = classifyIntervalRange(samples, startSample, endSample, intervalStartMs - (paddingSamples * 1000L / sampleRate), yamnetInterpreter)
+        // v3.1.93: refStartMs=0L，PCM文件从时间0开始，样本索引直接对应绝对时间
+        val segments = classifyIntervalRange(samples, startSample, endSample, 0L, yamnetInterpreter)
 
         // 裁回原始边界：修正子段坐标，移除超出原始区间的部分
         val trimmed = mutableListOf<VoiceSegment>()
