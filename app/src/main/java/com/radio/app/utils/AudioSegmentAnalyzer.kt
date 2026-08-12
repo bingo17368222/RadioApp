@@ -351,6 +351,29 @@ object AudioSegmentAnalyzer {
         return isYamnetInstalled(modelDir) && isSileroVadInstalled(modelDir) && areNativeLibsDownloaded(modelDir)
     }
 
+    /**
+     * v3.1.83: 加载YAMNet TFLite解释器，供SegmentGenerator在优化三层架构中使用。
+     * 调用方负责在完成后调用interpreter.close()释放资源。
+     * 返回null表示加载失败（模型未安装或native库未就绪）。
+     */
+    fun loadYamnetInterpreter(context: Context): Interpreter? {
+        if (!NativeLibLoader.ensureLoaded(context)) {
+            Log.e(TAG, "loadYamnetInterpreter: Native libraries not loaded.")
+            return null
+        }
+        val modelDir = getModelDir(context)
+        if (!isYamnetInstalled(modelDir)) {
+            Log.w(TAG, "loadYamnetInterpreter: YAMNet模型未安装")
+            return null
+        }
+        return try {
+            loadYamnetModel(File(modelDir, "yamnet.tflite"))
+        } catch (e: Throwable) {
+            Log.e(TAG, "loadYamnetInterpreter failed: ${e.message}")
+            null
+        }
+    }
+
     // v2.4.138: Required PCM cache version. Bump when info file format or resampling changes.
     private const val REQUIRED_PCM_VERSION = 7
 
@@ -2039,7 +2062,8 @@ object AudioSegmentAnalyzer {
     }
 
     // v2.4.161: Time range for coarse VAD segmentation
-    private data class TimeRange(val startMs: Long, val endMs: Long) {
+    // v3.1.83: 改为public，供SegmentGenerator使用runVadOnly的返回类型
+    data class TimeRange(val startMs: Long, val endMs: Long) {
         val durationMs: Long get() = endMs - startMs
     }
 
@@ -3137,7 +3161,231 @@ object AudioSegmentAnalyzer {
         }
     }
 
-    // ===== Inner classes =====
+    /**
+     * v3.1.83: 运行VAD粗分段，返回全时间轴语音活动区间（speech ranges）。
+     * 不加载YAMNet模型，不执行YAMNet推理。
+     * 用于优化三层架构：VAD只输出活动段，YAMNet仅在指纹未覆盖区间∩VAD活动段上执行。
+     */
+    fun runVadOnly(
+        context: Context,
+        pcmFile: File,
+        durationMs: Long,
+        progressCallback: ((Int) -> Unit)? = null
+    ): List<TimeRange> {
+        if (!pcmFile.exists() || pcmFile.length() < 16000) {
+            Log.w(TAG, "runVadOnly: PCM文件太小或不存在: ${pcmFile.absolutePath}")
+            return emptyList()
+        }
+
+        if (!NativeLibLoader.ensureLoaded(context)) {
+            Log.e(TAG, "runVadOnly: Native libraries not loaded.")
+            return emptyList()
+        }
+
+        val modelDir = getModelDir(context)
+        if (!isSileroVadInstalled(modelDir)) {
+            Log.w(TAG, "runVadOnly: VAD模型未安装")
+            return emptyList()
+        }
+
+        val vadModel = try {
+            loadSileroVad(File(modelDir, "silero_vad.onnx"))
+        } catch (e: Throwable) {
+            Log.e(TAG, "runVadOnly: loadSileroVad failed: ${e.message}")
+            return emptyList()
+        }
+
+        try {
+            val samples = try {
+                openPcmSamples(pcmFile)
+            } catch (e: Throwable) {
+                Log.e(TAG, "runVadOnly: openPcmSamples 失败: ${e.message}")
+                return emptyList()
+            }
+            samples.use { samplesProvider ->
+                if (samplesProvider.size < VAD_FRAME_SIZE) {
+                    Log.w(TAG, "runVadOnly: PCM太短: ${samplesProvider.size} samples")
+                    return emptyList()
+                }
+
+                val (speechRanges, _) = runSileroVadIntervals(samplesProvider, vadModel) { permille ->
+                    progressCallback?.invoke(permille)
+                }
+                return speechRanges
+            }
+        } finally {
+            try { vadModel.session.close() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * v3.1.83: 对单个PCM区间执行YAMNet子段提取推理。
+     * 使用零拷贝内存映射PCM视图，前后各加0.5s缓冲padding，推理完成后裁回原始边界。
+     * 返回该区间内的子段列表（DRY/WATER/SILENCE），坐标已回填到原始时间轴。
+     *
+     * @param context 上下文
+     * @param pcmFile 完整PCM文件（内存映射）
+     * @param intervalStartMs 区间起始时间（毫秒，原始时间轴）
+     * @param intervalEndMs 区间结束时间（毫秒，原始时间轴）
+     * @param yamnetInterpreter 已加载的YAMNet解释器
+     * @param progressCallback 进度回调
+     * @return 子段列表，坐标已回填到原始时间轴
+     */
+    fun classifyPcmInterval(
+        context: Context,
+        pcmFile: File,
+        intervalStartMs: Long,
+        intervalEndMs: Long,
+        yamnetInterpreter: Interpreter,
+        progressCallback: ((Int) -> Unit)? = null
+    ): List<VoiceSegment> {
+        if (!pcmFile.exists() || pcmFile.length() < 16000) {
+            Log.w(TAG, "classifyPcmInterval: PCM文件不存在 or 太小: ${pcmFile.absolutePath}")
+            return emptyList()
+        }
+
+        val intervalDurationMs = intervalEndMs - intervalStartMs
+        if (intervalDurationMs < 1500) {
+            Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalDurationMs}ms)，跳过")
+            return emptyList()
+        }
+
+        try {
+            val samples = openPcmSamples(pcmFile)
+            samples.use { samplesProvider ->
+                return classifyPcmIntervalInner(samplesProvider, intervalStartMs, intervalEndMs, yamnetInterpreter, progressCallback)
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "classifyPcmInterval failed: ${e.message}")
+            return emptyList()
+        }
+    }
+
+    /**
+     * v3.1.83: classifyPcmInterval的内部实现，使用已打开的SampleProvider。
+     * 前后各加0.5s缓冲padding，零拷贝切片，推理完成后裁回原始边界。
+     */
+    private fun classifyPcmIntervalInner(
+        samples: SampleProvider,
+        intervalStartMs: Long,
+        intervalEndMs: Long,
+        yamnetInterpreter: Interpreter,
+        progressCallback: ((Int) -> Unit)? = null
+    ): List<VoiceSegment> {
+        val totalSamples = samples.size
+        val sampleRate = YAMNET_SAMPLE_RATE
+
+        // 0.5s padding = 8000 samples at 16kHz
+        val paddingSamples = (sampleRate / 2).toInt()
+
+        // 计算带padding的样本范围
+        val startSample = ((intervalStartMs * sampleRate / 1000L) - paddingSamples).toInt().coerceIn(0, totalSamples)
+        val endSample = ((intervalEndMs * sampleRate / 1000L) + paddingSamples).toInt().coerceIn(0, totalSamples)
+
+        // 原始区间样本范围（无padding）
+        val origStartSample = (intervalStartMs * sampleRate / 1000L).toInt().coerceIn(0, totalSamples)
+        val origEndSample = (intervalEndMs * sampleRate / 1000L).toInt().coerceIn(0, totalSamples)
+
+        // 如果带padding的范围不足以容纳一个YAMNet窗口，直接返回
+        if (endSample - startSample < YAMNET_WINDOW_SAMPLES) {
+            // 尝试用无padding的样本
+            if (origEndSample - origStartSample < YAMNET_WINDOW_SAMPLES) {
+                Log.d(TAG, "classifyPcmInterval: 区间太短(${intervalEndMs - intervalStartMs}ms)，无法执行YAMNet")
+                return emptyList()
+            }
+            // 使用无padding的原始区间
+            return classifyIntervalRange(samples, origStartSample, origEndSample, intervalStartMs, yamnetInterpreter)
+        }
+
+        // 使用带padding的区间执行YAMNet推理
+        val segments = classifyIntervalRange(samples, startSample, endSample, intervalStartMs - (paddingSamples * 1000L / sampleRate), yamnetInterpreter)
+
+        // 裁回原始边界：修正子段坐标，移除超出原始区间的部分
+        val trimmed = mutableListOf<VoiceSegment>()
+        for (seg in segments) {
+            val clippedStart = maxOf(seg.start, intervalStartMs)
+            val clippedEnd = minOf(seg.end, intervalEndMs)
+            if (clippedEnd - clippedStart >= 500) { // 保留至少500ms的片段
+                trimmed.add(VoiceSegment().apply {
+                    start = clippedStart
+                    end = clippedEnd
+                    hasVoice = seg.hasVoice
+                    label = seg.label
+                    isSimulated = false
+                })
+            }
+        }
+
+        // 合并同类型相邻子段（裁切后可能产生边界碎片）
+        if (trimmed.size <= 1) return trimmed
+        val merged = mutableListOf(trimmed[0])
+        for (i in 1 until trimmed.size) {
+            val last = merged.last()
+            val cur = trimmed[i]
+            if (last.label == cur.label && cur.start <= last.end + 10) {
+                last.end = maxOf(last.end, cur.end)
+            } else {
+                merged.add(cur)
+            }
+        }
+        return merged
+    }
+
+    /**
+     * v3.1.83: 在指定的样本范围内执行YAMNet密集分类，返回子段列表。
+     * 使用滑动窗口（窗口大小=YAMNET_WINDOW_SAMPLES，步长=YAMNET_SPEECH_HOP_SAMPLES）。
+     * 子段坐标已回填到以refStartMs为基准的原始时间轴。
+     */
+    private fun classifyIntervalRange(
+        samples: SampleProvider,
+        rangeStartSample: Int,
+        rangeEndSample: Int,
+        refStartMs: Long,
+        yamnetInterpreter: Interpreter
+    ): List<VoiceSegment> {
+        val frameTypes = mutableListOf<Pair<Long, FrameType>>() // (timestampMs, type)
+
+        var pos = rangeStartSample
+        while (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+            checkCancelled()
+            val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
+            val yamnet = classifyWithYamnet(yamnetInterpreter, window)
+            val type = classifyYamnetScores(yamnet)
+
+            // 窗口中心时间戳（相对于refStartMs）
+            val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
+            val windowCenterMs = refStartMs + (windowCenterSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+            frameTypes.add(windowCenterMs to type)
+            pos += YAMNET_SPEECH_HOP_SAMPLES
+        }
+
+        if (frameTypes.isEmpty()) return emptyList()
+
+        // 将帧级结果合并为子段
+        // 窗口覆盖范围：每个窗口覆盖 [windowCenterMs - halfWindowMs, windowCenterMs + halfWindowMs]
+        val halfWindowMs = (YAMNET_WINDOW_SAMPLES * 1000L / (2 * YAMNET_SAMPLE_RATE))
+        val segments = mutableListOf<VoiceSegment>()
+
+        var segStartMs = maxOf(0L, frameTypes[0].first - halfWindowMs)
+        var segType = frameTypes[0].second
+
+        for (i in 1 until frameTypes.size) {
+            val (currentTs, currentType) = frameTypes[i]
+            if (currentType != segType) {
+                val segEndMs = currentTs - halfWindowMs
+                if (segEndMs > segStartMs) {
+                    segments.add(createSegment(segStartMs, segEndMs, segType))
+                }
+                segStartMs = segEndMs
+                segType = currentType
+            }
+        }
+        // 最后一个子段
+        val lastEndMs = (frameTypes.last().first + halfWindowMs).coerceAtMost(refStartMs + ((rangeEndSample - rangeStartSample).toLong() * 1000L / YAMNET_SAMPLE_RATE))
+        segments.add(createSegment(segStartMs, lastEndMs, segType))
+
+        return segments
+    }
 
     private data class FrameResult(
         val timestampMs: Long,

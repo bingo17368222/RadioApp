@@ -8,6 +8,7 @@ import com.radio.app.models.AppSettings
 import com.radio.app.models.VoiceSegment
 import com.radio.app.utils.ChromaprintExtractor
 import com.radio.app.utils.PcmSegmentExtractor
+import org.tensorflow.lite.Interpreter
 import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
@@ -1009,49 +1010,189 @@ object SegmentGenerator {
         val shouldRunLayer2 = effectiveDurationMs > 60000
 
         if (shouldRunLayer2) {
-        // ========== 第二层：对完整PCM运行VAD+YAMNet全量分析 ==========
-        // v3.1.30: 使用完整PCM运行VAD，再将第1层指纹水货段叠加覆盖。
-        // 不再逐片段提取PCM，避免VAD在片段边界处产生碎片化分段。
+        // ========== 第二层：优化三层架构（VAD-only + 区间YAMNet） ==========
+        // v3.1.83: 优化流程：
+        // 1. 第一层指纹匹配 → 指纹水货段 + 待处理段（指纹未覆盖区间）
+        // 2. 第二层-A VAD：对完整PCM运行VAD-only，获取全时间轴活动段
+        // 3. 计算交集：指纹未覆盖区间 ∩ VAD活动段 → YAMNet待处理区间
+        // 4. 过滤 < 1.5s 的区间
+        // 5. 第二层-B YAMNet：对每个区间独立做子段提取推理（零拷贝+padding）
+        // 6. 拼图式合并：指纹段 + YAMNet段，边界冲突时指纹优先
         val waterSegmentsAfterLayer1 = mergedAfterLayer1.filter { it.label == "指纹水货" }
+        val pendingSegments = mergedAfterLayer1.filter { it.label == "待处理" }
 
         val vadModelDir = AudioSegmentAnalyzer.getModelDir(context)
         val vadModelsReady = AudioSegmentAnalyzer.isModelInstalled(vadModelDir)
 
         var mergedAfterLayer2: List<VoiceSegment>
         if (vadModelsReady && pcmSourceFile != null) {
-            Log.i(TAG, "三层架构: 第二层全量VAD+YAMNet分析 for episode=$episodeId")
+            Log.i(TAG, "三层架构: 第二层-A VAD + 第二层-B YAMNet（区间推理） for episode=$episodeId")
             try {
-                // 对完整PCM运行VAD+YAMNet分析（使用完整PCM文件，不逐片段提取）
-                val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
-                    context, pcmSourceFile, effectiveDurationMs, { permille, elapsedMs, etaMs ->
-                        val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
-                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析")
+                // ===== 第二层-A：VAD-only，获取全时间轴活动段 =====
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 200, "第2层-A VAD活动检测")
+                val speechRanges = AudioSegmentAnalyzer.runVadOnly(
+                    context, pcmSourceFile, effectiveDurationMs
+                ) { permille ->
+                    val mapped = 200 + (permille * 150 / 1000).coerceIn(0, 150)
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
+                }
+
+                if (speechRanges.isEmpty()) {
+                    Log.w(TAG, "三层架构: VAD未检测到活动段，仅使用指纹段 for episode=$episodeId")
+                    mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
+                        for (pending in pendingSegments) {
+                            segs.add(VoiceSegment().apply {
+                                start = pending.start; end = pending.end; hasVoice = false
+                                label = "水货"; isSimulated = false
+                            })
+                        }
+                        segs.sortBy { it.start }
                     }
-                )
+                    audioEngineName = "VAD+YAMNet+三层(优化-VAD无活动)"
+                } else {
+                    // ===== 计算交集：指纹未覆盖区间 ∩ VAD活动段 =====
+                    val yamnetIntervals = mutableListOf<Pair<Long, Long>>()
+                    for (pending in pendingSegments) {
+                        for (speech in speechRanges) {
+                            val interStart = maxOf(pending.start, speech.startMs)
+                            val interEnd = minOf(pending.end, speech.endMs)
+                            if (interEnd > interStart && (interEnd - interStart) >= 1500) {
+                                yamnetIntervals.add(interStart to interEnd)
+                            }
+                        }
+                    }
 
-                // 叠加第1层指纹水货段：VAD结果中与第1层指纹水货重叠的片段改为"指纹水货"
-                val overlaidSegments = overlayLayer1WaterSegments(vadResult.segments, waterSegmentsAfterLayer1)
-                mergedAfterLayer2 = mergeAdjacentSegments(overlaidSegments)
-                audioEngineName = "VAD+YAMNet+三层"
+                    Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段，交集后${yamnetIntervals.size}个YAMNet区间 for episode=$episodeId")
 
-                Log.i(TAG, "三层架构: 第二层全量VAD完成，VAD产出${vadResult.segments.size}段，叠加后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                    if (yamnetIntervals.isEmpty()) {
+                        // 无YAMNet待处理区间，仅使用指纹段
+                        mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
+                            for (pending in pendingSegments) {
+                                segs.add(VoiceSegment().apply {
+                                    start = pending.start; end = pending.end; hasVoice = false
+                                    label = "水货"; isSimulated = false
+                                })
+                            }
+                            segs.sortBy { it.start }
+                        }
+                        audioEngineName = "VAD+YAMNet+三层(优化-无YAMNet区间)"
+                    } else {
+                        // ===== 加载YAMNet模型（所有区间共用） =====
+                        val yamnetInterpreter = AudioSegmentAnalyzer.loadYamnetInterpreter(context)
+                        if (yamnetInterpreter == null) {
+                            Log.w(TAG, "三层架构: YAMNet模型加载失败，使用第1层结果 for episode=$episodeId")
+                            mergedAfterLayer2 = mergedAfterLayer1
+                            audioEngineName = "VAD+YAMNet+三层(优化-YAMNet加载失败)"
+                        } else {
+                            try {
+                                // ===== 第二层-B：对每个区间独立运行YAMNet推理 =====
+                                val yamnetAllSegments = mutableListOf<VoiceSegment>()
+                                var processedCount = 0
+                                val totalIntervals = yamnetIntervals.size
+
+                                // 记录每个区间内YAMNet覆盖的范围（用于填充未覆盖间隙）
+                                val coveredRanges = mutableListOf<Pair<Long, Long>>()
+
+                                for ((intervalStart, intervalEnd) in yamnetIntervals) {
+                                    if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+
+                                    val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                        context, pcmSourceFile, intervalStart, intervalEnd,
+                                        yamnetInterpreter
+                                    ) { permille ->
+                                        val baseProgress = 350 + (processedCount * 500 / totalIntervals)
+                                        val intervalProgress = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
+                                        val mapped = (baseProgress + intervalProgress).coerceIn(350, 900)
+                                        SegmentNotificationHelper.update(
+                                            context, episodeId, episodeTitle, mapped,
+                                            "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals"
+                                        )
+                                    }
+
+                                    for (seg in subSegments) {
+                                        coveredRanges.add(seg.start to seg.end)
+                                    }
+                                    yamnetAllSegments.addAll(subSegments)
+                                    processedCount++
+                                }
+
+                                // ===== 拼图式合并：指纹段 + YAMNet段 =====
+                                val jigsawSegments = mutableListOf<VoiceSegment>()
+
+                                // 1. 指纹水货段（边界冲突时指纹优先）
+                                jigsawSegments.addAll(waterSegmentsAfterLayer1.map { it.copy() })
+
+                                // 2. YAMNet子段，做保护性边界裁剪
+                                for (yamnetSeg in yamnetAllSegments) {
+                                    var clipStart = yamnetSeg.start
+                                    var clipEnd = yamnetSeg.end
+                                    for (waterSeg in waterSegmentsAfterLayer1) {
+                                        if (clipStart < waterSeg.end && clipEnd > waterSeg.start) {
+                                            if (clipStart >= waterSeg.start && clipStart < waterSeg.end) {
+                                                clipStart = waterSeg.end
+                                            }
+                                            if (clipEnd > waterSeg.start && clipEnd <= waterSeg.end) {
+                                                clipEnd = waterSeg.start
+                                            }
+                                        }
+                                    }
+                                    if (clipEnd - clipStart >= 500) {
+                                        jigsawSegments.add(VoiceSegment().apply {
+                                            start = clipStart; end = clipEnd
+                                            hasVoice = yamnetSeg.hasVoice; label = yamnetSeg.label; isSimulated = false
+                                        })
+                                    }
+                                }
+
+                                // 3. 填充指纹未覆盖且YAMNet未覆盖的间隙（VAD活动但YAMNet未产生子段 → 水货）
+                                for (pending in pendingSegments) {
+                                    var pos = pending.start
+                                    val sortedCovered = coveredRanges.filter {
+                                        it.first >= pending.start && it.second <= pending.end
+                                    }.sortedBy { it.first }
+                                    for ((cs, ce) in sortedCovered) {
+                                        if (pos < cs) {
+                                            jigsawSegments.add(VoiceSegment().apply {
+                                                start = pos; end = cs; hasVoice = false
+                                                label = "水货"; isSimulated = false
+                                            })
+                                        }
+                                        pos = maxOf(pos, ce)
+                                    }
+                                    if (pos < pending.end) {
+                                        jigsawSegments.add(VoiceSegment().apply {
+                                            start = pos; end = pending.end; hasVoice = false
+                                            label = "水货"; isSimulated = false
+                                        })
+                                    }
+                                }
+
+                                // 4. 排序合并同类型相邻段
+                                jigsawSegments.sortBy { it.start }
+                                mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
+                                audioEngineName = "VAD+YAMNet+三层(优化)"
+
+                                Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                            } finally {
+                                try { yamnetInterpreter.close() } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                }
             } catch (e: Exception) {
-                // VAD异常时记录详细信息，不允许回退其他方案
-                val fpMsgVadError = "三层架构: 第二层VAD分析异常: ${e.javaClass.simpleName}: ${e.message}"
+                val fpMsgVadError = "三层架构: 第二层优化方案异常: ${e.javaClass.simpleName}: ${e.message}"
                 Log.e(TAG, fpMsgVadError)
                 writeFingerprintLog(context, fpMsgVadError)
-                // 使用第1层结果继续
                 mergedAfterLayer2 = mergedAfterLayer1
-                audioEngineName = "VAD+YAMNet+三层(VAD异常)"
+                audioEngineName = "VAD+YAMNet+三层(优化异常)"
             }
         } else if (vadModelsReady && pcmSourceFile == null) {
-            // v3.1.40: PCM文件不存在时，先重新生成完整版PCM（带进度通知），再运行VAD
+            // v3.1.40: PCM文件不存在时，先重新生成完整版PCM（带进度通知），再运行优化VAD+YAMNet
             val fpMsgPcmMissing = "三层架构: 完整PCM文件不存在，重新生成PCM for episode=$episodeId"
             Log.i(TAG, fpMsgPcmMissing)
             writeFingerprintLog(context, fpMsgPcmMissing)
             SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50, "重新生成PCM")
 
-            // 调用AudioSegmentAnalyzer预生成PCM（从音频文件解码）
             val audioFile = AudioSegmentAnalyzer.getCachedAudioFile(context, episodeId, audioUrl)
             if (audioFile != null && audioFile.exists() && audioFile.length() > 1024 * 100) {
                 val regenResult = AudioSegmentAnalyzer.preGeneratePcmFiles(
@@ -1061,37 +1202,127 @@ object SegmentGenerator {
                     }
                 )
                 if (regenResult) {
-                    // 重新生成成功，重新检查PCM文件
                     val pcmCacheDir = com.radio.app.RadioApplication.getPcmCacheDir(context)
                     val newFullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
                     if (newFullPcm.exists() && newFullPcm.length() > 0) {
-                        Log.i(TAG, "三层架构: PCM重新生成成功，运行VAD for episode=$episodeId")
+                        Log.i(TAG, "三层架构: PCM重新生成成功，运行优化VAD+YAMNet for episode=$episodeId")
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 100, "PCM生成完成，开始VAD分析")
                         try {
-                            val vadResult = AudioSegmentAnalyzer.analyzePcmFile(
-                                context, newFullPcm, effectiveDurationMs, { permille, _, _ ->
-                                    val mapped = 200 + (permille * 700 / 1000).coerceIn(0, 700)
-                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层VAD分析")
+                            // ===== 第二层-A：VAD-only =====
+                            val speechRanges = AudioSegmentAnalyzer.runVadOnly(
+                                context, newFullPcm, effectiveDurationMs
+                            ) { permille ->
+                                val mapped = 150 + (permille * 100 / 1000).coerceIn(0, 100)
+                                SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
+                            }
+
+                            if (speechRanges.isEmpty()) {
+                                mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
+                                    for (pending in pendingSegments) {
+                                        segs.add(VoiceSegment().apply {
+                                            start = pending.start; end = pending.end; hasVoice = false
+                                            label = "水货"; isSimulated = false
+                                        })
+                                    }
+                                    segs.sortBy { it.start }
                                 }
-                            )
-                            val overlaid = overlayLayer1WaterSegments(vadResult.segments, waterSegmentsAfterLayer1)
-                            mergedAfterLayer2 = mergeAdjacentSegments(overlaid)
-                            audioEngineName = "VAD+YAMNet+三层(PCM重新生成)"
-                            Log.i(TAG, "三层架构: 第二层全量VAD完成（PCM重新生成后），VAD产出${vadResult.segments.size}段，叠加后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                                audioEngineName = "VAD+YAMNet+三层(优化-VAD无活动)"
+                            } else {
+                                val yamnetIntervals = mutableListOf<Pair<Long, Long>>()
+                                for (pending in pendingSegments) {
+                                    for (speech in speechRanges) {
+                                        val interStart = maxOf(pending.start, speech.startMs)
+                                        val interEnd = minOf(pending.end, speech.endMs)
+                                        if (interEnd > interStart && (interEnd - interStart) >= 1500) {
+                                            yamnetIntervals.add(interStart to interEnd)
+                                        }
+                                    }
+                                }
+
+                                if (yamnetIntervals.isEmpty()) {
+                                    mergedAfterLayer2 = waterSegmentsAfterLayer1.map { it.copy() }.toMutableList().also { segs ->
+                                        for (pending in pendingSegments) {
+                                            segs.add(VoiceSegment().apply {
+                                                start = pending.start; end = pending.end; hasVoice = false
+                                                label = "水货"; isSimulated = false
+                                            })
+                                        }
+                                        segs.sortBy { it.start }
+                                    }
+                                    audioEngineName = "VAD+YAMNet+三层(优化-无YAMNet区间)"
+                                } else {
+                                    val yamnetInterpreter = AudioSegmentAnalyzer.loadYamnetInterpreter(context)
+                                    if (yamnetInterpreter == null) {
+                                        mergedAfterLayer2 = mergedAfterLayer1
+                                        audioEngineName = "VAD+YAMNet+三层(优化-YAMNet加载失败)"
+                                    } else {
+                                        try {
+                                            val yamnetAllSegments = mutableListOf<VoiceSegment>()
+                                            var processedCount = 0
+                                            val totalIntervals = yamnetIntervals.size
+                                            val coveredRanges = mutableListOf<Pair<Long, Long>>()
+
+                                            for ((intervalStart, intervalEnd) in yamnetIntervals) {
+                                                if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+                                                val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                                    context, newFullPcm, intervalStart, intervalEnd, yamnetInterpreter
+                                                ) { permille ->
+                                                    val base = 250 + (processedCount * 500 / totalIntervals)
+                                                    val inc = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
+                                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, (base + inc).coerceIn(250, 800), "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals")
+                                                }
+                                                for (seg in subSegments) coveredRanges.add(seg.start to seg.end)
+                                                yamnetAllSegments.addAll(subSegments)
+                                                processedCount++
+                                            }
+
+                                            val jigsawSegments = mutableListOf<VoiceSegment>()
+                                            jigsawSegments.addAll(waterSegmentsAfterLayer1.map { it.copy() })
+                                            for (yamnetSeg in yamnetAllSegments) {
+                                                var clipStart = yamnetSeg.start; var clipEnd = yamnetSeg.end
+                                                for (waterSeg in waterSegmentsAfterLayer1) {
+                                                    if (clipStart < waterSeg.end && clipEnd > waterSeg.start) {
+                                                        if (clipStart >= waterSeg.start && clipStart < waterSeg.end) clipStart = waterSeg.end
+                                                        if (clipEnd > waterSeg.start && clipEnd <= waterSeg.end) clipEnd = waterSeg.start
+                                                    }
+                                                }
+                                                if (clipEnd - clipStart >= 500) {
+                                                    jigsawSegments.add(VoiceSegment().apply {
+                                                        start = clipStart; end = clipEnd; hasVoice = yamnetSeg.hasVoice; label = yamnetSeg.label; isSimulated = false
+                                                    })
+                                                }
+                                            }
+                                            for (pending in pendingSegments) {
+                                                var pos = pending.start
+                                                val sortedCovered = coveredRanges.filter { it.first >= pending.start && it.second <= pending.end }.sortedBy { it.first }
+                                                for ((cs, ce) in sortedCovered) {
+                                                    if (pos < cs) jigsawSegments.add(VoiceSegment().apply { start = pos; end = cs; hasVoice = false; label = "水货"; isSimulated = false })
+                                                    pos = maxOf(pos, ce)
+                                                }
+                                                if (pos < pending.end) jigsawSegments.add(VoiceSegment().apply { start = pos; end = pending.end; hasVoice = false; label = "水货"; isSimulated = false })
+                                            }
+                                            jigsawSegments.sortBy { it.start }
+                                            mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
+                                            audioEngineName = "VAD+YAMNet+三层(优化-PCM重新生成)"
+                                            Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                                        } finally {
+                                            try { yamnetInterpreter.close() } catch (_: Exception) {}
+                                        }
+                                    }
+                                }
+                            }
                         } catch (e: Exception) {
-                            val fpMsgVadError = "三层架构: 重新生成PCM后VAD分析异常: ${e.message}"
+                            val fpMsgVadError = "三层架构: 重新生成PCM后优化方案异常: ${e.message}"
                             Log.e(TAG, fpMsgVadError)
                             writeFingerprintLog(context, fpMsgVadError)
                             mergedAfterLayer2 = mergedAfterLayer1
-                            audioEngineName = "VAD+YAMNet+三层(VAD异常)"
+                            audioEngineName = "VAD+YAMNet+三层(优化异常)"
                         }
                     } else {
-                        // PCM重新生成后文件仍不存在，使用第1层结果
                         mergedAfterLayer2 = mergedAfterLayer1
                         audioEngineName = "三层架构(仅第一层)"
                     }
                 } else {
-                    // PCM重新生成失败，使用第1层结果
                     val fpMsgPcmFail = "三层架构: PCM重新生成失败，使用第1层结果"
                     Log.w(TAG, fpMsgPcmFail)
                     writeFingerprintLog(context, fpMsgPcmFail)
@@ -1099,7 +1330,6 @@ object SegmentGenerator {
                     audioEngineName = "三层架构(仅第一层)"
                 }
             } else {
-                // 音频文件不存在，无法重新生成PCM
                 val fpMsgNoAudio = "三层架构: 音频文件不存在，无法重新生成PCM for episode=$episodeId"
                 Log.w(TAG, fpMsgNoAudio)
                 writeFingerprintLog(context, fpMsgNoAudio)
@@ -1112,11 +1342,11 @@ object SegmentGenerator {
                 !vadModelsReady -> "VAD/YAMNet模型未安装"
                 else -> "未知原因"
             }
-            val fpMsgVadUnavailable = "三层架构: 第二层VAD跳过($reason)"
+            val fpMsgVadUnavailable = "三层架构: 第二层跳过($reason)"
             Log.w(TAG, fpMsgVadUnavailable)
             writeFingerprintLog(context, fpMsgVadUnavailable)
             mergedAfterLayer2 = mergedAfterLayer1
-            audioEngineName = "VAD+YAMNet+三层(VAD跳过)"
+            audioEngineName = "VAD+YAMNet+三层(优化跳过)"
         }
 
         // 统计第2层VAD产出
@@ -1630,36 +1860,6 @@ object SegmentGenerator {
      * VAD结果中与第1层"指纹水货"段重叠的片段，改为"指纹水货"分类。
      * 不重叠的片段保留VAD的原始分类。
      */
-    private fun overlayLayer1WaterSegments(
-        vadSegments: List<VoiceSegment>,
-        layer1WaterSegments: List<VoiceSegment>
-    ): List<VoiceSegment> {
-        if (layer1WaterSegments.isEmpty()) return vadSegments
-        if (vadSegments.isEmpty()) return layer1WaterSegments
-
-        val result = mutableListOf<VoiceSegment>()
-        for (vadSeg in vadSegments) {
-            // 检查VAD片段是否与第1层指纹水货段重叠
-            val overlapsWater = layer1WaterSegments.any { waterSeg ->
-                vadSeg.start < waterSeg.end && vadSeg.end > waterSeg.start
-            }
-            if (overlapsWater) {
-                // 重叠部分覆盖为"指纹水货"
-                result.add(VoiceSegment().apply {
-                    start = vadSeg.start
-                    end = vadSeg.end
-                    hasVoice = false
-                    label = "指纹水货"
-                    isSimulated = false
-                })
-            } else {
-                // 不重叠部分保留VAD原始分类
-                result.add(vadSeg.copy())
-            }
-        }
-        return result
-    }
-
     /**
      * v3.1.30: 验证三层分段结果是否正常。
      * - 全部水分或全部干货均为异常
