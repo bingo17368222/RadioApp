@@ -351,6 +351,7 @@ object SegmentGenerator {
         // Pass 2: 合并被短中间片段分隔的连续水分片段
         // 场景：指纹水货 → 短静音/待处理 → 指纹水货，应合并为一个大水分段
         // v3.1.87: 不合并通过干货（hasVoice=true且非水分）片段，保护YAMNet产出的干货不被吞没
+        // v3.1.90: 静音段（label="静音", hasVoice=false）作为合并屏障，防止对所有水货段无限合并
         changed = true
         while (changed) {
             changed = false
@@ -360,11 +361,12 @@ object SegmentGenerator {
                 var gapMs = 0L
                 var j = i + 1
                 var hasDryInGap = false
+                var hasSilenceInGap = false
                 while (j < sorted.size) {
                     val mid = sorted[j]
                     if (isWaterLabel(mid.label)) {
-                        if (!hasDryInGap) {
-                            // 找到下一个水分片段，且中间没有干货，合并（跳过中间的非水分片段）
+                        if (!hasDryInGap && !hasSilenceInGap) {
+                            // 找到下一个水分片段，且中间没有干货也没有静音，合并（跳过中间的非水分片段）
                             curr.end = maxOf(curr.end, mid.end)
                             repeat(j - i) { sorted.removeAt(i + 1) }
                             changed = true
@@ -374,6 +376,10 @@ object SegmentGenerator {
                     // 标记中间有干货段（hasVoice=true且非水分），不合并
                     if (mid.hasVoice && !isWaterLabel(mid.label)) {
                         hasDryInGap = true
+                    }
+                    // 标记中间有静音段（label="静音", hasVoice=false），作为合并屏障
+                    if (!mid.hasVoice && !isWaterLabel(mid.label)) {
+                        hasSilenceInGap = true
                     }
                     // 非水分：累积间隔
                     gapMs += mid.end - mid.start
@@ -1110,6 +1116,8 @@ object SegmentGenerator {
                     "首段[${speechRanges.first().startMs}~${speechRanges.first().endMs}ms], 末段[${speechRanges.last().startMs}~${speechRanges.last().endMs}ms]"
                 }
                 Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段: $vadDetail for episode=$episodeId")
+                // v3.1.90: 写指纹日志
+                writeFingerprintLog(context, "三层架构: 第2层-A VAD产出${speechRanges.size}个活动段（总${speechRanges.sumOf { it.durationMs }}ms）")
                 Log.i(TAG, "三层架构: YAMNet待处理${yamnetIntervals.size}个区间(原始${rawIntervals.size}个) for episode=$episodeId")
                 if (yamnetIntervals.isNotEmpty()) {
                     val intervalDetail = if (yamnetIntervals.size <= 10) {
@@ -1118,6 +1126,8 @@ object SegmentGenerator {
                         "首区间[${yamnetIntervals.first().first}~${yamnetIntervals.first().second}ms], 末区间[${yamnetIntervals.last().first}~${yamnetIntervals.last().second}ms]"
                     }
                     Log.i(TAG, "三层架构: YAMNet区间详情: $intervalDetail for episode=$episodeId")
+                    // v3.1.90: 写指纹日志
+                    writeFingerprintLog(context, "三层架构: 第2层-B YAMNet待处理${yamnetIntervals.size}个区间: $intervalDetail")
                 }
 
                 if (yamnetIntervals.isEmpty()) {
@@ -1223,13 +1233,16 @@ object SegmentGenerator {
                             // v3.1.86: 详细日志，输出YAMNet子段产出的干/水分类统计
                             val yamnetDryCount = yamnetAllSegments.count { it.hasVoice }
                             val yamnetWaterCount = yamnetAllSegments.count { !it.hasVoice }
+                            val yamnetSilenceCount = yamnetAllSegments.count { it.label == "静音" }
                             val yamnetDetail = if (yamnetAllSegments.size <= 15) {
                                 yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
                             } else {
                                 "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
                             }
-                            Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                            Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
                             Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail for episode=$episodeId")
+                            // v3.1.90: 写指纹日志
+                            writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段")
                         } finally {
                             try { yamnetInterpreter.close() } catch (_: Exception) {}
                         }
@@ -1306,6 +1319,8 @@ object SegmentGenerator {
                                 "首段[${speechRanges.first().startMs}~${speechRanges.first().endMs}ms], 末段[${speechRanges.last().startMs}~${speechRanges.last().endMs}ms]"
                             }
                             Log.i(TAG, "三层架构: VAD产出${speechRanges.size}个活动段: $vadDetail2 for episode=$episodeId")
+                            // v3.1.90: 写指纹日志
+                            writeFingerprintLog(context, "三层架构: 第2层-A VAD产出${speechRanges.size}个活动段（总${speechRanges.sumOf { it.durationMs }}ms）")
                             Log.i(TAG, "三层架构: YAMNet待处理${yamnetIntervals.size}个区间(原始${rawIntervals.size}个) for episode=$episodeId")
                             if (yamnetIntervals.isNotEmpty()) {
                                 val intervalDetail2 = if (yamnetIntervals.size <= 10) {
@@ -1314,6 +1329,8 @@ object SegmentGenerator {
                                     "首区间[${yamnetIntervals.first().first}~${yamnetIntervals.first().second}ms], 末区间[${yamnetIntervals.last().first}~${yamnetIntervals.last().second}ms]"
                                 }
                                 Log.i(TAG, "三层架构: YAMNet区间详情: $intervalDetail2 for episode=$episodeId")
+                                // v3.1.90: 写指纹日志
+                                writeFingerprintLog(context, "三层架构: 第2层-B YAMNet待处理${yamnetIntervals.size}个区间: $intervalDetail2")
                             }
 
                             if (yamnetIntervals.isEmpty()) {
@@ -1379,13 +1396,16 @@ object SegmentGenerator {
                                         // v3.1.86: 详细日志
                                         val yamnetDryCount2 = yamnetAllSegments.count { it.hasVoice }
                                         val yamnetWaterCount2 = yamnetAllSegments.count { !it.hasVoice }
+                                        val yamnetSilenceCount2 = yamnetAllSegments.count { it.label == "静音" }
                                         val yamnetDetail2 = if (yamnetAllSegments.size <= 15) {
                                             yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
                                         } else {
                                             "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
                                         }
-                                        Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                                        Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
                                         Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail2 for episode=$episodeId")
+                                        // v3.1.90: 写指纹日志
+                                        writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段")
                                     } finally {
                                         try { yamnetInterpreter.close() } catch (_: Exception) {}
                                     }
@@ -1434,6 +1454,8 @@ object SegmentGenerator {
         layer2WaterSegments = mergedAfterLayer2.count { !it.hasVoice }
 
         Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段）")
+        // v3.1.90: 写指纹日志
+        writeFingerprintLog(context, "三层架构: 第2层完成: ${mergedAfterLayer2.size}个片段（干${layer2DrySegments}段/水${layer2WaterSegments}段）")
 
         // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
         // v3.1.46: 添加第三层进度通知栏更新，确保三层分段全程都有进度显示
