@@ -166,6 +166,10 @@ object AudioSegmentAnalyzer {
     // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
     private val pcmGenerateLock = java.util.concurrent.locks.ReentrantLock()
 
+    // v3.1.99: VAD语音帧占比（probs中>=VAD_THRESHOLD的比例），用于classifyYamnetScores判断
+    @Volatile
+    private var vadSpeechRatio: Float = 0f
+
     /**
      * Interrupt the currently running audio-segment analysis (decode + classify).
      * Called from the notification cancel action or when starting a new segment task.
@@ -281,7 +285,7 @@ object AudioSegmentAnalyzer {
     private const val VAD_FRAME_SIZE = 512
     // v2.4.142: Silero VAD expects 64 samples of previous audio as context prepended to each 512-sample chunk.
     private const val VAD_CONTEXT_SIZE = 64
-    private const val VAD_THRESHOLD = 0.55f
+    private const val VAD_THRESHOLD = 0.30f
     private const val VAD_MIN_SPEECH_DURATION_MS = 3000L
     private const val VAD_MIN_SILENCE_DURATION_MS = 3500L
 
@@ -1948,7 +1952,9 @@ object AudioSegmentAnalyzer {
         // v2.4.143: Raw max logit. If all logits are near 0, every sigmoid is ~0.5 and the model
         // is effectively unresponsive. If some other class has a high logit while speech/music/
         // silence are 0.5, the model is still working — just not detecting those categories.
-        val maxRawScore: Float
+        val maxRawScore: Float,
+        // v3.1.99: 1kHz~4kHz能量 / 全频能量比值，用于人声频谱前置检测
+        val spectrumRatio: Float = 0f
     )
 
     private fun classifyWithYamnet(
@@ -1956,12 +1962,17 @@ object AudioSegmentAnalyzer {
         samples: FloatArray
     ): YamnetResult {
         try {
+            // v3.1.99: 输入侧响度归一化，归一化到目标RMS 0.15后再喂给YAMNet
+            val normalizedSamples = normalizeLoudness(samples)
+            // v3.1.99: 计算人声频谱比值（1kHz~4kHz能量占比）
+            val spectrumRatio = computeSpectrumRatio(normalizedSamples)
+
             // v2.4.130: Use model's actual input shape instead of hardcoded [1, 15600].
             val inputBuffer = TensorBuffer.createFixedSize(
                 yamnetInputShape,
                 org.tensorflow.lite.DataType.FLOAT32
             )
-            inputBuffer.loadArray(samples)
+            inputBuffer.loadArray(normalizedSamples)
 
             // v2.4.129: Log input diagnostics for first 3 calls
             yamnetCallCount++
@@ -1988,7 +1999,8 @@ object AudioSegmentAnalyzer {
                     speech = 0.5f, narration = 0.5f, singing = 0f, music = 0f,
                     instrumental = 0f, popMusic = 0f, jingle = 0f, song = 0f,
                     backgroundMusic = 0f, themeMusic = 0f, silence = 0.5f,
-                    voiceSum = 1.0f, bgMusicSum = 0f, maxRawScore = 0f
+                    voiceSum = 1.0f, bgMusicSum = 0f, maxRawScore = 0f,
+                    spectrumRatio = spectrumRatio
                 )
             }
             checkCancelled()
@@ -2046,18 +2058,99 @@ object AudioSegmentAnalyzer {
                 silence = silenceProb,
                 voiceSum = voiceSum,
                 bgMusicSum = bgMusicSum,
-                maxRawScore = maxRawScore
+                maxRawScore = maxRawScore,
+                spectrumRatio = spectrumRatio
             )
         } catch (e: Exception) {
             Log.e(TAG, "YAMNet classification failed: ${e.message}")
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            return YamnetResult(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            return YamnetResult(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
         }
     }
 
     private fun sigmoid(x: Float): Float {
         val exp = kotlin.math.exp(-x.toDouble())
         return (1.0 / (1.0 + exp)).toFloat()
+    }
+
+    // v3.1.99: 响度归一化：计算RMS并归一化到目标RMS
+    private fun normalizeLoudness(samples: FloatArray, targetRms: Float = 0.15f): FloatArray {
+        var sumSq = 0.0
+        for (s in samples) {
+            sumSq += s.toDouble() * s.toDouble()
+        }
+        val rms = kotlin.math.sqrt(sumSq / samples.size)
+        if (rms < 1e-6f) return samples.copyOf() // 避免除零
+        val gain = targetRms / rms.toFloat()
+        val result = FloatArray(samples.size)
+        for (i in samples.indices) {
+            result[i] = samples[i] * gain
+        }
+        return result
+    }
+
+    // v3.1.99: 计算人声频谱比值（1kHz~4kHz能量 / 全频能量）
+    // 对15600样本补零到16384做基2FFT，计算频谱能量比
+    private fun computeSpectrumRatio(samples: FloatArray): Float {
+        val n = 16384 // 2^14，大于15600的最小2的幂
+        if (samples.size < 100) return 0f // 样本太少，无法计算
+
+        val real = FloatArray(n)
+        val imag = FloatArray(n)
+        // 补零
+        for (i in 0 until minOf(samples.size, n)) {
+            real[i] = samples[i]
+        }
+
+        // 基2FFT（Cooley-Tukey迭代算法）
+        var j = 0
+        for (i in 1 until n) {
+            var bit = n shr 1
+            while (j and bit != 0) {
+                j = j xor bit
+                bit = bit shr 1
+            }
+            j = j xor bit
+            if (i < j) {
+                val temp = real[i]; real[i] = real[j]; real[j] = temp
+            }
+        }
+
+        var len = 1
+        while (len < n) {
+            val step = len shl 1
+            val angle = -Math.PI / len
+            for (i in 0 until n step step) {
+                for (k in 0 until len) {
+                    val wReal = kotlin.math.cos(k * angle).toFloat()
+                    val wImag = kotlin.math.sin(k * angle).toFloat()
+                    val idx = i + k
+                    val tReal = real[idx + len] * wReal - imag[idx + len] * wImag
+                    val tImag = real[idx + len] * wImag + imag[idx + len] * wReal
+                    real[idx + len] = real[idx] - tReal
+                    imag[idx + len] = imag[idx] - tImag
+                    real[idx] += tReal
+                    imag[idx] += tImag
+                }
+            }
+            len = step
+        }
+
+        // 计算能量
+        val nyquist = n / 2
+        val bin1k = (1000 * n / YAMNET_SAMPLE_RATE)  // 1kHz对应的bin索引
+        val bin4k = (4000 * n / YAMNET_SAMPLE_RATE)  // 4kHz对应的bin索引
+        var totalEnergy = 0.0
+        var voiceBandEnergy = 0.0
+        for (i in 0 until nyquist) {
+            val energy = real[i].toDouble() * real[i].toDouble() + imag[i].toDouble() * imag[i].toDouble()
+            totalEnergy += energy
+            if (i in bin1k..bin4k) {
+                voiceBandEnergy += energy
+            }
+        }
+
+        return if (totalEnergy > 0.0) (voiceBandEnergy / totalEnergy).toFloat() else 0f
     }
 
     // v2.4.161: Time range for coarse VAD segmentation
@@ -2067,68 +2160,42 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.166: Apply YAMNet decision rules using calibrated probabilities.
+     * v3.1.99: YAMNet判据改为相对差值。
      *
-     * YAMNet outputs logits; after sigmoid, an inactive class has probability ~0.5.
-     * Using raw sigmoid values directly makes sum-based thresholds meaningless because
-     * every inactive class contributes 0.5. We therefore subtract 0.5 to obtain an
-     * "activation strength" relative to the neutral baseline.
-     *
-     * Strategy:
-     * - Clear speech/narration or strong combined voice -> dry (host talking).
-     * - Voice only becomes water when music is prominent (ads / songs).
-     * - Strong singing -> dry (preserve host singing with accompaniment).
-     * - Pure music / weak ambiguous frames -> water / silence.
+     * 优先级（从高到低）：
+     * 1. 频谱比值 > 0.20 → DRY（人声频谱前置检测）
+     * 2. VAD语音帧占比 > 25% → DRY
+     * 3. 直接使用YAMNet原始sigmoid概率值
+     *    - 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
+     *    - 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
+     *    - 其余 → DRY（模糊段，等指纹二次判定）
      */
     private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
-        // Calibrated activation strengths (0.5 = neutral/unactivated)
-        val calSpeech = yamnet.speech - 0.5f
-        val calNarration = yamnet.narration - 0.5f
-        val calSinging = yamnet.singing - 0.5f
-        val calMusic = yamnet.music - 0.5f
-        val calInstrumental = yamnet.instrumental - 0.5f
-        val calPopMusic = yamnet.popMusic - 0.5f
-        val calJingle = yamnet.jingle - 0.5f
-        val calSong = yamnet.song - 0.5f
-        val calBgMusic = yamnet.backgroundMusic - 0.5f
-        val calThemeMusic = yamnet.themeMusic - 0.5f
-        val calSilence = yamnet.silence - 0.5f
-
-        val calVoice = maxOf(0f, calSpeech) + maxOf(0f, calNarration) + maxOf(0f, calSinging)
-        val calMusicSum = maxOf(0f, calMusic) + maxOf(0f, calInstrumental) + maxOf(0f, calPopMusic) +
-                maxOf(0f, calJingle) + maxOf(0f, calSong) + maxOf(0f, calBgMusic) + maxOf(0f, calThemeMusic)
-
-        // Silence first: if nothing meaningful is present, mark silence.
-        if (calVoice < 0.05f && calMusicSum < 0.05f && calSilence > 0.05f) {
-            return FrameType.SILENCE
-        }
-
-        // Strong singing protection: keep clear singing (even with accompaniment) as dry.
-        if (calSinging > 0.10f && calSinging >= calVoice * SINGING_FORCE_THRESHOLD) {
+        // 优先级1：频谱比值 > 0.20 → DRY（人声频谱前置检测，豁免水分）
+        if (yamnet.spectrumRatio > 0.20f) {
             return FrameType.DRY
         }
 
-        // Clear host speech / narration -> dry, unless music is very prominent.
-        val hasClearSpeech = calSpeech > 0.10f || calNarration > 0.10f || calVoice >= VOICE_SUM_THRESHOLD
-        if (hasClearSpeech) {
-            // v2.4.173: require stronger music presence (absolute and relative to voice)
-            // so host speech with only light background music stays dry.
-            return if (calMusicSum > 0.10f && calMusicSum >= calVoice * BG_MUSIC_SUM_THRESHOLD) {
-                // Voice with prominent music -> ads / accompanied songs -> water
-                FrameType.WATER
-            } else {
-                // Voice dominates -> host speech / dialogue -> dry
-                FrameType.DRY
-            }
+        // 优先级2：VAD语音帧占比 > 25% → DRY
+        if (vadSpeechRatio > 0.25f) {
+            return FrameType.DRY
         }
 
-        // Weak voice but prominent music -> water.
-        if (calMusicSum > 0.05f && calMusicSum > calVoice * 2.0f) {
+        // 直接使用YAMNet原始sigmoid概率值
+        val speechScore = maxOf(yamnet.speech, yamnet.narration)
+
+        // 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
+        if (yamnet.silence > 0.60f && yamnet.speech < 0.15f) {
+            return FrameType.SILENCE
+        }
+
+        // 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
+        if ((yamnet.music - speechScore) > 0.35f && speechScore < 0.30f) {
             return FrameType.WATER
         }
 
-        // Weak ambiguous frames default to silence.
-        return FrameType.SILENCE
+        // 其余 → DRY（模糊段，等指纹二次判定）
+        return FrameType.DRY
     }
 
     /**
@@ -2170,6 +2237,11 @@ object AudioSegmentAnalyzer {
                 reportPos += YAMNET_SAMPLE_RATE * 5
             }
         }
+
+        // v3.1.99: 计算VAD语音帧占比
+        val speechCount = probs.count { it >= VAD_THRESHOLD }
+        vadSpeechRatio = if (probs.isNotEmpty()) speechCount.toFloat() / probs.size else 0f
+        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] runSileroVadIntervals: VAD语音帧占比 = ${String.format(java.util.Locale.US, "%.2f", vadSpeechRatio)} (${speechCount}/${probs.size}帧 >= VAD_THRESHOLD)")
 
         // Initial thresholding into speech/silence chunks
         val rawSegments = mutableListOf<Pair<Boolean, Int>>()
@@ -3391,7 +3463,13 @@ object AudioSegmentAnalyzer {
         refStartMs: Long,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
-        val frameTypes = mutableListOf<Pair<Long, FrameType>>() // (timestampMs, type)
+        // v3.1.99: 存储帧信息（用于上下文连续性检查的第二遍处理）
+        data class FrameInfo(
+            val timestampMs: Long,
+            val type: FrameType,
+            val isSpeechContaining: Boolean  // 是否含语音（频谱比值>0.20或VAD占比>25%或YAMNet判为DRY）
+        )
+        val frames = mutableListOf<FrameInfo>()
 
         var pos = rangeStartSample
         while (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
@@ -3400,11 +3478,35 @@ object AudioSegmentAnalyzer {
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
 
+            // v3.1.99: 判断是否含语音（频谱比值 > 0.20 或 VAD占比 > 25% 或 YAMNet判为DRY）
+            val isSpeechContaining = (yamnet.spectrumRatio > 0.20f) || (vadSpeechRatio > 0.25f) || (type == FrameType.DRY)
+
             // 窗口中心时间戳（相对于refStartMs）
             val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
             val windowCenterMs = refStartMs + (windowCenterSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
-            frameTypes.add(windowCenterMs to type)
+            frames.add(FrameInfo(windowCenterMs, type, isSpeechContaining))
             pos += YAMNET_SPEECH_HOP_SAMPLES
+        }
+
+        if (frames.isEmpty()) return emptyList()
+
+        // v3.1.99: 上下文连续性约束（5秒滑动窗口）
+        // 对每个YAMNet帧，检查前后各1秒（约2个YAMNet帧）内是否有其他帧被标记为含语音
+        // 如果有，则当前帧降级为模糊段 DRY（不判水分，等指纹二次判定）
+        val oneSecMs = 1000L
+        for (i in frames.indices) {
+            val frame = frames[i]
+            if (frame.type == FrameType.WATER) {
+                val hasSpeechNearby = frames.any { other ->
+                    other != frame &&
+                        kotlin.math.abs(other.timestampMs - frame.timestampMs) <= oneSecMs &&
+                        other.isSpeechContaining
+                }
+                if (hasSpeechNearby) {
+                    // 降级为模糊段，等指纹二次判定
+                    frames[i] = frame.copy(type = FrameType.DRY, isSpeechContaining = true)
+                }
+            }
         }
 
         // 将帧级结果合并为子段
@@ -3412,11 +3514,11 @@ object AudioSegmentAnalyzer {
         val halfWindowMs = (YAMNET_WINDOW_SAMPLES * 1000L / (2 * YAMNET_SAMPLE_RATE))
         val segments = mutableListOf<VoiceSegment>()
 
-        var segStartMs = maxOf(0L, frameTypes[0].first - halfWindowMs)
-        var segType = frameTypes[0].second
+        var segStartMs = maxOf(0L, frames[0].timestampMs - halfWindowMs)
+        var segType = frames[0].type
 
-        for (i in 1 until frameTypes.size) {
-            val (currentTs, currentType) = frameTypes[i]
+        for (i in 1 until frames.size) {
+            val (currentTs, currentType, _) = frames[i]
             if (currentType != segType) {
                 val segEndMs = currentTs - halfWindowMs
                 if (segEndMs > segStartMs) {
@@ -3427,7 +3529,7 @@ object AudioSegmentAnalyzer {
             }
         }
         // 最后一个子段
-        val lastEndMs = (frameTypes.last().first + halfWindowMs).coerceAtMost(refStartMs + ((rangeEndSample - rangeStartSample).toLong() * 1000L / YAMNET_SAMPLE_RATE))
+        val lastEndMs = (frames.last().timestampMs + halfWindowMs).coerceAtMost(refStartMs + ((rangeEndSample - rangeStartSample).toLong() * 1000L / YAMNET_SAMPLE_RATE))
         segments.add(createSegment(segStartMs, lastEndMs, segType))
 
         return segments
