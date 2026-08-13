@@ -166,7 +166,7 @@ object AudioSegmentAnalyzer {
     // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
     private val pcmGenerateLock = java.util.concurrent.locks.ReentrantLock()
 
-    // v3.1.99: VAD语音帧占比（probs中>=VAD_THRESHOLD的比例），用于classifyYamnetScores判断
+    // v3.1.100: VAD语音帧占比（仅供日志，不再用于classifyYamnetScores判断）
     @Volatile
     private var vadSpeechRatio: Float = 0f
 
@@ -2176,11 +2176,6 @@ object AudioSegmentAnalyzer {
             return FrameType.DRY
         }
 
-        // 优先级2：VAD语音帧占比 > 25% → DRY
-        if (vadSpeechRatio > 0.25f) {
-            return FrameType.DRY
-        }
-
         // 直接使用YAMNet原始sigmoid概率值
         val speechScore = maxOf(yamnet.speech, yamnet.narration)
 
@@ -3463,11 +3458,11 @@ object AudioSegmentAnalyzer {
         refStartMs: Long,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
-        // v3.1.99: 存储帧信息（用于上下文连续性检查的第二遍处理）
+        // v3.1.100: 存储帧信息（用于上下文连续性检查的第二遍处理）
         data class FrameInfo(
             val timestampMs: Long,
             val type: FrameType,
-            val isSpeechContaining: Boolean  // 是否含语音（频谱比值>0.20或VAD占比>25%或YAMNet判为DRY）
+            val isSpeechContaining: Boolean  // 是否含语音（频谱比值>0.20或YAMNet判为DRY）
         )
         val frames = mutableListOf<FrameInfo>()
 
@@ -3478,8 +3473,8 @@ object AudioSegmentAnalyzer {
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
 
-            // v3.1.99: 判断是否含语音（频谱比值 > 0.20 或 VAD占比 > 25% 或 YAMNet判为DRY）
-            val isSpeechContaining = (yamnet.spectrumRatio > 0.20f) || (vadSpeechRatio > 0.25f) || (type == FrameType.DRY)
+            // v3.1.100: 判断是否含语音（频谱比值 > 0.20 或 YAMNet判为DRY，不再依赖全局VAD）
+            val isSpeechContaining = (yamnet.spectrumRatio > 0.20f) || (type == FrameType.DRY)
 
             // 窗口中心时间戳（相对于refStartMs）
             val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
@@ -3490,7 +3485,7 @@ object AudioSegmentAnalyzer {
 
         if (frames.isEmpty()) return emptyList()
 
-        // v3.1.99: 上下文连续性约束（5秒滑动窗口）
+        // v3.1.100: 上下文连续性约束（5秒滑动窗口，基于局部帧判断）
         // 对每个YAMNet帧，检查前后各1秒（约2个YAMNet帧）内是否有其他帧被标记为含语音
         // 如果有，则当前帧降级为模糊段 DRY（不判水分，等指纹二次判定）
         val oneSecMs = 1000L
