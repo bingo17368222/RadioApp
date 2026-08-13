@@ -743,19 +743,55 @@ object SegmentGenerator {
             // v2.4.178: Large PCM files are now handled by memory-mapped sample access in
             // AudioSegmentAnalyzer, so the artificial 120MB limit is removed. Pre-segmentation
             // can run on any episode whose full PCM has already been decoded.
+            // v3.1.97: 使用用户选择的方案
             Log.i(TAG, "preSegmentAudio: running audio segmentation for episode=$episodeId")
+
+            val settings = AppSettings.getInstance(context)
+            val segStartTime = System.currentTimeMillis()
+            val segments: List<VoiceSegment>
+            val engineName: String
+            val processingTimeMs: Long
+            val audioDurationMs: Long
 
             // v2.4.186: Use non-blocking mode so background pre-segmentation skips when
             // another audio analysis (manual or another pre-segment task) is already running.
-            val result = tryGenerateAudioSegments(
-                context, episodeId, durationMs, audioUrl,
-                progressCallback = { permille, _, _ ->
-                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille)
-                },
-                blocking = false
-            )
-            val segments = result?.segments ?: emptyList()
-            if (result == null || segments.isEmpty()) {
+            if (settings.aiModel == AppSettings.AI_MODEL_JIU_AI_TING) {
+                Log.i(TAG, "preSegmentAudio: 使用就AI听三层架构方案 for episode=$episodeId")
+                val jiuAiTingResult = generateJiuAiTingSegments(context, episodeId, durationMs, audioUrl, progressCallback)
+                if (jiuAiTingResult != null && jiuAiTingResult.segments.isNotEmpty()) {
+                    segments = jiuAiTingResult.segments
+                    engineName = jiuAiTingResult.engineName
+                    processingTimeMs = jiuAiTingResult.processingTimeMs
+                    audioDurationMs = durationMs
+                } else {
+                    Log.w(TAG, "preSegmentAudio: 就AI听三层架构无结果，回退VAD+YAMNet for episode=$episodeId")
+                    val result = tryGenerateAudioSegments(
+                        context, episodeId, durationMs, audioUrl,
+                        progressCallback = { permille, _, _ ->
+                            SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille)
+                        },
+                        blocking = false
+                    )
+                    segments = result?.segments ?: emptyList()
+                    engineName = result?.engineName ?: "VAD+YAMNet"
+                    processingTimeMs = result?.processingTimeMs ?: (System.currentTimeMillis() - segStartTime)
+                    audioDurationMs = result?.audioDurationMs ?: durationMs
+                }
+            } else {
+                val result = tryGenerateAudioSegments(
+                    context, episodeId, durationMs, audioUrl,
+                    progressCallback = { permille, _, _ ->
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille)
+                    },
+                    blocking = false
+                )
+                segments = result?.segments ?: emptyList()
+                engineName = result?.engineName ?: "VAD+YAMNet"
+                processingTimeMs = result?.processingTimeMs ?: (System.currentTimeMillis() - segStartTime)
+                audioDurationMs = result?.audioDurationMs ?: durationMs
+            }
+
+            if (segments.isEmpty()) {
                 Log.w(TAG, "preSegmentAudio: no segments generated for episode=$episodeId")
                 return false
             }
@@ -768,10 +804,10 @@ object SegmentGenerator {
                 dbHelper.saveSegmentAnalysisInfo(
                     com.radio.app.database.SegmentAnalysisInfo(
                         episodeId = episodeId,
-                        engineName = result.engineName,
+                        engineName = engineName,
                         generatedAt = System.currentTimeMillis(),
-                        processingTimeMs = result.processingTimeMs,
-                        audioDurationMs = result.audioDurationMs,
+                        processingTimeMs = processingTimeMs,
+                        audioDurationMs = audioDurationMs,
                         segmentCount = segments.size,
                         dryCount = dryCount,
                         waterCount = segments.size - dryCount
@@ -781,7 +817,7 @@ object SegmentGenerator {
                 Log.e(TAG, "preSegmentAudio: failed to save segment analysis info: ${e.message}")
             }
 
-            Log.i(TAG, "preSegmentAudio: saved ${segments.size} segments for episode=$episodeId (engine=${result.engineName}, time=${result.processingTimeMs}ms)")
+            Log.i(TAG, "preSegmentAudio: saved ${segments.size} segments for episode=$episodeId (engine=${engineName}, time=${processingTimeMs}ms)")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "preSegmentAudio failed: ${e.message}")
@@ -994,6 +1030,11 @@ object SegmentGenerator {
         var layer3RecallCount = 0
         var observationPoolNewCount = 0
         var observationPoolHitCount = 0
+        // v3.1.97: 各层耗时统计
+        val layer1StartTime = System.currentTimeMillis()
+        var layer1TimeMs = 0L
+        var layer2TimeMs = 0L
+        var layer3TimeMs = 0L
 
         if (pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // 滑动窗口指纹匹配，传递进度回调以更新通知
@@ -1006,7 +1047,9 @@ object SegmentGenerator {
             mergedAfterLayer1 = slidingResult
             layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
-            Log.i(TAG, "三层架构: 第一层滑动窗口完成，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段 for episode=$episodeId")
+            layer1TimeMs = System.currentTimeMillis() - layer1StartTime
+            Log.i(TAG, "三层架构: 第一层滑动窗口完成，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段，耗时${layer1TimeMs}ms for episode=$episodeId")
+            writeFingerprintLog(context, "三层架构: 第1层耗时${layer1TimeMs}ms，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段")
         } else {
             // 无PCM或无指纹库，运行全量VAD+YAMNet获取真实分段
             val fallbackReason = when {
@@ -1026,12 +1069,16 @@ object SegmentGenerator {
             if (fullVadResult != null && fullVadResult.segments.size >= 2) {
                 mergedAfterLayer1 = mergeAdjacentSegments(fullVadResult.segments.map { it.copy() })
                 audioEngineName = fullVadResult.engineName
-                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${mergedAfterLayer1.size}个真实分段 for episode=$episodeId")
+                layer1TimeMs = System.currentTimeMillis() - layer1StartTime
+                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${mergedAfterLayer1.size}个真实分段，耗时${layer1TimeMs}ms for episode=$episodeId")
+                writeFingerprintLog(context, "三层架构: 第1层全量VAD+YAMNet耗时${layer1TimeMs}ms，${mergedAfterLayer1.size}个分段")
             } else {
                 // VAD也无结果，使用固定分段兜底
                 val fixedSegs = generateFixedSegments(effectiveDurationMs)
                 mergedAfterLayer1 = fixedSegs
-                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底 for episode=$episodeId")
+                layer1TimeMs = System.currentTimeMillis() - layer1StartTime
+                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底，耗时${layer1TimeMs}ms for episode=$episodeId")
+                writeFingerprintLog(context, "三层架构: 第1层固定分段兜底耗时${layer1TimeMs}ms，${fixedSegs.size}个分段")
             }
         }
 
@@ -1060,6 +1107,7 @@ object SegmentGenerator {
         val shouldRunLayer2 = effectiveDurationMs > 60000
 
         if (shouldRunLayer2) {
+        val layer2StartTime = System.currentTimeMillis()
         // ========== 第二层：优化三层架构（VAD-only + 区间YAMNet） ==========
         // v3.1.83: 优化流程：
         // 1. 第一层指纹匹配 → 指纹水货段 + 待处理段（指纹未覆盖区间）
@@ -1473,20 +1521,24 @@ object SegmentGenerator {
         // 统计第2层VAD产出
         layer2DrySegments = mergedAfterLayer2.count { it.hasVoice }
         layer2WaterSegments = mergedAfterLayer2.count { !it.hasVoice }
+        layer2TimeMs = System.currentTimeMillis() - layer2StartTime
 
-        Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段）")
+        Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段），耗时${layer2TimeMs}ms")
         // v3.1.90: 写指纹日志
-        writeFingerprintLog(context, "三层架构: 第2层完成: ${mergedAfterLayer2.size}个片段（干${layer2DrySegments}段/水${layer2WaterSegments}段）")
+        writeFingerprintLog(context, "三层架构: 第2层完成: ${mergedAfterLayer2.size}个片段（干${layer2DrySegments}段/水${layer2WaterSegments}段），耗时${layer2TimeMs}ms")
 
         // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
         // v3.1.46: 添加第三层进度通知栏更新，确保三层分段全程都有进度显示
+        val layer3StartTime = System.currentTimeMillis()
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 900, "第3层指纹漏判召回")
         val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // v3.1.95: 使用带计数的召回函数，recallCount 是实际翻转的片段数
             // 原公式 recalled.waterCount - mergedAfterLayer2.waterCount 在合并后可能为负
             val (recalled, recallCount) = applyFingerprintRecallLayer3WithCount(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
             layer3RecallCount = recallCount
-            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
+            layer3TimeMs = System.currentTimeMillis() - layer3StartTime
+            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${layer3TimeMs}ms")
+            writeFingerprintLog(context, "三层架构: 第3层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${layer3TimeMs}ms")
             SegmentNotificationHelper.update(context, episodeId, episodeTitle, 950, "第3层召回完成，合并结果")
             recalled
         } else {
@@ -1508,8 +1560,11 @@ object SegmentGenerator {
             }
         }
 
-        // 日志统计
-        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（第一层快筛${layer1MatchCount}段，第二层VAD产出${layer2DrySegments}干/${layer2WaterSegments}水，第三层召回${layer3RecallCount}段）"
+        // 日志统计（含各层耗时和干货占比）
+        val totalTimeMs = System.currentTimeMillis() - segStartTime
+        val finalDryCount = finalSegments.count { it.hasVoice }
+        val dryRatio = if (finalSegments.isNotEmpty()) "%.1f".format(finalDryCount * 100.0 / finalSegments.size) else "0.0"
+        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${totalTimeMs}ms（第1层${layer1TimeMs}ms，第2层${layer2TimeMs}ms，第3层${layer3TimeMs}ms）"
         Log.i(TAG, fpMsgStats)
         writeFingerprintLog(context, fpMsgStats)
 
@@ -1555,7 +1610,7 @@ object SegmentGenerator {
         // v3.1.28: 更新通知为100%完成
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成")
 
-        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（快筛${layer1MatchCount}段，VAD${layer2WaterSegments}段，召回${layer3RecallCount}段）"
+        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${totalTimeMs}ms（第1层${layer1TimeMs}ms，第2层${layer2TimeMs}ms，第3层${layer3TimeMs}ms）"
         Log.i(TAG, fpMsgDone)
         writeFingerprintLog(context, fpMsgDone)
 
