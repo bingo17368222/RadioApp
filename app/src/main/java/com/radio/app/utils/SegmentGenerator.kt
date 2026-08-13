@@ -1490,7 +1490,10 @@ object SegmentGenerator {
         }
 
         // 最终合并
-        val finalSegments = mergeAdjacentSegments(layer3Result).apply {
+        // v3.1.95: 应用完整的后处理合并逻辑（碎片合并、干货合并、水分合并）
+        // 解决三层架构连续水分分段未合并、总分段数过多的问题
+        val merged = mergeAdjacentSegments(layer3Result)
+        val finalSegments = AudioSegmentAnalyzer.postProcessSegments(merged).toMutableList().apply {
             for (seg in this) {
                 if (!seg.hasVoice && seg.label == null) {
                     seg.label = "指纹水货"

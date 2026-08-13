@@ -2959,7 +2959,9 @@ object AudioSegmentAnalyzer {
      * 6. Merge consecutive/nearby water segments separated by short pure-silence gaps.
      * 7. Final merge of adjacent same-type segments created by earlier absorption passes.
      */
-    private fun postProcessSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
+    // v3.1.95: Made internal so SegmentGenerator (three-layer architecture) can also
+    // apply the full post-processing merge logic (fragment merge, dry merging, water merging).
+    internal fun postProcessSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
         if (segments.isEmpty()) return segments
 
         // Pass 1: merge same-type overlapping/adjacent segments
