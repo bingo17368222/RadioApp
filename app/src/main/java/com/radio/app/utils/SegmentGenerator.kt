@@ -757,7 +757,12 @@ object SegmentGenerator {
             // another audio analysis (manual or another pre-segment task) is already running.
             if (settings.aiModel == AppSettings.AI_MODEL_JIU_AI_TING) {
                 Log.i(TAG, "preSegmentAudio: 使用就AI听三层架构方案 for episode=$episodeId")
-                val jiuAiTingResult = generateJiuAiTingSegments(context, episodeId, durationMs, audioUrl, progressCallback)
+                val jiuAiTingResult = generateJiuAiTingSegments(
+                    context, episodeId, durationMs, audioUrl,
+                    { permille, _, _ ->
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille)
+                    }
+                )
                 if (jiuAiTingResult != null && jiuAiTingResult.segments.isNotEmpty()) {
                     segments = jiuAiTingResult.segments
                     engineName = jiuAiTingResult.engineName
