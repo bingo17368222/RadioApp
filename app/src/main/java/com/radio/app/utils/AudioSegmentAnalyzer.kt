@@ -2245,7 +2245,7 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v2.4.170: Classify a speech interval sparsely with YAMNet (0.975s window, 2.0s hop)
+     * v2.4.170/v3.1.94: Classify a speech interval sparsely with YAMNet (0.975s window, 2.0s hop)
      * and return a single segment per interval using majority vote.
      *
      * Per-hop sub-segmentation produced too many fragments for the user's use case.
@@ -2253,10 +2253,14 @@ object AudioSegmentAnalyzer {
      * whole interval by the dominant frame type. This keeps the boundary precision
      * of VAD while avoiding YAMNet flicker inside an interval.
      *
+     * v3.1.94: Removed the <5s early-return default. Short intervals now go through
+     * normal YAMNet classification; the post-processing merge logic (Pass 2/4/5/6)
+     * consolidates small fragments with adjacent segments of the same type.
+     * This eliminates the arbitrary default assignment and lets YAMNet's actual
+     * classification determine the type, consistent with the dual-model scheme.
+     *
      * Bias: speech intervals are assumed to be host speech unless music is clearly
-     * dominant. Short intervals (<5s) skip YAMNet entirely and default to dry to
-     * avoid splitting continuous host talking with a few seconds of water fragment
-     * and to keep analysis fast.
+     * dominant. Tie or slight dry lead keeps host talking continuous.
      */
     private fun classifySpeechInterval(
         samples: SampleProvider,
@@ -2267,17 +2271,6 @@ object AudioSegmentAnalyzer {
         val endSample = (range.endMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
         val intervalEndSample = endSample.coerceAtMost(samples.size)
         val intervalEndMs = (intervalEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
-        val intervalDurationMs = intervalEndMs - range.startMs
-
-        // v2.4.170/v3.1.93: Short speech intervals default to dry. Skip YAMNet
-        // to save time and avoid tiny fragments inside continuous host talking.
-        // DRY short intervals merge with adjacent DRY segments via post-processing
-        // (Pass 4/5), reducing total segment count. WATER short intervals form blocks
-        // that survive merge and increase segment count, as observed in v3.1.92 (72→90).
-        if (intervalDurationMs < 5000) {
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: short (${intervalDurationMs}ms), defaulting to dry")
-            return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
-        }
 
         // Interval too short for a full YAMNet window: VAD already marked it as speech, default to dry.
         if (intervalEndSample - startSample < YAMNET_WINDOW_SAMPLES) {
@@ -2300,8 +2293,6 @@ object AudioSegmentAnalyzer {
         val dryVotes = typeVotes.getOrDefault(FrameType.DRY, 0)
         val waterVotes = typeVotes.getOrDefault(FrameType.WATER, 0)
         val dominantType = when {
-            // Short speech intervals default to dry.
-            intervalDurationMs < 5000 -> FrameType.DRY
             // Tie or dry lead keeps host talking continuous; water must clearly win.
             dryVotes >= waterVotes -> FrameType.DRY
             else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
