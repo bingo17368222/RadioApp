@@ -898,6 +898,11 @@ object SegmentGenerator {
 
         // v3.1.32: 清除历史取消标志，避免VAD因上次取消信号而立即失败
         AudioSegmentAnalyzer.resetCancellation()
+        // v3.1.95: 同时清除线程中断标志。cancelCurrentAnalysis() 设置了 analysisCancelled
+        // 并调用了 thread.interrupt()。resetCancellation 只清除了标志，但线程的中断状态
+        // 仍保留，导致后续层或下一次运行的第一层检查 Thread.interrupted() 时立即退出。
+        // Thread.interrupted() 会检查并清除中断状态，确保后续操作不受影响。
+        Thread.interrupted() // clear interrupt flag
         SegmentNotificationHelper.reset()
 
         val dbHelper = RadioDatabaseHelper.getInstance(context)
@@ -1477,8 +1482,10 @@ object SegmentGenerator {
         // v3.1.46: 添加第三层进度通知栏更新，确保三层分段全程都有进度显示
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 900, "第3层指纹漏判召回")
         val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
-            val recalled = applyFingerprintRecallLayer3(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
-            layer3RecallCount = recalled.count { !it.hasVoice } - mergedAfterLayer2.count { !it.hasVoice }
+            // v3.1.95: 使用带计数的召回函数，recallCount 是实际翻转的片段数
+            // 原公式 recalled.waterCount - mergedAfterLayer2.waterCount 在合并后可能为负
+            val (recalled, recallCount) = applyFingerprintRecallLayer3WithCount(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
+            layer3RecallCount = recallCount
             Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段")
             SegmentNotificationHelper.update(context, episodeId, episodeTitle, 950, "第3层召回完成，合并结果")
             recalled
@@ -1864,6 +1871,100 @@ object SegmentGenerator {
         }
 
         return merged
+    }
+
+    /**
+     * v3.1.95: 第三层指纹漏判召回，带召回计数返回。
+     * 与 applyFingerprintRecallLayer3 逻辑相同，但返回 Pair 包含实际召回数。
+     * 解决原 recallCount 在函数内部无法传递到外层的问题。
+     */
+    private fun applyFingerprintRecallLayer3WithCount(
+        context: Context,
+        episodeId: String,
+        segments: List<VoiceSegment>,
+        goldStandardFingerprints: List<AudioFingerprint>
+    ): Pair<List<VoiceSegment>, Int> {
+        if (segments.isEmpty() || goldStandardFingerprints.isEmpty()) return Pair(segments, 0)
+        if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
+            val fpMsg = "第三层指纹漏判召回: 跳过（指纹引擎未就绪）"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return Pair(segments, 0)
+        }
+
+        val appContext = context.applicationContext
+        val result = segments.map { it.copy() }.toMutableList()
+        var recallCount = 0
+        val recallDetails = mutableListOf<String>()
+
+        val fpMsgStart = "第三层指纹漏判召回: 金标准指纹库${goldStandardFingerprints.size}条，待审核干货${result.count { it.hasVoice }}段"
+        Log.i(TAG, fpMsgStart)
+        writeFingerprintLog(context, fpMsgStart)
+
+        for (i in result.indices) {
+            val seg = result[i]
+            if (!seg.hasVoice) continue
+            if (seg.end - seg.start < MIN_SEGMENT_MS_FOR_FINGERPRINT) continue
+
+            var tempPcmFile: File? = null
+            try {
+                tempPcmFile = try {
+                    PcmSegmentExtractor.extractSegmentPcm(appContext, episodeId, seg.start, seg.end)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "第三层指纹漏判召回: 提取片段${seg.start/1000}秒PCM异常: ${e.message}")
+                    null
+                }
+                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+
+                val fingerprint = try {
+                    ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "第三层指纹漏判召回: 提取片段${seg.start/1000}秒指纹异常: ${e.message}")
+                    null
+                }
+                if (fingerprint.isNullOrBlank()) continue
+
+                var matched = false
+                var matchedSimilarity = 0f
+                for (goldFp in goldStandardFingerprints) {
+                    val durationRatio = minOf(seg.end - seg.start, goldFp.durationMs).toFloat() /
+                            maxOf(seg.end - seg.start, goldFp.durationMs).toFloat()
+                    if (durationRatio < 0.4f) continue
+
+                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, goldFp.fingerprint)
+                    if (sim >= LAYER3_RECALL_THRESHOLD) {
+                        matched = true
+                        matchedSimilarity = sim
+                        break
+                    }
+                }
+
+                if (matched) {
+                    seg.hasVoice = false
+                    seg.label = "水货(漏判召回)"
+                    recallCount++
+                    recallDetails.add("${seg.start/1000}秒-${seg.end/1000}秒(相似度:${"%.0f".format(matchedSimilarity*100)}%)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "第三层指纹漏判召回: 片段${seg.start/1000}秒异常: ${e.message}")
+            } finally {
+                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+        }
+
+        val merged = mergeAdjacentSegments(result)
+
+        if (recallCount > 0) {
+            val fpMsg = "第三层指纹漏判召回: 召回${recallCount}个漏判片段 [${recallDetails.joinToString("; ")}]，合并后共${merged.count{!it.hasVoice}}段水货"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        } else {
+            val fpMsg = "第三层指纹漏判召回: 无漏判，所有干货保持原分类"
+            Log.i(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+        }
+
+        return Pair(merged, recallCount)
     }
 
     /**
