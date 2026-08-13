@@ -296,14 +296,17 @@ object AudioSegmentAnalyzer {
 
     // v2.4.171: Post-processing thresholds
     // Strong merging to reach a manageable segment count for long broadcasts.
-    // MIN_FRAGMENT_MS raised to 5s so short pauses / noise bursts are folded into
+    // MIN_FRAGMENT_MS raised to 8s so short pauses / noise bursts are folded into
     // the surrounding host speech instead of becoming their own segments.
-    private const val MIN_FRAGMENT_MS = 5000L
+    // v3.1.98: 进一步加大合并力度，减少两小时节目总分段数
+    private const val MIN_FRAGMENT_MS = 8000L
     private const val MAX_PURE_MUSIC_GAP_MS = 2000L
-    private const val MAX_DRY_GAP_MS = 10000L
+    // v3.1.98: 干货合并间隔从10s放宽到30s，电台主持人停顿通常10-20s
+    private const val MAX_DRY_GAP_MS = 30000L
     // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
     // Ad breaks and song blocks often have 5-10s pauses between them.
-    private const val MAX_WATER_GAP_MS = 10000L
+    // v3.1.98: 水分合并间隔从10s放宽到15s
+    private const val MAX_WATER_GAP_MS = 15000L
 
     // Classification results
     private enum class FrameType { DRY, WATER, SILENCE }

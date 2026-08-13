@@ -83,6 +83,19 @@ object SegmentGenerator {
         }
     }
 
+    // v3.1.98: 耗时格式化：将毫秒转为"X分Y秒Z毫秒"格式
+    private fun formatDuration(ms: Long): String {
+        if (ms <= 0) return "0秒"
+        val minutes = ms / 60000
+        val seconds = (ms % 60000) / 1000
+        val millis = ms % 1000
+        return buildString {
+            if (minutes > 0) append("${minutes}分")
+            if (seconds > 0 || minutes > 0) append("${seconds}秒")
+            append("${millis}毫秒")
+        }
+    }
+
     /**
      * v3.1.46: 从音频URL解析节目时长（毫秒）。
      * 解析URL中的时间范围（如 0700_0900），计算时长。
@@ -328,7 +341,8 @@ object SegmentGenerator {
         val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
 
         // v3.1.44: 增强合并逻辑，处理连续水分片段被短间隔分隔未合并的问题
-        val MAX_WATER_MERGE_GAP_MS = 10000L // 10秒
+        // v3.1.98: 合并间隔从10s放宽到20s，减少总分段数
+        val MAX_WATER_MERGE_GAP_MS = 20000L // 20秒
 
         // Pass 1: 合并相邻同类型片段（原有合并逻辑）
         var changed = true
@@ -1053,8 +1067,8 @@ object SegmentGenerator {
             layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
             layer1TimeMs = System.currentTimeMillis() - layer1StartTime
-            Log.i(TAG, "三层架构: 第一层滑动窗口完成，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段，耗时${layer1TimeMs}ms for episode=$episodeId")
-            writeFingerprintLog(context, "三层架构: 第1层耗时${layer1TimeMs}ms，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段")
+            Log.i(TAG, "三层架构: 第一层滑动窗口完成，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段，耗时${formatDuration(layer1TimeMs)} for episode=$episodeId")
+            writeFingerprintLog(context, "三层架构: 第1层耗时${formatDuration(layer1TimeMs)}，匹配${layer1MatchCount}个水货段，共${mergedAfterLayer1.size}个片段")
         } else {
             // 无PCM或无指纹库，运行全量VAD+YAMNet获取真实分段
             val fallbackReason = when {
@@ -1075,15 +1089,15 @@ object SegmentGenerator {
                 mergedAfterLayer1 = mergeAdjacentSegments(fullVadResult.segments.map { it.copy() })
                 audioEngineName = fullVadResult.engineName
                 layer1TimeMs = System.currentTimeMillis() - layer1StartTime
-                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${mergedAfterLayer1.size}个真实分段，耗时${layer1TimeMs}ms for episode=$episodeId")
-                writeFingerprintLog(context, "三层架构: 第1层全量VAD+YAMNet耗时${layer1TimeMs}ms，${mergedAfterLayer1.size}个分段")
+                Log.i(TAG, "三层架构: 全量VAD+YAMNet生成${mergedAfterLayer1.size}个真实分段，耗时${formatDuration(layer1TimeMs)} for episode=$episodeId")
+                writeFingerprintLog(context, "三层架构: 第1层全量VAD+YAMNet耗时${formatDuration(layer1TimeMs)}，${mergedAfterLayer1.size}个分段")
             } else {
                 // VAD也无结果，使用固定分段兜底
                 val fixedSegs = generateFixedSegments(effectiveDurationMs)
                 mergedAfterLayer1 = fixedSegs
                 layer1TimeMs = System.currentTimeMillis() - layer1StartTime
-                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底，耗时${layer1TimeMs}ms for episode=$episodeId")
-                writeFingerprintLog(context, "三层架构: 第1层固定分段兜底耗时${layer1TimeMs}ms，${fixedSegs.size}个分段")
+                Log.w(TAG, "三层架构: 无有效分段，生成固定分段(${fixedSegs.size}个)兜底，耗时${formatDuration(layer1TimeMs)} for episode=$episodeId")
+                writeFingerprintLog(context, "三层架构: 第1层固定分段兜底耗时${formatDuration(layer1TimeMs)}，${fixedSegs.size}个分段")
             }
         }
 
@@ -1528,9 +1542,9 @@ object SegmentGenerator {
         layer2WaterSegments = mergedAfterLayer2.count { !it.hasVoice }
         layer2TimeMs = System.currentTimeMillis() - layer2StartTime
 
-        Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段），耗时${layer2TimeMs}ms")
+        Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段），耗时${formatDuration(layer2TimeMs)}")
         // v3.1.90: 写指纹日志
-        writeFingerprintLog(context, "三层架构: 第2层完成: ${mergedAfterLayer2.size}个片段（干${layer2DrySegments}段/水${layer2WaterSegments}段），耗时${layer2TimeMs}ms")
+        writeFingerprintLog(context, "三层架构: 第2层完成: ${mergedAfterLayer2.size}个片段（干${layer2DrySegments}段/水${layer2WaterSegments}段），耗时${formatDuration(layer2TimeMs)}")
 
         // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
         // v3.1.46: 添加第三层进度通知栏更新，确保三层分段全程都有进度显示
@@ -1542,8 +1556,8 @@ object SegmentGenerator {
             val (recalled, recallCount) = applyFingerprintRecallLayer3WithCount(context, episodeId, mergedAfterLayer2, goldStandardFingerprints)
             layer3RecallCount = recallCount
             layer3TimeMs = System.currentTimeMillis() - layer3StartTime
-            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${layer3TimeMs}ms")
-            writeFingerprintLog(context, "三层架构: 第3层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${layer3TimeMs}ms")
+            Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${formatDuration(layer3TimeMs)}")
+            writeFingerprintLog(context, "三层架构: 第3层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${formatDuration(layer3TimeMs)}")
             SegmentNotificationHelper.update(context, episodeId, episodeTitle, 950, "第3层召回完成，合并结果")
             recalled
         } else {
@@ -1569,7 +1583,7 @@ object SegmentGenerator {
         val totalTimeMs = System.currentTimeMillis() - segStartTime
         val finalDryCount = finalSegments.count { it.hasVoice }
         val dryRatio = if (finalSegments.isNotEmpty()) "%.1f".format(finalDryCount * 100.0 / finalSegments.size) else "0.0"
-        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${totalTimeMs}ms（第1层${layer1TimeMs}ms，第2层${layer2TimeMs}ms，第3层${layer3TimeMs}ms）"
+        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${formatDuration(totalTimeMs)}（第1层${formatDuration(layer1TimeMs)}，第2层${formatDuration(layer2TimeMs)}，第3层${formatDuration(layer3TimeMs)}）"
         Log.i(TAG, fpMsgStats)
         writeFingerprintLog(context, fpMsgStats)
 
@@ -1615,7 +1629,7 @@ object SegmentGenerator {
         // v3.1.28: 更新通知为100%完成
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成")
 
-        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${totalTimeMs}ms（第1层${layer1TimeMs}ms，第2层${layer2TimeMs}ms，第3层${layer3TimeMs}ms）"
+        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${formatDuration(totalTimeMs)}（第1层${formatDuration(layer1TimeMs)}，第2层${formatDuration(layer2TimeMs)}，第3层${formatDuration(layer3TimeMs)}）"
         Log.i(TAG, fpMsgDone)
         writeFingerprintLog(context, fpMsgDone)
 
