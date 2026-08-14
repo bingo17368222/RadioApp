@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.101 安装</title>
+<title>RadioApp v3.1.102 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.101</div>
+  <div class="version">v3.1.102</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.101</h3>
+    <h3>更新内容 v3.1.102</h3>
     <ul>
-      <li>Fix: classifyYamnetScores优先级 - YAMNet判定优先于spectrumRatio</li>
-      <li>修复之前音乐帧被spectrumRatio>0.20误判为DRY的问题</li>
+      <li>Fix: 移除YAMNet双重sigmoid导致WATER判据失效</li>
+      <li>YAMNet输出已是sigmoid概率值，直接使用原始值</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.101.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.102.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -114,7 +114,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.101.apk",
+  text: window.location.href + "RadioApp-v3.1.102.apk",
   width: 180,
   height: 180
 });

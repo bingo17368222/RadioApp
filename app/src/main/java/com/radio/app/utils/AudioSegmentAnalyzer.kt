@@ -166,7 +166,7 @@ object AudioSegmentAnalyzer {
     // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
     private val pcmGenerateLock = java.util.concurrent.locks.ReentrantLock()
 
-    // v3.1.101: VAD语音帧占比（仅供日志，不再用于classifyYamnetScores判断）
+    // v3.1.103: VAD语音帧占比（用于classifyYamnetScores中speech_prob锁定0.30）
     @Volatile
     private var vadSpeechRatio: Float = 0f
 
@@ -304,7 +304,8 @@ object AudioSegmentAnalyzer {
     // the surrounding host speech instead of becoming their own segments.
     // v3.1.98: 进一步加大合并力度，减少两小时节目总分段数
     private const val MIN_FRAGMENT_MS = 8000L
-    private const val MAX_PURE_MUSIC_GAP_MS = 2000L
+    // v3.1.103: 孤立水分片段 < 2.2s 归入模糊段
+    private const val MAX_PURE_MUSIC_GAP_MS = 2200L
     // v3.1.98: 干货合并间隔从10s放宽到30s，电台主持人停顿通常10-20s
     private const val MAX_DRY_GAP_MS = 30000L
     // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
@@ -2161,34 +2162,44 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v3.1.101: YAMNet优先，频谱比值作为补充。
+     * v3.1.103: 新优先级体系。
      *
-     * 优先级（从高到低）：
+     * 判定优先级（从高到低）：
      * 1. 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
-     * 2. 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
-     * 3. 频谱比值 > 0.20 → DRY（人声频谱前置检测，补充YAMNet漏判）
-     * 4. 其余 → DRY（模糊段，等指纹二次判定）
+     * 2. 频谱比值 > 0.16 → DRY（连续3帧生效由classifyIntervalRange保证）
+     * 3. VAD语音帧占比 > 20% → speech_prob锁定0.30
+     * 4. (music - effectiveSpeechScore) > 0.42 且 effectiveSpeechScore < 0.35 → WATER
+     * 5. 其余 → DRY（模糊段，等指纹二次校验）
+     *
+     * @param enableSpectrumCheck 是否启用频谱比值检查（用于classifyIntervalRange的3帧约束）
      */
-    private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
+    private fun classifyYamnetScores(yamnet: YamnetResult, enableSpectrumCheck: Boolean = true): FrameType {
         // 直接使用YAMNet原始sigmoid概率值
         val speechScore = maxOf(yamnet.speech, yamnet.narration)
 
-        // 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
+        // 优先级1：静音检测
         if (yamnet.silence > 0.60f && yamnet.speech < 0.15f) {
             return FrameType.SILENCE
         }
 
-        // 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
-        if ((yamnet.music - speechScore) > 0.35f && speechScore < 0.30f) {
-            return FrameType.WATER
-        }
-
-        // 频谱比值 > 0.20 → DRY（人声频谱前置检测，补充YAMNet漏判的语音段）
-        if (yamnet.spectrumRatio > 0.20f) {
+        // 优先级2：频谱比值 > 0.16 → DRY（连续3帧生效由外层保证）
+        if (enableSpectrumCheck && yamnet.spectrumRatio > 0.16f) {
             return FrameType.DRY
         }
 
-        // 其余 → DRY（模糊段，等指纹二次判定）
+        // 优先级3：VAD语音帧占比 > 20% → speech_prob锁定0.30
+        val effectiveSpeechScore = if (vadSpeechRatio > 0.20f) {
+            maxOf(speechScore, 0.30f)
+        } else {
+            speechScore
+        }
+
+        // 优先级4：YAMNet判定
+        if ((yamnet.music - effectiveSpeechScore) > 0.42f && effectiveSpeechScore < 0.35f) {
+            return FrameType.WATER
+        }
+
+        // 优先级5：其余 → DRY（模糊段，等指纹二次校验）
         return FrameType.DRY
     }
 
@@ -3080,7 +3091,8 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // Pass 3: absorb short pure-music (<1s) gaps inside/between dry segments into dry
+        // Pass 3: v3.1.103 孤立水分片段 < 2.2s 归入模糊段（DRY）
+        // 被干货包围 → 吸收到相邻干货；孤立（无干货相邻）→ 直接转为干货
         changed = true
         while (changed) {
             changed = false
@@ -3104,6 +3116,12 @@ object AudioSegmentAnalyzer {
                         next.start = minOf(next.start, seg.start)
                         next.end = maxOf(next.end, seg.end)
                         sorted.removeAt(i)
+                        changed = true
+                        break
+                    } else {
+                        // 孤立水分片段 → 转为干货（模糊段，等指纹二次校验）
+                        seg.label = "干货"
+                        seg.hasVoice = true
                         changed = true
                         break
                     }
@@ -3449,6 +3467,7 @@ object AudioSegmentAnalyzer {
      * v3.1.83: 在指定的样本范围内执行YAMNet密集分类，返回子段列表。
      * 使用滑动窗口（窗口大小=YAMNET_WINDOW_SAMPLES，步长=YAMNET_SPEECH_HOP_SAMPLES）。
      * 子段坐标已回填到以refStartMs为基准的原始时间轴。
+     * v3.1.103: 新增频谱比值连续3帧约束、上下文窗口7s/1.5s。
      */
     private fun classifyIntervalRange(
         samples: SampleProvider,
@@ -3457,11 +3476,13 @@ object AudioSegmentAnalyzer {
         refStartMs: Long,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
-        // v3.1.101: 存储帧信息（用于上下文连续性检查的第二遍处理）
+        // v3.1.103: 存储原始帧结果（含无频谱判定的备选类型）
         data class FrameInfo(
             val timestampMs: Long,
-            val type: FrameType,
-            val isSpeechContaining: Boolean  // 是否含语音（频谱比值>0.20或YAMNet判为DRY）
+            val type: FrameType,          // 完整判定（含频谱检查）
+            val typeNoSpectrum: FrameType, // 无频谱判定的YAMNet-only判定
+            val isSpeechContaining: Boolean,
+            val spectrumRatio: Float       // 原始频谱比值，用于3帧约束
         )
         val frames = mutableListOf<FrameInfo>()
 
@@ -3470,30 +3491,53 @@ object AudioSegmentAnalyzer {
             checkCancelled()
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
-            val type = classifyYamnetScores(yamnet)
+            val type = classifyYamnetScores(yamnet)                           // 含频谱检查
+            val typeNoSpectrum = classifyYamnetScores(yamnet, false)          // 无频谱检查
 
-            // v3.1.101: 判断是否含语音（频谱比值 > 0.20 或 YAMNet判为DRY，不再依赖全局VAD）
-            val isSpeechContaining = (yamnet.spectrumRatio > 0.20f) || (type == FrameType.DRY)
+            // v3.1.103: 判断是否含语音（频谱比值>0.16或YAMNet判为DRY）
+            val isSpeechContaining = (yamnet.spectrumRatio > 0.16f) || (type == FrameType.DRY)
 
             // 窗口中心时间戳（相对于refStartMs）
             val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
             val windowCenterMs = refStartMs + (windowCenterSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
-            frames.add(FrameInfo(windowCenterMs, type, isSpeechContaining))
+            frames.add(FrameInfo(windowCenterMs, type, typeNoSpectrum, isSpeechContaining, yamnet.spectrumRatio))
             pos += YAMNET_SPEECH_HOP_SAMPLES
         }
 
         if (frames.isEmpty()) return emptyList()
 
-        // v3.1.101: 上下文连续性约束（5秒滑动窗口，基于局部帧判断）
-        // 对每个YAMNet帧，检查前后各1秒（约2个YAMNet帧）内是否有其他帧被标记为含语音
-        // 如果有，则当前帧降级为模糊段 DRY（不判水分，等指纹二次判定）
-        val oneSecMs = 1000L
+        // v3.1.103: 频谱比值连续3帧生效约束
+        // 如果某帧因spectrumRatio>0.16被判DRY但不在连续3帧内，回退到YAMNet-only判定
+        for (i in frames.indices) {
+            if (frames[i].type == FrameType.DRY &&
+                frames[i].typeNoSpectrum != FrameType.DRY &&
+                frames[i].spectrumRatio > 0.16f) {
+                val inThreeInARow = (i >= 2 &&
+                    frames[i-1].spectrumRatio > 0.16f &&
+                    frames[i-2].spectrumRatio > 0.16f) ||
+                    (i >= 1 && i < frames.size - 1 &&
+                        frames[i-1].spectrumRatio > 0.16f &&
+                        frames[i+1].spectrumRatio > 0.16f) ||
+                    (i < frames.size - 2 &&
+                        frames[i+1].spectrumRatio > 0.16f &&
+                        frames[i+2].spectrumRatio > 0.16f)
+                if (!inThreeInARow) {
+                    frames[i] = frames[i].copy(type = frames[i].typeNoSpectrum,
+                        isSpeechContaining = (frames[i].spectrumRatio > 0.16f) || (frames[i].typeNoSpectrum == FrameType.DRY))
+                }
+            }
+        }
+
+        // v3.1.103: 上下文连续性约束（7秒滑动窗口，前后1.5秒）
+        // 对每个WATER帧，检查前后1.5s内是否有其他帧被标记为含语音
+        // 如果有，则当前帧降级为模糊段 DRY（等指纹二次判定）
+        val contextWindowMs = 1500L
         for (i in frames.indices) {
             val frame = frames[i]
             if (frame.type == FrameType.WATER) {
                 val hasSpeechNearby = frames.any { other ->
                     other != frame &&
-                        kotlin.math.abs(other.timestampMs - frame.timestampMs) <= oneSecMs &&
+                        kotlin.math.abs(other.timestampMs - frame.timestampMs) <= contextWindowMs &&
                         other.isSpeechContaining
                 }
                 if (hasSpeechNearby) {
@@ -3512,7 +3556,7 @@ object AudioSegmentAnalyzer {
         var segType = frames[0].type
 
         for (i in 1 until frames.size) {
-            val (currentTs, currentType, _) = frames[i]
+            val (currentTs, currentType, _, _, _) = frames[i]
             if (currentType != segType) {
                 val segEndMs = currentTs - halfWindowMs
                 if (segEndMs > segStartMs) {
