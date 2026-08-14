@@ -176,19 +176,20 @@ object AudioSegmentAnalyzer {
      */
     fun cancelCurrentAnalysis(): Boolean {
         analysisCancelled = true
-        // v3.1.109: 记录取消来源的完整调用栈到logcat，用于排查"非用户取消"问题
+        // v3.1.110: 记录取消来源的完整调用栈到指纹日志，用于排查非用户触发的取消
         val stackTrace = Thread.currentThread().stackTrace
         val caller = stackTrace.getOrNull(2)?.let { "${it.className}.${it.methodName}:${it.lineNumber}" } ?: "unknown"
         Log.e("AudioSegmentAnalyzer", "cancelCurrentAnalysis called by $caller")
-        // 记录完整调用栈
+        // 记录完整调用栈到logcat
         val sw = java.io.StringWriter()
         val pw = java.io.PrintWriter(sw)
         pw.println("cancelCurrentAnalysis called by $caller")
-        pw.println("Full stack trace:")
         for (element in stackTrace.take(20)) {
             pw.println("\tat ${element.className}.${element.methodName}(${element.fileName}:${element.lineNumber})")
         }
         Log.e("AudioSegmentAnalyzer", sw.toString())
+        // 写入指纹日志文件
+        writeFingerprintLog("cancelCurrentAnalysis called by $caller, analysisEpisodeId=$episodeId")
         val t = currentAnalysisThread ?: return false
         return if (!t.isInterrupted) {
             t.interrupt()
@@ -261,6 +262,19 @@ object AudioSegmentAnalyzer {
             logFile?.let { f ->
                 f.appendText("[$timestamp] $msg\n")
             }
+        } catch (_: Exception) {}
+    }
+
+    // v3.1.110: 将调试日志写入指纹日志文件（logs/fingerprint/fingerprint_segment.log）
+    // 用于跨模块排查时统一日志位置，不依赖logcat
+    private fun writeFingerprintLog(msg: String) {
+        try {
+            val ctx = logContext ?: return
+            val logDir = File(com.radio.app.RadioApplication.getLogDir(ctx), "fingerprint")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = File(logDir, "fingerprint_segment.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            logFile.appendText("[$ts] $msg\n")
         } catch (_: Exception) {}
     }
 
@@ -3326,8 +3340,22 @@ object AudioSegmentAnalyzer {
                     return emptyList()
                 }
 
-                val (speechRanges, _) = runSileroVadIntervals(samplesProvider, vadModel) { permille ->
-                    progressCallback?.invoke(permille)
+                val speechRanges: List<TimeRange>
+                try {
+                    val result = runSileroVadIntervals(samplesProvider, vadModel) { permille ->
+                        progressCallback?.invoke(permille)
+                    }
+                    speechRanges = result.first
+                } catch (e: InterruptedException) {
+                    // v3.1.110: 捕获InterruptedException，返回空列表让调用方自然处理
+                    // 调用方会在speechRanges.isEmpty()时使用pending段作为YAMNet区间
+                    Log.w(TAG, "runVadOnly: VAD被中断: ${e.message}")
+                    writeFingerprintLog("runVadOnly: VAD被中断: ${e.message}")
+                    val sw = java.io.StringWriter()
+                    val pw = java.io.PrintWriter(sw)
+                    e.printStackTrace(pw)
+                    writeFingerprintLog("runVadOnly: VAD中断调用栈:\n${sw.toString().take(500)}")
+                    return emptyList()
                 }
 
                 // v3.1.86: 详细日志输出VAD活动段信息
