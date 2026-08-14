@@ -95,16 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.107</div>
+  <div class="version">v3.1.108</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.107</h3>
+    <h3>更新内容 v3.1.108</h3>
     <ul>
-      <li>Fix: MIN_FRAGMENT_MS从8s降到3s，避免3-7秒短干货被误吸收到相邻水段</li>
-      <li>Fix: MAX_DRY_GAP_MS从30s降到3s，避免层叠合并导致干货中间丢失</li>
-      <li>解决干货片段中间丢失问题（原100段干货→15段，现预期保留50-70段）</li>
+      <li>Fix: generateJiuAiTingSegments注册currentAnalysisThread，使取消机制能正确中断线程</li>
+      <li>Fix: 取消日志细化来源（区分Thread.interrupted/isAnalysisCancelled标志）</li>
+      <li>Fix: cancelCurrentAnalysis添加调用栈追踪，记录触发来源</li>
+      <li>解决异常被误报为用户取消的问题</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.107.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.108.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>

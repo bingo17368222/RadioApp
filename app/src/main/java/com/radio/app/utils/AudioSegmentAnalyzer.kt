@@ -176,6 +176,10 @@ object AudioSegmentAnalyzer {
      */
     fun cancelCurrentAnalysis(): Boolean {
         analysisCancelled = true
+        // v3.1.108: 记录取消来源的调用栈，用于排查"非用户取消"问题
+        val stackTrace = Thread.currentThread().stackTrace
+        val caller = stackTrace.getOrNull(2)?.let { "${it.className}.${it.methodName}:${it.lineNumber}" } ?: "unknown"
+        Log.i("AudioSegmentAnalyzer", "cancelCurrentAnalysis called by $caller")
         val t = currentAnalysisThread ?: return false
         return if (!t.isInterrupted) {
             t.interrupt()
@@ -201,6 +205,17 @@ object AudioSegmentAnalyzer {
      */
     @JvmStatic
     fun isAnalysisCancelled(): Boolean = analysisCancelled
+
+    // v3.1.108: 公开getter/setter，使generateJiuAiTingSegments也能设置当前分析线程
+    // 原来只有analyzeEpisode设置了currentAnalysisThread，三层分段流程未设置，
+    // 导致cancelCurrentAnalysis()只能设analysisCancelled标志，不能中断线程
+    @JvmStatic
+    fun getCurrentAnalysisThread(): Thread? = currentAnalysisThread
+
+    @JvmStatic
+    fun setCurrentAnalysisThread(t: Thread?) {
+        currentAnalysisThread = t
+    }
 
     private fun checkCancelled() {
         if (analysisCancelled || Thread.currentThread().isInterrupted) {

@@ -924,6 +924,8 @@ object SegmentGenerator {
         audioUrl: String? = null,
         progressCallback: ((Int, Long, Long) -> Unit)? = null
     ): JiuAiTingResult? {
+        // v3.1.108: 必须在try块外声明，确保finally块能访问
+        var savedAnalysisThread: Thread? = null
         try {
             // v3.1.50: 检查全局三层分段标志，防止并发分段导致通知栏循环
             if (isThreeLayerSegmenting) {
@@ -936,6 +938,12 @@ object SegmentGenerator {
             // startSession 被 isSegmenting 检查拒绝（永远返回 false），通知栏永远不会启动。
             // 现在先执行 startSession，成功后再设置 isSegmenting，阻止外部并发请求。
         val segStartTime = System.currentTimeMillis()
+        // v3.1.108: 设置当前分析线程引用，使 cancelCurrentAnalysis() 能正确中断线程
+        // 原来 generateJiuAiTingSegments 未设置 currentAnalysisThread，导致：
+        // 1. cancelCurrentAnalysis() 只能设 analysisCancelled 标志，不能中断线程
+        // 2. 线程中断标志不清，后续层检查 Thread.interrupted() 时误判为"用户取消"
+        savedAnalysisThread = AudioSegmentAnalyzer.getCurrentAnalysisThread()
+        AudioSegmentAnalyzer.setCurrentAnalysisThread(Thread.currentThread())
         // v3.1.46: 校验durationMs，如果为0或<=60000则使用默认值2小时
         // 避免因durationMs无效导致shouldRunLayer2=false（仅运行第1层）或瞬间完成
         // v3.1.47: 增加最小时长限制（900秒=15分钟），确保即使durationMs>60000但过小时，
@@ -1105,8 +1113,10 @@ object SegmentGenerator {
         // 根因分析：原代码 resetCancellation + restartSession 导致通知栏出现消失循环。
         // 用户取消通知意味着不想看到进度，后续第2/3层静默运行即可，无需恢复通知。
         // 取消标志保持为true，后续层级的进度更新会被 SegmentNotificationHelper.update 中的 cancelled 检查拦截。
+        // v3.1.108: 区分取消来源，记录详细原因
         if (AudioSegmentAnalyzer.isAnalysisCancelled()) {
-            val fpMsgCancel = "三层架构: 第1层期间收到取消信号，后续层静默运行（不重建通知）for episode=$episodeId"
+            val cancelSource = if (Thread.currentThread().isInterrupted) "thread.interrupt" else "analysisCancelled flag"
+            val fpMsgCancel = "三层架构: 第1层期间收到取消信号(cancelSource=$cancelSource)，后续层静默运行 for episode=$episodeId"
             Log.i(TAG, fpMsgCancel)
             writeFingerprintLog(context, fpMsgCancel)
         }
@@ -1664,6 +1674,8 @@ var subSegments = listOf<VoiceSegment>()
             try { SegmentNotificationHelper.endSession(context, episodeId) } catch (_: Exception) {}
             return null
         } finally {
+            // v3.1.108: 恢复之前的分析线程引用
+            AudioSegmentAnalyzer.setCurrentAnalysisThread(savedAnalysisThread)
             isThreeLayerSegmenting = false
             // v3.1.51: 同时清除全局标志，允许后续分段请求
             SegmentNotificationHelper.isSegmenting = false
@@ -1717,8 +1729,16 @@ var subSegments = listOf<VoiceSegment>()
             totalWindows++
 
             // v3.1.32: 响应取消信号，及时停止滑动窗口处理
-            if (Thread.interrupted() || AudioSegmentAnalyzer.isAnalysisCancelled()) {
-                val fpMsgCancel = "第一层滑动窗口: 用户取消处理，位置${pos}ms"
+            // v3.1.108: 区分取消来源，记录详细原因
+            val threadInterrupted = Thread.interrupted()
+            val flagCancelled = AudioSegmentAnalyzer.isAnalysisCancelled()
+            if (threadInterrupted || flagCancelled) {
+                val cancelSource = when {
+                    threadInterrupted && flagCancelled -> "thread.interrupt+analysisCancelled"
+                    threadInterrupted -> "thread.interrupt"
+                    else -> "analysisCancelled flag"
+                }
+                val fpMsgCancel = "第一层滑动窗口: 取消处理(cancelSource=$cancelSource)，位置${pos}ms for episode=$episodeId"
                 Log.i(TAG, fpMsgCancel)
                 writeFingerprintLog(context, fpMsgCancel)
                 break
