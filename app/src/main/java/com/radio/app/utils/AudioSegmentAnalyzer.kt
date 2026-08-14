@@ -166,7 +166,7 @@ object AudioSegmentAnalyzer {
     // v3.1.41: PCM生成锁，确保同时只生成一个PCM文件
     private val pcmGenerateLock = java.util.concurrent.locks.ReentrantLock()
 
-    // v3.1.100: VAD语音帧占比（仅供日志，不再用于classifyYamnetScores判断）
+    // v3.1.101: VAD语音帧占比（仅供日志，不再用于classifyYamnetScores判断）
     @Volatile
     private var vadSpeechRatio: Float = 0f
 
@@ -2160,22 +2160,15 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v3.1.99: YAMNet判据改为相对差值。
+     * v3.1.101: YAMNet优先，频谱比值作为补充。
      *
      * 优先级（从高到低）：
-     * 1. 频谱比值 > 0.20 → DRY（人声频谱前置检测）
-     * 2. VAD语音帧占比 > 25% → DRY
-     * 3. 直接使用YAMNet原始sigmoid概率值
-     *    - 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
-     *    - 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
-     *    - 其余 → DRY（模糊段，等指纹二次判定）
+     * 1. 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
+     * 2. 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
+     * 3. 频谱比值 > 0.20 → DRY（人声频谱前置检测，补充YAMNet漏判）
+     * 4. 其余 → DRY（模糊段，等指纹二次判定）
      */
     private fun classifyYamnetScores(yamnet: YamnetResult): FrameType {
-        // 优先级1：频谱比值 > 0.20 → DRY（人声频谱前置检测，豁免水分）
-        if (yamnet.spectrumRatio > 0.20f) {
-            return FrameType.DRY
-        }
-
         // 直接使用YAMNet原始sigmoid概率值
         val speechScore = maxOf(yamnet.speech, yamnet.narration)
 
@@ -2187,6 +2180,11 @@ object AudioSegmentAnalyzer {
         // 如果 (music - speech_score) > 0.35 且 speech_score < 0.30 → WATER
         if ((yamnet.music - speechScore) > 0.35f && speechScore < 0.30f) {
             return FrameType.WATER
+        }
+
+        // 频谱比值 > 0.20 → DRY（人声频谱前置检测，补充YAMNet漏判的语音段）
+        if (yamnet.spectrumRatio > 0.20f) {
+            return FrameType.DRY
         }
 
         // 其余 → DRY（模糊段，等指纹二次判定）
@@ -3458,7 +3456,7 @@ object AudioSegmentAnalyzer {
         refStartMs: Long,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
-        // v3.1.100: 存储帧信息（用于上下文连续性检查的第二遍处理）
+        // v3.1.101: 存储帧信息（用于上下文连续性检查的第二遍处理）
         data class FrameInfo(
             val timestampMs: Long,
             val type: FrameType,
@@ -3473,7 +3471,7 @@ object AudioSegmentAnalyzer {
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
             val type = classifyYamnetScores(yamnet)
 
-            // v3.1.100: 判断是否含语音（频谱比值 > 0.20 或 YAMNet判为DRY，不再依赖全局VAD）
+            // v3.1.101: 判断是否含语音（频谱比值 > 0.20 或 YAMNet判为DRY，不再依赖全局VAD）
             val isSpeechContaining = (yamnet.spectrumRatio > 0.20f) || (type == FrameType.DRY)
 
             // 窗口中心时间戳（相对于refStartMs）
@@ -3485,7 +3483,7 @@ object AudioSegmentAnalyzer {
 
         if (frames.isEmpty()) return emptyList()
 
-        // v3.1.100: 上下文连续性约束（5秒滑动窗口，基于局部帧判断）
+        // v3.1.101: 上下文连续性约束（5秒滑动窗口，基于局部帧判断）
         // 对每个YAMNet帧，检查前后各1秒（约2个YAMNet帧）内是否有其他帧被标记为含语音
         // 如果有，则当前帧降级为模糊段 DRY（不判水分，等指纹二次判定）
         val oneSecMs = 1000L

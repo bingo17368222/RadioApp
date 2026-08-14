@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.92 安装</title>
+<title>RadioApp v3.1.100 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.92</div>
+  <div class="version">v3.1.100</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.92</h3>
+    <h3>更新内容 v3.1.100</h3>
     <ul>
-      <li>Fix: classifyPcmInterval复用PCM文件句柄，避免打开316次</li>
-      <li>Fix: 双音频分段独立方案短区间默认类型改为WATER减少分段数</li>
-      <li>Fix: 去除v3.1.91新增的YAMNet回退机制</li>
+      <li>Fix: 移除classifyYamnetScores全局vadSpeechRatio检查</li>
+      <li>Fix: isSpeechContaining改为基于局部帧判断</li>
+      <li>修复双模型仅1段问题</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.92.apk" class="download-btn" download>📥 下载安装</a>
-  <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
+  <a href="RadioApp-v3.1.100.apk" class="download-btn" download>📥 下载安装</a>
+  <div class="file-info">34 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
     <div class="qr-label">手机扫码安装</div>
@@ -115,7 +115,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.92.apk",
+  text: window.location.href + "RadioApp-v3.1.100.apk",
   width: 180,
   height: 180
 });
