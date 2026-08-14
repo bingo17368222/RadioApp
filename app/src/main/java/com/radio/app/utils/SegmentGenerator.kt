@@ -1231,7 +1231,7 @@ object SegmentGenerator {
 
                                     // v3.1.106: 内部捕获InterruptedException转为break，使用部分结果
                                     // 避免整个第2层回退到第1层结果（单段待处理→全水分）
-                                    val subSegments: List<VoiceSegment>
+var subSegments = listOf<VoiceSegment>()
                                     try {
                                         subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
                                             pcmSamples, intervalStart, intervalEnd,
@@ -1428,7 +1428,7 @@ object SegmentGenerator {
 
                                                 // v3.1.106: 内部捕获InterruptedException转为break，使用部分结果
                                                 // 避免整个第2层回退到第1层结果（单段待处理→全水分）
-                                                val subSegments: List<VoiceSegment>
+var subSegments = listOf<VoiceSegment>()
                                                 try {
                                                     subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
