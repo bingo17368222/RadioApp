@@ -2162,7 +2162,7 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v3.1.103: 新优先级体系。
+     * v3.1.104: 新优先级体系。
      *
      * 判定优先级（从高到低）：
      * 1. 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
@@ -2170,6 +2170,11 @@ object AudioSegmentAnalyzer {
      * 3. VAD语音帧占比 > 20% → speech_prob锁定0.30
      * 4. (music - effectiveSpeechScore) > 0.42 且 effectiveSpeechScore < 0.35 → WATER
      * 5. 其余 → DRY（模糊段，等指纹二次校验）
+     *
+     * 上下文保护（classifyIntervalRange中执行）：
+     * - 人声保护范围仅前后1.5秒
+     * - 仅spectrumRatio>0.16（实际人声）触发保护
+     * - 间隔超出1.5s不再触发上下文豁免
      *
      * @param enableSpectrumCheck 是否启用频谱比值检查（用于classifyIntervalRange的3帧约束）
      */
@@ -3494,8 +3499,9 @@ object AudioSegmentAnalyzer {
             val type = classifyYamnetScores(yamnet)                           // 含频谱检查
             val typeNoSpectrum = classifyYamnetScores(yamnet, false)          // 无频谱检查
 
-            // v3.1.103: 判断是否含语音（频谱比值>0.16或YAMNet判为DRY）
-            val isSpeechContaining = (yamnet.spectrumRatio > 0.16f) || (type == FrameType.DRY)
+            // v3.1.104: 判断是否含人声（仅频谱比值>0.16，不依赖YAMNet的DRY标记）
+            // 避免将音乐、静音等非语音干帧误判为"含语音"而触发上下文保护
+            val isSpeechContaining = (yamnet.spectrumRatio > 0.16f)
 
             // 窗口中心时间戳（相对于refStartMs）
             val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
@@ -3523,14 +3529,15 @@ object AudioSegmentAnalyzer {
                         frames[i+2].spectrumRatio > 0.16f)
                 if (!inThreeInARow) {
                     frames[i] = frames[i].copy(type = frames[i].typeNoSpectrum,
-                        isSpeechContaining = (frames[i].spectrumRatio > 0.16f) || (frames[i].typeNoSpectrum == FrameType.DRY))
+                        isSpeechContaining = (frames[i].spectrumRatio > 0.16f))
                 }
             }
         }
 
-        // v3.1.103: 上下文连续性约束（7秒滑动窗口，前后1.5秒）
-        // 对每个WATER帧，检查前后1.5s内是否有其他帧被标记为含语音
-        // 如果有，则当前帧降级为模糊段 DRY（等指纹二次判定）
+        // v3.1.104: 上下文连续性约束（人声保护范围仅前后1.5秒）
+        // 对每个WATER帧，检查前后1.5s内是否有其他帧含人声（spectrumRatio>0.16）
+        // 如果超出1.5s间隔，不再触发上下文豁免
+        // 只有在频谱比值>0.16（实际人声）时才触发保护，避免音乐帧误触发
         val contextWindowMs = 1500L
         for (i in frames.indices) {
             val frame = frames[i]
