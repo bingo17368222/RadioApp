@@ -337,9 +337,9 @@ object AudioSegmentAnalyzer {
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
     // v2.4.171: Post-processing thresholds
-    // v3.1.107: MIN_FRAGMENT_MS从8s降到3s，避免短干货片段被误吸收到相邻水段
-    // 8s导致大量3-7秒干货（主持人短句）被吸收，是干货中间丢失的主因之一
-    private const val MIN_FRAGMENT_MS = 3000L
+    // v3.1.112: MIN_FRAGMENT_MS从3s降到1.5s，避免短干货片段（主持人短句1.5-3s）被误吸收
+    // 3s导致大量短干货被合并到相邻水段，经Pass3转干→Pass4合并为一个大段，是干货间丢失的主因
+    private const val MIN_FRAGMENT_MS = 1500L
     // v3.1.112: 孤立水分片段 < 1s 才归入模糊段，避免过度吞并中间干货
     private const val MAX_PURE_MUSIC_GAP_MS = 1000L
     // v3.1.112: 干货合并间隔从3s降到500ms，仅合并极短间隔的相邻干货
@@ -1853,14 +1853,23 @@ object AudioSegmentAnalyzer {
                         val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
                         try { progressCallback?.invoke(mapped, elapsedMs, etaMs) } catch (_: Exception) { }
                     }
-                    if ((mapped > 0 && mapped % 50 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
+                    // v3.1.112: 每10%和每30秒写入指纹日志，记录VAD/YAMNet进度
+                    if ((mapped > 0 && mapped % 100 == 0 && nowMs - lastFriendlyLogTimeMs > 10_000)
                         || (nowMs - lastFriendlyLogTimeMs > 30_000)) {
                         lastFriendlyLogTimeMs = nowMs
                         val processedMs = (mapped * totalDurationMs / 1000L).coerceAtMost(totalDurationMs)
                         val elapsedMs = nowMs - analysisStartTimeMs
                         val etaMs = if (mapped > 0) (elapsedMs * (1000 - mapped) / mapped) else 0L
                         val progressPercent = String.format(java.util.Locale.US, "%.1f", mapped / 10f)
-                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progressPercent}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}")
+                        val logMsg = "[${com.radio.app.RadioApplication.appVersionTag()}] 音频分段进度 ${progressPercent}%：已处理 ${formatDurationMs(processedMs)} / ${formatDurationMs(totalDurationMs)}，已用 ${formatDurationMs(elapsedMs)}，预计剩余 ${formatDurationMs(etaMs)}"
+                        vadLog(logMsg)
+                        // v3.1.112: 同时写入指纹日志
+                        val phaseName = when {
+                            mapped < 300 -> "Phase1 VAD"
+                            mapped < 900 -> "Phase2 YAMNet"
+                            else -> "Phase3 合并"
+                        }
+                        writeFingerprintLog("音频分段进度 $phaseName: ${progressPercent}% (已用${formatDurationMs(elapsedMs)}/剩余${formatDurationMs(etaMs)})")
                     }
                 }
 

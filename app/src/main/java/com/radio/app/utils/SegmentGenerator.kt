@@ -1166,12 +1166,17 @@ object SegmentGenerator {
             try {
                 // ===== 第二层-A：VAD-only，获取全时间轴活动段 =====
                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, 200, "第2层-A VAD活动检测")
+                val vadStartTime = System.currentTimeMillis()
                 val speechRanges = AudioSegmentAnalyzer.runVadOnly(
                     context, pcmSourceFile, effectiveDurationMs
                 ) { permille ->
                     val mapped = 200 + (permille * 150 / 1000).coerceIn(0, 150)
                     SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
                 }
+                val vadDurationMs = System.currentTimeMillis() - vadStartTime
+                val vadTotalActivityMs = speechRanges.sumOf { it.durationMs }
+                val vadActivityRatio = if (effectiveDurationMs > 0) "%.1f".format(vadTotalActivityMs * 100.0 / effectiveDurationMs) else "0"
+                writeFingerprintLog(context, "三层架构: 第2层-A VAD完成: ${speechRanges.size}个活动段（总${vadTotalActivityMs}ms, 占比${vadActivityRatio}%）, 耗时${formatDuration(vadDurationMs)}")
 
                 // ===== VAD结果（可能为空，但不允许降级） =====
                 // v3.1.85: 移除所有降级路径，VAD无活动时直接用pending段，YAMNet始终运行
@@ -1373,12 +1378,17 @@ var subSegments = listOf<VoiceSegment>()
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 100, "PCM生成完成，开始VAD分析")
                         try {
                             // ===== 第二层-A：VAD-only =====
+                            val vadStartTime2 = System.currentTimeMillis()
                             val speechRanges = AudioSegmentAnalyzer.runVadOnly(
                                 context, newFullPcm, effectiveDurationMs
                             ) { permille ->
                                 val mapped = 150 + (permille * 100 / 1000).coerceIn(0, 100)
                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
                             }
+                            val vadDurationMs2 = System.currentTimeMillis() - vadStartTime2
+                            val vadTotalActivityMs2 = speechRanges.sumOf { it.durationMs }
+                            val vadActivityRatio2 = if (effectiveDurationMs > 0) "%.1f".format(vadTotalActivityMs2 * 100.0 / effectiveDurationMs) else "0"
+                            writeFingerprintLog(context, "三层架构: PCM再生后第2层-A VAD完成: ${speechRanges.size}个活动段（总${vadTotalActivityMs2}ms, 占比${vadActivityRatio2}%）, 耗时${formatDuration(vadDurationMs2)}")
 
                             // ===== VAD结果（可能为空，但不允许降级） =====
                             // v3.1.85: 移除所有降级路径，VAD无活动时直接用pending段，YAMNet始终运行
@@ -1592,6 +1602,9 @@ var subSegments = listOf<VoiceSegment>()
         // v3.1.95: 应用完整的后处理合并逻辑（碎片合并、干货合并、水分合并）
         // 解决三层架构连续水分分段未合并、总分段数过多的问题
         val merged = mergeAdjacentSegments(layer3Result)
+        // v3.1.112: 记录合并前后的分段数，用于排查干货间丢失
+        val dryBeforePost = merged.count { it.hasVoice }
+        val waterBeforePost = merged.count { !it.hasVoice && isWaterLabel(it.label) }
         val finalSegments = AudioSegmentAnalyzer.postProcessSegments(merged).toMutableList().apply {
             for (seg in this) {
                 if (!seg.hasVoice && seg.label == null) {
@@ -1599,6 +1612,10 @@ var subSegments = listOf<VoiceSegment>()
                 }
             }
         }
+        val dryAfterPost = finalSegments.count { it.hasVoice }
+        val waterAfterPost = finalSegments.count { !it.hasVoice }
+        // v3.1.112: 详细记录后处理变化
+        writeFingerprintLog(context, "三层架构: 后处理结果: ${merged.size}段(干${dryBeforePost}/水${waterBeforePost}) → ${finalSegments.size}段(干${dryAfterPost}/水${waterAfterPost}), 合并前${layer3Result.size}段")
 
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime

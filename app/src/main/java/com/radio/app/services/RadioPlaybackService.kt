@@ -1564,20 +1564,47 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return try {
             val dbHelper = RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodesByDateAndStation(stationId, dateStr)
-            // 认为至少 3 个节目才算完整（可根据电台实际节目密度调整）
-            if (cached.size >= 3) {
-                Log.d(TAG, "ensureScheduleComplete: schedule already complete for $stationId $dateStr (${cached.size} episodes)")
-                return true
+            // v3.1.112: 从3个提高到8个，确保节目单足够完整
+            if (cached.size >= 8) {
+                // v3.1.112: 验证最早节目时间是否在当日合理范围内
+                val sorted = cached.sortedBy { it.startTime }
+                val firstStart = sorted.firstOrNull()?.startTime ?: 0L
+                val lastStart = sorted.lastOrNull()?.startTime ?: 0L
+                // 计算当天0点时间戳（北京时间）
+                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                val dayStart = (sdf.parse(dateStr)?.time ?: 0L)
+                val dayEnd = dayStart + 86400000L
+                if (firstStart >= dayStart && firstStart < dayEnd && lastStart > firstStart) {
+                    Log.d(TAG, "ensureScheduleComplete: schedule already complete for $stationId $dateStr (${cached.size} episodes)")
+                    return true
+                }
+                writePreCacheLog("ensureScheduleComplete: cached ${cached.size} but timestamps invalid (first=$firstStart, dayStart=$dayStart), refreshing...")
+            } else {
+                writePreCacheLog("ensureScheduleComplete: schedule incomplete for $stationId $dateStr (cached=${cached.size}), refreshing...")
             }
-            writePreCacheLog("ensureScheduleComplete: schedule incomplete for $stationId $dateStr (cached=${cached.size}), refreshing...")
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
             if (!freshEpisodes.isNullOrEmpty()) {
-                dbHelper.saveEpisodeInfos(freshEpisodes)
-                writePreCacheLog("ensureScheduleComplete: refreshed ${freshEpisodes.size} episodes for $stationId $dateStr")
-                true
+                // v3.1.112: 过滤无效节目，确保排序正确
+                val validEpisodes = freshEpisodes
+                    .filter { it.duration > 0 && it.startTime > 0 && !it.broadcastAt.isNullOrBlank() }
+                    .sortedBy { it.startTime }
+                if (validEpisodes.isNotEmpty()) {
+                    dbHelper.saveEpisodeInfos(validEpisodes)
+                    writePreCacheLog("ensureScheduleComplete: refreshed ${validEpisodes.size}/${freshEpisodes.size} valid episodes for $stationId $dateStr")
+                    // v3.1.112: 验证刷新后的节目单是否足够
+                    if (validEpisodes.size >= 5) {
+                        writePreCacheLog("ensureScheduleComplete: schedule refreshed with ${validEpisodes.size} episodes, " +
+                                "first: ${validEpisodes.first().title}@${validEpisodes.first().startTime}, " +
+                                "last: ${validEpisodes.last().title}@${validEpisodes.last().startTime}")
+                        return true
+                    }
+                }
+                writePreCacheLog("ensureScheduleComplete: refresh returned only ${validEpisodes.size} valid episodes for $stationId $dateStr")
+                false
             } else {
-                writePreCacheLog("ensureScheduleComplete: refresh returned empty for $stationId $dateStr")
+                writePreCacheLog("ensureScheduleComplete: refresh returned null/empty for $stationId $dateStr")
                 false
             }
         } catch (e: Exception) {

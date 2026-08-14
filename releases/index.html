@@ -95,17 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.112</div>
+  <div class="version">v3.1.113</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.112</h3>
+    <h3>更新内容 v3.1.113</h3>
     <ul>
-      <li>Fix: 第2层异常不再回退第1层结果，改为向上抛出异常，由外层统一处理</li>
-      <li>Fix: 后处理Pass3仅转标签不合并，防止层叠触发Pass4合并导致干货中间丢失</li>
-      <li>Fix: MAX_DRY_GAP_MS 3s→500ms, MAX_PURE_MUSIC_GAP_MS 2.2s→1s，减少过度合并</li>
-      <li>Fix: 通知进度卡顿 — PROGRESS_SIGNIFICANT_CHANGE 5→1，VAD/YAMNet进度不再被防抖跳过</li>
+      <li>Fix: MIN_FRAGMENT_MS 3s→1.5s，减少短干货被合并到相邻段导致干货间丢失</li>
+      <li>Fix: ensureScheduleComplete 阈值3→8，刷新节目单时按startTime排序，过滤无效节目</li>
+      <li>Fix: 音频分段VAD/YAMNet进度每10%写入指纹日志，后处理干/水变化详细记录</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.112.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.113.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -116,7 +115,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.112.apk",
+  text: window.location.href + "RadioApp-v3.1.113.apk",
   width: 180,
   height: 180
 });
