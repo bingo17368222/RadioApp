@@ -189,7 +189,7 @@ object AudioSegmentAnalyzer {
         }
         Log.e("AudioSegmentAnalyzer", sw.toString())
         // 写入指纹日志文件
-        writeFingerprintLog("cancelCurrentAnalysis called by $caller, analysisEpisodeId=$episodeId")
+        writeFingerprintLog("cancelCurrentAnalysis called by $caller")
         val t = currentAnalysisThread ?: return false
         return if (!t.isInterrupted) {
             t.interrupt()
