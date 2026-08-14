@@ -1229,17 +1229,25 @@ object SegmentGenerator {
                                 for ((intervalStart, intervalEnd) in yamnetIntervals) {
                                     if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
 
-                                    val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
-                                        pcmSamples, intervalStart, intervalEnd,
-                                        yamnetInterpreter
-                                    ) { permille ->
-                                        val baseProgress = 350 + (processedCount * 500 / totalIntervals)
-                                        val intervalProgress = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
-                                        val mapped = (baseProgress + intervalProgress).coerceIn(350, 900)
-                                        SegmentNotificationHelper.update(
-                                            context, episodeId, episodeTitle, mapped,
-                                            "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals"
-                                        )
+                                    // v3.1.106: 内部捕获InterruptedException转为break，使用部分结果
+                                    // 避免整个第2层回退到第1层结果（单段待处理→全水分）
+                                    val subSegments: List<VoiceSegment>
+                                    try {
+                                        subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                            pcmSamples, intervalStart, intervalEnd,
+                                            yamnetInterpreter
+                                        ) { permille ->
+                                            val baseProgress = 350 + (processedCount * 500 / totalIntervals)
+                                            val intervalProgress = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
+                                            val mapped = (baseProgress + intervalProgress).coerceIn(350, 900)
+                                            SegmentNotificationHelper.update(
+                                                context, episodeId, episodeTitle, mapped,
+                                                "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals"
+                                            )
+                                        }
+                                    } catch (e: InterruptedException) {
+                                        if (yamnetAllSegments.isEmpty()) throw  // 无部分结果，向上传播
+                                        break  // 有部分结果，使用部分结果
                                     }
 
                                     for (seg in subSegments) {
@@ -1280,31 +1288,12 @@ object SegmentGenerator {
                                 }
                             }
 
-                            // 3. v3.1.105: 填充YAMNet未覆盖的间隙，默认标记为干货（非YAMNet判定区域不应默认水货，等指纹二次校验）
-                            for (pending in pendingSegments) {
-                                var pos = pending.start
-                                // v3.1.105: 修复过滤条件bug - 只需要覆盖范围和pending区间有交集即可，不要求整个范围都在pending内部
-                                // 原bug: it.first >= pending.start && it.second <= pending.end 会过滤掉部分重叠的范围，导致未覆盖间隙被错误填充为水货
-                                val sortedCovered = coveredRanges.filter {
-                                    // 区间有交集: !(it.second <= pending.start || it.first >= pending.end)
-                                    it.second > pending.start && it.first < pending.end
-                                }.sortedBy { it.first }
-                                for ((cs, ce) in sortedCovered) {
-                                    if (pos < cs) {
-                                        jigsawSegments.add(VoiceSegment().apply {
-                                            start = pos; end = cs; hasVoice = true
-                                            label = "干货"; isSimulated = false
-                                        })
-                                    }
-                                    pos = maxOf(pos, ce)
-                                }
-                                if (pos < pending.end) {
-                                    jigsawSegments.add(VoiceSegment().apply {
-                                        start = pos; end = pending.end; hasVoice = true
-                                        label = "干货"; isSimulated = false
-                                    })
-                                }
-                            }
+                            // v3.1.106: 彻底移除gap-filling填充
+                            // 原因：
+                            // 1. pendingSegments = 指纹未覆盖区间
+                            // 2. 每个pending已经通过VAD∩pending得到yamnetIntervals，每个区间都已经做了YAMNet分类
+                            // 3. 剩余未覆盖的都是VAD非活动段（静音），保持原样即可，不需要强行填充
+                            // 4. 错误的gap-filling导致过度合并，总分段数过少，有时变成一个大段
 
                             // 4. 排序合并同类型相邻段
                             jigsawSegments.sortBy { it.start }
@@ -1437,12 +1426,20 @@ object SegmentGenerator {
                                             for ((intervalStart, intervalEnd) in yamnetIntervals) {
                                                 if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
 
-                                                val subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
-                                                    pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
-                                                ) { permille ->
-                                                    val base = 250 + (processedCount * 550 / totalIntervals)
-                                                    val inc = (permille * 550 / (totalIntervals * 1000)).coerceIn(0, 550 / totalIntervals.coerceAtLeast(1))
-                                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, (base + inc).coerceIn(250, 800), "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals")
+                                                // v3.1.106: 内部捕获InterruptedException转为break，使用部分结果
+                                                // 避免整个第2层回退到第1层结果（单段待处理→全水分）
+                                                val subSegments: List<VoiceSegment>
+                                                try {
+                                                    subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                                        pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
+                                                    ) { permille ->
+                                                        val base = 250 + (processedCount * 550 / totalIntervals)
+                                                        val inc = (permille * 550 / (totalIntervals * 1000)).coerceIn(0, 550 / totalIntervals.coerceAtLeast(1))
+                                                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, (base + inc).coerceIn(250, 800), "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals")
+                                                    }
+                                                } catch (e: InterruptedException) {
+                                                    if (yamnetAllSegments.isEmpty()) throw  // 无部分结果，向上传播
+                                                    break  // 有部分结果，使用部分结果
                                                 }
 
                                                 for (seg in subSegments) {
@@ -1455,6 +1452,7 @@ object SegmentGenerator {
                                             try { pcmSamples2.close() } catch (_: Exception) {}
                                         }
 
+                                        // v3.1.106: 拼图合并：指纹段 + YAMNet子段（移除gap-filling）
                                         val jigsawSegments = mutableListOf<VoiceSegment>()
                                         jigsawSegments.addAll(waterSegmentsAfterLayer1.map { it.copy() })
                                         for (yamnetSeg in yamnetAllSegments) {
@@ -1470,18 +1468,6 @@ object SegmentGenerator {
                                                     start = clipStart; end = clipEnd; hasVoice = yamnetSeg.hasVoice; label = yamnetSeg.label; isSimulated = false
                                                 })
                                             }
-                                        }
-                                        for (pending in pendingSegments) {
-                                            var pos = pending.start
-                                            // v3.1.105: 修复过滤条件bug - 只需要覆盖范围和pending区间有交集即可
-                                            val sortedCovered = coveredRanges.filter {
-                                                it.second > pending.start && it.first < pending.end
-                                            }.sortedBy { it.first }
-                                            for ((cs, ce) in sortedCovered) {
-                                                if (pos < cs) jigsawSegments.add(VoiceSegment().apply { start = pos; end = cs; hasVoice = true; label = "干货"; isSimulated = false })
-                                                pos = maxOf(pos, ce)
-                                            }
-                                            if (pos < pending.end) jigsawSegments.add(VoiceSegment().apply { start = pos; end = pending.end; hasVoice = true; label = "干货"; isSimulated = false })
                                         }
                                         jigsawSegments.sortBy { it.start }
                                         mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)

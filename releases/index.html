@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.105 安装</title>
+<title>RadioApp v3.1.106 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.105</div>
+  <div class="version">v3.1.106</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.105</h3>
+    <h3>更新内容 v3.1.106</h3>
     <ul>
-      <li>Fix: 三层模型拼图合并中gap-filling默认标签从"水货"改为"干货"</li>
-      <li>Fix: coveredRanges过滤条件只要求与pending区间有交集，不要求完全包含</li>
-      <li>避免VAD间歇被错误填充为水分段，导致主持人讲话被误判为水货</li>
+      <li>Fix: 彻底移除三层模型gap-filling，YAMNet子段已全覆盖VAD活动区间</li>
+      <li>Fix: 后处理Pass 3吸收水分段时不合并前后干货段，避免层叠合并</li>
+      <li>Fix: YAMNet循环内捕获InterruptedException转为break，使用部分结果不回退第1层</li>
+      <li>解决分段数过少问题（6/10个，有时1个）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.105.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.106.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -115,7 +116,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.105.apk",
+  text: window.location.href + "RadioApp-v3.1.106.apk",
   width: 180,
   height: 180
 });

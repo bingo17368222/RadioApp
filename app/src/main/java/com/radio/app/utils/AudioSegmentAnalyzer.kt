@@ -3097,7 +3097,7 @@ object AudioSegmentAnalyzer {
         }
 
         // Pass 3: v3.1.103 孤立水分片段 < 2.2s 归入模糊段（DRY）
-        // 被干货包围 → 吸收到相邻干货；孤立（无干货相邻）→ 直接转为干货
+        // v3.1.106: 被干货包围时只转干货，不合并前后干货段，避免过度分段合并
         changed = true
         while (changed) {
             changed = false
@@ -3107,9 +3107,9 @@ object AudioSegmentAnalyzer {
                     val prev = sorted.getOrNull(i - 1)
                     val next = sorted.getOrNull(i + 1)
                     if (prev?.label == "干货" && next?.label == "干货") {
-                        prev.end = maxOf(prev.end, next.end)
-                        sorted.removeAt(i + 1)
-                        sorted.removeAt(i)
+                        // v3.1.106: 只转干货，不合并前后段，避免层叠合并导致分段数过少
+                        seg.label = "干货"
+                        seg.hasVoice = true
                         changed = true
                         break
                     } else if (prev?.label == "干货") {
