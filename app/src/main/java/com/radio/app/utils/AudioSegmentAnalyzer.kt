@@ -1995,11 +1995,12 @@ object AudioSegmentAnalyzer {
             } catch (e: Throwable) {
                 vadLog("classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message}")
                 // 返回默认结果，避免崩溃传播
+                // v3.1.102: YAMNet输出已经是sigmoid概率值，回退值直接给0
                 return YamnetResult(
-                    speech = 0.5f, narration = 0.5f, singing = 0f, music = 0f,
+                    speech = 0f, narration = 0f, singing = 0f, music = 0f,
                     instrumental = 0f, popMusic = 0f, jingle = 0f, song = 0f,
-                    backgroundMusic = 0f, themeMusic = 0f, silence = 0.5f,
-                    voiceSum = 1.0f, bgMusicSum = 0f, maxRawScore = 0f,
+                    backgroundMusic = 0f, themeMusic = 0f, silence = 0f,
+                    voiceSum = 0f, bgMusicSum = 0f, maxRawScore = 0f,
                     spectrumRatio = spectrumRatio
                 )
             }
@@ -2028,18 +2029,18 @@ object AudioSegmentAnalyzer {
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet #$yamnetCallCount: max score=$maxScore at idx=$maxIdx, all zeros=${scores.all { it == 0f }}, output size=${scores.size}")
             }
 
-            // v2.4.161: Compute sigmoid probabilities for all relevant classes
-            val speechProb = sigmoid(scores.getOrElse(YAMNET_IDX_SPEECH) { 0f })
-            val narrationProb = sigmoid(scores.getOrElse(YAMNET_IDX_NARRATION) { 0f })
-            val singingProb = sigmoid(scores.getOrElse(YAMNET_IDX_SINGING) { 0f })
-            val musicProb = sigmoid(scores.getOrElse(YAMNET_IDX_MUSIC) { 0f })
-            val instrumentalProb = sigmoid(scores.getOrElse(YAMNET_IDX_INSTRUMENTAL) { 0f })
-            val popMusicProb = sigmoid(scores.getOrElse(YAMNET_IDX_POP_MUSIC) { 0f })
-            val songProb = sigmoid(scores.getOrElse(YAMNET_IDX_SONG) { 0f })
-            val bgMusicProb = sigmoid(scores.getOrElse(YAMNET_IDX_BACKGROUND_MUSIC) { 0f })
-            val themeMusicProb = sigmoid(scores.getOrElse(YAMNET_IDX_THEME_MUSIC) { 0f })
-            val jingleProb = sigmoid(scores.getOrElse(YAMNET_IDX_JINGLE) { 0f })
-            val silenceProb = sigmoid(scores.getOrElse(YAMNET_IDX_SILENCE) { 0f })
+            // v3.1.102: YAMNet输出已经是sigmoid概率值（0~1），直接使用原始值，避免双重sigmoid压缩差值
+            val speechProb = scores.getOrElse(YAMNET_IDX_SPEECH) { 0f }
+            val narrationProb = scores.getOrElse(YAMNET_IDX_NARRATION) { 0f }
+            val singingProb = scores.getOrElse(YAMNET_IDX_SINGING) { 0f }
+            val musicProb = scores.getOrElse(YAMNET_IDX_MUSIC) { 0f }
+            val instrumentalProb = scores.getOrElse(YAMNET_IDX_INSTRUMENTAL) { 0f }
+            val popMusicProb = scores.getOrElse(YAMNET_IDX_POP_MUSIC) { 0f }
+            val songProb = scores.getOrElse(YAMNET_IDX_SONG) { 0f }
+            val bgMusicProb = scores.getOrElse(YAMNET_IDX_BACKGROUND_MUSIC) { 0f }
+            val themeMusicProb = scores.getOrElse(YAMNET_IDX_THEME_MUSIC) { 0f }
+            val jingleProb = scores.getOrElse(YAMNET_IDX_JINGLE) { 0f }
+            val silenceProb = scores.getOrElse(YAMNET_IDX_SILENCE) { 0f }
 
             val voiceSum = speechProb + narrationProb + singingProb
             val bgMusicSum = musicProb + instrumentalProb + popMusicProb + jingleProb + songProb + bgMusicProb + themeMusicProb
