@@ -1337,15 +1337,15 @@ var subSegments = listOf<VoiceSegment>()
                         }
                     }
                 }
-            } catch (e: Exception) {
-                val fpMsgVadError = "三层架构: 第二层优化方案异常: ${e.javaClass.simpleName}: ${e.message}"
+            } catch (e: Throwable) {
+                val fpMsgVadError = "三层架构: 第二层优化方案异常: ${e.javaClass.name}: ${e.message}"
                 Log.e(TAG, fpMsgVadError)
                 writeFingerprintLog(context, fpMsgVadError)
-                // v3.1.110: 异常时记录详细调用栈到指纹日志，帮助排查中断来源
+                // v3.1.111: 记录完整调用栈到指纹日志（含Error类型如UnsatisfiedLinkError）
                 val sw = java.io.StringWriter()
                 val pw = java.io.PrintWriter(sw)
                 e.printStackTrace(pw)
-                writeFingerprintLog(context, "三层架构: 第二层优化方案异常详情:\n${sw.toString().take(500)}")
+                writeFingerprintLog(context, "三层架构: 第二层优化方案异常详情:\n${sw.toString().take(1000)}")
                 // 不使用固定分段兜底，直接回退到第1层结果
                 // 第1层结果至少包含1个整段，VAD空结果时caller会fallback到pending段→YAMNet
                 mergedAfterLayer2 = mergedAfterLayer1
@@ -1517,10 +1517,14 @@ var subSegments = listOf<VoiceSegment>()
                                     }
                                 }
                             }
-                        } catch (e: Exception) {
-                            val fpMsgVadError = "三层架构: 重新生成PCM后优化方案异常: ${e.message}"
+                        } catch (e: Throwable) {
+                            val fpMsgVadError = "三层架构: 重新生成PCM后优化方案异常: ${e.javaClass.name}: ${e.message}"
                             Log.e(TAG, fpMsgVadError)
                             writeFingerprintLog(context, fpMsgVadError)
+                            val sw = java.io.StringWriter()
+                            val pw = java.io.PrintWriter(sw)
+                            e.printStackTrace(pw)
+                            writeFingerprintLog(context, "三层架构: 重新生成PCM后优化方案异常详情:\n${sw.toString().take(1000)}")
                             mergedAfterLayer2 = mergedAfterLayer1
                             audioEngineName = "VAD+YAMNet+三层(优化异常)"
                         }
@@ -1682,10 +1686,14 @@ var subSegments = listOf<VoiceSegment>()
             )
         }
         } catch (e: Throwable) {
-            Log.e(TAG, "generateJiuAiTingSegments 崩溃: ${e.message}")
             val fpMsgCrash = "generateJiuAiTingSegments 崩溃: ${e.javaClass.name}: ${e.message}"
             Log.e(TAG, fpMsgCrash)
             writeFingerprintLog(context, fpMsgCrash)
+            // v3.1.111: 记录崩溃的完整调用栈到指纹日志
+            val sw = java.io.StringWriter()
+            val pw = java.io.PrintWriter(sw)
+            e.printStackTrace(pw)
+            writeFingerprintLog(context, "generateJiuAiTingSegments 崩溃详情:\n${sw.toString().take(1000)}")
             // v3.1.59: 崩溃时确保通知会话结束，防止残留状态
             try { SegmentNotificationHelper.endSession(context, episodeId) } catch (_: Exception) {}
             return null

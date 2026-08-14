@@ -997,6 +997,17 @@ class PlayerActivity : AppCompatActivity() {
     private fun writeDislikeLog(msg: String) = writeLog("dislike", msg)
     private fun writeNotificationLog(msg: String) = writeLog("notification", msg)
 
+    // v3.1.111: 将崩溃/异常详情写入指纹日志（与SegmentGenerator/AudioSegmentAnalyzer共用同一日志文件）
+    private fun writeFingerprintLog(msg: String) {
+        try {
+            val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "fingerprint")
+            if (!logDir.exists()) logDir.mkdirs()
+            val logFile = java.io.File(logDir, "fingerprint_segment.log")
+            val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            java.io.FileWriter(logFile, true).use { it.append("[$ts] [PlayerActivity] $msg\n") }
+        } catch (_: Exception) {}
+    }
+
     // v2.4.141: Helpers to manage the episode-switch position lock consistently.
     private fun setEpisodeSwitchLock(pos: Long) {
         episodeSwitchLockPos = pos
@@ -1831,7 +1842,16 @@ class PlayerActivity : AppCompatActivity() {
                 restoreSegmentModelInfo()
             }
         } else if (voiceSegments.isEmpty()) {
-            val simulated = generateSimulatedSegments()
+            val simulated = try {
+                generateSimulatedSegments()
+            } catch (e: Throwable) {
+                writeJitterLog(" ensureSegmentsForCurrentEpisode: generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}")
+                val sw = java.io.StringWriter()
+                val pw = java.io.PrintWriter(sw)
+                e.printStackTrace(pw)
+                writeFingerprintLog("ensureSegmentsForCurrentEpisode generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}\n${sw.toString().take(500)}")
+                emptyList()
+            }
             if (simulated.isNotEmpty()) {
                 voiceSegments = simulated
                 updateSegmentsUI()
@@ -4266,8 +4286,12 @@ class PlayerActivity : AppCompatActivity() {
 
             writeJitterLog(" generateContentBasedSegments: 完成: ${finalSegments.size}段, 干货${finalSegments.count{it.hasVoice}}段, 水货${finalSegments.count{!it.hasVoice}}段, 指纹匹配${lastFingerprintMatchCount}段")
             return finalSegments
-        } catch (e: Exception) {
-            writeJitterLog(" generateContentBasedSegments failed: ${e.message}")
+        } catch (e: Throwable) {
+            writeJitterLog(" generateContentBasedSegments failed: ${e.javaClass.name}: ${e.message}")
+            val sw = java.io.StringWriter()
+            val pw = java.io.PrintWriter(sw)
+            e.printStackTrace(pw)
+            writeFingerprintLog("generateContentBasedSegments 崩溃: ${e.javaClass.name}: ${e.message}\n${sw.toString().take(500)}")
             return emptyList()
         }
     }

@@ -95,17 +95,18 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.110</div>
+  <div class="version">v3.1.111</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.110</h3>
+    <h3>更新内容 v3.1.111</h3>
     <ul>
-      <li>Fix: 移除固定分段兜底，异常时回退到第1层结果</li>
-      <li>Fix: 所有异常详情和调用栈写入logs/fingerprint/fingerprint_segment.log</li>
-      <li>Fix: VAD内部捕获InterruptedException，返回空列表优雅降级</li>
-      <li>解决异常中断导致结果异常的问题</li>
+      <li>Fix: 所有catch(Exception)改为catch(Throwable)，捕获UnsatisfiedLinkError等Error类型</li>
+      <li>Fix: 崩溃/异常调用栈详细写入logs/fingerprint/fingerprint_segment.log</li>
+      <li>Fix: ensureSegmentsForCurrentEpisode中generateSimulatedSegments崩溃保护</li>
+      <li>Fix: PlayerActivity添加writeFingerprintLog，崩溃日志统一写入指纹日志</li>
+      <li>解决UnsatisfiedLinkError导致闪退且无日志的问题</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.110.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.111.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -116,7 +117,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.110.apk",
+  text: window.location.href + "RadioApp-v3.1.111.apk",
   width: 180,
   height: 180
 });
