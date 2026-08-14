@@ -95,17 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.106</div>
+  <div class="version">v3.1.107</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.106</h3>
+    <h3>更新内容 v3.1.107</h3>
     <ul>
-      <li>Fix: 彻底移除三层模型gap-filling，YAMNet子段已全覆盖VAD活动区间</li>
-      <li>Fix: 后处理Pass 3吸收水分段时不合并前后干货段，避免层叠合并</li>
-      <li>Fix: YAMNet循环内捕获InterruptedException转为break，使用部分结果不回退第1层</li>
-      <li>解决分段数过少问题（6/10个，有时1个）</li>
+      <li>Fix: MIN_FRAGMENT_MS从8s降到3s，避免3-7秒短干货被误吸收到相邻水段</li>
+      <li>Fix: MAX_DRY_GAP_MS从30s降到3s，避免层叠合并导致干货中间丢失</li>
+      <li>解决干货片段中间丢失问题（原100段干货→15段，现预期保留50-70段）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.106.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.107.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>

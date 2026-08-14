@@ -299,15 +299,14 @@ object AudioSegmentAnalyzer {
     private const val MUSIC_AD_THRESHOLD = 0.25f
 
     // v2.4.171: Post-processing thresholds
-    // Strong merging to reach a manageable segment count for long broadcasts.
-    // MIN_FRAGMENT_MS raised to 8s so short pauses / noise bursts are folded into
-    // the surrounding host speech instead of becoming their own segments.
-    // v3.1.98: 进一步加大合并力度，减少两小时节目总分段数
-    private const val MIN_FRAGMENT_MS = 8000L
+    // v3.1.107: MIN_FRAGMENT_MS从8s降到3s，避免短干货片段被误吸收到相邻水段
+    // 8s导致大量3-7秒干货（主持人短句）被吸收，是干货中间丢失的主因之一
+    private const val MIN_FRAGMENT_MS = 3000L
     // v3.1.103: 孤立水分片段 < 2.2s 归入模糊段
     private const val MAX_PURE_MUSIC_GAP_MS = 2200L
-    // v3.1.98: 干货合并间隔从10s放宽到30s，电台主持人停顿通常10-20s
-    private const val MAX_DRY_GAP_MS = 30000L
+    // v3.1.107: 干货合并间隔从30s降到3s，避免层叠吞并导致干货中间丢失
+    // 30s导致相邻干货（被Pass 3转换后）无条件合并，是分段数过少的第二主因
+    private const val MAX_DRY_GAP_MS = 3000L
     // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
     // Ad breaks and song blocks often have 5-10s pauses between them.
     // v3.1.98: 水分合并间隔从10s放宽到15s
