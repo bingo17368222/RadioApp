@@ -176,10 +176,19 @@ object AudioSegmentAnalyzer {
      */
     fun cancelCurrentAnalysis(): Boolean {
         analysisCancelled = true
-        // v3.1.108: 记录取消来源的调用栈，用于排查"非用户取消"问题
+        // v3.1.109: 记录取消来源的完整调用栈到logcat，用于排查"非用户取消"问题
         val stackTrace = Thread.currentThread().stackTrace
         val caller = stackTrace.getOrNull(2)?.let { "${it.className}.${it.methodName}:${it.lineNumber}" } ?: "unknown"
-        Log.i("AudioSegmentAnalyzer", "cancelCurrentAnalysis called by $caller")
+        Log.e("AudioSegmentAnalyzer", "cancelCurrentAnalysis called by $caller")
+        // 记录完整调用栈
+        val sw = java.io.StringWriter()
+        val pw = java.io.PrintWriter(sw)
+        pw.println("cancelCurrentAnalysis called by $caller")
+        pw.println("Full stack trace:")
+        for (element in stackTrace.take(20)) {
+            pw.println("\tat ${element.className}.${element.methodName}(${element.fileName}:${element.lineNumber})")
+        }
+        Log.e("AudioSegmentAnalyzer", sw.toString())
         val t = currentAnalysisThread ?: return false
         return if (!t.isInterrupted) {
             t.interrupt()

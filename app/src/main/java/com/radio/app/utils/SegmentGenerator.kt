@@ -1121,6 +1121,15 @@ object SegmentGenerator {
             writeFingerprintLog(context, fpMsgCancel)
         }
 
+        // v3.1.109: 进入第2层前再次清除取消标志和中断标志。
+        // 第1层滑动窗口中的 Thread.interrupted() 已清除中断标志，但 analysisCancelled 可能被
+        // 外部线程（如通知取消、UI事件）在此时设置。不清除会导致第2层VAD中 checkCancelled() 立即抛出
+        // InterruptedException，使整个第2层降级为1个片段。
+        // 注意：不清除 SegmentNotificationHelper.cancelled，保持通知栏静默状态。
+        AudioSegmentAnalyzer.resetCancellation()  // 清除 analysisCancelled 和 currentAnalysisThread
+        AudioSegmentAnalyzer.setCurrentAnalysisThread(Thread.currentThread())  // 重新设置当前线程
+        Thread.interrupted()  // 清除可能残留的中断标志
+
         if (mergedAfterLayer1.isEmpty()) {
             val fpMsgEmpty = "generateJiuAiTingSegments: 无分段结果"
             Log.w(TAG, fpMsgEmpty)
@@ -1332,8 +1341,27 @@ var subSegments = listOf<VoiceSegment>()
                 val fpMsgVadError = "三层架构: 第二层优化方案异常: ${e.javaClass.simpleName}: ${e.message}"
                 Log.e(TAG, fpMsgVadError)
                 writeFingerprintLog(context, fpMsgVadError)
-                mergedAfterLayer2 = mergedAfterLayer1
-                audioEngineName = "VAD+YAMNet+三层(优化异常)"
+                // v3.1.109: 区分InterruptedException和其他异常。
+                // InterruptedException由checkCancelled()抛出，说明analysisCancelled被设置或线程被中断。
+                // 此时不丢弃第2层结果，而是用固定分段兜底，避免1个片段的异常结果。
+                if (e is InterruptedException) {
+                    // 清除中断标志和取消标志，防止影响后续层
+                    Thread.interrupted()
+                    AudioSegmentAnalyzer.resetCancellation()
+                    // 记录调用栈，帮助定位取消来源
+                    val sw = java.io.StringWriter()
+                    val pw = java.io.PrintWriter(sw)
+                    e.printStackTrace(pw)
+                    writeFingerprintLog(context, "三层架构: 第二层优化方案异常详情(InterruptedException): ${sw.toString().take(500)}")
+                    // 使用固定分段兜底，每段约5分钟，确保合理的分段数
+                    val fixedSegs = generateFixedSegments(effectiveDurationMs)
+                    mergedAfterLayer2 = fixedSegs
+                    audioEngineName = "VAD+YAMNet+三层(优化异常-中断兜底)"
+                    writeFingerprintLog(context, "三层架构: 第二层中断兜底: 生成${fixedSegs.size}个固定分段")
+                } else {
+                    mergedAfterLayer2 = mergedAfterLayer1
+                    audioEngineName = "VAD+YAMNet+三层(优化异常)"
+                }
             }
         } else if (vadModelsReady && pcmSourceFile == null) {
             // v3.1.40: PCM文件不存在时，先重新生成完整版PCM（带进度通知），再运行优化VAD+YAMNet

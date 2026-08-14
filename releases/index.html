@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.108</div>
+  <div class="version">v3.1.109</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.108</h3>
+    <h3>更新内容 v3.1.109</h3>
     <ul>
-      <li>Fix: generateJiuAiTingSegments注册currentAnalysisThread，使取消机制能正确中断线程</li>
-      <li>Fix: 取消日志细化来源（区分Thread.interrupted/isAnalysisCancelled标志）</li>
-      <li>Fix: cancelCurrentAnalysis添加调用栈追踪，记录触发来源</li>
-      <li>解决异常被误报为用户取消的问题</li>
+      <li>Fix: 第2层VAD若中途被中断(InterruptedException)，不丢弃结果，用固定分段兜底</li>
+      <li>Fix: 进入第2层前再次清除取消标志，防止外部线程误设导致VAD立即失败</li>
+      <li>Fix: cancelCurrentAnalysis添加完整调用栈日志，帮助定位取消来源</li>
+      <li>解决异常导致只有1个片段的问题</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.108.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.109.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
