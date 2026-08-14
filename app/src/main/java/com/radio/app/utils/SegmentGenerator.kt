@@ -1280,25 +1280,28 @@ object SegmentGenerator {
                                 }
                             }
 
-                            // 3. 填充指纹未覆盖且YAMNet未覆盖的间隙（VAD活动但YAMNet未产生子段 → 水货）
+                            // 3. v3.1.105: 填充YAMNet未覆盖的间隙，默认标记为干货（非YAMNet判定区域不应默认水货，等指纹二次校验）
                             for (pending in pendingSegments) {
                                 var pos = pending.start
+                                // v3.1.105: 修复过滤条件bug - 只需要覆盖范围和pending区间有交集即可，不要求整个范围都在pending内部
+                                // 原bug: it.first >= pending.start && it.second <= pending.end 会过滤掉部分重叠的范围，导致未覆盖间隙被错误填充为水货
                                 val sortedCovered = coveredRanges.filter {
-                                    it.first >= pending.start && it.second <= pending.end
+                                    // 区间有交集: !(it.second <= pending.start || it.first >= pending.end)
+                                    it.second > pending.start && it.first < pending.end
                                 }.sortedBy { it.first }
                                 for ((cs, ce) in sortedCovered) {
                                     if (pos < cs) {
                                         jigsawSegments.add(VoiceSegment().apply {
-                                            start = pos; end = cs; hasVoice = false
-                                            label = "水货"; isSimulated = false
+                                            start = pos; end = cs; hasVoice = true
+                                            label = "干货"; isSimulated = false
                                         })
                                     }
                                     pos = maxOf(pos, ce)
                                 }
                                 if (pos < pending.end) {
                                     jigsawSegments.add(VoiceSegment().apply {
-                                        start = pos; end = pending.end; hasVoice = false
-                                        label = "水货"; isSimulated = false
+                                        start = pos; end = pending.end; hasVoice = true
+                                        label = "干货"; isSimulated = false
                                     })
                                 }
                             }
@@ -1470,12 +1473,15 @@ object SegmentGenerator {
                                         }
                                         for (pending in pendingSegments) {
                                             var pos = pending.start
-                                            val sortedCovered = coveredRanges.filter { it.first >= pending.start && it.second <= pending.end }.sortedBy { it.first }
+                                            // v3.1.105: 修复过滤条件bug - 只需要覆盖范围和pending区间有交集即可
+                                            val sortedCovered = coveredRanges.filter {
+                                                it.second > pending.start && it.first < pending.end
+                                            }.sortedBy { it.first }
                                             for ((cs, ce) in sortedCovered) {
-                                                if (pos < cs) jigsawSegments.add(VoiceSegment().apply { start = pos; end = cs; hasVoice = false; label = "水货"; isSimulated = false })
+                                                if (pos < cs) jigsawSegments.add(VoiceSegment().apply { start = pos; end = cs; hasVoice = true; label = "干货"; isSimulated = false })
                                                 pos = maxOf(pos, ce)
                                             }
-                                            if (pos < pending.end) jigsawSegments.add(VoiceSegment().apply { start = pos; end = pending.end; hasVoice = false; label = "水货"; isSimulated = false })
+                                            if (pos < pending.end) jigsawSegments.add(VoiceSegment().apply { start = pos; end = pending.end; hasVoice = true; label = "干货"; isSimulated = false })
                                         }
                                         jigsawSegments.sortBy { it.start }
                                         mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
