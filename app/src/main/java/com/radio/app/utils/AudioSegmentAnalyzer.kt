@@ -340,11 +340,11 @@ object AudioSegmentAnalyzer {
     // v3.1.107: MIN_FRAGMENT_MS从8s降到3s，避免短干货片段被误吸收到相邻水段
     // 8s导致大量3-7秒干货（主持人短句）被吸收，是干货中间丢失的主因之一
     private const val MIN_FRAGMENT_MS = 3000L
-    // v3.1.103: 孤立水分片段 < 2.2s 归入模糊段
-    private const val MAX_PURE_MUSIC_GAP_MS = 2200L
-    // v3.1.107: 干货合并间隔从30s降到3s，避免层叠吞并导致干货中间丢失
-    // 30s导致相邻干货（被Pass 3转换后）无条件合并，是分段数过少的第二主因
-    private const val MAX_DRY_GAP_MS = 3000L
+    // v3.1.112: 孤立水分片段 < 1s 才归入模糊段，避免过度吞并中间干货
+    private const val MAX_PURE_MUSIC_GAP_MS = 1000L
+    // v3.1.112: 干货合并间隔从3s降到500ms，仅合并极短间隔的相邻干货
+    // 3s导致Pass3转换水段→干后层叠触发Pass4合并，分段数从180→72
+    private const val MAX_DRY_GAP_MS = 500L
     // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
     // Ad breaks and song blocks often have 5-10s pauses between them.
     // v3.1.98: 水分合并间隔从10s放宽到15s
@@ -3133,8 +3133,8 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // Pass 3: v3.1.103 孤立水分片段 < 2.2s 归入模糊段（DRY）
-        // v3.1.106: 被干货包围时只转干货，不合并前后干货段，避免过度分段合并
+        // Pass 3: v3.1.103 孤立水分片段 < 1s 归入模糊段（DRY）
+        // v3.1.112: 只转标签不合并，防止层叠触发Pass4合并导致干货丢失
         changed = true
         while (changed) {
             changed = false
@@ -3144,20 +3144,15 @@ object AudioSegmentAnalyzer {
                     val prev = sorted.getOrNull(i - 1)
                     val next = sorted.getOrNull(i + 1)
                     if (prev?.label == "干货" && next?.label == "干货") {
-                        // v3.1.106: 只转干货，不合并前后段，避免层叠合并导致分段数过少
+                        // v3.1.112: 只转干货，不合并前后段，防止层叠触发Pass4合并
                         seg.label = "干货"
                         seg.hasVoice = true
                         changed = true
                         break
-                    } else if (prev?.label == "干货") {
-                        prev.end = maxOf(prev.end, seg.end)
-                        sorted.removeAt(i)
-                        changed = true
-                        break
-                    } else if (next?.label == "干货") {
-                        next.start = minOf(next.start, seg.start)
-                        next.end = maxOf(next.end, seg.end)
-                        sorted.removeAt(i)
+                    } else if (prev?.label == "干货" || next?.label == "干货") {
+                        // v3.1.112: 只转干货，不合并到相邻干货段，保持独立分段
+                        seg.label = "干货"
+                        seg.hasVoice = true
                         changed = true
                         break
                     } else {

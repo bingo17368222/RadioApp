@@ -1341,15 +1341,14 @@ var subSegments = listOf<VoiceSegment>()
                 val fpMsgVadError = "三层架构: 第二层优化方案异常: ${e.javaClass.name}: ${e.message}"
                 Log.e(TAG, fpMsgVadError)
                 writeFingerprintLog(context, fpMsgVadError)
-                // v3.1.111: 记录完整调用栈到指纹日志（含Error类型如UnsatisfiedLinkError）
+                // v3.1.112: 记录完整调用栈到指纹日志，并向上抛出异常（不允许回退第1层）
                 val sw = java.io.StringWriter()
                 val pw = java.io.PrintWriter(sw)
                 e.printStackTrace(pw)
                 writeFingerprintLog(context, "三层架构: 第二层优化方案异常详情:\n${sw.toString().take(1000)}")
-                // 不使用固定分段兜底，直接回退到第1层结果
-                // 第1层结果至少包含1个整段，VAD空结果时caller会fallback到pending段→YAMNet
-                mergedAfterLayer2 = mergedAfterLayer1
-                audioEngineName = "VAD+YAMNet+三层(优化异常)"
+                // v3.1.112: 不允许回退第1层分段结果，向上抛出异常
+                // 外层catch会捕获该异常并返回null，由调用方决定降级策略
+                throw e
             }
         } else if (vadModelsReady && pcmSourceFile == null) {
             // v3.1.40: PCM文件不存在时，先重新生成完整版PCM（带进度通知），再运行优化VAD+YAMNet
@@ -1525,8 +1524,8 @@ var subSegments = listOf<VoiceSegment>()
                             val pw = java.io.PrintWriter(sw)
                             e.printStackTrace(pw)
                             writeFingerprintLog(context, "三层架构: 重新生成PCM后优化方案异常详情:\n${sw.toString().take(1000)}")
-                            mergedAfterLayer2 = mergedAfterLayer1
-                            audioEngineName = "VAD+YAMNet+三层(优化异常)"
+                            // v3.1.112: 不允许回退第1层，向上抛出
+                            throw e
                         }
                     } else {
                         mergedAfterLayer2 = mergedAfterLayer1

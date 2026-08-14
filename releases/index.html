@@ -95,18 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.111</div>
+  <div class="version">v3.1.112</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.111</h3>
+    <h3>更新内容 v3.1.112</h3>
     <ul>
-      <li>Fix: 所有catch(Exception)改为catch(Throwable)，捕获UnsatisfiedLinkError等Error类型</li>
-      <li>Fix: 崩溃/异常调用栈详细写入logs/fingerprint/fingerprint_segment.log</li>
-      <li>Fix: ensureSegmentsForCurrentEpisode中generateSimulatedSegments崩溃保护</li>
-      <li>Fix: PlayerActivity添加writeFingerprintLog，崩溃日志统一写入指纹日志</li>
-      <li>解决UnsatisfiedLinkError导致闪退且无日志的问题</li>
+      <li>Fix: 第2层异常不再回退第1层结果，改为向上抛出异常，由外层统一处理</li>
+      <li>Fix: 后处理Pass3仅转标签不合并，防止层叠触发Pass4合并导致干货中间丢失</li>
+      <li>Fix: MAX_DRY_GAP_MS 3s→500ms, MAX_PURE_MUSIC_GAP_MS 2.2s→1s，减少过度合并</li>
+      <li>Fix: 通知进度卡顿 — PROGRESS_SIGNIFICANT_CHANGE 5→1，VAD/YAMNet进度不再被防抖跳过</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.111.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.112.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -117,7 +116,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.111.apk",
+  text: window.location.href + "RadioApp-v3.1.112.apk",
   width: 180,
   height: 180
 });

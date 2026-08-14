@@ -72,7 +72,9 @@ object SegmentNotificationHelper {
     @Volatile
     private var lastLayerName: String = ""
     private const val UPDATE_DEBOUNCE_MS = 300L  // 同一层最小更新间隔300ms
-    private const val PROGRESS_SIGNIFICANT_CHANGE = 5  // 进度变化超过5%才算有意义的变化
+    // v3.1.112: 进度显著变化阈值从5降到1，确保VAD/YAMNet慢速进度不被防抖跳过
+    // VAD处理2小时音频时每次回调仅变化0.1‰，5‰阈值导致全程无更新
+    private const val PROGRESS_SIGNIFICANT_CHANGE = 1  // 进度变化超过1‰才算有意义的变化
 
     /**
      * v3.1.50: 全局分段中标志。当三层分段正在进行时，新的请求先检查此标志。
