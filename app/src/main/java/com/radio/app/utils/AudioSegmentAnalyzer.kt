@@ -3453,6 +3453,49 @@ object AudioSegmentAnalyzer {
     }
 
     /**
+     * v3.1.115: 对单个PCM区间执行YAMNet多数投票分类。
+     * 使用滑动窗口对区间内所有帧做YAMNet推理，然后统计干/水/静音票数，取多数作为整区间类型。
+     * 返回单个VoiceSegment（1段/区间），消除classifyIntervalRange逐帧分类产生的交替子段问题。
+     * 与旧方案classifySpeechInterval的多数投票策略一致，但使用已打开的SampleProvider。
+     */
+    internal fun classifyIntervalMajority(
+        samples: SampleProvider,
+        intervalStartMs: Long,
+        intervalEndMs: Long,
+        yamnetInterpreter: Interpreter
+    ): VoiceSegment? {
+        val intervalDurationMs = intervalEndMs - intervalStartMs
+        if (intervalDurationMs < 1500) return null
+
+        val startSample = (intervalStartMs * YAMNET_SAMPLE_RATE / 1000L).toInt().coerceIn(0, samples.size)
+        val endSample = (intervalEndMs * YAMNET_SAMPLE_RATE / 1000L).toInt().coerceIn(0, samples.size)
+        if (endSample - startSample < YAMNET_WINDOW_SAMPLES) return null
+
+        val typeVotes = mutableMapOf<FrameType, Int>()
+
+        var pos = startSample
+        while (pos + YAMNET_WINDOW_SAMPLES <= endSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+            val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
+            val yamnet = classifyWithYamnet(yamnetInterpreter, window)
+            val type = classifyYamnetScores(yamnet)
+            typeVotes[type] = typeVotes.getOrDefault(type, 0) + 1
+            pos += YAMNET_SPEECH_HOP_SAMPLES
+        }
+
+        if (typeVotes.isEmpty()) return null
+
+        val dryVotes = typeVotes.getOrDefault(FrameType.DRY, 0)
+        val waterVotes = typeVotes.getOrDefault(FrameType.WATER, 0)
+        val dominantType = when {
+            // Tie or dry lead keeps host talking continuous; water must clearly win.
+            dryVotes >= waterVotes -> FrameType.DRY
+            else -> typeVotes.maxByOrNull { it.value }?.key ?: FrameType.DRY
+        }
+
+        return createSegment(intervalStartMs, intervalEndMs, dominantType)
+    }
+
+    /**
      * v3.1.83: classifyPcmInterval的内部实现，使用已打开的SampleProvider。
      * 前后各加0.5s缓冲padding，零拷贝切片，推理完成后裁回原始边界。
      */

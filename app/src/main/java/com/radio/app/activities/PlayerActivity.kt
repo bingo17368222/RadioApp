@@ -36,6 +36,7 @@ import com.radio.app.services.SubtitleGeneratorService
 import com.radio.app.models.AppSettings
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.utils.PreferenceManager
+import com.radio.app.utils.PlayHistoryUtils
 import com.radio.app.whisper.MnnLlmBridge
 import com.radio.app.widgets.PhantomSafeImageButton
 import java.io.File
@@ -896,6 +897,8 @@ class PlayerActivity : AppCompatActivity() {
                             pendingSeekMs = -1L  // [v2.1.9] Clear after use
                             // v2.4.44: Reset isFreshStart after first play so reconnections restore position
                             isFreshStart = false
+                            // v3.1.117: 记录播放历史
+                            PlayHistoryUtils.recordHistory(this@PlayerActivity, episode, if (startPos > 0) startPos else 0L)
                         } else {
                             // [v2.2.0] If pendingSeekMs from search, use it instead of savedPosition
                             var savedPosition = if (pendingSeekMs > 0) {
@@ -942,6 +945,8 @@ class PlayerActivity : AppCompatActivity() {
                                 binding.tvLiveIndicator.text = "恢复中..."
                             }
                             playbackService?.playEpisode(episode, false, savedPosition)
+                            // v3.1.117: 记录播放历史
+                            PlayHistoryUtils.recordHistory(this@PlayerActivity, episode, if (savedPosition > 0) savedPosition else 0L)
                         }
                     }
                 }
@@ -2241,6 +2246,10 @@ class PlayerActivity : AppCompatActivity() {
             writeJitterLog("btnClose: calling finish() to exit to MainActivity")
             finish()
         }
+        // v3.1.117: 播放历史按钮
+        binding.btnHistory.setOnClickListener {
+            showHistoryDialog()
+        }
         // Issue 6 & 11: 点击节目导航提示（如 "1/10"）弹出当前节目列表，可高亮当前播放项并点击切换
         binding.tvEpisodeNavHint.setOnClickListener {
             writeEpisodeLog("tvEpisodeNavHint clicked, showing episode list dialog")
@@ -3250,6 +3259,8 @@ class PlayerActivity : AppCompatActivity() {
         ensureSegmentsForCurrentEpisode()
         updateUI()
         setupPreCacheList()
+        // v3.1.117: 记录播放历史
+        PlayHistoryUtils.recordHistory(this, targetEpisode, 0L)
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: DONE, switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
     }
 
@@ -3311,6 +3322,156 @@ class PlayerActivity : AppCompatActivity() {
         }
         writeEpisodeLog("showEpisodeListDialog: showing dialog with ${episodeList.size} episodes, currentEpisodeIndex=$currentEpisodeIndex, currentId=$currentId")
         dialog.show()
+    }
+
+    // v3.1.117: 播放历史弹窗
+    private fun showHistoryDialog() {
+        val historyList = PlayHistoryUtils.getHistory(this)
+        if (historyList.isEmpty()) {
+            Toast.makeText(this, "暂无播放历史", Toast.LENGTH_SHORT).show()
+            return
+        }
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: historyList.size=${historyList.size}")
+
+        val recyclerView = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@PlayerActivity)
+            setHasFixedSize(true)
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.6).toInt()
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
+        }
+
+        val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
+        val adapter = HistoryListAdapter(historyList, currentId)
+        adapter.onItemClicked = { position ->
+            val item = historyList.getOrNull(position) ?: return@let
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}")
+            val episode = item.toEpisode()
+            // 在当前节目列表中查找匹配的节目
+            val listIdx = episodeList.indexOfFirst { it.id == item.episodeId }
+            if (listIdx >= 0) {
+                // 如果在当前节目列表中，使用 playEpisodeAtIndex 切换
+                playEpisodeAtIndex(listIdx)
+            } else {
+                // 不在当前列表，直接通过 service 播放
+                if (playbackService == null) {
+                    Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
+                    return@let
+                }
+                Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
+                currentEpisode = episode
+                currentEpisodeIndex = -1
+                saveLastEpisode()
+                playbackService?.playEpisode(episode, false, item.lastPosition)
+                ensureSegmentsForCurrentEpisode()
+                updateUI()
+                setupPreCacheList()
+                // 记录历史（更新位置）
+                PlayHistoryUtils.recordHistory(this, episode, item.lastPosition)
+            }
+        }
+        recyclerView.adapter = adapter
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("播放历史")
+            .setView(recyclerView)
+            .setNegativeButton("关闭", null)
+            .create()
+
+        dialog.show()
+    }
+
+    // 历史列表适配器
+    inner class HistoryListAdapter(
+        private val historyItems: List<PlayHistoryUtils.HistoryItem>,
+        var currentlyPlayingId: String?
+    ) : RecyclerView.Adapter<HistoryListAdapter.ViewHolder>() {
+        var onItemClicked: ((Int) -> Unit)? = null
+
+        private val dateIn = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+        private val dateOut = java.text.SimpleDateFormat("MM/dd", java.util.Locale.getDefault())
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_history, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val item = historyItems[position]
+            val isPlaying = item.episodeId == currentlyPlayingId
+
+            // 日期
+            holder.tvDate.text = try {
+                dateIn.parse(item.broadcastAt)?.let { dateOut.format(it) } ?: item.broadcastAt
+            } catch (_: Exception) {
+                item.broadcastAt
+            }
+
+            // 标题
+            holder.tvTitle.text = if (isPlaying) "▶ ${item.title}" else item.title
+
+            // 电台名
+            holder.tvStation.text = item.stationName
+
+            // 最后播放位置
+            val posMin = item.lastPosition / 60000
+            val posSec = (item.lastPosition % 60000) / 1000
+            val totalMin = item.duration / 60000
+            holder.tvPosition.text = "${posMin}:${String.format("%02d", posSec)} / ${totalMin}分钟"
+
+            val ctx = holder.itemView.context
+            val accentColor = resolveThemeColor(ctx, android.R.attr.colorPrimary)
+            val titleColor = resolveThemeColor(ctx, com.radio.app.R.attr.appTextPrimary)
+
+            if (isPlaying) {
+                val tint = Color.argb(180, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
+                holder.itemView.setBackgroundColor(tint)
+                val density = ctx.resources.displayMetrics.density
+                holder.itemView.setPadding((3 * density).toInt(), holder.itemView.paddingTop,
+                    holder.itemView.paddingEnd, holder.itemView.paddingBottom)
+                holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
+                holder.tvTitle.setTextColor(accentColor)
+                holder.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
+                holder.btnPlay.setColorFilter(accentColor)
+            } else {
+                holder.itemView.background = holder.originalBackground
+                val density = ctx.resources.displayMetrics.density
+                holder.itemView.setPadding((4 * density).toInt(), holder.itemView.paddingTop,
+                    holder.itemView.paddingEnd, holder.itemView.paddingBottom)
+                holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
+                holder.tvTitle.setTextColor(titleColor)
+                holder.btnPlay.setImageResource(R.drawable.ic_play)
+                holder.btnPlay.clearColorFilter()
+            }
+
+            holder.itemView.setOnClickListener {
+                val clickPos = holder.bindingAdapterPosition
+                if (clickPos >= 0 && clickPos < historyItems.size) {
+                    onItemClicked?.invoke(clickPos)
+                }
+                // 找到 dialog 并关闭
+                var parent = holder.itemView.parent
+                while (parent != null) {
+                    if (parent is androidx.appcompat.app.AlertDialog) {
+                        parent.dismiss()
+                        break
+                    }
+                    parent = (parent as? View)?.parent
+                }
+            }
+        }
+
+        override fun getItemCount(): Int = historyItems.size
+
+        inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvDate: TextView = view.findViewById(R.id.tv_history_date)
+            val tvTitle: TextView = view.findViewById(R.id.tv_history_title)
+            val tvStation: TextView = view.findViewById(R.id.tv_history_station)
+            val tvPosition: TextView = view.findViewById(R.id.tv_history_position)
+            val btnPlay: ImageView = view.findViewById(R.id.btn_history_play)
+            val originalBackground: android.graphics.drawable.Drawable? = view.background
+        }
     }
 
     // 解析主题属性对应的颜色（兼容直接颜色值与颜色资源引用）
@@ -3829,6 +3990,8 @@ class PlayerActivity : AppCompatActivity() {
                 val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playbackService?.playEpisode(ep, false, startPos)
+                // v3.1.117: 记录播放历史
+                PlayHistoryUtils.recordHistory(this@PlayerActivity, ep, if (startPos > 0) startPos else 0L)
                 // v2.4.160: Load DB segments first; only generate simulated if DB has none.
                 ensureSegmentsForCurrentEpisode()
                 updateUI()
@@ -3878,6 +4041,8 @@ class PlayerActivity : AppCompatActivity() {
                 val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
                 playbackService?.playEpisode(ep, false, startPos)
+                // v3.1.117: 记录播放历史
+                PlayHistoryUtils.recordHistory(this@PlayerActivity, ep, if (startPos > 0) startPos else 0L)
                 // v2.4.160: Load DB segments first; only generate simulated if DB has none.
                 ensureSegmentsForCurrentEpisode()
                 updateUI()
@@ -3999,6 +4164,8 @@ class PlayerActivity : AppCompatActivity() {
                     val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                     val startPos = if (savedPos > 0) savedPos else -1L
                     playbackService?.playEpisode(targetEpisode, false, startPos)
+                    // v3.1.117: 记录播放历史
+                    PlayHistoryUtils.recordHistory(this@PlayerActivity, targetEpisode, if (startPos > 0) startPos else 0L)
                     // v2.4.160: Load DB segments first; only generate simulated if DB has none.
                     ensureSegmentsForCurrentEpisode()
                     updateUI()
@@ -4844,6 +5011,8 @@ class PlayerActivity : AppCompatActivity() {
                     pendingSeekMs = -1L  // Clear pendingSeekMs — it was for the old episode
                 }
                 playbackService?.playEpisode(newEpisode, false, startPos)
+                // v3.1.117: 记录播放历史
+                PlayHistoryUtils.recordHistory(this@PlayerActivity, newEpisode, if (startPos > 0) startPos else 0L)
             }
         } else {
             // Service not bound yet - episode will be played when service connects
@@ -4896,6 +5065,10 @@ class PlayerActivity : AppCompatActivity() {
                     .putLong("cached_duration", dur)
                     .putString("cached_episode_id", epId)
                     .apply()
+                // v3.1.117: 更新播放历史中的最后播放位置
+                if (pos > 0) {
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, epId, pos)
+                }
                 writeJitterLog("onPause: cached position=$pos (uiPos=$lastDisplayedPositionMs), duration=$dur, episodeId=$epId (prepared=true)")
             } else {
                 writeJitterLog("onPause: SKIPPED position cache (prepared=$isPrepared, pos=$pos, dur=$dur, epId=$epId) - keeping previous cache")

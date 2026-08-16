@@ -95,8 +95,26 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.113</div>
+  <div class="version">v3.1.116</div>
   <div class="changelog">
+    <h3>更新内容 v3.1.116</h3>
+    <ul>
+      <li>Fix: 填充段间间隙为"静音"段，确保时间轴100%连续</li>
+      <li>Fix: 根因——VAD活动段只覆盖89.3%时间轴，剩余10.7%静音间隙（约12.9分钟）未被任何段覆盖，拼图合并仅覆盖pending∩VAD区域</li>
+      <li>Fix: 同时补全首段前（0到第一段）和末段后（最后一段到节目总时长）的间隙</li>
+    </ul>
+    <h3>更新内容 v3.1.115</h3>
+    <ul>
+      <li>Fix: 替换区间YAMNet分类策略——从逐帧滑动窗口（classifyIntervalRange，每区间多段）改为多数投票（classifyIntervalMajority，每区间1段），与旧双模型方案一致，彻底消除交替干/水子段问题</li>
+      <li>Fix: 移除Pass 3.5（交替段合并）和Pass 8（间隙填充），前者因区间内已无交替段而不需要，后者增加噪声段</li>
+      <li>Fix: 预计2小时节目从243段降至约60-80段，时间轴连续</li>
+    </ul>
+    <h3>更新内容 v3.1.114</h3>
+    <ul>
+      <li>Fix: 新增Pass 3.5合并短交替干/水段（Dry-Water-Dry或Water-Dry-Water，每段&lt;5s），解决237段过多问题</li>
+      <li>Fix: 新增Pass 8填充段间间隙为"静音"段，确保时间轴连续，不再有消失的时间段</li>
+      <li>Fix: 消失的时间段是VAD静音间隙（约10.7%），以及YAMNet丢弃的&lt;500ms子段</li>
+    </ul>
     <h3>更新内容 v3.1.113</h3>
     <ul>
       <li>Fix: MIN_FRAGMENT_MS 3s→1.5s，减少短干货被合并到相邻段导致干货间丢失</li>
@@ -104,7 +122,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
       <li>Fix: 音频分段VAD/YAMNet进度每10%写入指纹日志，后处理干/水变化详细记录</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.113.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.116.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="qr-container">
     <div id="qrcode"></div>
@@ -115,7 +133,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script>
 new QRCode(document.getElementById("qrcode"), {
-  text: window.location.href + "RadioApp-v3.1.113.apk",
+  text: window.location.href + "RadioApp-v3.1.116.apk",
   width: 180,
   height: 180
 });

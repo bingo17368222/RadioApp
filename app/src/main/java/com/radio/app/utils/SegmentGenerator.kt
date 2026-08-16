@@ -336,6 +336,67 @@ object SegmentGenerator {
         return label == "指纹水货" || label == "水货" || label == "水货(漏判召回)"
     }
 
+    /**
+     * v3.1.116: 填充段间间隙为静音段，确保时间轴连续。
+     * VAD活动段只覆盖了约89.3%的时间轴，剩余10.7%的静音间隙未被任何段覆盖。
+     * 对段列表按start排序，在相邻段间填充"静音"段，最后补全首段前和末段后到总时长。
+     * @return 填充的静音段数量
+     */
+    private fun fillSilenceGaps(segments: MutableList<VoiceSegment>, totalDurationMs: Long): Int {
+        if (segments.isEmpty()) return 0
+        segments.sortBy { it.start }
+        var fillCount = 0
+
+        // 1. 填充首段之前的间隙（从0到第一段start）
+        val firstSeg = segments.first()
+        if (firstSeg.start > 50) {
+            segments.add(0, VoiceSegment().apply {
+                start = 0L
+                end = firstSeg.start
+                hasVoice = false
+                label = "静音"
+                isSimulated = false
+            })
+            fillCount++
+        }
+
+        // 2. 填充相邻段之间的间隙
+        var i = 0
+        while (i < segments.size - 1) {
+            val curr = segments[i]
+            val next = segments[i + 1]
+            val gapMs = next.start - curr.end
+            if (gapMs > 50) {
+                segments.add(i + 1, VoiceSegment().apply {
+                    start = curr.end
+                    end = next.start
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                fillCount++
+                i += 2
+            } else {
+                i++
+            }
+        }
+
+        // 3. 填充末段之后的间隙（从最后一段end到totalDurationMs）
+        val lastSeg = segments.last()
+        if (totalDurationMs > 0 && lastSeg.end < totalDurationMs - 50) {
+            segments.add(VoiceSegment().apply {
+                start = lastSeg.end
+                end = totalDurationMs
+                hasVoice = false
+                label = "静音"
+                isSimulated = false
+            })
+            fillCount++
+        }
+
+        return fillCount
+    }
+
     private fun mergeAdjacentSegments(segments: List<VoiceSegment>): MutableList<VoiceSegment> {
         if (segments.isEmpty()) return mutableListOf()
         val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
@@ -1244,41 +1305,36 @@ object SegmentGenerator {
                             var processedCount = 0
                             val totalIntervals = yamnetIntervals.size
 
-                            // 记录每个区间内YAMNet覆盖的范围（用于填充未覆盖间隙）
-                            val coveredRanges = mutableListOf<Pair<Long, Long>>()
-
                             // v3.1.92: 打开PCM文件一次，避免重复打开316次
                             val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
                             try {
-                                for ((intervalStart, intervalEnd) in yamnetIntervals) {
+                                for (interval in yamnetIntervals) {
                                     if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+                                    val intervalStart = interval.first
+                                    val intervalEnd = interval.second
 
-                                    // v3.1.106: 内部捕获InterruptedException转为break，使用部分结果
-                                    // 避免整个第2层回退到第1层结果（单段待处理→全水分）
-var subSegments = listOf<VoiceSegment>()
+                                    // v3.1.115: 使用多数投票分类，每个区间只产生1段，消除交替子段问题
+                                    // 与旧双模型方案classifySpeechInterval策略一致
+                                    var majoritySeg: VoiceSegment? = null
                                     try {
-                                        subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                        majoritySeg = AudioSegmentAnalyzer.classifyIntervalMajority(
                                             pcmSamples, intervalStart, intervalEnd,
                                             yamnetInterpreter
-                                        ) { permille ->
-                                            val baseProgress = 350 + (processedCount * 500 / totalIntervals)
-                                            val intervalProgress = (permille * 500 / (totalIntervals * 1000)).coerceIn(0, 500 / totalIntervals.coerceAtLeast(1))
-                                            val mapped = (baseProgress + intervalProgress).coerceIn(350, 900)
-                                            SegmentNotificationHelper.update(
-                                                context, episodeId, episodeTitle, mapped,
-                                                "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals"
-                                            )
-                                        }
+                                        )
                                     } catch (e: InterruptedException) {
-                                        if (yamnetAllSegments.isEmpty()) throw  // 无部分结果，向上传播
-                                        break  // 有部分结果，使用部分结果
+                                        if (yamnetAllSegments.isEmpty()) throw
+                                        break
                                     }
 
-                                    for (seg in subSegments) {
-                                        coveredRanges.add(seg.start to seg.end)
+                                    if (majoritySeg != null) {
+                                        yamnetAllSegments.add(majoritySeg!!)
                                     }
-                                    yamnetAllSegments.addAll(subSegments)
                                     processedCount++
+                                    val mapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
+                                    SegmentNotificationHelper.update(
+                                        context, episodeId, episodeTitle, mapped,
+                                        "第2层-B YAMNet推理 ${processedCount}/$totalIntervals"
+                                    )
                                 }
                             } finally {
                                 try { pcmSamples.close() } catch (_: Exception) {}
@@ -1453,35 +1509,33 @@ var subSegments = listOf<VoiceSegment>()
                                         val yamnetAllSegments = mutableListOf<VoiceSegment>()
                                         var processedCount = 0
                                         val totalIntervals = yamnetIntervals.size
-                                        val coveredRanges = mutableListOf<Pair<Long, Long>>()
 
                                         // v3.1.92: 打开PCM文件一次
                                         val pcmSamples2 = AudioSegmentAnalyzer.openPcmSamples(newFullPcm)
                                         try {
-                                            for ((intervalStart, intervalEnd) in yamnetIntervals) {
+                                            for (interval in yamnetIntervals) {
                                                 if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+                                                val intervalStart = interval.first
+                                                val intervalEnd = interval.second
 
-                                                // v3.1.106: 内部捕获InterruptedException转为break，使用部分结果
-                                                // 避免整个第2层回退到第1层结果（单段待处理→全水分）
-var subSegments = listOf<VoiceSegment>()
+                                                // v3.1.115: 使用多数投票分类，每个区间只产生1段
+                                                var majoritySeg: VoiceSegment? = null
                                                 try {
-                                                    subSegments = AudioSegmentAnalyzer.classifyPcmInterval(
+                                                    majoritySeg = AudioSegmentAnalyzer.classifyIntervalMajority(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
-                                                    ) { permille ->
-                                                        val base = 250 + (processedCount * 550 / totalIntervals)
-                                                        val inc = (permille * 550 / (totalIntervals * 1000)).coerceIn(0, 550 / totalIntervals.coerceAtLeast(1))
-                                                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, (base + inc).coerceIn(250, 800), "第2层-B YAMNet推理 ${processedCount + 1}/$totalIntervals")
-                                                    }
+                                                    )
                                                 } catch (e: InterruptedException) {
-                                                    if (yamnetAllSegments.isEmpty()) throw  // 无部分结果，向上传播
-                                                    break  // 有部分结果，使用部分结果
+                                                    if (yamnetAllSegments.isEmpty()) throw
+                                                    break
                                                 }
 
-                                                for (seg in subSegments) {
-                                                    coveredRanges.add(seg.start to seg.end)
+                                                if (majoritySeg != null) {
+                                                    yamnetAllSegments.add(majoritySeg!!)
                                                 }
-                                                yamnetAllSegments.addAll(subSegments)
                                                 processedCount++
+                                                SegmentNotificationHelper.update(context, episodeId, episodeTitle,
+                                                    (250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)).coerceIn(250, 800),
+                                                    "第2层-B YAMNet推理 ${processedCount}/$totalIntervals")
                                             }
                                         } finally {
                                             try { pcmSamples2.close() } catch (_: Exception) {}
@@ -1616,6 +1670,16 @@ var subSegments = listOf<VoiceSegment>()
         val waterAfterPost = finalSegments.count { !it.hasVoice }
         // v3.1.112: 详细记录后处理变化
         writeFingerprintLog(context, "三层架构: 后处理结果: ${merged.size}段(干${dryBeforePost}/水${waterBeforePost}) → ${finalSegments.size}段(干${dryAfterPost}/水${waterAfterPost}), 合并前${layer3Result.size}段")
+
+        // v3.1.116: 填充段间间隙为静音段，确保时间轴100%连续
+        // 根因：VAD活动段只覆盖了约89.3%的时间轴（见日志第2层-A VAD占比），
+        // 剩余10.7%的静音间隙未被任何段覆盖，导致播放器显示时间不连续。
+        // 拼图合并仅覆盖pending∩VAD区域，VAD非活动区域完全缺失。
+        // 方法：对最终段按start排序，在相邻段间填充"静音"段。
+        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs)
+        if (gapFillCount > 0) {
+            writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
+        }
 
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime
