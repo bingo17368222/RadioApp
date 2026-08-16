@@ -3345,28 +3345,30 @@ class PlayerActivity : AppCompatActivity() {
         val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
         val adapter = HistoryListAdapter(historyList, currentId)
         adapter.onItemClicked = { position ->
-            val item = historyList.getOrNull(position) ?: return@(adapter.onItemClicked!!)
-            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}")
-            val episode = item.toEpisode()
-            // 在当前节目列表中查找匹配的节目
-            val listIdx = episodeList.indexOfFirst { it.id == item.episodeId }
-            if (listIdx >= 0) {
-                // 如果在当前节目列表中，使用 playEpisodeAtIndex 切换
-                playEpisodeAtIndex(listIdx)
-            } else if (playbackService == null) {
-                Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
-            } else {
-                // 不在当前列表，直接通过 service 播放
-                Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
-                currentEpisode = episode
-                currentEpisodeIndex = -1
-                saveLastEpisode()
-                playbackService?.playEpisode(episode, false, item.lastPosition)
-                ensureSegmentsForCurrentEpisode()
-                updateUI()
-                setupPreCacheList()
-                // 记录历史（更新位置）
-                PlayHistoryUtils.recordHistory(this, episode, item.lastPosition)
+            val item = historyList.getOrNull(position)
+            if (item != null) {
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}")
+                val episode = item.toEpisode()
+                // 在当前节目列表中查找匹配的节目
+                val listIdx = episodeList.indexOfFirst { it.id == item.episodeId }
+                if (listIdx >= 0) {
+                    // 如果在当前节目列表中，使用 playEpisodeAtIndex 切换
+                    playEpisodeAtIndex(listIdx)
+                } else if (playbackService == null) {
+                    Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
+                } else {
+                    // 不在当前列表，直接通过 service 播放
+                    Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
+                    currentEpisode = episode
+                    currentEpisodeIndex = -1
+                    saveLastEpisode()
+                    playbackService?.playEpisode(episode, false, item.lastPosition)
+                    ensureSegmentsForCurrentEpisode()
+                    updateUI()
+                    setupPreCacheList()
+                    // 记录历史（更新位置）
+                    PlayHistoryUtils.recordHistory(this, episode, item.lastPosition)
+                }
             }
         }
         recyclerView.adapter = adapter
