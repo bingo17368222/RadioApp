@@ -3345,7 +3345,7 @@ class PlayerActivity : AppCompatActivity() {
         val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
         val adapter = HistoryListAdapter(historyList, currentId)
         adapter.onItemClicked = { position ->
-            val item = historyList.getOrNull(position) ?: return@let
+            val item = historyList.getOrNull(position) ?: return@(adapter.onItemClicked!!)
             writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}")
             val episode = item.toEpisode()
             // 在当前节目列表中查找匹配的节目
@@ -3353,12 +3353,10 @@ class PlayerActivity : AppCompatActivity() {
             if (listIdx >= 0) {
                 // 如果在当前节目列表中，使用 playEpisodeAtIndex 切换
                 playEpisodeAtIndex(listIdx)
+            } else if (playbackService == null) {
+                Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
             } else {
                 // 不在当前列表，直接通过 service 播放
-                if (playbackService == null) {
-                    Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
-                    return@let
-                }
                 Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
                 currentEpisode = episode
                 currentEpisodeIndex = -1
