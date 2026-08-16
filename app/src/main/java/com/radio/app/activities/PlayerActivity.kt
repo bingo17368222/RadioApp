@@ -700,6 +700,13 @@ class PlayerActivity : AppCompatActivity() {
                     val msg = "JITTER-GUARD: same episode playing, only update UI (svcPos=$svcPos, savedPos=$savedPosForCheck)"
                     android.util.Log.d("PlayerActivity", msg)
                     writeJitterLog(msg)
+                    // v3.1.117: 服务已在播放的节目也应记录到播放历史
+                    val jitterEp = currentEpisode
+                    if (jitterEp != null) {
+                        val savedPos = getSavedPositionForEpisode(this@PlayerActivity, jitterEp.id ?: "")
+                        PlayHistoryUtils.recordHistory(this@PlayerActivity, jitterEp, if (savedPos > 0) savedPos else 0L)
+                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onServiceConnected JITTER-GUARD(same): recorded history for ${jitterEp.title}")
+                    }
                     // v2.4.37: Update jitter guard baseline to current service position.
                     // Without this, the first onPositionChanged callback after switching back
                     // would compare against the OLD lastDisplayedPositionMs (from before onPause),
@@ -732,6 +739,13 @@ class PlayerActivity : AppCompatActivity() {
                     val msg = "${com.radio.app.RadioApplication.appVersionTag()} JITTER-GUARD: same episode title+id '${svcEpisode.title}'/'${svcEpisode.id}' (URL differs), syncing to service position=$svcPos without restart"
                     android.util.Log.d("PlayerActivity", msg)
                     writeJitterLog(msg)
+                    // v3.1.117: 服务已在播放的节目也应记录到播放历史
+                    val jitterEp2 = currentEpisode
+                    if (jitterEp2 != null) {
+                        val savedPos = getSavedPositionForEpisode(this@PlayerActivity, jitterEp2.id ?: "")
+                        PlayHistoryUtils.recordHistory(this@PlayerActivity, jitterEp2, if (savedPos > 0) savedPos else 0L)
+                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onServiceConnected JITTER-GUARD(title+id): recorded history for ${jitterEp2.title}")
+                    }
                     lastDisplayedPositionMs = svcPos
                     updateUI()
                     startCacheProgressUpdater()
@@ -772,6 +786,13 @@ class PlayerActivity : AppCompatActivity() {
                         updateUI()
                         restoreBackgroundResults()
                     }
+                }
+                // v3.1.117: 服务已在播放的节目也应记录到播放历史
+                val jitterEp3 = currentEpisode
+                if (jitterEp3 != null) {
+                    val savedPos = getSavedPositionForEpisode(this@PlayerActivity, jitterEp3.id ?: "")
+                    PlayHistoryUtils.recordHistory(this@PlayerActivity, jitterEp3, if (savedPos > 0) savedPos else 0L)
+                    writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onServiceConnected JITTER-GUARD(diff): recorded history for ${jitterEp3.title}")
                 }
                 saveLastEpisode()
                 setPlaybackInProgress(this@PlayerActivity, null)
@@ -5047,6 +5068,10 @@ class PlayerActivity : AppCompatActivity() {
         if (serviceBound && playbackService != null) {
             if (sameEpisode) {
                 writeJitterLog("onNewIntent: same episode already playing, skip restart")
+                // v3.1.117: 即使同节目，也应确保在播放历史中
+                val savedPos = getSavedPositionForEpisode(this@PlayerActivity, newEpisode.id ?: "")
+                PlayHistoryUtils.recordHistory(this@PlayerActivity, newEpisode, if (savedPos > 0) savedPos else 0L)
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onNewIntent(same): recorded history for ${newEpisode.title}")
                 restoreBackgroundResults()
                 // [v2.1.8] If same episode, seek immediately
                 if (pendingSeekMs > 0) {
@@ -5087,6 +5112,10 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             // Service not bound yet - episode will be played when service connects
             writeJitterLog("onNewIntent: service not bound, will play when connected: ${newEpisode.title}")
+            // v3.1.117: 服务未绑定时也先记录历史，避免服务连接后同步丢失
+            val savedPos = getSavedPositionForEpisode(this@PlayerActivity, newEpisode.id ?: "")
+            PlayHistoryUtils.recordHistory(this@PlayerActivity, newEpisode, if (savedPos > 0) savedPos else 0L)
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onNewIntent(not bound): recorded history for ${newEpisode.title}")
         }
         updateUI()
     }
