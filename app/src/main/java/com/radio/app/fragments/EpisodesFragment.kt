@@ -15,10 +15,12 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -32,6 +34,7 @@ import com.radio.app.models.RadioStation
 import com.radio.app.network.EpisodeApiService
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.services.RadioPlaybackService
+import com.radio.app.utils.PlayHistoryUtils
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -95,6 +98,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             }
             Toast.makeText(context, "正在刷新节目单...", Toast.LENGTH_SHORT).show()
             loadEpisodes(selectedStationId!!, dateFormat.format(selectedDate.time), forceRefresh = true)
+        }
+
+        // v3.1.117: 播放历史按钮
+        v.findViewById<Button>(R.id.btn_history)?.setOnClickListener {
+            showPlayHistoryDialog()
         }
 
         // 先恢复上次保存的日期和电台
@@ -564,5 +572,126 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                 }
             }
             .show()
+    }
+
+    // v3.1.117: 显示播放历史弹窗
+    private fun showPlayHistoryDialog() {
+        val ctx = context ?: return
+        val historyList = PlayHistoryUtils.getHistory(ctx)
+        if (historyList.isEmpty()) {
+            Toast.makeText(ctx, "暂无播放历史", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val recyclerView = RecyclerView(ctx).apply {
+            layoutManager = LinearLayoutManager(ctx)
+            setHasFixedSize(true)
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.6).toInt()
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
+        }
+
+        val adapter = HistoryListAdapter(historyList, null)
+        adapter.onItemClicked = { position ->
+            val item = historyList.getOrNull(position)
+            if (item != null) {
+                // 启动 PlayerActivity 播放该节目
+                val intent = Intent(ctx, PlayerActivity::class.java).apply {
+                    putExtra("episode_id", item.episodeId)
+                    putExtra("title", item.title)
+                    putExtra("audio_url", item.audioUrl)
+                    putExtra("station_name", item.stationName)
+                    putExtra("station_id", item.stationId)
+                    putExtra("broadcast_at", item.broadcastAt)
+                    putExtra("duration", item.duration)
+                    putExtra("program_name", item.programName ?: "")
+                    putExtra("start_position", item.lastPosition)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(intent)
+            }
+        }
+        recyclerView.adapter = adapter
+
+        AlertDialog.Builder(ctx)
+            .setTitle("播放历史")
+            .setView(recyclerView)
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    // 历史列表适配器（复用 PlayerActivity 中的逻辑）
+    inner class HistoryListAdapter(
+        private val historyItems: List<PlayHistoryUtils.HistoryItem>,
+        var currentlyPlayingId: String?
+    ) : RecyclerView.Adapter<HistoryListAdapter.ViewHolder>() {
+        var onItemClicked: ((Int) -> Unit)? = null
+
+        private val dateIn = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+        private val dateOut = java.text.SimpleDateFormat("MM/dd", java.util.Locale.getDefault())
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_history, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val item = historyItems[position]
+            val isPlaying = item.episodeId == currentlyPlayingId
+
+            // 日期
+            holder.tvDate.text = try {
+                dateIn.parse(item.broadcastAt)?.let { dateOut.format(it) } ?: item.broadcastAt
+            } catch (_: Exception) {
+                item.broadcastAt
+            }
+
+            // 标题
+            holder.tvTitle.text = if (isPlaying) "▶ ${item.title}" else item.title
+
+            // 电台名
+            holder.tvStation.text = item.stationName
+
+            // 最后播放位置
+            val posMin = item.lastPosition / 60000
+            val posSec = (item.lastPosition % 60000) / 1000
+            val totalMin = item.duration / 60000
+            holder.tvPosition.text = "${posMin}:${String.format("%02d", posSec)} / ${totalMin}分钟"
+
+            if (isPlaying) {
+                holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
+                holder.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
+            } else {
+                holder.tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL)
+                holder.btnPlay.setImageResource(com.radio.app.R.drawable.ic_play)
+            }
+
+            holder.itemView.setOnClickListener {
+                val clickPos = holder.bindingAdapterPosition
+                if (clickPos >= 0 && clickPos < historyItems.size) {
+                    onItemClicked?.invoke(clickPos)
+                }
+                // 关闭 dialog
+                var parent = holder.itemView.parent
+                while (parent != null) {
+                    if (parent is AlertDialog) {
+                        parent.dismiss()
+                        break
+                    }
+                    parent = (parent as? View)?.parent
+                }
+            }
+        }
+
+        override fun getItemCount(): Int = historyItems.size
+
+        inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvDate: TextView = view.findViewById(R.id.tv_history_date)
+            val tvTitle: TextView = view.findViewById(R.id.tv_history_title)
+            val tvStation: TextView = view.findViewById(R.id.tv_history_station)
+            val tvPosition: TextView = view.findViewById(R.id.tv_history_position)
+            val btnPlay: ImageView = view.findViewById(R.id.btn_history_play)
+        }
     }
 }

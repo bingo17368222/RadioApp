@@ -56,6 +56,18 @@
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
             android:layout_marginStart="8dp" />
+
+        <Button
+            android:id="@+id/btn_history"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="🕐 历史"
+            android:textSize="13sp"
+            android:textColor="?attr/colorOnPrimary"
+            android:backgroundTint="?attr/colorPrimary"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:layout_marginStart="8dp" />
     </LinearLayout>
 
     <!-- 选中日期显示 -->
