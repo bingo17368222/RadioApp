@@ -725,8 +725,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (player != null) return
         try {
             val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36")
                 .setDefaultRequestProperties(mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36",
                     "Referer" to "https://www.hndt.com/"
                 ))
 
@@ -5106,13 +5106,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         ensurePlayerInitialized()
         try {
             player?.let {
-                // [v2.3.0-fix] Stop and clear previous media before setting new one.
-                // This ensures ExoPlayer exits any error state from a previous failed episode,
-                // preventing cascading playback failures.
-                try { it.stop() } catch (_: Exception) {}
-                it.clearMediaItems()
+                // v3.1.119: 移除 stop() + clearMediaItems()，与 playEpisode 的 v2.4.108 修复保持一致。
+                // stop() 将播放器置入 STATE_IDLE，后续 prepare() 可能失效导致直播卡死。
+                // setMediaItem() 会自动替换之前的媒体项，无需先 clearMediaItems()。
+                it.playWhenReady = true
                 it.setMediaItem(MediaItem.fromUri(currentPlaybackUri))
-                it.prepare(); it.playWhenReady = true
+                it.prepare()
             }
             notificationTitle = station.name; notificationSubText = "[直播]"
             notificationDate = ""; notificationTimeRange = ""; notificationPlaying = true
