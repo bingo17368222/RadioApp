@@ -1564,13 +1564,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return try {
             val dbHelper = RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodesByDateAndStation(stationId, dateStr)
-            // v3.1.118: 降低阈值从8到5，部分电台每天节目较少
+            // v3.1.119: 正常节目单每天至少有5个节目，以此为标准
             if (cached.size >= 5) {
                 // v3.1.112: 验证最早节目时间是否在当日合理范围内
                 val sorted = cached.sortedBy { it.startTime }
                 val firstStart = sorted.firstOrNull()?.startTime ?: 0L
                 val lastStart = sorted.lastOrNull()?.startTime ?: 0L
-                // 计算当天0点时间戳（北京时间）
+                // 计算当天0点时间戳（北京时间），使用 >= 以兼容零点零分开始的节目
                 val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                 sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
                 val dayStart = (sdf.parse(dateStr)?.time ?: 0L)
@@ -1586,22 +1586,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
             if (!freshEpisodes.isNullOrEmpty()) {
-                // v3.1.118: 不再要求 startTime > 0，部分电台的未来节目可能没有startTime
+                // v3.1.119: 节目都应该有开始时间但可能为0（零点零分），不再过滤duration>0
                 val validEpisodes = freshEpisodes
-                    .filter { it.duration > 0 && !it.broadcastAt.isNullOrBlank() }
+                    .filter { !it.broadcastAt.isNullOrBlank() }
                     .sortedBy { it.startTime }
                 if (validEpisodes.isNotEmpty()) {
                     dbHelper.saveEpisodeInfos(validEpisodes)
-                    writePreCacheLog("ensureScheduleComplete: refreshed ${validEpisodes.size}/${freshEpisodes.size} valid episodes for $stationId $dateStr")
-                    // v3.1.118: 降低阈值从5到3，只要有一些有效节目就认为节目单足够
-                    if (validEpisodes.size >= 3) {
+                    writePreCacheLog("ensureScheduleComplete: refreshed ${validEpisodes.size}/${freshEpisodes.size} episodes for $stationId $dateStr, " +
+                            "sorted by startTime, first: ${validEpisodes.first().title}@${validEpisodes.first().startTime}")
+                    // v3.1.119: 正常节目单每天至少5个节目
+                    if (validEpisodes.size >= 5) {
                         writePreCacheLog("ensureScheduleComplete: schedule refreshed with ${validEpisodes.size} episodes, " +
                                 "first: ${validEpisodes.first().title}@${validEpisodes.first().startTime}, " +
                                 "last: ${validEpisodes.last().title}@${validEpisodes.last().startTime}")
                         return true
                     }
                 }
-                writePreCacheLog("ensureScheduleComplete: refresh returned only ${validEpisodes.size} valid episodes for $stationId $dateStr")
+                writePreCacheLog("ensureScheduleComplete: refresh returned only ${validEpisodes.size} episodes for $stationId $dateStr")
                 false
             } else {
                 writePreCacheLog("ensureScheduleComplete: refresh returned null/empty for $stationId $dateStr")
@@ -1842,7 +1843,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
-        writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size})")
+        // v3.1.119: 刷新节目单后按开始时间排序，确保节目单列表按时间顺序展示
+        resultList.sortBy { it.startTime }
+        writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size}), sorted by startTime")
         return resultList
     }
 

@@ -718,9 +718,25 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             db.beginTransaction()
             try {
                 for (episode in episodes) {
-                    // v3.1.41: 跳过时长为0或广播时间为空的无效节目，避免污染列表
-                    if (episode.duration <= 0 || episode.broadcastAt.isNullOrBlank()) {
+                    // v3.1.119: 不再跳过时长为0的节目。即使API返回duration=0也应入库，
+                    // 后续可通过getEpisodeInfo从DB获取到节目信息（含startTime）。
+                    // 如果duration为0，尝试保留DB中已有的duration（同saveEpisodeInfo单例版逻辑）。
+                    if (episode.broadcastAt.isNullOrBlank()) {
                         continue
+                    }
+                    var finalDuration = episode.duration
+                    if (finalDuration <= 0) {
+                        try {
+                            val cursor = db.query(TABLE_EPISODE_INFO, arrayOf("duration"),
+                                "episode_id = ?", arrayOf(episode.id), null, null, null)
+                            if (cursor.moveToFirst()) {
+                                val existingDuration = cursor.getLong(cursor.getColumnIndexOrThrow("duration"))
+                                if (existingDuration > 0) {
+                                    finalDuration = existingDuration
+                                }
+                            }
+                            cursor.close()
+                        } catch (_: Exception) {}
                     }
                     val (effectiveBroadcastAt, effectiveTitle) = normalizeEpisodeFields(episode)
                     val values = ContentValues().apply {
@@ -728,7 +744,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                         put("date", effectiveBroadcastAt.substringBefore("T").take(10))
                         put("title", effectiveTitle)
                         put("broadcast_at", effectiveBroadcastAt)
-                        put("duration", episode.duration)
+                        put("duration", finalDuration)
                         // v2.4.148: Persist start/end timestamps for offline notification display.
                         put("start_time", episode.startTime)
                         put("end_time", episode.endTime)

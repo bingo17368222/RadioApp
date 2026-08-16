@@ -409,17 +409,35 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             EpisodeApiService.getInstance().getEpisodesByDate(stationId, dateStr,
                 object : EpisodeApiService.ApiCallback<List<Episode>> {
                     override fun onSuccess(result: List<Episode>) {
-                            // [v2.2.4] Save to DB for future lookups
-                            // v3.1.41: 过滤时长为0的无效节目
-                            val validEpisodes = result.filter { it.duration > 0 }
+                            // v3.1.119: 不再过滤duration>0的节目。即使API返回duration=0，
+                            // saveEpisodeInfos会保留DB中已有的时长（预缓存时已入库）。
+                            // 这样已缓存的节目不会出现"未知时长"问题。
+                            val unsortedList = result.toMutableList()
+                            // 对duration=0的节目，尝试从DB补充时长
                             try {
-                                RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(validEpisodes)
+                                val dbHelper = RadioDatabaseHelper.getInstance(requireContext())
+                                for (i in unsortedList.indices) {
+                                    if (unsortedList[i].duration <= 0) {
+                                        val dbEp = dbHelper.getEpisodeInfo(unsortedList[i].id ?: "")
+                                        if (dbEp != null && dbEp.duration > 0) {
+                                            unsortedList[i] = unsortedList[i].copy(
+                                                duration = dbEp.duration,
+                                                startTime = if (unsortedList[i].startTime <= 0) dbEp.startTime else unsortedList[i].startTime,
+                                                endTime = if (unsortedList[i].endTime <= 0) dbEp.endTime else unsortedList[i].endTime
+                                            )
+                                        }
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                            // 保存到DB（saveEpisodeInfos已兼容duration=0时保留已有值）
+                            try {
+                                RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(unsortedList)
                             } catch (_: Exception) {}
                             mainHandler.post {
                                 progressBar?.visibility = View.GONE
                                 episodes.clear()
-                                // v3.1.41: 按广播时间排序
-                                episodes.addAll(validEpisodes.sortedBy { it.broadcastAt })
+                                // v3.1.119: 按开始时间排序，确保节目单按时间顺序展示
+                                episodes.addAll(unsortedList.sortedBy { it.startTime })
                                 adapter?.notifyDataSetChanged()
                             }
                         }
