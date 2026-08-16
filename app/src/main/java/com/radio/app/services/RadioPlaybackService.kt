@@ -1564,8 +1564,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return try {
             val dbHelper = RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodesByDateAndStation(stationId, dateStr)
-            // v3.1.112: 从3个提高到8个，确保节目单足够完整
-            if (cached.size >= 8) {
+            // v3.1.118: 降低阈值从8到5，部分电台每天节目较少
+            if (cached.size >= 5) {
                 // v3.1.112: 验证最早节目时间是否在当日合理范围内
                 val sorted = cached.sortedBy { it.startTime }
                 val firstStart = sorted.firstOrNull()?.startTime ?: 0L
@@ -1586,15 +1586,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val apiService = com.radio.app.network.EpisodeApiService.getInstance()
             val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
             if (!freshEpisodes.isNullOrEmpty()) {
-                // v3.1.112: 过滤无效节目，确保排序正确
+                // v3.1.118: 不再要求 startTime > 0，部分电台的未来节目可能没有startTime
                 val validEpisodes = freshEpisodes
-                    .filter { it.duration > 0 && it.startTime > 0 && !it.broadcastAt.isNullOrBlank() }
+                    .filter { it.duration > 0 && !it.broadcastAt.isNullOrBlank() }
                     .sortedBy { it.startTime }
                 if (validEpisodes.isNotEmpty()) {
                     dbHelper.saveEpisodeInfos(validEpisodes)
                     writePreCacheLog("ensureScheduleComplete: refreshed ${validEpisodes.size}/${freshEpisodes.size} valid episodes for $stationId $dateStr")
-                    // v3.1.112: 验证刷新后的节目单是否足够
-                    if (validEpisodes.size >= 5) {
+                    // v3.1.118: 降低阈值从5到3，只要有一些有效节目就认为节目单足够
+                    if (validEpisodes.size >= 3) {
                         writePreCacheLog("ensureScheduleComplete: schedule refreshed with ${validEpisodes.size} episodes, " +
                                 "first: ${validEpisodes.first().title}@${validEpisodes.first().startTime}, " +
                                 "last: ${validEpisodes.last().title}@${validEpisodes.last().startTime}")
@@ -1787,6 +1787,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     !settings.isNoPreprocess(ep.id ?: "")
                 }
                 writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
+                // v3.1.118: 将API返回的节目信息（duration、startTime、endTime、title等）持久化到数据库，
+                // 避免节目单列表显示未知时长，确保预缓存完整性检查能查到完整节目单
+                if (validNewEpisodes.isNotEmpty()) {
+                    try {
+                        RadioDatabaseHelper.getInstance(this@RadioPlaybackService).saveEpisodeInfos(validNewEpisodes)
+                        writePreCacheLog("fetchMoreDaysForPreCache: saved ${validNewEpisodes.size} episodes to DB for $targetDate")
+                    } catch (e: Exception) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: DB save error: ${e.message}")
+                    }
+                }
                 resultList.addAll(validNewEpisodes)
             } else {
                 writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate, trying URL construction")
@@ -1847,6 +1857,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             obj.put("station_id", ep.stationId ?: "")
             obj.put("duration", ep.duration)
             obj.put("broadcast_at", ep.broadcastAt ?: "")
+            // v3.1.118: 保存startTime/endTime，确保预缓存列表加载后节目信息完整
+            obj.put("start_time", ep.startTime)
+            obj.put("end_time", ep.endTime)
             arr.put(obj)
         }
         getSharedPreferences("precache_list", MODE_PRIVATE)
@@ -1871,6 +1884,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     stationId = obj.optString("station_id", "")
                     duration = obj.optLong("duration", 0)
                     broadcastAt = obj.optString("broadcast_at", "")
+                    // v3.1.118: 恢复startTime/endTime
+                    startTime = obj.optLong("start_time", 0)
+                    endTime = obj.optLong("end_time", 0)
                 }
                 if (ep.audioUrl.isNotBlank()) list.add(ep)
             }

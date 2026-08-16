@@ -654,10 +654,20 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             holder.tvStation.text = item.stationName
 
             // 最后播放位置
-            val posMin = item.lastPosition / 60000
-            val posSec = (item.lastPosition % 60000) / 1000
-            val totalMin = item.duration / 60000
-            holder.tvPosition.text = "${posMin}:${String.format("%02d", posSec)} / ${totalMin}分钟"
+            // v3.1.118: Episode.duration 单位是秒（API中 (endTime-beginTime)/1000），需 /60 转为分钟
+            val totalSec = item.duration
+            if (totalSec <= 0) {
+                holder.tvPosition.text = "未知时长"
+            } else {
+                val totalMin = totalSec / 60
+                if (item.lastPosition <= 0) {
+                    holder.tvPosition.text = "0:00 / ${totalMin}分钟"
+                } else {
+                    val posMin = item.lastPosition / 60000
+                    val posSec = (item.lastPosition % 60000) / 1000
+                    holder.tvPosition.text = "${posMin}:${String.format("%02d", posSec)} / ${totalMin}分钟"
+                }
+            }
 
             if (isPlaying) {
                 holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
