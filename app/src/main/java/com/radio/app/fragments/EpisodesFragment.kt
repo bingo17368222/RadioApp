@@ -673,7 +673,16 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
             // 最后播放位置
             // v3.1.118: Episode.duration 单位是秒（API中 (endTime-beginTime)/1000），需 /60 转为分钟
-            val totalSec = item.duration
+            // v3.1.119: 预缓存已将节目时长入库，若duration为0则从数据库获取
+            var totalSec = item.duration
+            if (totalSec <= 0) {
+                try {
+                    val dbEp = RadioDatabaseHelper.getInstance(holder.itemView.context).getEpisodeInfo(item.episodeId)
+                    if (dbEp != null && dbEp.duration > 0) {
+                        totalSec = dbEp.duration
+                    }
+                } catch (_: Exception) {}
+            }
             if (totalSec <= 0) {
                 holder.tvPosition.text = "未知时长"
             } else {

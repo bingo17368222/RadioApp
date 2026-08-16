@@ -2118,6 +2118,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val metaDuration = episode.duration?.let { if (it in 60..100000) it * 1000L else 0L } ?: 0L
         if (metaDuration > 0) return metaDuration
 
+        // v3.1.119: 预缓存已将节目时长入库，优先从数据库获取
+        // 即使episode.duration为0，DB中可能已有预缓存时存储的时长
+        try {
+            val dbHelper = RadioDatabaseHelper.getInstance(this)
+            val dbEp = dbHelper.getEpisodeInfo(episode.id ?: "")
+            if (dbEp != null && dbEp.duration > 0) {
+                return dbEp.duration * 1000L
+            }
+        } catch (_: Exception) {}
+
         // 2. Parse URL path for HHMM_HHMM pattern at end of filename
         // v3.1.67: FIXED: regex now anchors at end of filename (\\.\\w+$) to avoid matching
         // date digits (e.g. "20241126_0700" instead of "0700_0900" in "sijiache_20241126_0700_0900.mp4").

@@ -225,7 +225,16 @@ class SearchFragment : Fragment(), SearchResultAdapter.OnSearchResultClickListen
                         } ?: ""
                     val timeSlotDisplay = if (episode != null) formatTimeSlotFromEpisode(episode) else ""
                     // [v2.2.7] If timeSlot is empty but we have parsed date, show at least the date as fallback
-                    val totalDurationSec = episode?.duration ?: 0L
+                    // v3.1.119: 预缓存已将节目时长入库，若duration为0则从数据库获取
+                    var totalDurationSec = episode?.duration ?: 0L
+                    if (totalDurationSec <= 0 && episode?.id != null) {
+                        try {
+                            val dbEp = RadioDatabaseHelper.getInstance(requireContext()).getEpisodeInfo(episode.id)
+                            if (dbEp != null && dbEp.duration > 0) {
+                                totalDurationSec = dbEp.duration
+                            }
+                        } catch (_: Exception) {}
+                    }
                     val totalDurationMs = totalDurationSec * 1000  // seconds -> ms for formatTime()
                     val totalDurationStr = if (totalDurationSec > 0) formatTime(totalDurationMs) else "未知"
                     val playPosStr = formatTime(t.segmentStart)

@@ -54,7 +54,18 @@ class EpisodeAdapter(
         }
         holder.tvTime.text = timeText
 
-        val durationMin = episode.duration / 60
+        // v3.1.119: 预缓存已将节目时长入库，若duration为0则从数据库获取
+        var durationSec = episode.duration
+        if (durationSec <= 0) {
+            try {
+                val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
+                val dbEp = dbHelper.getEpisodeInfo(episode.id ?: "")
+                if (dbEp != null && dbEp.duration > 0) {
+                    durationSec = dbEp.duration
+                }
+            } catch (_: Exception) {}
+        }
+        val durationMin = durationSec / 60
         // v3.1.40: Always prefer DB segment count over episode's in-memory segments.
         // API returns episodes with 8 dummy segments (generateSimpleSegments), which would
         // overwrite the actual segmentation count from patrol/pre-segmentation.
