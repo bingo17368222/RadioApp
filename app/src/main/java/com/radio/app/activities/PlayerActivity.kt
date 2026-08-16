@@ -389,6 +389,13 @@ class PlayerActivity : AppCompatActivity() {
                 val newTitle = intent.getStringExtra("episode_title") ?: return
                 val newId = intent.getStringExtra("episode_id") ?: return
                 writeNotificationLog("episodeChanged broadcast: title=$newTitle, id=$newId")
+                // v3.1.117: 保存旧节目播放位置到历史记录（在 currentEpisode 被覆盖之前）
+                val oldId = currentEpisode?.id
+                if (oldId != null && oldId != newId) {
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                    writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] episodeChangedReceiver: saved old episode position, id=$oldId, pos=$oldPos")
+                }
                 // [v2.0.93] Fix: Update currentEpisode before calling updateUI(), otherwise
                 // updateUI() overwrites tvStationName with old currentEpisode.title.
                 val ep = playbackService?.getCurrentEpisode()
@@ -441,6 +448,11 @@ class PlayerActivity : AppCompatActivity() {
                         binding.seekBar.progress = 0
                         setEpisodeSwitchLock(0L)
                         writeJitterLog(" episodeChanged broadcast: set position lock to 0 (no saved position)")
+                    }
+                    // v3.1.117: 记录新节目到播放历史
+                    if (ep != null) {
+                        val epSavedPos = getSavedPositionForEpisode(this@PlayerActivity, ep.id ?: "")
+                        PlayHistoryUtils.recordHistory(this@PlayerActivity, ep, if (epSavedPos > 0) epSavedPos else 0L)
                     }
                 }
             }
@@ -1378,6 +1390,13 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onEpisodeChanged(episode: Episode) {
             // 服务端自动切换节目时的回调（连续播放）
+            // v3.1.117: 先保存旧节目的播放位置到历史记录
+            val oldEpisode = currentEpisode
+            if (oldEpisode != null && oldEpisode.id != episode.id) {
+                val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                PlayHistoryUtils.updatePosition(this@PlayerActivity, oldEpisode.id ?: "", oldPos)
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onEpisodeChanged: saved old episode position, id=${oldEpisode.id}, pos=$oldPos")
+            }
             runOnUiThread {
                 if (_binding == null) return@runOnUiThread
                 android.util.Log.d("PlayerActivity", "onEpisodeChanged: ${episode.title}")
@@ -1421,6 +1440,8 @@ class PlayerActivity : AppCompatActivity() {
                 ensureSegmentsForCurrentEpisode()
                 updateUI()
                 setupPreCacheList()
+                // v3.1.117: 记录新节目到播放历史
+                PlayHistoryUtils.recordHistory(this@PlayerActivity, episode, if (savedPos > 0) savedPos else 0L)
             }
         }
     }
@@ -3259,8 +3280,14 @@ class PlayerActivity : AppCompatActivity() {
         ensureSegmentsForCurrentEpisode()
         updateUI()
         setupPreCacheList()
-        // v3.1.117: 记录播放历史
-        PlayHistoryUtils.recordHistory(this, targetEpisode, 0L)
+        // v3.1.117: 记录播放历史 - 先保存旧节目位置，再记录新节目
+        val oldId = beforeEpisode?.id
+        if (oldId != null && oldId != targetEpisode.id) {
+            val oldPos = playbackService?.getCurrentPosition() ?: 0L
+            PlayHistoryUtils.updatePosition(this, oldId, oldPos)
+        }
+        val targetSavedPos = com.radio.app.activities.PlayerActivity.Companion.getSavedPositionForEpisode(this, targetEpisode.id ?: "")
+        PlayHistoryUtils.recordHistory(this, targetEpisode, if (targetSavedPos > 0) targetSavedPos else 0L)
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: DONE, switched to ${targetEpisode.title}, index=$currentEpisodeIndex")
     }
 
@@ -3358,6 +3385,13 @@ class PlayerActivity : AppCompatActivity() {
                     Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 } else {
                     // 不在当前列表，直接通过 service 播放
+                    // v3.1.117: 保存旧节目播放位置到历史记录
+                    val oldId = currentEpisode?.id
+                    if (oldId != null) {
+                        val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                        PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: saved old episode position, id=$oldId, pos=$oldPos")
+                    }
                     Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
                     currentEpisode = episode
                     currentEpisodeIndex = -1
@@ -3415,10 +3449,14 @@ class PlayerActivity : AppCompatActivity() {
             holder.tvStation.text = item.stationName
 
             // 最后播放位置
-            val posMin = item.lastPosition / 60000
-            val posSec = (item.lastPosition % 60000) / 1000
             val totalMin = item.duration / 60000
-            holder.tvPosition.text = "${posMin}:${String.format("%02d", posSec)} / ${totalMin}分钟"
+            if (item.lastPosition <= 0) {
+                holder.tvPosition.text = "未播放 / ${totalMin}分钟"
+            } else {
+                val posMin = item.lastPosition / 60000
+                val posSec = (item.lastPosition % 60000) / 1000
+                holder.tvPosition.text = "${posMin}:${String.format("%02d", posSec)} / ${totalMin}分钟"
+            }
 
             val ctx = holder.itemView.context
             val accentColor = resolveThemeColor(ctx, android.R.attr.colorPrimary)
@@ -3981,6 +4019,12 @@ class PlayerActivity : AppCompatActivity() {
             if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                 && !settings.isNoPreprocess(ep.id ?: "")) {
                 // Found a non-disliked episode
+                // v3.1.117: 保存旧节目播放位置（在 currentEpisode 被覆盖之前）
+                val oldId = currentEpisode?.id
+                if (oldId != null) {
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                }
                 currentEpisode = ep
                 // Issue 10 Fix 2: clear old subtitles when switching to next episode
                 clearSubtitles()
@@ -4032,6 +4076,12 @@ class PlayerActivity : AppCompatActivity() {
             // 用户反馈"无需预处理的节目连续播放或手动切换节目时自动跳过"。
             if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                 && !settings.isNoPreprocess(ep.id ?: "")) {
+                // v3.1.117: 保存旧节目播放位置（在 currentEpisode 被覆盖之前）
+                val oldId = currentEpisode?.id
+                if (oldId != null) {
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                }
                 currentEpisode = ep
                 // Issue 10 Fix 2: clear old subtitles when switching to prev episode
                 clearSubtitles()
@@ -4149,6 +4199,13 @@ class PlayerActivity : AppCompatActivity() {
                 val finalEpisodes = foundEpisodes
                 runOnUiThread {
                     // 更新节目列表为新一天的节目
+                    // v3.1.117: 保存旧节目播放位置到历史记录
+                    val oldId = currentEpisode?.id
+                    if (oldId != null) {
+                        val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                        PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] fetchAndPlayCrossDayEpisode: saved old episode position, id=$oldId, pos=$oldPos")
+                    }
                     episodeList = ArrayList(finalEpisodes)
                     saveEpisodeListToPrefs()
                     // direction > 0 (next): 播放第一天第一个节目
@@ -5005,6 +5062,13 @@ class PlayerActivity : AppCompatActivity() {
                 // OLD episode's position (passed from notification/widget), not the
                 // new episode's position. Using it causes "90 min showing on new episode".
                 // Always use the new episode's saved position.
+                // v3.1.117: 保存旧节目播放位置到历史记录
+                val oldId = currentEpisode?.id
+                if (oldId != null) {
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                    writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] onNewIntent: saved old episode position, id=$oldId, pos=$oldPos")
+                }
                 val startPos = getSavedPositionForEpisode(this, newEpisode.id)
                 writeJitterLog("onNewIntent: DIFFERENT episode, calling playEpisode with startPos=$startPos (seekMs=$seekMs IGNORED — it was old episode's position)")
                 if (seekMs > 0) {
