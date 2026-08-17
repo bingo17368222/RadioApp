@@ -6037,7 +6037,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodeId.isNullOrBlank()) {
             try {
                 val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId)
-                if (dbSegments.isNotEmpty() && !dbSegments.all { it.isSimulated }) {
+                if (dbSegments.isNotEmpty()) {
+                    // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
+                    // 之前判断 !dbSegments.all { it.isSimulated } 在DB全为模拟分段时
+                    // 会跳过，导致生成新的15分钟固定分段。即使DB中全是模拟分段，也应使用
+                    // 它们而非重新生成，这样当真实分段入库后，下次调用自然能找到真实分段。
+                    // 防止了 saveVoiceSegments 事务提交过程中，getSegmentList 读到旧数据
+                    // 仍生成新固定分段，以及真实分段写入后仍看到旧固定分段的问题。
                     episode.voiceSegments = dbSegments
                     return dbSegments.sortedBy { it.start }
                 }

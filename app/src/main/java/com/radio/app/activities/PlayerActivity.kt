@@ -1809,7 +1809,7 @@ class PlayerActivity : AppCompatActivity() {
         val episodeId = episode.id ?: return emptyList()
         if (episodeId.isBlank()) return emptyList()
         return try {
-            com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId).filter { !it.isSimulated }
+            com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId)
         } catch (e: Exception) {
             android.util.Log.e("PlayerActivity", "loadSegmentsFromDb failed: ${e.message}")
             emptyList()

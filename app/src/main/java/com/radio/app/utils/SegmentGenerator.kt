@@ -617,15 +617,16 @@ object SegmentGenerator {
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 0, "预分段(15分钟固定)")
         try {
             val dbHelper = RadioDatabaseHelper.getInstance(context)
-            // Check if segments already exist
+            // Check if any non-simulated (real AI) segments already exist
             val existing = dbHelper.getVoiceSegments(episodeId)
-            if (existing.isNotEmpty()) {
-                Log.i(TAG, "preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping")
+            val hasAnyRealSegments = existing.isNotEmpty() && existing.any { !it.isSimulated }
+            if (hasAnyRealSegments) {
+                Log.i(TAG, "preSegmentFixed: episode=$episodeId already has ${existing.count { !it.isSimulated }} real segments (total ${existing.size}), skipping")
                 // v2.4.124: Write to precache log for visibility
                 val logFile = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "precache/precache.log")
                 logFile.parentFile?.mkdirs()
-                logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: episode=$episodeId already has ${existing.size} segments, skipping (durationMs=$durationMs)\n")
-                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "预分段(已存在)")
+                logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: episode=$episodeId already has ${existing.count { !it.isSimulated }} real segments (total ${existing.size}), skipping (durationMs=$durationMs)\n")
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "预分段(已存在真实分段)")
                 SegmentNotificationHelper.endSession(context, episodeId)
                 return
             }
