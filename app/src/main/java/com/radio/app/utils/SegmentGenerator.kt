@@ -3,6 +3,8 @@ package com.radio.app.utils
 import android.content.Context
 import android.util.Log
 import com.radio.app.database.AudioFingerprint
+import com.radio.app.database.FingerprintGroupInfo
+import com.radio.app.database.FingerprintGroupMember
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.models.VoiceSegment
@@ -1889,8 +1891,8 @@ object SegmentGenerator {
         formalLibrary: List<AudioFingerprint>,
         progressCallback: ((Int, Long, Long) -> Unit)? = null,
         // v3.1.129: 指纹分组信息，用于缩减对比量
-        fingerprintGroups: List<RadioDatabaseHelper.FingerprintGroupInfo> = emptyList(),
-        groupMembers: List<RadioDatabaseHelper.FingerprintGroupMember> = emptyList(),
+        fingerprintGroups: List<FingerprintGroupInfo> = emptyList(),
+        groupMembers: List<FingerprintGroupMember> = emptyList(),
         dbHelper: RadioDatabaseHelper? = null
     ): List<VoiceSegment> {
         if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
