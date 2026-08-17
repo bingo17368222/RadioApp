@@ -552,16 +552,31 @@ object ChromaprintExtractor {
         }
         fun union(x: Int, y: Int) { parent[find(x)] = find(y) }
 
-        for (i in 0 until n) {
-            val fi = parsedFingerprints[i]
-            if (fi.isEmpty()) continue
-            for (j in (i + 1) until n) {
-                val fj = parsedFingerprints[j]
-                if (fj.isEmpty()) continue
-                val lenRatio = minOf(fi.size, fj.size).toFloat() / maxOf(fi.size, fj.size).toFloat()
-                if (lenRatio < 0.8f) continue
-                val result = compareFingerprintArrays(fi, fj)
-                if (result.similarity >= FINGERPRINT_GROUP_THRESHOLD) { union(i, j) }
+        // v3.1.128: 哈希前缀预过滤——取指纹前5个整数的哈希，只有哈希一致才做全量对比
+        // 同一广告的指纹通常前几个整数高度相似，不同广告的指纹前几个整数差异显著
+        data class IndexedFp(val index: Int, val parsed: List<Int>, val hashKey: String)
+        val indexed = parsedFingerprints.mapIndexedNotNull { idx, fp ->
+            if (fp.isEmpty()) null
+            else IndexedFp(idx, fp, fp.take(5).joinToString(","))
+        }
+        // 按哈希键分组，仅在同一分组内进行O(n²)对比
+        val hashGroups = indexed.groupBy { it.hashKey }
+
+        for ((_, group) in hashGroups) {
+            if (group.size <= 1) continue
+            for (i in 0 until group.size) {
+                val fi = group[i].parsed
+                if (fi.isEmpty()) continue
+                for (j in (i + 1) until group.size) {
+                    val fj = group[j].parsed
+                    if (fj.isEmpty()) continue
+                    val lenRatio = minOf(fi.size, fj.size).toFloat() / maxOf(fi.size, fj.size).toFloat()
+                    if (lenRatio < 0.8f) continue
+                    val result = compareFingerprintArrays(fi, fj)
+                    if (result.similarity >= FINGERPRINT_GROUP_THRESHOLD) {
+                        union(group[i].index, group[j].index)
+                    }
+                }
             }
         }
 

@@ -156,6 +156,8 @@ class FingerprintGroupActivity : AppCompatActivity() {
 
     /**
      * v3.1.7: 从数据库读取已保存的分组数据，构造 GroupItem 列表（支持备注）。
+     * v3.1.128: 移除相似度计算（对比指纹需解析+全滑动窗口，耗时高），
+     * 改为在用户展开分组时按需计算。避免进入管理页面时所有分组都计算相似度导致的卡顿。
      */
     private fun buildGroupItemsFromDb(): List<FingerprintGroupAdapter.GroupItem> {
         val allFps = dbHelper.getAllAudioFingerprints()
@@ -175,20 +177,11 @@ class FingerprintGroupActivity : AppCompatActivity() {
                 memberFps.firstOrNull()
             } ?: return@mapNotNull null
 
-            // 计算相似度
-            val parsedRep = ChromaprintExtractor.parseFingerprint(representative.fingerprint)
-            val similarities = mutableMapOf<Long, Float>()
+            // v3.1.128: 不在此处计算相似度，用户展开分组时按需计算
             val memberDbIds = mutableMapOf<Long, Long>()
             for (member in members) {
                 val fp = fpMap[member.fingerprintId] ?: continue
                 memberDbIds[fp.id] = member.id
-                if (fp.id != representative.id) {
-                    val parsedFp = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
-                    if (parsedRep.isNotEmpty() && parsedFp.isNotEmpty()) {
-                        val result = ChromaprintExtractor.compareFingerprintArrays(parsedRep, parsedFp)
-                        similarities[fp.id] = result.similarity
-                    }
-                }
             }
 
             FingerprintGroupAdapter.GroupItem(
@@ -197,7 +190,7 @@ class FingerprintGroupActivity : AppCompatActivity() {
                 note = group.note,
                 representative = representative,
                 members = memberFps,
-                memberSimilarities = similarities,
+                memberSimilarities = emptyMap(), // v3.1.128: 延迟计算
                 memberDbIds = memberDbIds
             )
         }

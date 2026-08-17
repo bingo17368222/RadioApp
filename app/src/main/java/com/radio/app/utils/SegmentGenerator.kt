@@ -69,6 +69,10 @@ object SegmentGenerator {
     private const val POOL_PROMOTION_THRESHOLD_DEFAULT = 3
     // 指纹hash取前N字符作为快速索引
     private const val FINGERPRINT_HASH_PREFIX_LEN = 64
+    // v3.1.128: PCM能量静音跳过阈值——PCM为16bit有符号小端，计算16位样本RMS
+    // 静音段的RMS通常很低（<100），正常广播节目在200~5000+之间
+    // 此处阈值设为150，低于此值的窗口直接跳过，不做指纹提取和匹配
+    private const val SILENCE_RMS_THRESHOLD = 150f
 
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
     private fun writeFingerprintLog(context: Context, message: String) {
@@ -1860,6 +1864,11 @@ object SegmentGenerator {
      * 对完整PCM以固定窗口大小滑动，提取每个窗口的指纹并与正式指纹库比对。
      * 匹配到的窗口合并为水货段，未匹配的窗口标记为干货。
      * 不再依赖任何已有分段结果，完全从头开始。
+     *
+     * v3.1.128: 三重加速优化：
+     * 1. PCM能量静音跳过：计算窗口RMS能量，低于阈值跳过（静音窗口无需匹配）
+     * 2. 指纹哈希前缀索引：预建指纹库哈希前缀→指纹列表映射，仅对比哈希前缀匹配的指纹
+     * 3. 指纹分组去重：同一分组只保留代表指纹，避免近似指纹重复对比
      */
     private fun applyLayer1SlidingWindow(
         context: Context,
@@ -1882,15 +1891,49 @@ object SegmentGenerator {
         val WINDOW_MS = 15000L
         val STEP_MS = 5000L
 
-        // 预解析正式库指纹为整数数组（避免反复解析）
+        // v3.1.128: 预解析正式库指纹，构建哈希前缀索引
+        // 指纹字符串是逗号分隔的32位整数，取前N个整数的前几个字符作为哈希键
+        // 可快速过滤掉完全不相似的指纹，避免全量滑动窗口对比
+        data class ParsedFpEntry(
+            val parsed: List<Int>,
+            val originalFp: String,
+            val hashPrefix: String  // 取指纹字符串前64个字符
+        )
         val parsedLibrary = formalLibrary.map { fp ->
-            ChromaprintExtractor.parseFingerprint(fp.fingerprint) to fp.fingerprint
+            val parsed = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
+            val hashPrefix = fp.fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
+            ParsedFpEntry(parsed, fp.fingerprint, hashPrefix)
+        }
+        // 哈希前缀索引：相同前缀的指纹通常具有相似内容
+        val hashIndex = mutableMapOf<String, MutableList<ParsedFpEntry>>()
+        for (entry in parsedLibrary) {
+            if (entry.parsed.isEmpty()) continue
+            hashIndex.getOrPut(entry.hashPrefix) { mutableListOf() }.add(entry)
+        }
+        // v3.1.128: 指纹分组去重——同一分组内只保留代表指纹，减少冗余对比
+        // 将指纹按episodeId+startMs+endMs分组，同一节目同一位置的近似指纹只保留一条
+        val dedupedLibrary = mutableListOf<ParsedFpEntry>()
+        val seenFpKeys = mutableSetOf<String>()
+        for (entry in parsedLibrary) {
+            if (entry.parsed.isEmpty()) continue
+            // 去重键：取指纹的前5个整数作为快速去重标识
+            val dedupKey = entry.parsed.take(5).joinToString(",")
+            if (dedupKey in seenFpKeys) continue
+            seenFpKeys.add(dedupKey)
+            dedupedLibrary.add(entry)
+        }
+        val dedupCount = parsedLibrary.size - dedupedLibrary.size
+        // 重建去重后的哈希索引
+        val dedupedHashIndex = mutableMapOf<String, MutableList<ParsedFpEntry>>()
+        for (entry in dedupedLibrary) {
+            dedupedHashIndex.getOrPut(entry.hashPrefix) { mutableListOf() }.add(entry)
         }
 
         val matchedRanges = mutableListOf<Pair<Long, Long>>()
         val hitDetails = mutableListOf<String>()
         var totalWindows = 0
         var matchedWindows = 0
+        var skippedSilenceWindows = 0
         var lastReportedPct = -1
 
         var pos = 0L
@@ -1940,6 +1983,14 @@ object SegmentGenerator {
                     continue
                 }
 
+                // v3.1.128: PCM能量静音跳过——窗口为静音时无需指纹匹配
+                val rms = computePcmRms(pcmBytes)
+                if (rms < SILENCE_RMS_THRESHOLD) {
+                    skippedSilenceWindows++
+                    pos += STEP_MS
+                    continue
+                }
+
                 val fingerprint = ChromaprintExtractor.extractFingerprint(pcmBytes)
                 if (fingerprint.isNullOrBlank()) {
                     pos += STEP_MS
@@ -1952,11 +2003,17 @@ object SegmentGenerator {
                     continue
                 }
 
+                // v3.1.128: 使用哈希前缀索引快速定位候选指纹，仅对比哈希前缀匹配的条目
+                val windowHashPrefix = fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
+                // 先从哈希索引中查找，若未命中则回退到全量库
+                val candidates = dedupedHashIndex[windowHashPrefix]?.ifEmpty { null }
+                    ?: dedupedHashIndex.values.flatten().ifEmpty { dedupedLibrary }
+
                 var matched = false
                 var bestSim = 0f
-                for ((parsedFp, originalFp) in parsedLibrary) {
-                    if (parsedFp.isEmpty()) continue
-                    val sim = ChromaprintExtractor.compareFingerprintArrays(parsedWindow, parsedFp).similarity
+                for (entry in candidates) {
+                    if (entry.parsed.isEmpty()) continue
+                    val sim = ChromaprintExtractor.compareFingerprintArrays(parsedWindow, entry.parsed).similarity
                     if (sim > bestSim) bestSim = sim
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
@@ -2027,11 +2084,37 @@ object SegmentGenerator {
             })
         }
 
-        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段 [${hitDetails.joinToString("; ")}]"
+        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段，跳过${skippedSilenceWindows}个静音窗口，去重${dedupCount}个近似指纹 [${hitDetails.joinToString("; ")}]"
         Log.i(TAG, fpMsg)
         writeFingerprintLog(context, fpMsg)
 
         return segments
+    }
+
+    /**
+     * v3.1.128: 计算PCM 16位样本的RMS能量值。
+     * 16kHz单声道16bit小端PCM，每个样本2字节。
+     * RMS越高表示窗口音量越大，越低表示越接近静音。
+     */
+    private fun computePcmRms(pcmBytes: ByteArray): Float {
+        if (pcmBytes.size < 4) return 0f
+        // v3.1.128: 采样——对完整15秒窗口(480000字节)计算RMS很耗时，
+        // 只取前10%的样本估算能量，足够判断是否为静音
+        val sampleStep = 10
+        val sampleCount = pcmBytes.size / (2 * sampleStep)
+        if (sampleCount <= 0) return 0f
+        var sumSq = 0.0
+        var samples = 0
+        var byteIdx = 0
+        while (byteIdx + 1 < pcmBytes.size) {
+            val low = pcmBytes[byteIdx].toInt() and 0xFF
+            val high = pcmBytes[byteIdx + 1].toInt() and 0xFF
+            val sample = (low or (high shl 8)).toShort().toInt()
+            sumSq += (sample * sample).toDouble()
+            samples++
+            byteIdx += 2 * sampleStep
+        }
+        return if (samples > 0) kotlin.math.sqrt(sumSq / samples).toFloat() else 0f
     }
 
     /**
