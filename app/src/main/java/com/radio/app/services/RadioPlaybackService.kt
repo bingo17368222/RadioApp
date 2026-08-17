@@ -6028,8 +6028,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun getSegmentList(): List<VoiceSegment> {
         val episode = currentEpisode
         val segments = episode?.voiceSegments
-        // v2.4.175: If we already have real (non-simulated) AI segments, use them.
-        if (segments != null && segments.isNotEmpty() && !segments.all { it.isSimulated }) {
+        // v3.1.121: 只要内存中有分段就直接使用，避免与DB写入的竞态条件。
+        // 之前条件 !segments.all { it.isSimulated } 在内存分段全为模拟时跳过，
+        // 转而去查DB。但 saveVoiceSegments 使用 beginTransactionNonExclusive +
+        // DELETE + INSERT，在 DELETE 后 INSERT 前 DB 暂时为空，此时查DB返回空，
+        // 就会落到生成15分钟固定分段，导致"已有真实分段的节目按15分钟跳转"。
+        // 移除 !segments.all { it.isSimulated } 条件，内存中有分段即用。
+        if (segments != null && segments.isNotEmpty()) {
             return segments.sortedBy { it.start }
         }
         // v2.4.175: Otherwise try loading AI segments from the database.
@@ -6039,11 +6044,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId)
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
-                    // 之前判断 !dbSegments.all { it.isSimulated } 在DB全为模拟分段时
-                    // 会跳过，导致生成新的15分钟固定分段。即使DB中全是模拟分段，也应使用
-                    // 它们而非重新生成，这样当真实分段入库后，下次调用自然能找到真实分段。
-                    // 防止了 saveVoiceSegments 事务提交过程中，getSegmentList 读到旧数据
-                    // 仍生成新固定分段，以及真实分段写入后仍看到旧固定分段的问题。
                     episode.voiceSegments = dbSegments
                     return dbSegments.sortedBy { it.start }
                 }
