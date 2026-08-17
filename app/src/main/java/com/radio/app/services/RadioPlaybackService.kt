@@ -1922,12 +1922,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         for (i in list.indices.reversed()) {
             val ep = list[i]
             if (ep.id == curId || ep.audioUrl == currentPlayingUrl) { foundCurrent = true; continue }
-            // v2.4.134: 与 findNextInList 行为一致——跳过无需预处理的节目。
-            // 用户反馈"无需预处理的节目连续播放或手动切换节目时自动跳过"。
-            // findPrevInList 同时被 notifyPrevEpisode（通知栏上一集）和 PlayerActivity
-            // 间接路径使用，所以这里加检查后两条路径都获得跳过能力。
-            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                && !settings.isNoPreprocess(ep.id ?: "")) {
+            // v3.1.122: 不再跳过"无需预处理"的节目。isNoPreprocess 只影响预处理（字幕/PCM生成），
+            // 不应影响连续播放。用户反馈特定节目被连续播放跳过，但该节目本应可播放。
+            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
                 return ep
             }
         }
@@ -1945,9 +1942,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (ep.id == curId || ep.audioUrl == currentPlayingUrl) foundCurrent = true
                 continue
             }
-            // v2.4.91: Skip no-preprocess episodes in continuous play
-            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                && !settings.isNoPreprocess(ep.id ?: "")) {
+            // v3.1.122: 不再跳过"无需预处理"的节目，同 findPrevInList 的修复。
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
                 return ep
             }
         }
@@ -6049,18 +6045,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             } catch (_: Exception) {}
         }
-        // Generate simulated 15-minute segments as last resort
-        val dur = player?.duration ?: 0L
-        if (dur <= 0) return emptyList()
-        val segmentSize = 15 * 60 * 1000L  // 15 minutes
-        val result = mutableListOf<VoiceSegment>()
-        var start = 0L
-        while (start < dur) {
-            val end = minOf(start + segmentSize, dur)
-            result.add(VoiceSegment(start = start, end = end, hasVoice = true, isSimulated = true))
-            start = end
-        }
-        return result
+        // v3.1.122: 不再生成15分钟固定分段。
+        // 之前当DB在 saveVoiceSegments 的 DELETE+INSERT 窗口期间返回空时，
+        // 这里会生成15分钟固定分段，导致已有真实分段的节目使用错误分段跳转。
+        // 调用方（jumpToNextSegment/jumpToPrevSegment）已能优雅处理空分段：
+        // jumpToNextSegment 回退到30秒快进，jumpToPrevSegment 回退到seek到0。
+        // 同时，ensureSegmentsForCurrentEpisode 在PlayerActivity中也会
+        // 从DB加载分段，不会因为这里返回空而丢失分段能力。
+        return emptyList()
     }
 
     fun jumpToNextSegment() {
@@ -6696,8 +6688,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     if (ep.id == curId) foundCurrent = true
                     continue
                 }
-                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                    && !settings.isNoPreprocess(ep.id ?: "")) {
+                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
                     nextEpisode = ep
                     break
                 }
