@@ -6028,21 +6028,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun getSegmentList(): List<VoiceSegment> {
         val episode = currentEpisode
         val segments = episode?.voiceSegments
-        // v3.1.121: 只要内存中有分段就直接使用，避免与DB写入的竞态条件。
-        // 之前条件 !segments.all { it.isSimulated } 在内存分段全为模拟时跳过，
-        // 转而去查DB。但 saveVoiceSegments 使用 beginTransactionNonExclusive +
-        // DELETE + INSERT，在 DELETE 后 INSERT 前 DB 暂时为空，此时查DB返回空，
-        // 就会落到生成15分钟固定分段，导致"已有真实分段的节目按15分钟跳转"。
-        // 移除 !segments.all { it.isSimulated } 条件，内存中有分段即用。
-        if (segments != null && segments.isNotEmpty()) {
+
+        // v3.1.127: 三段式优先策略：
+        // 1. 内存中有真实分段（非模拟）→ 直接使用，避免DB竞态条件
+        // 2. 内存中全为模拟分段或空 → 查DB，数据库可能有预先生成的真实分段
+        // 3. DB为空但有内存模拟分段 → 回退到模拟分段（优于生成新分段）
+        // 4. 全空 → 生成15分钟固定分段作为最后手段
+        //
+        // 背景：Episode从API创建时voiceSegments被初始化为8个固定模拟分段（isSimulated=true），
+        // 但数据库可能已有预先生成的真实分段（来自patrolSubtitle后台预分段）。
+        // v3.1.121移除了模拟分段检查，导致即使DB有真实分段也永远不会被查询到。
+        // 本版本重新引入检查，但保留了DB为空时的模拟分段回退机制，避免竞态条件下生成新分段。
+
+        // 第1步：内存中有真实分段 → 直接使用
+        if (segments != null && segments.isNotEmpty() && segments.any { !it.isSimulated }) {
             return segments.sortedBy { it.start }
         }
-        // v2.4.175: Otherwise try loading AI segments from the database.
+
+        // 第2步：尝试从数据库加载真实分段
         val episodeId = episode?.id
         if (!episodeId.isNullOrBlank()) {
             try {
-                // v3.1.124: 处理跨天节目ID（以"-cross"结尾）——真实分段保存在不带"-cross"的基础ID下
-                // 因为跨天节目是预分段的，数据库中已经有真实分段了，只是ID后缀不同导致查询不到。
+                // v3.1.124: 处理跨天节目ID（以"-cross"结尾）
                 val queryId = if (episodeId.endsWith("-cross")) {
                     episodeId.substring(0, episodeId.length - 6)
                 } else {
@@ -6051,12 +6058,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
-                    episode.voiceSegments = dbSegments
+                    episode?.voiceSegments = dbSegments
                     return dbSegments.sortedBy { it.start }
                 }
             } catch (_: Exception) {}
         }
-        // Generate simulated 15-minute segments as last resort
+
+        // 第3步：DB为空，但内存有模拟分段 → 回退到模拟分段
+        // 这发生在saveVoiceSegments使用DELETE+INSERT导致DB临时为空时，
+        // 使用内存中已有的模拟分段比生成新的15分钟分段更合理。
+        if (segments != null && segments.isNotEmpty()) {
+            return segments.sortedBy { it.start }
+        }
+
+        // 第4步：全空 → 生成15分钟固定分段作为最后手段
         val dur = player?.duration ?: 0L
         if (dur <= 0) return emptyList()
         val segmentSize = 15 * 60 * 1000L  // 15 minutes

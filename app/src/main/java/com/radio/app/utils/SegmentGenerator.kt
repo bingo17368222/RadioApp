@@ -399,12 +399,14 @@ object SegmentGenerator {
 
     /**
      * v3.1.125: 将静音段合并到相邻水分段。
-     * fillSilenceGaps填充的静音段位于两个水分段之间，或紧邻水分段时，
-     * 应合并为水分段而非单独保留，避免"静音+水分+静音"的碎片化模式。
+     * v3.1.126: 同时将相邻静音段合并到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"
+     * 三种碎片化模式，让干货保持连续大段而非被静音分割。
+     * fillSilenceGaps填充的静音段位于两个段之间，或紧邻段时，
+     * 只要相邻有非静音段（无论水/干），都应合并而非保留孤立静音段。
      * 具体规则：
-     * - 静音段前面是水分段 → 静音段合并到前一个水分段（延长end）
-     * - 静音段后面是水分段且前面不是水分段 → 静音段合并到后一个水分段（前移start）
-     * - 静音段前后都是水分段 → 静音段合并到前一个水分段，后一个水分段延后吸收
+     * - 静音段前面是非静音 → 静音段合并到前一个非静音段（延长end）
+     * - 静音段后面是非静音且前面不是 → 静音段合并到后一个非静音段（前移start）
+     * - 静音段前后都是非静音 → 静音段合并到前一个非静音段，后一个非静音段延后吸收
      * @return 合并的静音段数量
      */
     private fun mergeSilenceToAdjacentWater(segments: MutableList<VoiceSegment>): Int {
@@ -421,17 +423,17 @@ object SegmentGenerator {
             }
             val hasPrev = i > 0
             val hasNext = i < segments.size - 1
-            val prevIsWater = hasPrev && !segments[i-1].hasVoice && isWaterLabel(segments[i-1].label)
-            val nextIsWater = hasNext && !segments[i+1].hasVoice && isWaterLabel(segments[i+1].label)
+            val prevIsNonSilence = hasPrev && segments[i-1].label != "静音"
+            val nextIsNonSilence = hasNext && segments[i+1].label != "静音"
 
-            if (prevIsWater) {
-                // 合并到前一个水分段
+            if (prevIsNonSilence) {
+                // 合并到前一个非静音段（无论水/干）
                 segments[i-1].end = seg.end
                 segments.removeAt(i)
                 mergeCount++
                 // 不移i，因为removeAt后当前元素后移
-            } else if (nextIsWater) {
-                // 合并到后一个水分段
+            } else if (nextIsNonSilence) {
+                // 合并到后一个非静音段（无论水/干）
                 segments[i+1].start = seg.start
                 segments.removeAt(i)
                 mergeCount++
@@ -1391,17 +1393,19 @@ object SegmentGenerator {
                             // ===== 拼图式合并：指纹段 + YAMNet段 =====
                             // v3.1.125: YAMNet干段优先于指纹水货段。YAMNet逐帧分类比指纹匹配更精确，
                             // 当指纹水货段与YAMNet干段冲突时，裁剪指纹水货段而非YAMNet干段。
+                            // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
+                            // 因为YAMNet逐帧分类比指纹15秒窗口匹配更精确，YAMNet的分类结果应完全替代指纹覆盖。
                             val jigsawSegments = mutableListOf<VoiceSegment>()
 
                             // 1. YAMNet子段（全部保留，干段优先）
                             jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
 
-                            // 2. 指纹水货段，做保护性边界裁剪（避开YAMNet干段）
+                            // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段，不止干段）
                             for (waterSeg in waterSegmentsAfterLayer1) {
                                 var clipStart = waterSeg.start
                                 var clipEnd = waterSeg.end
                                 for (yamnetSeg in yamnetAllSegments) {
-                                    if (!yamnetSeg.hasVoice) continue // 只对YAMNet干段做裁剪
+                                    // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
                                     if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
                                         if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) {
                                             clipStart = yamnetSeg.end
@@ -1593,14 +1597,16 @@ object SegmentGenerator {
 
                                         // v3.1.106: 拼图合并：指纹段 + YAMNet子段（移除gap-filling）
                                         // v3.1.125: YAMNet干段优先于指纹水货段，裁剪指纹水货段避开YAMNet干段
+                                        // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
+                                        // YAMNet逐帧分类比指纹15秒窗口匹配更精确，分类结果应完全替代指纹覆盖。
                                         val jigsawSegments = mutableListOf<VoiceSegment>()
                                         // 1. YAMNet子段（全部保留，干段优先）
                                         jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
-                                        // 2. 指纹水货段，做保护性边界裁剪（避开YAMNet干段）
+                                        // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
                                         for (waterSeg in waterSegmentsAfterLayer1) {
                                             var clipStart = waterSeg.start; var clipEnd = waterSeg.end
                                             for (yamnetSeg in yamnetAllSegments) {
-                                                if (!yamnetSeg.hasVoice) continue
+                                                // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
                                                 if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
                                                     if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
                                                     if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
@@ -1735,11 +1741,11 @@ object SegmentGenerator {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
 
-        // v3.1.125: 合并静音段到相邻水分段。fillSilenceGaps填充的静音段紧邻水分段时，
-        // 应合并为水分段而非单独保留，避免"静音+水分+静音"的碎片化模式。
+        // v3.1.125: 合并静音段到相邻非静音段。
+        // v3.1.126: 同时合并静音段到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"碎片化模式。
         val silenceMergedCount = mergeSilenceToAdjacentWater(finalSegments)
         if (silenceMergedCount > 0) {
-            writeFingerprintLog(context, "三层架构: 合并${silenceMergedCount}个静音段到相邻水分段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
+            writeFingerprintLog(context, "三层架构: 合并${silenceMergedCount}个静音段到相邻非静音段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
 
         // 日志统计（含各层耗时和干货占比）
