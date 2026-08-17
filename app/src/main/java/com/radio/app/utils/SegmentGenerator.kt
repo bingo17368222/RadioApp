@@ -1106,6 +1106,9 @@ object SegmentGenerator {
         // ========== 获取指纹库 ==========
         // 正式指纹库（金标准+自动晋升）→ 第一层使用
         val formalLibrary = try { dbHelper.getFormalLibraryFingerprints() } catch (_: Exception) { emptyList() }
+        // v3.1.129: 获取指纹分组，用于第一层缩减对比量
+        val fingerprintGroups = try { dbHelper.getAllFingerprintGroups() } catch (_: Exception) { emptyList() }
+        val groupMembers = try { dbHelper.getAllGroupMembers() } catch (_: Exception) { emptyList() }
         // 金标准指纹（仅人工录入）→ 第三层使用
         val goldStandardFingerprints = try { dbHelper.getGoldStandardFingerprints() } catch (_: Exception) { emptyList() }
 
@@ -1186,7 +1189,7 @@ object SegmentGenerator {
             val slidingProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "第1层指纹快筛")
             }
-            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, effectiveDurationMs, formalLibrary, slidingProgressCallback)
+            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, effectiveDurationMs, formalLibrary, slidingProgressCallback, fingerprintGroups, groupMembers, dbHelper)
             mergedAfterLayer1 = slidingResult
             layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
@@ -1235,6 +1238,14 @@ object SegmentGenerator {
             val fpMsgCancel = "三层架构: 第1层期间收到取消信号(cancelSource=$cancelSource)，后续层静默运行 for episode=$episodeId"
             Log.i(TAG, fpMsgCancel)
             writeFingerprintLog(context, fpMsgCancel)
+        }
+
+        // v3.1.129: 第一层取消后，重置取消标志让VAD正常运行
+        // 第一层取消是因为超时，但VAD和YAMNet应该继续运行产生有效分段
+        if (AudioSegmentAnalyzer.isAnalysisCancelled()) {
+            AudioSegmentAnalyzer.resetCancellation()
+            Thread.interrupted() // 清除中断标志
+            Log.i(TAG, "三层架构: 第1层取消后重置取消标志，第2层继续运行 for episode=$episodeId")
         }
 
         // v3.1.110: 记录第1层完成时的取消状态到指纹日志，用于排查中断来源
@@ -1876,7 +1887,11 @@ object SegmentGenerator {
         pcmFile: File,
         durationMs: Long,
         formalLibrary: List<AudioFingerprint>,
-        progressCallback: ((Int, Long, Long) -> Unit)? = null
+        progressCallback: ((Int, Long, Long) -> Unit)? = null,
+        // v3.1.129: 指纹分组信息，用于缩减对比量
+        fingerprintGroups: List<RadioDatabaseHelper.FingerprintGroupInfo> = emptyList(),
+        groupMembers: List<RadioDatabaseHelper.FingerprintGroupMember> = emptyList(),
+        dbHelper: RadioDatabaseHelper? = null
     ): List<VoiceSegment> {
         if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
             val fpMsg = "第一层滑动窗口: 跳过（指纹引擎未就绪）"
@@ -1894,7 +1909,9 @@ object SegmentGenerator {
         // v3.1.128: 预解析正式库指纹，构建哈希前缀索引
         // 指纹字符串是逗号分隔的32位整数，取前N个整数的前几个字符作为哈希键
         // 可快速过滤掉完全不相似的指纹，避免全量滑动窗口对比
+        // v3.1.129: 增加指纹ID字段，用于分组映射和last_matched_at更新
         data class ParsedFpEntry(
+            val id: Long,
             val parsed: List<Int>,
             val originalFp: String,
             val hashPrefix: String  // 取指纹字符串前64个字符
@@ -1902,7 +1919,7 @@ object SegmentGenerator {
         val parsedLibrary = formalLibrary.map { fp ->
             val parsed = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
             val hashPrefix = fp.fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
-            ParsedFpEntry(parsed, fp.fingerprint, hashPrefix)
+            ParsedFpEntry(fp.id, parsed, fp.fingerprint, hashPrefix)
         }
         // 哈希前缀索引：相同前缀的指纹通常具有相似内容
         val hashIndex = mutableMapOf<String, MutableList<ParsedFpEntry>>()
@@ -1927,6 +1944,15 @@ object SegmentGenerator {
         val dedupedHashIndex = mutableMapOf<String, MutableList<ParsedFpEntry>>()
         for (entry in dedupedLibrary) {
             dedupedHashIndex.getOrPut(entry.hashPrefix) { mutableListOf() }.add(entry)
+        }
+
+        // v3.1.129: 构建指纹ID到分组的映射，同一分组只保留代表指纹参与对比
+        // 从groupMembers构建fingerprintId → isRepresentative的映射
+        val fpGroupMap = mutableMapOf<Long, Boolean>() // fingerprintId → isRepresentative
+        if (fingerprintGroups.isNotEmpty() && groupMembers.isNotEmpty()) {
+            for (member in groupMembers) {
+                fpGroupMap[member.fingerprintId] = member.isRepresentative
+            }
         }
 
         val matchedRanges = mutableListOf<Pair<Long, Long>>()
@@ -1983,13 +2009,8 @@ object SegmentGenerator {
                     continue
                 }
 
-                // v3.1.128: PCM能量静音跳过——窗口为静音时无需指纹匹配
-                val rms = computePcmRms(pcmBytes)
-                if (rms < SILENCE_RMS_THRESHOLD) {
-                    skippedSilenceWindows++
-                    pos += STEP_MS
-                    continue
-                }
+                // v3.1.129: 移除RMS计算——RMS阈值检查给广播节目带来了额外开销没有收益
+                // 静音窗口不会影响指纹匹配结果，即使匹配到静音窗口也可以被后续层处理
 
                 val fingerprint = ChromaprintExtractor.extractFingerprint(pcmBytes)
                 if (fingerprint.isNullOrBlank()) {
@@ -2011,12 +2032,17 @@ object SegmentGenerator {
 
                 var matched = false
                 var bestSim = 0f
+                var matchedFpId: Long? = null
                 for (entry in candidates) {
                     if (entry.parsed.isEmpty()) continue
+                    // v3.1.129: 如果该指纹有分组且不是代表指纹，跳过对比
+                    val isRepresentative = fpGroupMap[entry.id] ?: true // 默认true（无分组时参与对比）
+                    if (!isRepresentative) continue
                     val sim = ChromaprintExtractor.compareFingerprintArrays(parsedWindow, entry.parsed).similarity
-                    if (sim > bestSim) bestSim = sim
+                    if (sim > bestSim) { bestSim = sim; matchedFpId = entry.id }
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
+                        matchedFpId = entry.id
                         break
                     }
                 }
@@ -2026,6 +2052,12 @@ object SegmentGenerator {
                     matchedWindows++
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
                         hitDetails.add("${pos/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
+                    }
+                    // v3.1.129: 更新匹配指纹的last_matched_at
+                    if (matchedFpId != null && matchedFpId!! > 0 && dbHelper != null) {
+                        try {
+                            dbHelper.updateFingerprintLastMatched(matchedFpId!!)
+                        } catch (_: Exception) {}
                     }
                 }
             } catch (e: Exception) {

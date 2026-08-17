@@ -923,6 +923,11 @@ class FingerprintListFragment : Fragment() {
 
     // ===== 内部数据封装 =====
 
+    // v3.1.129: 提供给外部调用的刷新方法，用于清理过期指纹后刷新列表
+    fun refreshData() {
+        loadData()
+    }
+
     private class ManualResult(val fingerprints: List<AudioFingerprint>)
     private class CandidateResult(val candidates: List<ObservationPoolCandidate>)
     private class AutomaticResult(val fingerprints: List<AudioFingerprint>)

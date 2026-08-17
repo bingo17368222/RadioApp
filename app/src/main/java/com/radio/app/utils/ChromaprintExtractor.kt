@@ -552,18 +552,44 @@ object ChromaprintExtractor {
         }
         fun union(x: Int, y: Int) { parent[find(x)] = find(y) }
 
-        // v3.1.128: 哈希前缀预过滤——取指纹前5个整数的哈希，只有哈希一致才做全量对比
+        // v3.1.129: 哈希前缀预过滤——取指纹前10个整数的hashCode作为哈希键
+        // 相比v3.1.128的take(5).joinToString(",")改为hashCode，范围更宽，过滤更灵活
         // 同一广告的指纹通常前几个整数高度相似，不同广告的指纹前几个整数差异显著
-        data class IndexedFp(val index: Int, val parsed: List<Int>, val hashKey: String)
+        data class IndexedFp(val index: Int, val parsed: List<Int>, val hashKey: Int)
         val indexed = parsedFingerprints.mapIndexedNotNull { idx, fp ->
             if (fp.isEmpty()) null
-            else IndexedFp(idx, fp, fp.take(5).joinToString(","))
+            else IndexedFp(idx, fp, fp.take(10).hashCode())
         }
         // 按哈希键分组，仅在同一分组内进行O(n²)对比
         val hashGroups = indexed.groupBy { it.hashKey }
+        val sortedKeys = hashGroups.keys.sorted()
 
-        for ((_, group) in hashGroups) {
-            if (group.size <= 1) continue
+        for (key in sortedKeys) {
+            val group = hashGroups[key]!!
+            if (group.size <= 1) {
+                // v3.1.129: 单成员哈希组——与相邻哈希组尝试对比，扩大搜索范围
+                val keyIndex = sortedKeys.indexOf(key)
+                val adjacentKeys = mutableListOf<Int>()
+                if (keyIndex > 0) adjacentKeys.add(sortedKeys[keyIndex - 1])
+                if (keyIndex < sortedKeys.size - 1) adjacentKeys.add(sortedKeys[keyIndex + 1])
+                for (adjKey in adjacentKeys) {
+                    val adjGroup = hashGroups[adjKey] ?: continue
+                    if (adjGroup.size <= 1) continue
+                    val fi = group[0].parsed
+                    if (fi.isEmpty()) continue
+                    for (adjEntry in adjGroup) {
+                        val fj = adjEntry.parsed
+                        if (fj.isEmpty()) continue
+                        val lenRatio = minOf(fi.size, fj.size).toFloat() / maxOf(fi.size, fj.size).toFloat()
+                        if (lenRatio < 0.8f) continue
+                        val result = compareFingerprintArrays(fi, fj)
+                        if (result.similarity >= FINGERPRINT_GROUP_THRESHOLD) {
+                            union(group[0].index, adjEntry.index)
+                        }
+                    }
+                }
+                continue
+            }
             for (i in 0 until group.size) {
                 val fi = group[i].parsed
                 if (fi.isEmpty()) continue

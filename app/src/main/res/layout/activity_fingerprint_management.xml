@@ -50,6 +50,19 @@
         android:clickable="true"
         android:focusable="true" />
 
+    <!-- v3.1.129: 一键清理过期指纹 -->
+    <TextView
+        android:id="@+id/tv_cleanup_expired"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="一键清理过期指纹"
+        android:textColor="?attr/appWarning"
+        android:textSize="15sp"
+        android:padding="12dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true" />
+
     <androidx.viewpager2.widget.ViewPager2
         android:id="@+id/view_pager"
         android:layout_width="match_parent"
