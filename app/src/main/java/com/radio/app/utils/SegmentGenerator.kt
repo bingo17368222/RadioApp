@@ -1314,11 +1314,11 @@ object SegmentGenerator {
                                     val intervalStart = interval.first
                                     val intervalEnd = interval.second
 
-                                    // v3.1.115: 使用多数投票分类，每个区间只产生1段，消除交替子段问题
-                                    // 与旧双模型方案classifySpeechInterval策略一致
-                                    var majoritySeg: VoiceSegment? = null
+                                    // v3.1.124: 恢复逐帧滑动窗口分类，YAMNet得分先过5帧滑动均值再分类，
+                                    // 然后应用后处理规则（短段合并、水分占比、交替结构合并）
+                                    val subSegments: List<VoiceSegment>
                                     try {
-                                        majoritySeg = AudioSegmentAnalyzer.classifyIntervalMajority(
+                                        subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                             pcmSamples, intervalStart, intervalEnd,
                                             yamnetInterpreter
                                         )
@@ -1327,9 +1327,8 @@ object SegmentGenerator {
                                         break
                                     }
 
-                                    if (majoritySeg != null) {
-                                        yamnetAllSegments.add(majoritySeg!!)
-                                    }
+                                    val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
+                                    yamnetAllSegments.addAll(processedSegments)
                                     processedCount++
                                     val mapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
                                     SegmentNotificationHelper.update(
@@ -1519,10 +1518,10 @@ object SegmentGenerator {
                                                 val intervalStart = interval.first
                                                 val intervalEnd = interval.second
 
-                                                // v3.1.115: 使用多数投票分类，每个区间只产生1段
-                                                var majoritySeg: VoiceSegment? = null
+                                                // v3.1.124: 恢复逐帧滑动窗口分类+后处理
+                                                val subSegments: List<VoiceSegment>
                                                 try {
-                                                    majoritySeg = AudioSegmentAnalyzer.classifyIntervalMajority(
+                                                    subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
                                                     )
                                                 } catch (e: InterruptedException) {
@@ -1530,9 +1529,8 @@ object SegmentGenerator {
                                                     break
                                                 }
 
-                                                if (majoritySeg != null) {
-                                                    yamnetAllSegments.add(majoritySeg!!)
-                                                }
+                                                val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
+                                                yamnetAllSegments.addAll(processedSegments)
                                                 processedCount++
                                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle,
                                                     (250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)).coerceIn(250, 800),

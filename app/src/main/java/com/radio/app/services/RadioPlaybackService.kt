@@ -1922,9 +1922,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         for (i in list.indices.reversed()) {
             val ep = list[i]
             if (ep.id == curId || ep.audioUrl == currentPlayingUrl) { foundCurrent = true; continue }
-            // v3.1.122: 不再跳过"无需预处理"的节目。isNoPreprocess 只影响预处理（字幕/PCM生成），
-            // 不应影响连续播放。用户反馈特定节目被连续播放跳过，但该节目本应可播放。
-            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+            // v2.4.134: 与 findNextInList 行为一致——跳过无需预处理的节目。
+            // 用户反馈"无需预处理的节目连续播放或手动切换节目时自动跳过"。
+            // findPrevInList 同时被 notifyPrevEpisode（通知栏上一集）和 PlayerActivity
+            // 间接路径使用，所以这里加检查后两条路径都获得跳过能力。
+            if (foundCurrent && !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                && !settings.isNoPreprocess(ep.id ?: "")) {
                 return ep
             }
         }
@@ -1942,8 +1945,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (ep.id == curId || ep.audioUrl == currentPlayingUrl) foundCurrent = true
                 continue
             }
-            // v3.1.122: 不再跳过"无需预处理"的节目，同 findPrevInList 的修复。
-            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+            // v2.4.91: Skip no-preprocess episodes in continuous play
+            if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                && !settings.isNoPreprocess(ep.id ?: "")) {
                 return ep
             }
         }
@@ -6037,7 +6041,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val episodeId = episode?.id
         if (!episodeId.isNullOrBlank()) {
             try {
-                val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(episodeId)
+                // v3.1.124: 处理跨天节目ID（以"-cross"结尾）——真实分段保存在不带"-cross"的基础ID下
+                // 因为跨天节目是预分段的，数据库中已经有真实分段了，只是ID后缀不同导致查询不到。
+                val queryId = if (episodeId.endsWith("-cross")) {
+                    episodeId.substring(0, episodeId.length - 6)
+                } else {
+                    episodeId
+                }
+                val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
                     episode.voiceSegments = dbSegments
@@ -6045,14 +6056,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             } catch (_: Exception) {}
         }
-        // v3.1.122: 不再生成15分钟固定分段。
-        // 之前当DB在 saveVoiceSegments 的 DELETE+INSERT 窗口期间返回空时，
-        // 这里会生成15分钟固定分段，导致已有真实分段的节目使用错误分段跳转。
-        // 调用方（jumpToNextSegment/jumpToPrevSegment）已能优雅处理空分段：
-        // jumpToNextSegment 回退到30秒快进，jumpToPrevSegment 回退到seek到0。
-        // 同时，ensureSegmentsForCurrentEpisode 在PlayerActivity中也会
-        // 从DB加载分段，不会因为这里返回空而丢失分段能力。
-        return emptyList()
+        // Generate simulated 15-minute segments as last resort
+        val dur = player?.duration ?: 0L
+        if (dur <= 0) return emptyList()
+        val segmentSize = 15 * 60 * 1000L  // 15 minutes
+        val result = mutableListOf<VoiceSegment>()
+        var start = 0L
+        while (start < dur) {
+            val end = minOf(start + segmentSize, dur)
+            result.add(VoiceSegment(start = start, end = end, hasVoice = true, isSimulated = true))
+            start = end
+        }
+        return result
     }
 
     fun jumpToNextSegment() {
@@ -6616,6 +6631,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (nextEpisode == null) {
             nextEpisode = findNextInList(savedList, curId, settings)
         }
+        // v3.1.124: 同样处理savedList被跨天覆盖的问题
+        if (nextEpisode == null && savedList.isNotEmpty() && savedList.none { it.id == curId || it.audioUrl == currentPlayingUrl }) {
+            val curEp = currentEpisode
+            if (curEp != null) {
+                val stationId = curEp.stationId
+                val dateStr = curEp.broadcastAt?.take(10)
+                if (stationId.isNotBlank() && !dateStr.isNullOrBlank() && !curId.endsWith("-cross")) {
+                    writeServiceLog("notification", "notifyNextEpisode: curId not found in savedList, fetching fresh list for station=$stationId date=$dateStr")
+                    try {
+                        val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                        val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
+                        if (!freshEpisodes.isNullOrEmpty()) {
+                            saveEpisodeList(freshEpisodes)
+                            nextEpisode = findNextInList(freshEpisodes, curId, settings)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "notifyNextEpisode: failed to refresh episode list", e)
+                    }
+                }
+            }
+        }
         // [v2.1.5] Anti-loop: if nextEpisode is the same as current, don't switch
         if (nextEpisode != null && nextEpisode.id == curId) {
             writeServiceLog("notification", "notifyNextEpisode: [ANTI-LOOP] nextEpisode.id == curId ($curId), skipping to cross-day")
@@ -6688,7 +6724,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     if (ep.id == curId) foundCurrent = true
                     continue
                 }
-                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                    && !settings.isNoPreprocess(ep.id ?: "")) {
                     nextEpisode = ep
                     break
                 }
@@ -6700,7 +6737,40 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // find the next episode on the same day instead of jumping to cross-day.
             if (nextEpisode == null) {
                 writeNotifDetailLog("autoPlayNextEpisode: curId=$curId not found in preCacheList (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
-                nextEpisode = findNextInList(savedList, curId, settings)
+                // v3.1.124: 当savedList中找不到当前节目时，说明savedList可能被fetchCrossDayEpisode覆盖了
+                // （跨天获取成功时调用了saveEpisodeList覆盖了当天的节目列表）。
+                // 尝试根据当前节目的broadcastAt和stationId重建正确的节目列表。
+                val listToSearch = if (savedList.isNotEmpty() && savedList.none { it.id == curId || it.audioUrl == currentPlayingUrl }) {
+                    val curEp = currentEpisode
+                    if (curEp != null) {
+                        val stationId = curEp.stationId
+                        val dateStr = curEp.broadcastAt?.take(10)
+                        if (stationId.isNotBlank() && !dateStr.isNullOrBlank() && !curId.endsWith("-cross")) {
+                            writeNotifDetailLog("autoPlayNextEpisode: curId not found in savedList, fetching fresh list for station=$stationId date=$dateStr")
+                            try {
+                                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                                val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
+                                if (!freshEpisodes.isNullOrEmpty()) {
+                                    saveEpisodeList(freshEpisodes)
+                                    writeNotifDetailLog("autoPlayNextEpisode: refreshed savedList, got ${freshEpisodes.size} episodes")
+                                    freshEpisodes
+                                } else {
+                                    savedList
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "autoPlayNextEpisode: failed to refresh episode list", e)
+                                savedList
+                            }
+                        } else {
+                            savedList
+                        }
+                    } else {
+                        savedList
+                    }
+                } else {
+                    savedList
+                }
+                nextEpisode = findNextInList(listToSearch, curId, settings)
             }
             // v2.4.62: Anti-loop check
             if (nextEpisode != null && nextEpisode.id == curId) {

@@ -3567,10 +3567,168 @@ object AudioSegmentAnalyzer {
     }
 
     /**
+     * v3.1.124: 对单个VAD区间YAMNet产出的子段应用后处理规则2/3/4。
+     *
+     * 规则2：＜1.5秒短段直接合并到相邻主导段（左右取更长者）
+     * 规则3：单VAD区间水分占比＜30%全合并为干货，单区间最多3段子段
+     * 规则4：交替结构中间段＜2秒直接合并
+     *
+     * @param segments 单个VAD区间YAMNet产出的子段列表（已排序）
+     * @return 后处理后的子段列表
+     */
+    internal fun postProcessYamnetSubSegments(segments: List<VoiceSegment>): List<VoiceSegment> {
+        if (segments.size <= 1) return segments
+
+        // 深拷贝，避免修改原始数据
+        var result = segments.map { it.copy() }.toMutableList()
+
+        // ===== 规则4：交替结构中间段＜2秒直接合并 =====
+        // 先做交替合并，因为短中间段是最常见的交替碎片
+        var changed = true
+        while (changed) {
+            changed = false
+            val newList = mutableListOf<VoiceSegment>()
+            var i = 0
+            while (i < result.size) {
+                if (i > 0 && i < result.size - 1) {
+                    val prev = result[i - 1]
+                    val cur = result[i]
+                    val next = result[i + 1]
+                    // 检查是否是交替模式：prev.label == next.label 且 cur.label != prev.label
+                    if (prev.label == next.label && cur.label != prev.label) {
+                        val curDuration = cur.end - cur.start
+                        if (curDuration < 2000) {
+                            // 中间段＜2s，合并到前后段（延长prev的end）
+                            prev.end = next.end
+                            newList.add(prev)
+                            i += 2 // 跳过cur和next
+                            changed = true
+                            continue
+                        }
+                    }
+                }
+                newList.add(result[i])
+                i++
+            }
+            result = newList
+        }
+
+        // ===== 规则2：＜1.5秒短段直接合并到相邻主导段 =====
+        changed = true
+        while (changed) {
+            changed = false
+            val newList = mutableListOf<VoiceSegment>()
+            var i = 0
+            while (i < result.size) {
+                val cur = result[i]
+                val curDuration = cur.end - cur.start
+                if (curDuration >= 1500) {
+                    newList.add(cur)
+                    i++
+                    continue
+                }
+                // 短段＜1.5s，需要合并
+                val hasPrev = i > 0
+                val hasNext = i < result.size - 1
+
+                if (hasPrev && hasNext) {
+                    val prev = result[i - 1]
+                    val next = result[i + 1]
+                    val prevDuration = prev.end - prev.start
+                    val nextDuration = next.end - next.start
+                    // 合并到相邻更长的段
+                    if (prevDuration >= nextDuration) {
+                        // 合并到前一段
+                        prev.end = cur.end
+                    } else {
+                        // 合并到后一段，后一段的start前移
+                        next.start = cur.start
+                    }
+                } else if (hasPrev) {
+                    // 只有前一段，合并到前一段
+                    result[i - 1].end = cur.end
+                } else if (hasNext) {
+                    // 只有后一段，合并到后一段
+                    result[i + 1].start = cur.start
+                }
+                // 移除当前短段
+                changed = true
+                i++
+            }
+            // 重新收集（由于合并修改了相邻段的边界，需要重新构建列表）
+            if (changed) {
+                val rebuilt = mutableListOf<VoiceSegment>()
+                for (seg in result) {
+                    if (rebuilt.isNotEmpty() && rebuilt.last().label == seg.label && rebuilt.last().end >= seg.start) {
+                        // 合并相邻同类型重叠段
+                        rebuilt.last().end = maxOf(rebuilt.last().end, seg.end)
+                    } else {
+                        rebuilt.add(seg.copy())
+                    }
+                }
+                result = rebuilt
+            }
+        }
+
+        // ===== 规则3：单VAD区间水分占比＜30%全合并为干货 =====
+        val totalDuration = result.sumOf { it.end - it.start }
+        val waterDuration = result.filter { !it.hasVoice }.sumOf { it.end - it.start }
+        val waterRatio = if (totalDuration > 0) waterDuration.toFloat() / totalDuration else 0f
+
+        if (waterRatio < 0.30f) {
+            // 水分占比＜30%，全合并为干货
+            val mergedStart = result.minOf { it.start }
+            val mergedEnd = result.maxOf { it.end }
+            return listOf(createSegment(mergedStart, mergedEnd, FrameType.DRY))
+        }
+
+        // 单区间最多3段子段：如果超过3段，合并相邻同类型
+        if (result.size > 3) {
+            val merged = mutableListOf(result.first())
+            for (i in 1 until result.size) {
+                val last = merged.last()
+                val cur = result[i]
+                if (last.label == cur.label) {
+                    last.end = maxOf(last.end, cur.end)
+                } else {
+                    merged.add(cur)
+                }
+            }
+            // 如果合并后还是超过3段，强制合并最短的相邻同类型段
+            while (merged.size > 3) {
+                var minDuration = Long.MAX_VALUE
+                var mergeIdx = -1
+                for (i in 0 until merged.size - 1) {
+                    // 找到最短的段，合并到邻居
+                    val d = merged[i].end - merged[i].start
+                    if (d < minDuration) {
+                        minDuration = d
+                        mergeIdx = i
+                    }
+                }
+                if (mergeIdx < 0) break
+                // 将最短段合并到后一段
+                val shortest = merged.removeAt(mergeIdx)
+                if (mergeIdx < merged.size) {
+                    merged[mergeIdx].start = shortest.start
+                } else if (mergeIdx > 0) {
+                    merged[mergeIdx - 1].end = shortest.end
+                } else {
+                    merged.add(shortest) // 不应该发生
+                }
+            }
+            return merged
+        }
+
+        return result
+    }
+
+    /**
      * v3.1.83: 在指定的样本范围内执行YAMNet密集分类，返回子段列表。
      * 使用滑动窗口（窗口大小=YAMNET_WINDOW_SAMPLES，步长=YAMNET_SPEECH_HOP_SAMPLES）。
      * 子段坐标已回填到以refStartMs为基准的原始时间轴。
      * v3.1.103: 新增频谱比值连续3帧约束、上下文窗口7s/1.5s。
+     * v3.1.124: 新增5帧滑动均值滤波（YAMNet得分先平滑再分类）。
      */
     private fun classifyIntervalRange(
         samples: SampleProvider,
@@ -3579,36 +3737,99 @@ object AudioSegmentAnalyzer {
         refStartMs: Long,
         yamnetInterpreter: Interpreter
     ): List<VoiceSegment> {
-        // v3.1.103: 存储原始帧结果（含无频谱判定的备选类型）
-        data class FrameInfo(
+        // 第一阶段：收集所有帧的原始YAMNet得分（不立即分类）
+        data class RawFrameScores(
             val timestampMs: Long,
-            val type: FrameType,          // 完整判定（含频谱检查）
-            val typeNoSpectrum: FrameType, // 无频谱判定的YAMNet-only判定
-            val isSpeechContaining: Boolean,
-            val spectrumRatio: Float       // 原始频谱比值，用于3帧约束
+            val speech: Float, val narration: Float, val singing: Float,
+            val music: Float, val silence: Float,
+            val spectrumRatio: Float
         )
-        val frames = mutableListOf<FrameInfo>()
+        val rawScores = mutableListOf<RawFrameScores>()
 
         var pos = rangeStartSample
         while (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             checkCancelled()
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
-            val type = classifyYamnetScores(yamnet)                           // 含频谱检查
-            val typeNoSpectrum = classifyYamnetScores(yamnet, false)          // 无频谱检查
-
-            // v3.1.104: 判断是否含人声（仅频谱比值>0.16，不依赖YAMNet的DRY标记）
-            // 避免将音乐、静音等非语音干帧误判为"含语音"而触发上下文保护
-            val isSpeechContaining = (yamnet.spectrumRatio > 0.16f)
 
             // 窗口中心时间戳（相对于refStartMs）
             val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
             val windowCenterMs = refStartMs + (windowCenterSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
-            frames.add(FrameInfo(windowCenterMs, type, typeNoSpectrum, isSpeechContaining, yamnet.spectrumRatio))
+            rawScores.add(RawFrameScores(
+                timestampMs = windowCenterMs,
+                speech = yamnet.speech,
+                narration = yamnet.narration,
+                singing = yamnet.singing,
+                music = yamnet.music,
+                silence = yamnet.silence,
+                spectrumRatio = yamnet.spectrumRatio
+            ))
             pos += YAMNET_SPEECH_HOP_SAMPLES
         }
 
-        if (frames.isEmpty()) return emptyList()
+        if (rawScores.isEmpty()) return emptyList()
+
+        // 第二阶段：5帧滑动均值滤波
+        // 对每个关键得分字段，frame[i] = average of frame[i-2]..frame[i+2]，边界处取有效帧平均
+        val n = rawScores.size
+        fun smoothed(index: Int, extractor: (RawFrameScores) -> Float): Float {
+            var sum = 0f
+            var count = 0
+            val start = maxOf(0, index - 2)
+            val end = minOf(n - 1, index + 2)
+            for (j in start..end) {
+                sum += extractor(rawScores[j])
+                count++
+            }
+            return sum / count
+        }
+
+        // 第三阶段：用平滑后的得分构造YamnetResult并调用classifyYamnetScores分类
+        data class FrameInfo(
+            val timestampMs: Long,
+            val type: FrameType,          // 完整判定（含频谱检查）
+            val typeNoSpectrum: FrameType, // 无频谱判定的YAMNet-only判定
+            val isSpeechContaining: Boolean,
+            val spectrumRatio: Float       // 平滑后的频谱比值，用于3帧约束
+        )
+        val frames = mutableListOf<FrameInfo>()
+
+        for (i in rawScores.indices) {
+            val smoothSpeech = smoothed(i) { it.speech }
+            val smoothNarration = smoothed(i) { it.narration }
+            val smoothSinging = smoothed(i) { it.singing }
+            val smoothMusic = smoothed(i) { it.music }
+            val smoothSilence = smoothed(i) { it.silence }
+            val smoothSpectrumRatio = smoothed(i) { it.spectrumRatio }
+
+            // 构造平滑后的YamnetResult对象（仅填充classifyYamnetScores使用的字段）
+            val smoothedYamnet = YamnetResult(
+                speech = smoothSpeech,
+                narration = smoothNarration,
+                singing = smoothSinging,
+                music = smoothMusic,
+                instrumental = 0f,
+                popMusic = 0f,
+                jingle = 0f,
+                song = 0f,
+                backgroundMusic = 0f,
+                themeMusic = 0f,
+                silence = smoothSilence,
+                voiceSum = smoothSpeech + smoothNarration + smoothSinging,
+                bgMusicSum = 0f,
+                maxRawScore = 0f,
+                spectrumRatio = smoothSpectrumRatio
+            )
+
+            val type = classifyYamnetScores(smoothedYamnet)                           // 含频谱检查
+            val typeNoSpectrum = classifyYamnetScores(smoothedYamnet, false)          // 无频谱检查
+
+            // v3.1.104: 判断是否含人声（仅频谱比值>0.16，不依赖YAMNet的DRY标记）
+            // 避免将音乐、静音等非语音干帧误判为"含语音"而触发上下文保护
+            val isSpeechContaining = (smoothSpectrumRatio > 0.16f)
+
+            frames.add(FrameInfo(rawScores[i].timestampMs, type, typeNoSpectrum, isSpeechContaining, smoothSpectrumRatio))
+        }
 
         // v3.1.103: 频谱比值连续3帧生效约束
         // 如果某帧因spectrumRatio>0.16被判DRY但不在连续3帧内，回退到YAMNet-only判定
