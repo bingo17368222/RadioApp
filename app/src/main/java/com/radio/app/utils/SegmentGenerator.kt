@@ -75,6 +75,8 @@ object SegmentGenerator {
     // 静音段的RMS通常很低（<100），正常广播节目在200~5000+之间
     // 此处阈值设为150，低于此值的窗口直接跳过，不做指纹提取和匹配
     private const val SILENCE_RMS_THRESHOLD = 150f
+    // v3.1.130: 16kHz 16bit mono PCM: 1ms = 32 bytes
+    private const val PCM_BYTES_PER_MS = 32
 
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
     private fun writeFingerprintLog(context: Context, message: String) {
@@ -1964,6 +1966,32 @@ object SegmentGenerator {
         var skippedSilenceWindows = 0
         var lastReportedPct = -1
 
+        // v3.1.130: 将完整PCM一次性读入内存，避免每窗口重复文件I/O。
+        // 16kHz 16bit mono, 1ms=32字节, 90分钟=172MB, 现代手机内存足够。
+        // per-window: 15s读取480KB, 1080次=500MB的重复I/O, 耗时10~20分钟。
+        // 内存模式: 一次读入后直接切片, 毫秒级完成。
+        val fullPcmBytes: ByteArray? = try {
+            if (pcmFile.exists() && pcmFile.length() > 16000) {
+                pcmFile.readBytes()
+            } else {
+                Log.w(TAG, "第一层滑动窗口: PCM文件不存在或太小: ${pcmFile.absolutePath}")
+                null
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "第一层滑动窗口: 读取完整PCM到内存异常: ${e.message}")
+            null
+        }
+        if (fullPcmBytes == null || fullPcmBytes.size < 16000) {
+            val fpMsg = "第一层滑动窗口: 无法读取PCM到内存，跳过"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return listOf(VoiceSegment().apply {
+                this.start = 0; this.end = durationMs; this.hasVoice = true; this.label = "干货"; this.isSimulated = true
+            })
+        }
+        // 16kHz 16bit mono: 1ms = 32 bytes
+        val fullPcmSize = fullPcmBytes.size
+
         var pos = 0L
         // v3.1.59: 外层循环用try-catch捕获Throwable，防止单次窗口异常导致整个分段崩溃
         try {
@@ -1994,25 +2022,15 @@ object SegmentGenerator {
             }
 
             try {
-                if (!pcmFile.exists() || pcmFile.length() < 16000) {
-                    val fpMsg = "第一层滑动窗口: PCM文件不存在或太小: ${pcmFile.absolutePath}"
-                    Log.w(TAG, fpMsg)
-                    writeFingerprintLog(context, fpMsg)
-                    break
-                }
-                val pcmBytes = try {
-                    PcmSegmentExtractor.readSegmentBytes(pcmFile, pos, pos + WINDOW_MS)
-                } catch (e: Throwable) {
-                    Log.w(TAG, "第一层滑动窗口: 位置${pos}ms读取PCM异常: ${e.javaClass.name}: ${e.message}")
-                    null
-                }
-                if (pcmBytes == null || pcmBytes.isEmpty()) {
+                // v3.1.130: 从内存切片，替代文件I/O
+                val byteStart = (pos * PCM_BYTES_PER_MS).toInt()
+                val byteEnd = minOf(byteStart + (WINDOW_MS * PCM_BYTES_PER_MS).toInt(), fullPcmSize)
+                if (byteStart >= byteEnd || byteEnd - byteStart < 16000) {
                     pos += STEP_MS
                     continue
                 }
-
+                val pcmBytes = fullPcmBytes.copyOfRange(byteStart, byteEnd)
                 // v3.1.129: 移除RMS计算——RMS阈值检查给广播节目带来了额外开销没有收益
-                // 静音窗口不会影响指纹匹配结果，即使匹配到静音窗口也可以被后续层处理
 
                 val fingerprint = ChromaprintExtractor.extractFingerprint(pcmBytes)
                 if (fingerprint.isNullOrBlank()) {
