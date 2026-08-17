@@ -1316,9 +1316,8 @@ object SegmentGenerator {
 
                                     // v3.1.124: 恢复逐帧滑动窗口分类，YAMNet得分先过5帧滑动均值再分类，
                                     // 然后应用后处理规则（短段合并、水分占比、交替结构合并）
-                                    val subSegments: List<VoiceSegment>
-                                    try {
-                                        subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
+                                    val subSegments = try {
+                                        AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                             pcmSamples, intervalStart, intervalEnd,
                                             yamnetInterpreter
                                         )
@@ -1519,9 +1518,8 @@ object SegmentGenerator {
                                                 val intervalEnd = interval.second
 
                                                 // v3.1.124: 恢复逐帧滑动窗口分类+后处理
-                                                val subSegments: List<VoiceSegment>
-                                                try {
-                                                    subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
+                                                val subSegments = try {
+                                                    AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
                                                     )
                                                 } catch (e: InterruptedException) {
