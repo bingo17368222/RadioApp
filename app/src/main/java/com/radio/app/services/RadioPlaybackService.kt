@@ -534,7 +534,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     // v3.1.133: 后续计划播放列表（当前节目之后的5个节目），每次切换节目后更新
     private val futurePlannedEpisodes = mutableListOf<Episode>()
-    private const val FUTURE_PLAN_COUNT = 5  // 提前计划后续5个节目
+    private val FUTURE_PLAN_COUNT = 5  // 提前计划后续5个节目
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
