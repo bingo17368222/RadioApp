@@ -1415,17 +1415,31 @@ object SegmentGenerator {
                             jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
 
                             // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段，不止干段）
+                            // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，
+                            // 原代码只处理clipStart/clipEnd在YAMNet段内的情况，不处理完全包含。
+                            // 完全包含时，clipStart<YAMNet.start且clipEnd>YAMNet.end，两个条件都不触发，
+                            // 导致指纹水货段未被裁剪，YAMNet段被指纹水货段覆盖。
+                            // 修复：完全包含时，将指纹水货段拆分为两段（YAMNet段前和YAMNet段后）。
                             for (waterSeg in waterSegmentsAfterLayer1) {
                                 var clipStart = waterSeg.start
                                 var clipEnd = waterSeg.end
+                                // 收集完全包含时需要分割的额外段
+                                val extraSplits = mutableListOf<Pair<Long, Long>>()
                                 for (yamnetSeg in yamnetAllSegments) {
                                     // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
                                     if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
-                                        if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) {
-                                            clipStart = yamnetSeg.end
-                                        }
-                                        if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) {
+                                        // 检查是否完全包含YAMNet段（clipStart < YAMNet.start 且 clipEnd > YAMNet.end）
+                                        if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
+                                            // 完全包含：将YAMNet段之后的部分作为额外段
+                                            extraSplits.add(yamnetSeg.end to clipEnd)
                                             clipEnd = yamnetSeg.start
+                                        } else {
+                                            if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) {
+                                                clipStart = yamnetSeg.end
+                                            }
+                                            if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) {
+                                                clipEnd = yamnetSeg.start
+                                            }
                                         }
                                     }
                                 }
@@ -1434,6 +1448,15 @@ object SegmentGenerator {
                                         start = clipStart; end = clipEnd
                                         hasVoice = false; label = "指纹水货"; isSimulated = false
                                     })
+                                }
+                                // 添加完全包含时分割出的额外段
+                                for ((extraStart, extraEnd) in extraSplits) {
+                                    if (extraEnd - extraStart >= 500) {
+                                        jigsawSegments.add(VoiceSegment().apply {
+                                            start = extraStart; end = extraEnd
+                                            hasVoice = false; label = "指纹水货"; isSimulated = false
+                                        })
+                                    }
                                 }
                             }
 
@@ -1617,19 +1640,34 @@ object SegmentGenerator {
                                         // 1. YAMNet子段（全部保留，干段优先）
                                         jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
                                         // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
+                                        // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，
+                                        // 原代码只处理clipStart/clipEnd在YAMNet段内的情况，不处理完全包含。
                                         for (waterSeg in waterSegmentsAfterLayer1) {
                                             var clipStart = waterSeg.start; var clipEnd = waterSeg.end
+                                            val extraSplits = mutableListOf<Pair<Long, Long>>()
                                             for (yamnetSeg in yamnetAllSegments) {
                                                 // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
                                                 if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
-                                                    if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
-                                                    if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
+                                                    if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
+                                                        extraSplits.add(yamnetSeg.end to clipEnd)
+                                                        clipEnd = yamnetSeg.start
+                                                    } else {
+                                                        if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
+                                                        if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
+                                                    }
                                                 }
                                             }
                                             if (clipEnd - clipStart >= 500) {
                                                 jigsawSegments.add(VoiceSegment().apply {
                                                     start = clipStart; end = clipEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
                                                 })
+                                            }
+                                            for ((extraStart, extraEnd) in extraSplits) {
+                                                if (extraEnd - extraStart >= 500) {
+                                                    jigsawSegments.add(VoiceSegment().apply {
+                                                        start = extraStart; end = extraEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
+                                                    })
+                                                }
                                             }
                                         }
                                         jigsawSegments.sortBy { it.start }
@@ -2419,7 +2457,32 @@ object SegmentGenerator {
                             Log.i(TAG, fpMsg)
                             writeFingerprintLog(context, fpMsg)
                         } else {
-                            Log.d(TAG, "观察池过滤: 片段${waterSeg.start/1000}s-${waterSeg.end/1000}s与正式库/观察池重复，但hash未匹配，跳过")
+                            // v3.1.134: hash不匹配时fallback到全量对比，因为指纹字符串前64字符可能不稳定
+                            // 同一段音频在不同节目中的指纹提取可能有微小差异，导致hash不同。
+                            var matchedCandidate: RadioDatabaseHelper.ObservationPoolCandidate? = null
+                            var maxSim = 0f
+                            try {
+                                val allCandidates = dbHelper.getAllObservationPoolCandidates()
+                                for (cand in allCandidates) {
+                                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, cand.fingerprint)
+                                    if (sim > POOL_DUPLICATE_THRESHOLD && sim > maxSim) {
+                                        maxSim = sim
+                                        matchedCandidate = cand
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                            if (matchedCandidate != null) {
+                                dbHelper.incrementObservationPoolHit(
+                                    matchedCandidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT
+                                )
+                                val fpMsg = "观察池: 候选指纹#${matchedCandidate.id}跨节目命中（hash fallback，相似度${"%.0f".format(maxSim*100)}%，节目ID=$episodeId），hit_count=${matchedCandidate.hitCount + 1}"
+                                Log.i(TAG, fpMsg)
+                                writeFingerprintLog(context, fpMsg)
+                            } else {
+                                val fpMsg = "观察池: 重复但hash未匹配且无fallback匹配（节目ID=$episodeId），跳过"
+                                Log.d(TAG, fpMsg)
+                                writeFingerprintLog(context, fpMsg)
+                            }
                         }
                         continue
                     }
