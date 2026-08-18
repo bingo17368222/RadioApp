@@ -71,12 +71,7 @@ object SegmentGenerator {
     private const val POOL_PROMOTION_THRESHOLD_DEFAULT = 3
     // 指纹hash取前N字符作为快速索引
     private const val FINGERPRINT_HASH_PREFIX_LEN = 64
-    // v3.1.128: PCM能量静音跳过阈值——PCM为16bit有符号小端，计算16位样本RMS
-    // 静音段的RMS通常很低（<100），正常广播节目在200~5000+之间
-    // 此处阈值设为150，低于此值的窗口直接跳过，不做指纹提取和匹配
-    private const val SILENCE_RMS_THRESHOLD = 150f
-    // v3.1.130: 16kHz 16bit mono PCM: 1ms = 32 bytes
-    private const val PCM_BYTES_PER_MS = 32
+    // v3.1.131: 移除SILENCE_RMS_THRESHOLD和PCM_BYTES_PER_MS（第1层改用全量指纹提取，不再需要PCM切片）
 
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
     private fun writeFingerprintLog(context: Context, message: String) {
@@ -1910,45 +1905,36 @@ object SegmentGenerator {
         val WINDOW_MS = 15000L
         val STEP_MS = 5000L
 
-        // v3.1.128: 预解析正式库指纹，构建哈希前缀索引
-        // 指纹字符串是逗号分隔的32位整数，取前N个整数的前几个字符作为哈希键
-        // 可快速过滤掉完全不相似的指纹，避免全量滑动窗口对比
+        // v3.1.131: 预解析正式库指纹，去重后直接使用（移除哈希前缀索引——哈希前缀因指纹字符串
+        // 格式差异频繁不命中，导致回退到全量库，实际效果等同于直接全量对比，且增加复杂度）。
         // v3.1.129: 增加指纹ID字段，用于分组映射和last_matched_at更新
+        // v3.1.132: parsed改为IntArray——原始int[]直接内存访问，消除List<Int>装箱开销
         data class ParsedFpEntry(
             val id: Long,
-            val parsed: List<Int>,
-            val originalFp: String,
-            val hashPrefix: String  // 取指纹字符串前64个字符
+            val parsed: IntArray,
+            val originalFp: String
         )
         val parsedLibrary = formalLibrary.map { fp ->
             val parsed = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
-            val hashPrefix = fp.fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
-            ParsedFpEntry(fp.id, parsed, fp.fingerprint, hashPrefix)
+            // v3.1.132: List<Int> → IntArray，消除装箱开销
+            val parsedArray = if (parsed is ArrayList<Int>) {
+                IntArray(parsed.size) { parsed[it] }
+            } else {
+                parsed.toIntArray()
+            }
+            ParsedFpEntry(fp.id, parsedArray, fp.fingerprint)
         }
-        // 哈希前缀索引：相同前缀的指纹通常具有相似内容
-        val hashIndex = mutableMapOf<String, MutableList<ParsedFpEntry>>()
-        for (entry in parsedLibrary) {
-            if (entry.parsed.isEmpty()) continue
-            hashIndex.getOrPut(entry.hashPrefix) { mutableListOf() }.add(entry)
-        }
-        // v3.1.128: 指纹分组去重——同一分组内只保留代表指纹，减少冗余对比
-        // 将指纹按episodeId+startMs+endMs分组，同一节目同一位置的近似指纹只保留一条
+        // 指纹去重：取指纹的前5个整数作为快速去重标识
         val dedupedLibrary = mutableListOf<ParsedFpEntry>()
         val seenFpKeys = mutableSetOf<String>()
         for (entry in parsedLibrary) {
             if (entry.parsed.isEmpty()) continue
-            // 去重键：取指纹的前5个整数作为快速去重标识
             val dedupKey = entry.parsed.take(5).joinToString(",")
             if (dedupKey in seenFpKeys) continue
             seenFpKeys.add(dedupKey)
             dedupedLibrary.add(entry)
         }
         val dedupCount = parsedLibrary.size - dedupedLibrary.size
-        // 重建去重后的哈希索引
-        val dedupedHashIndex = mutableMapOf<String, MutableList<ParsedFpEntry>>()
-        for (entry in dedupedLibrary) {
-            dedupedHashIndex.getOrPut(entry.hashPrefix) { mutableListOf() }.add(entry)
-        }
 
         // v3.1.129: 构建指纹ID到分组的映射，同一分组只保留代表指纹参与对比
         // 从groupMembers构建fingerprintId → isRepresentative的映射
@@ -1963,43 +1949,64 @@ object SegmentGenerator {
         val hitDetails = mutableListOf<String>()
         var totalWindows = 0
         var matchedWindows = 0
-        var skippedSilenceWindows = 0
         var lastReportedPct = -1
 
-        // v3.1.130: 将完整PCM一次性读入内存，避免每窗口重复文件I/O。
-        // 16kHz 16bit mono, 1ms=32字节, 90分钟=172MB, 现代手机内存足够。
-        // per-window: 15s读取480KB, 1080次=500MB的重复I/O, 耗时10~20分钟。
-        // 内存模式: 一次读入后直接切片, 毫秒级完成。
-        val fullPcmBytes: ByteArray? = try {
-            if (pcmFile.exists() && pcmFile.length() > 16000) {
-                pcmFile.readBytes()
-            } else {
-                Log.w(TAG, "第一层滑动窗口: PCM文件不存在或太小: ${pcmFile.absolutePath}")
-                null
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "第一层滑动窗口: 读取完整PCM到内存异常: ${e.message}")
-            null
-        }
-        if (fullPcmBytes == null || fullPcmBytes.size < 16000) {
-            val fpMsg = "第一层滑动窗口: 无法读取PCM到内存，跳过"
+        // v3.1.131: 改用全量指纹一次提取+指纹级滑动窗口替代每窗口PCM提取+JNI调用。
+        // 原方案(v3.1.128~v3.1.130): 每5秒提取一次15秒窗口的指纹（1080次JNI调用），
+        // 每次JNI处理15秒PCM=480KB，1080次×50ms=54秒JNI耗时，加上copyOfRange内存分配GC压力。
+        // 新方案: 一次提取完整PCM指纹（1次JNI调用），然后对指纹数组做滑动窗口切片。
+        // 指纹数组是List<Int>，subList是O(1)视图操作，无内存分配，无GC压力。
+        // 90分钟节目约54000帧指纹，1080个窗口，对比逻辑不变，JNI从1080次降至1次。
+        // v3.1.132: 完整指纹和窗口都转为IntArray，使用compareFingerprintArraysFast消除装箱开销。
+        // 原版List<Int>比较: 137,856次比较×22,500次迭代=31亿次装箱访问→49分钟。
+        // IntArray版: 直接int[]内存访问，每次比较5~10微秒，总计约1~2秒。
+        // v3.1.133: 增加关键节点计时日志，用于诊断速度瓶颈。
+        val t0 = System.currentTimeMillis()
+        val fullFingerprint = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
+        if (fullFingerprint.isNullOrBlank()) {
+            val fpMsg = "第一层滑动窗口: 提取完整PCM指纹失败，跳过"
             Log.w(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
             return listOf(VoiceSegment().apply {
                 this.start = 0; this.end = durationMs; this.hasVoice = true; this.label = "干货"; this.isSimulated = true
             })
         }
-        // 16kHz 16bit mono: 1ms = 32 bytes
-        val fullPcmSize = fullPcmBytes.size
+        val parsedFull = ChromaprintExtractor.parseFingerprint(fullFingerprint)
+        if (parsedFull.size < 50) {
+            val fpMsg = "第一层滑动窗口: 完整指纹帧数过少(${parsedFull.size})，跳过"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return listOf(VoiceSegment().apply {
+                this.start = 0; this.end = durationMs; this.hasVoice = true; this.label = "干货"; this.isSimulated = true
+            })
+        }
+        // v3.1.132: 转IntArray，消除装箱开销
+        val fullArray = if (parsedFull is ArrayList<Int>) {
+            IntArray(parsedFull.size) { parsedFull[it] }
+        } else {
+            parsedFull.toIntArray()
+        }
+        val t1 = System.currentTimeMillis()
+        val extractTime = t1 - t0
+        val fpMsgTime = "第一层滑动窗口: PCM指纹提取耗时${formatDuration(extractTime)}，帧数=${fullArray.size}，正式库=${parsedLibrary.size}条，去重后=${dedupedLibrary.size}条"
+        Log.i(TAG, fpMsgTime)
+        writeFingerprintLog(context, fpMsgTime)
 
-        var pos = 0L
+        // 计算每帧对应的毫秒数，用于将帧位置映射为时间
+        val msPerFrame = durationMs.toFloat() / fullArray.size.toFloat()
+        // 窗口帧数：15秒窗口
+        val windowFrames = (WINDOW_MS / msPerFrame).toInt().coerceAtLeast(50)
+        // 步进帧数：5秒步长
+        val stepFrames = (STEP_MS / msPerFrame).toInt().coerceAtLeast(10)
+        val maxOffset = fullArray.size - windowFrames
+
+        var framePos = 0
         // v3.1.59: 外层循环用try-catch捕获Throwable，防止单次窗口异常导致整个分段崩溃
         try {
-        while (pos + WINDOW_MS <= durationMs) {
+        while (framePos <= maxOffset) {
             totalWindows++
 
             // v3.1.32: 响应取消信号，及时停止滑动窗口处理
-            // v3.1.108: 区分取消来源，记录详细原因
             val threadInterrupted = Thread.interrupted()
             val flagCancelled = AudioSegmentAnalyzer.isAnalysisCancelled()
             if (threadInterrupted || flagCancelled) {
@@ -2008,47 +2015,26 @@ object SegmentGenerator {
                     threadInterrupted -> "thread.interrupt"
                     else -> "analysisCancelled flag"
                 }
-                val fpMsgCancel = "第一层滑动窗口: 取消处理(cancelSource=$cancelSource)，位置${pos}ms for episode=$episodeId"
+                val fpMsgCancel = "第一层滑动窗口: 取消处理(cancelSource=$cancelSource)，帧位置$framePos for episode=$episodeId"
                 Log.i(TAG, fpMsgCancel)
                 writeFingerprintLog(context, fpMsgCancel)
                 break
             }
 
             // 进度回调
-            val pct = ((pos * 1000L) / durationMs).toInt().coerceIn(0, 1000)
+            val pct = ((framePos * 1000L) / (maxOffset + 1)).toInt().coerceIn(0, 1000)
             if (pct / 50 != lastReportedPct / 50) {
                 lastReportedPct = pct
                 progressCallback?.invoke(pct, System.currentTimeMillis() - 0, 0)
             }
 
             try {
-                // v3.1.130: 从内存切片，替代文件I/O
-                val byteStart = (pos * PCM_BYTES_PER_MS).toInt()
-                val byteEnd = minOf(byteStart + (WINDOW_MS * PCM_BYTES_PER_MS).toInt(), fullPcmSize)
-                if (byteStart >= byteEnd || byteEnd - byteStart < 16000) {
-                    pos += STEP_MS
-                    continue
-                }
-                val pcmBytes = fullPcmBytes.copyOfRange(byteStart, byteEnd)
-                // v3.1.129: 移除RMS计算——RMS阈值检查给广播节目带来了额外开销没有收益
+                // v3.1.132: 从IntArray切片（copyOfRange分配int[150]=600字节，可忽略）
+                val windowArray = fullArray.copyOfRange(framePos, framePos + windowFrames)
 
-                val fingerprint = ChromaprintExtractor.extractFingerprint(pcmBytes)
-                if (fingerprint.isNullOrBlank()) {
-                    pos += STEP_MS
-                    continue
-                }
-
-                val parsedWindow = ChromaprintExtractor.parseFingerprint(fingerprint)
-                if (parsedWindow.isEmpty()) {
-                    pos += STEP_MS
-                    continue
-                }
-
-                // v3.1.128: 使用哈希前缀索引快速定位候选指纹，仅对比哈希前缀匹配的条目
-                val windowHashPrefix = fingerprint.take(FINGERPRINT_HASH_PREFIX_LEN)
-                // 先从哈希索引中查找，若未命中则回退到全量库
-                val candidates = dedupedHashIndex[windowHashPrefix]?.ifEmpty { null }
-                    ?: dedupedHashIndex.values.flatten().ifEmpty { dedupedLibrary }
+                // v3.1.131: 移除哈希前缀索引——哈希前缀因指纹字符串格式差异频繁不命中，
+                // 导致回退到全量库，实际效果等同于直接全量对比。直接使用去重库。
+                val candidates = dedupedLibrary
 
                 var matched = false
                 var bestSim = 0f
@@ -2058,7 +2044,8 @@ object SegmentGenerator {
                     // v3.1.129: 如果该指纹有分组且不是代表指纹，跳过对比
                     val isRepresentative = fpGroupMap[entry.id] ?: true // 默认true（无分组时参与对比）
                     if (!isRepresentative) continue
-                    val sim = ChromaprintExtractor.compareFingerprintArrays(parsedWindow, entry.parsed).similarity
+                    // v3.1.132: 使用IntArray版快速比较，消除装箱开销
+                    val sim = ChromaprintExtractor.compareFingerprintArraysFast(windowArray, entry.parsed)
                     if (sim > bestSim) { bestSim = sim; matchedFpId = entry.id }
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
@@ -2068,10 +2055,12 @@ object SegmentGenerator {
                 }
 
                 if (matched) {
-                    matchedRanges.add(pos to (pos + WINDOW_MS))
+                    val startMs = (framePos * msPerFrame).toLong()
+                    val endMs = ((framePos + windowFrames) * msPerFrame).toLong()
+                    matchedRanges.add(startMs to endMs)
                     matchedWindows++
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
-                        hitDetails.add("${pos/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
+                        hitDetails.add("${startMs/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
                     }
                     // v3.1.129: 更新匹配指纹的last_matched_at
                     if (matchedFpId != null && matchedFpId!! > 0 && dbHelper != null) {
@@ -2081,15 +2070,21 @@ object SegmentGenerator {
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "第一层滑动窗口: 位置${pos}ms异常: ${e.message}")
+                Log.w(TAG, "第一层滑动窗口: 帧位置${framePos}异常: ${e.message}")
             }
-            pos += STEP_MS
+            framePos += stepFrames
         }
         } catch (e: Throwable) {
             val fpMsg = "第一层滑动窗口: 循环异常中止: ${e.javaClass.name}: ${e.message}"
             Log.w(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
         }
+
+        val t2 = System.currentTimeMillis()
+        val loopTime = t2 - t0
+        val fpMsgLoop = "第一层滑动窗口: 循环完成，总耗时${formatDuration(loopTime)}，窗口数=${totalWindows}，匹配=${matchedWindows}/${totalWindows}，正式库=${dedupedLibrary.size}条"
+        Log.i(TAG, fpMsgLoop)
+        writeFingerprintLog(context, fpMsgLoop)
 
         // 合并重叠/相邻的匹配范围
         matchedRanges.sortBy { it.first }
@@ -2136,7 +2131,7 @@ object SegmentGenerator {
             })
         }
 
-        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段，跳过${skippedSilenceWindows}个静音窗口，去重${dedupCount}个近似指纹 [${hitDetails.joinToString("; ")}]"
+        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段，去重${dedupCount}个近似指纹 [${hitDetails.joinToString("; ")}]"
         Log.i(TAG, fpMsg)
         writeFingerprintLog(context, fpMsg)
 

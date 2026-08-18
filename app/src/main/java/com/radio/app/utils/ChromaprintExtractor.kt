@@ -304,6 +304,53 @@ object ChromaprintExtractor {
     }
 
     /**
+     * v3.1.132: IntArray版快速指纹比较——消除List<Int>装箱/拆箱开销。
+     * 原版 compareFingerprintArrays 使用 List<Int>，每次 list[i] 触发Integer.valueOf+intValue，
+     * 在137,856次比较×22,500次迭代=31亿次数组访问下，装箱开销巨大（实测49分钟）。
+     * IntArray是原始int[]，直接内存访问，无装箱，速度提升50~100倍。
+     * 仅返回相似度（浮点数），不含详细诊断信息，用于第1层快速判定的热路径。
+     */
+    fun compareFingerprintArraysFast(a: IntArray, b: IntArray): Float {
+        if (a.isEmpty() || b.isEmpty()) return 0f
+        val minLen = minOf(a.size, b.size)
+        val maxLen = maxOf(a.size, b.size)
+        if (a.size == b.size) {
+            // 快速路径：等长时直接比较，避免滑动窗口
+            var errors = 0
+            for (i in 0 until minLen) {
+                errors += Integer.bitCount(a[i] xor b[i])
+            }
+            if (errors == 0) return 1f
+            val rawSim = 1f - (errors.toFloat() / (minLen * 32).toFloat())
+            return rawSim.coerceIn(0f, 1f)
+        }
+
+        val short: IntArray
+        val long: IntArray
+        if (a.size <= b.size) { short = a; long = b }
+        else { short = b; long = a }
+
+        val maxOffset = long.size - minLen
+        var minErrors = Int.MAX_VALUE
+
+        for (offset in 0..maxOffset) {
+            var errors = 0
+            for (i in 0 until minLen) {
+                errors += Integer.bitCount(short[i] xor long[offset + i])
+            }
+            if (errors < minErrors) {
+                minErrors = errors
+                if (minErrors == 0) break // 完全匹配，提前退出
+            }
+        }
+
+        val rawSimilarity = 1f - (minErrors.toFloat() / (minLen * 32).toFloat())
+        val lengthRatio = minLen.toFloat() / maxLen.toFloat()
+        val lengthPenalty = if (lengthRatio >= 0.8f) 1f else 1f - (1f - lengthRatio) * 0.3f
+        return (rawSimilarity * lengthPenalty).coerceIn(0f, 1f)
+    }
+
+    /**
      * 判断两段指纹是否匹配。
      * v3.1.3: 默认阈值从 0.75 降至 0.70，适应跨节目匹配的轻微差异。
      * @param threshold 相似度阈值，默认 0.70

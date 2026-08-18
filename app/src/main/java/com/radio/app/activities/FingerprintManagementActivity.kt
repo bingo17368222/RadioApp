@@ -62,42 +62,50 @@ class FingerprintManagementActivity : AppCompatActivity() {
     /**
      * v3.1.129: 显示过期指纹清理确认对话框。
      * 先统计过期指纹数量，再确认是否清理。
+     * v3.1.133: 将数据库查询移至后台线程，消除主线程卡顿。
      */
     private fun showCleanupExpiredDialog() {
         val dbHelper = RadioDatabaseHelper.getInstance(applicationContext)
-        try {
-            // 统计过期指纹数量
-            val twoMonthsAgo = System.currentTimeMillis() - 60L * 24 * 60 * 60 * 1000
-            val allFps = dbHelper.getAllAudioFingerprints()
-            val expiredFps = allFps.filter { it.isGoldStandard && it.lastMatchedAt > 0 && it.lastMatchedAt < twoMonthsAgo }
-            val expiredCount = expiredFps.size
+        lifecycleScope.launch {
+            try {
+                // 统计过期指纹数量 - 后台线程
+                val expiredCount = withContext(Dispatchers.IO) {
+                    val twoMonthsAgo = System.currentTimeMillis() - 60L * 24 * 60 * 60 * 1000
+                    val allFps = dbHelper.getAllAudioFingerprints()
+                    allFps.count { it.isGoldStandard && it.lastMatchedAt > 0 && it.lastMatchedAt < twoMonthsAgo }
+                }
 
-            if (expiredCount == 0) {
-                Toast.makeText(this, "没有过期指纹需要清理", Toast.LENGTH_SHORT).show()
-                return
-            }
+                if (expiredCount == 0) {
+                    Toast.makeText(this@FingerprintManagementActivity, "没有过期指纹需要清理", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
 
-            AlertDialog.Builder(this)
-                .setTitle("清理过期指纹")
-                .setMessage("确定删除 $expiredCount 条过期指纹吗？\n（超过2个月未匹配的人工指纹）")
-                .setPositiveButton("删除") { _, _ ->
-                    val deleted = dbHelper.cleanupExpiredFingerprints()
-                    if (deleted > 0) {
-                        Toast.makeText(this, "已删除 $deleted 条过期指纹", Toast.LENGTH_SHORT).show()
-                        // 刷新当前显示的Fragment
-                        supportFragmentManager.fragments.forEach { fragment ->
-                            if (fragment is FingerprintListFragment) {
-                                fragment.refreshData()
+                AlertDialog.Builder(this@FingerprintManagementActivity)
+                    .setTitle("清理过期指纹")
+                    .setMessage("确定删除 $expiredCount 条过期指纹吗？\n（超过2个月未匹配的人工指纹）")
+                    .setPositiveButton("删除") { _, _ ->
+                        lifecycleScope.launch {
+                            val deleted = withContext(Dispatchers.IO) {
+                                dbHelper.cleanupExpiredFingerprints()
+                            }
+                            if (deleted > 0) {
+                                Toast.makeText(this@FingerprintManagementActivity, "已删除 $deleted 条过期指纹", Toast.LENGTH_SHORT).show()
+                                // 刷新当前显示的Fragment
+                                supportFragmentManager.fragments.forEach { fragment ->
+                                    if (fragment is FingerprintListFragment) {
+                                        fragment.refreshData()
+                                    }
+                                }
+                            } else {
+                                Toast.makeText(this@FingerprintManagementActivity, "清理失败", Toast.LENGTH_SHORT).show()
                             }
                         }
-                    } else {
-                        Toast.makeText(this, "清理失败", Toast.LENGTH_SHORT).show()
                     }
-                }
-                .setNegativeButton("取消", null)
-                .show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "统计失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    .setNegativeButton("取消", null)
+                    .show()
+            } catch (e: Exception) {
+                Toast.makeText(this@FingerprintManagementActivity, "统计失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }

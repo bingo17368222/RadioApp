@@ -532,6 +532,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     @Volatile
     private var forceNotificationUpdate: Boolean = false
 
+    // v3.1.133: 后续计划播放列表（当前节目之后的5个节目），每次切换节目后更新
+    private val futurePlannedEpisodes = mutableListOf<Episode>()
+    private const val FUTURE_PLAN_COUNT = 5  // 提前计划后续5个节目
+
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
     // Issue 1: Cache the contentIntent PendingIntent - creating it on every notification update may cause Activity recreation
@@ -5509,6 +5513,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v2.4.117: removed lastNotificationContentHash=0 — forceNotificationUpdate=true is sufficient
         forceNotificationUpdate = true  // Issue 3: bypass content hash check
         notifyNotification()
+
+        // v3.1.133: 节目切换后立即加载真实分段到内存，避免分段导航使用固定15分钟分段
+        // 同时预载下个节目的分段和更新播放计划
+        serviceScope.launch(Dispatchers.IO) {
+            updatePlaybackSchedule()
+        }
     }
 
     fun play() {
@@ -6024,6 +6034,162 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     fun getDownloadTotalBytes(): Long = downloadTotalBytes
     fun getDownloadDoneBytes(): Long = downloadDoneBytes
     fun isDownloading(): Boolean = downloadActive.get()
+
+    // ==================== v3.1.133: 分段预加载和播放计划 ====================
+
+    /**
+     * v3.1.133: 从数据库加载真实分段到episode.voiceSegments内存。
+     * 解决"已有真实分段的节目，按钮有时按照固定15分钟跳转"的问题。
+     * 在playEpisode()完成后立即调用，确保分段导航时真实分段已在内存中。
+     * 也用于预加载下个节目的分段。
+     */
+    private fun loadEpisodeSegmentsFromDb(episode: Episode?): Boolean {
+        val episodeId = episode?.id ?: return false
+        if (episodeId.isBlank()) return false
+        try {
+            val queryId = if (episodeId.endsWith("-cross")) {
+                episodeId.substring(0, episodeId.length - 6)
+            } else {
+                episodeId
+            }
+            val dbSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
+            if (dbSegments.isNotEmpty() && dbSegments.any { !it.isSimulated }) {
+                episode.voiceSegments = dbSegments
+                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${dbSegments.size} real segments for $episodeId")
+                return true
+            } else {
+                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: no real segments found for $episodeId (db=${dbSegments.size} segs)")
+            }
+        } catch (e: Exception) {
+            writeServiceLog("segment", "loadEpisodeSegmentsFromDb: failed for $episodeId: ${e.message}")
+        }
+        return false
+    }
+
+    /**
+     * v3.1.133: 预载下个计划播放节目的真实分段。
+     * 从preCacheList/savedList中查找下一个节目，将其分段从DB加载到内存，
+     * 这样用户切换到下个节目时分段已经就绪，不会回退到固定15分钟分段。
+     */
+    private fun preloadNextEpisodeSegments() {
+        val settings = AppSettings.getInstance(this)
+        val curId = currentEpisode?.id ?: return
+        if (curId.isBlank()) return
+
+        val preCacheList = loadPreCacheList()
+        val savedList = loadEpisodeList()
+
+        // 先找preCacheList，再找savedList
+        val nextEpisode = findNextInList(preCacheList, curId, settings)
+            ?: findNextInList(savedList, curId, settings)
+
+        if (nextEpisode != null) {
+            val epId = nextEpisode.id ?: ""
+            if (epId.isNotBlank()) {
+                // 加载到nextEpisode的voiceSegments，这样playEpisode时直接用
+                loadEpisodeSegmentsFromDb(nextEpisode)
+                writeServiceLog("segment", "preloadNextEpisodeSegments: preloaded segments for next ep=$epId (${nextEpisode.title})")
+            }
+        }
+    }
+
+    /**
+     * v3.1.133: 构建后续FUTURE_PLAN_COUNT(5)个节目的播放计划列表。
+     * 从preCacheList和savedList中查找当前节目之后的节目，排除不喜欢和无需预处理的节目。
+     * 检查异常跳过（时间间隔过大等）。
+     * 更新futurePlannedEpisodes列表，每次切换节目时调用。
+     */
+    private fun buildPlaybackSchedule(): List<Episode> {
+        val settings = AppSettings.getInstance(this)
+        val curId = currentEpisode?.id ?: return emptyList()
+        if (curId.isBlank()) return emptyList()
+
+        val preCacheList = loadPreCacheList()
+        val savedList = loadEpisodeList()
+
+        // 合并列表，preCacheList优先，去重
+        val combinedList = (preCacheList + savedList).distinctBy { it.id }
+
+        // 找到当前节目的位置
+        var currentIdx = combinedList.indexOfFirst { it.id == curId || it.audioUrl == currentPlayingUrl }
+        if (currentIdx < 0) {
+            writeServiceLog("schedule", "buildPlaybackSchedule: curId=$curId not found in combined list")
+            return emptyList()
+        }
+
+        // 取后续FUTURE_PLAN_COUNT个节目（跳过不喜欢和无需预处理的）
+        val nextPlanned = mutableListOf<Episode>()
+        var idx = currentIdx + 1
+        while (nextPlanned.size < FUTURE_PLAN_COUNT && idx < combinedList.size) {
+            val ep = combinedList[idx]
+            val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+            val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
+            if (!isDisliked && !isNoPreprocess) {
+                nextPlanned.add(ep)
+            }
+            idx++
+        }
+
+        // 更新futurePlannedEpisodes
+        synchronized(futurePlannedEpisodes) {
+            futurePlannedEpisodes.clear()
+            futurePlannedEpisodes.addAll(nextPlanned)
+        }
+
+        // 构建日志
+        val sb = StringBuilder("播放计划: 后续${nextPlanned.size}个节目")
+        nextPlanned.forEachIndexed { i, ep ->
+            val timeStr = if (ep.startTime > 0) {
+                val sdf = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                sdf.format(java.util.Date(ep.startTime))
+            } else {
+                ep.broadcastAt?.take(16) ?: "未知时间"
+            }
+            sb.append("\n  ${i+1}. ${ep.title} ($timeStr)")
+        }
+
+        // 检查时间间隔异常（>10分钟视为异常）
+        if (nextPlanned.size >= 2) {
+            for (i in 0 until nextPlanned.size - 1) {
+                val curr = nextPlanned[i]
+                val next = nextPlanned[i + 1]
+                if (curr.endTime > 0 && next.startTime > 0) {
+                    val gap = next.startTime - curr.endTime
+                    if (gap > 600000) { // 10分钟
+                        sb.append(" | ⚠异常: ${curr.title}→${next.title}间隔${gap/60000}分钟")
+                    }
+                }
+            }
+        }
+
+        // 检查是否有节目被跳过（列表不连续）
+        if (nextPlanned.size < FUTURE_PLAN_COUNT) {
+            val skipped = FUTURE_PLAN_COUNT - nextPlanned.size
+            sb.append(" | 提示: 后续不足${FUTURE_PLAN_COUNT}个节目（缺${skipped}个），可能因跨天或列表结束")
+        }
+
+        writeServiceLog("schedule", sb.toString())
+        return nextPlanned
+    }
+
+    /**
+     * v3.1.133: 每次切换节目时更新播放计划：
+     * 1. 加载当前节目的真实分段到内存
+     * 2. 预载下个节目的真实分段
+     * 3. 构建后续5个节目的播放计划列表
+     */
+    private fun updatePlaybackSchedule() {
+        // 1. 加载当前节目的真实分段
+        val loaded = loadEpisodeSegmentsFromDb(currentEpisode)
+        writeServiceLog("segment", "updatePlaybackSchedule: current episode segments loaded=${loaded}")
+
+        // 2. 预载下个节目的真实分段
+        preloadNextEpisodeSegments()
+
+        // 3. 构建播放计划列表
+        buildPlaybackSchedule()
+    }
 
     private fun getSegmentList(): List<VoiceSegment> {
         val episode = currentEpisode
