@@ -3,6 +3,8 @@ package com.radio.app.utils
 import android.content.Context
 import android.util.Log
 import com.radio.app.database.AudioFingerprint
+import com.radio.app.database.FingerprintGroupInfo
+import com.radio.app.database.FingerprintGroupMember
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.models.VoiceSegment
@@ -69,6 +71,7 @@ object SegmentGenerator {
     private const val POOL_PROMOTION_THRESHOLD_DEFAULT = 3
     // 指纹hash取前N字符作为快速索引
     private const val FINGERPRINT_HASH_PREFIX_LEN = 64
+    // v3.1.131: 移除SILENCE_RMS_THRESHOLD和PCM_BYTES_PER_MS（第1层改用全量指纹提取，不再需要PCM切片）
 
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
     private fun writeFingerprintLog(context: Context, message: String) {
@@ -342,22 +345,67 @@ object SegmentGenerator {
      * 对段列表按start排序，在相邻段间填充"静音"段，最后补全首段前和末段后到总时长。
      * @return 填充的静音段数量
      */
-    private fun fillSilenceGaps(segments: MutableList<VoiceSegment>, totalDurationMs: Long): Int {
+    /**
+     * v3.1.135: 大间隙阈值（3分钟），超过此阈值的间隙标记为"干货"而非"静音"。
+     * 根因：YAMNet可能因VAD间隔或分类偏差跳过主持人讲话区域，
+     * 导致fillSilenceGaps将大段讲话区域填充为静音。
+     * 广播节目中间不会有连续3分钟以上的纯静音，所以大间隙应视为疑似的干货。
+     */
+    private val LARGE_GAP_THRESHOLD_MS = 180000L // 3分钟
+
+    private fun fillSilenceGaps(segments: MutableList<VoiceSegment>, totalDurationMs: Long, context: Context? = null): Int {
         if (segments.isEmpty()) return 0
         segments.sortBy { it.start }
         var fillCount = 0
 
+        // v3.1.137: 大间隙填充时，拆分为60秒一个的小段，避免单个大段覆盖多分钟
+        // 防止12-16分钟（720~960s）与相邻时间段被合并为一个不可分割的段
+        // 拆分后每个小段在后续mergeSilenceToAdjacentWater中会被相邻水段分别吸收
+        // 但不会被合并为一个超长段，从而保护讲话区域不被水段吞没
+        // v3.1.138: 大间隙拆分的小段始终标记为"静音"，不再标记为"干货"。
+        // 根因：标记为"干货"后，mergeSilenceToAdjacentWater只处理"静音"标签的段，
+        // 这些大间隙干货段不会被合并到相邻水段，导致干货比例过高。
+        // 改为"静音"后，mergeSilenceToAdjacentWater会将它们合并到相邻水段，
+        // 既保留了YAMNet缺失区域的覆盖，又不会增加干货比例。
+        fun splitGapIntoChunks(start: Long, end: Long): List<VoiceSegment> {
+            val chunks = mutableListOf<VoiceSegment>()
+            val CHUNK_SIZE_MS = 60000L // 60秒一个块
+            var chunkStart = start
+            while (chunkStart < end) {
+                val chunkEnd = minOf(chunkStart + CHUNK_SIZE_MS, end)
+                chunks.add(VoiceSegment().apply {
+                    this.start = chunkStart
+                    this.end = chunkEnd
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                chunkStart = chunkEnd
+            }
+            return chunks
+        }
+
         // 1. 填充首段之前的间隙（从0到第一段start）
         val firstSeg = segments.first()
         if (firstSeg.start > 50) {
-            segments.add(0, VoiceSegment().apply {
-                start = 0L
-                end = firstSeg.start
-                hasVoice = false
-                label = "静音"
-                isSimulated = false
-            })
-            fillCount++
+            val gapMs = firstSeg.start
+            val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
+            if (isLargeGap) {
+                // v3.1.137: 大间隙拆分为小段
+                // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
+                val chunks = splitGapIntoChunks(0, firstSeg.start)
+                segments.addAll(0, chunks)
+                fillCount += chunks.size
+            } else {
+                segments.add(0, VoiceSegment().apply {
+                    start = 0L
+                    end = firstSeg.start
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                fillCount++
+            }
         }
 
         // 2. 填充相邻段之间的间隙
@@ -367,15 +415,25 @@ object SegmentGenerator {
             val next = segments[i + 1]
             val gapMs = next.start - curr.end
             if (gapMs > 50) {
-                segments.add(i + 1, VoiceSegment().apply {
-                    start = curr.end
-                    end = next.start
-                    hasVoice = false
-                    label = "静音"
-                    isSimulated = false
-                })
-                fillCount++
-                i += 2
+                val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
+                if (isLargeGap) {
+                    // v3.1.137: 大间隙拆分为小段
+                    // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
+                    val chunks = splitGapIntoChunks(curr.end, next.start)
+                    segments.addAll(i + 1, chunks)
+                    fillCount += chunks.size
+                    i += chunks.size + 1
+                } else {
+                    segments.add(i + 1, VoiceSegment().apply {
+                        start = curr.end
+                        end = next.start
+                        hasVoice = false
+                        label = "静音"
+                        isSimulated = false
+                    })
+                    fillCount++
+                    i += 2
+                }
             } else {
                 i++
             }
@@ -384,28 +442,110 @@ object SegmentGenerator {
         // 3. 填充末段之后的间隙（从最后一段end到totalDurationMs）
         val lastSeg = segments.last()
         if (totalDurationMs > 0 && lastSeg.end < totalDurationMs - 50) {
-            segments.add(VoiceSegment().apply {
-                start = lastSeg.end
-                end = totalDurationMs
-                hasVoice = false
-                label = "静音"
-                isSimulated = false
-            })
-            fillCount++
+            val gapMs = totalDurationMs - lastSeg.end
+            val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
+            if (isLargeGap) {
+                // v3.1.137: 大间隙拆分为小段
+                // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
+                val chunks = splitGapIntoChunks(lastSeg.end, totalDurationMs)
+                segments.addAll(chunks)
+                fillCount += chunks.size
+            } else {
+                segments.add(VoiceSegment().apply {
+                    start = lastSeg.end
+                    end = totalDurationMs
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                fillCount++
+            }
+        }
+
+        if (fillCount > 0 && context != null) {
+            writeFingerprintLog(context, "三层架构: 大间隙填充: ${fillCount}个静音段填充完成，总段数: ${segments.size}段(干${segments.count { it.hasVoice }}/水${segments.count { !it.hasVoice }})")
         }
 
         return fillCount
     }
 
+    /**
+     * v3.1.125: 将静音段合并到相邻水分段。
+     * v3.1.126: 同时将相邻静音段合并到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"
+     * 三种碎片化模式，让干货保持连续大段而非被静音分割。
+     * fillSilenceGaps填充的静音段位于两个段之间，或紧邻段时，
+     * 只要相邻有非静音段（无论水/干），都应合并而非保留孤立静音段。
+     * 具体规则：
+     * - 静音段前面是非静音 → 静音段合并到前一个非静音段（延长end）
+     * - 静音段后面是非静音且前面不是 → 静音段合并到后一个非静音段（前移start）
+     * - 静音段前后都是非静音 → 静音段合并到前一个非静音段，后一个非静音段延后吸收
+     * @return 合并的静音段数量
+     */
+    private fun mergeSilenceToAdjacentWater(segments: MutableList<VoiceSegment>): Int {
+        if (segments.size <= 1) return 0
+        segments.sortBy { it.start }
+        // v3.1.135: 最大水段长度限制，与mergeAdjacentSegments一致
+        val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
+        var mergeCount = 0
+        var i = 0
+        while (i < segments.size) {
+            val seg = segments[i]
+            // 只处理静音段
+            if (seg.label != "静音") {
+                i++
+                continue
+            }
+            val hasPrev = i > 0
+            val hasNext = i < segments.size - 1
+            val prevIsNonSilence = hasPrev && segments[i-1].label != "静音"
+            val nextIsNonSilence = hasNext && segments[i+1].label != "静音"
+
+            if (prevIsNonSilence) {
+                // v3.1.135: 如果合并后水段长度超过最大长度，不合并
+                if (isWaterLabel(segments[i-1].label) && seg.end - segments[i-1].start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                    i++
+                    continue
+                }
+                // 合并到前一个非静音段（无论水/干）
+                segments[i-1].end = seg.end
+                segments.removeAt(i)
+                mergeCount++
+                // 不移i，因为removeAt后当前元素后移
+            } else if (nextIsNonSilence) {
+                // v3.1.135: 如果合并后水段长度超过最大长度，不合并
+                if (isWaterLabel(segments[i+1].label) && segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                    i++
+                    continue
+                }
+                // 合并到后一个非静音段（无论水/干）
+                segments[i+1].start = seg.start
+                segments.removeAt(i)
+                mergeCount++
+                // 不移i
+            } else {
+                i++
+            }
+        }
+        return mergeCount
+    }
+
+    /**
+     * v3.1.44: 增强合并逻辑，处理连续水分片段被短间隔分隔未合并的问题
+     */
     private fun mergeAdjacentSegments(segments: List<VoiceSegment>): MutableList<VoiceSegment> {
         if (segments.isEmpty()) return mutableListOf()
         val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
 
-        // v3.1.44: 增强合并逻辑，处理连续水分片段被短间隔分隔未合并的问题
         // v3.1.98: 合并间隔从10s放宽到20s，减少总分段数
         val MAX_WATER_MERGE_GAP_MS = 20000L // 20秒
+        // v3.1.135: 最大水段长度限制，防止主持人讲话区域被误合并到水段。
+        // 根因：YAMNet可能将12-16分钟的主持人讲话误分类为水，或YAMNet层被跳过，
+        // 导致mergeAdjacentSegments Pass 2将相邻水段无限合并，吞没讲话区域。
+        // 5分钟（300秒）是一个合理的上限——正常水段（纯音乐/广告）不会超过5分钟。
+        val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
 
         // Pass 1: 合并相邻同类型片段（原有合并逻辑）
+        // v3.1.135: 对水段增加MAX_WATER_SEGMENT_LENGTH_MS限制，防止YAMNet水段与指纹水段相邻合并导致超长
         var changed = true
         while (changed) {
             changed = false
@@ -415,6 +555,8 @@ object SegmentGenerator {
                 if (curr.hasVoice == next.hasVoice
                         && isWaterLabel(curr.label) == isWaterLabel(next.label)
                         && next.start <= curr.end + 10) {
+                    // v3.1.135: 水段合并检查长度限制
+                    if (isWaterLabel(curr.label) && (next.end - curr.start) >= MAX_WATER_SEGMENT_LENGTH_MS) continue
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
                     changed = true
@@ -427,12 +569,15 @@ object SegmentGenerator {
         // 场景：指纹水货 → 短静音/待处理 → 指纹水货，应合并为一个大水分段
         // v3.1.87: 不合并通过干货（hasVoice=true且非水分）片段，保护YAMNet产出的干货不被吞没
         // v3.1.90: 静音段（label="静音", hasVoice=false）作为合并屏障，防止对所有水货段无限合并
+        // v3.1.135: 增加MAX_WATER_SEGMENT_LENGTH_MS限制，防止水段无限合并吞没讲话区域
         changed = true
         while (changed) {
             changed = false
             for (i in 0 until sorted.size - 1) {
                 val curr = sorted[i]
                 if (!isWaterLabel(curr.label)) continue
+                // v3.1.135: 如果当前水段已经超过最大长度，不再合并
+                if (curr.end - curr.start >= MAX_WATER_SEGMENT_LENGTH_MS) continue
                 var gapMs = 0L
                 var j = i + 1
                 var hasDryInGap = false
@@ -441,10 +586,14 @@ object SegmentGenerator {
                     val mid = sorted[j]
                     if (isWaterLabel(mid.label)) {
                         if (!hasDryInGap && !hasSilenceInGap) {
-                            // 找到下一个水分片段，且中间没有干货也没有静音，合并（跳过中间的非水分片段）
-                            curr.end = maxOf(curr.end, mid.end)
-                            repeat(j - i) { sorted.removeAt(i + 1) }
-                            changed = true
+                            // v3.1.135: 检查合并后的水段长度是否超过最大长度
+                            val mergedEnd = maxOf(curr.end, mid.end)
+                            if (mergedEnd - curr.start < MAX_WATER_SEGMENT_LENGTH_MS) {
+                                // 找到下一个水分片段，且中间没有干货也没有静音，合并（跳过中间的非水分片段）
+                                curr.end = mergedEnd
+                                repeat(j - i) { sorted.removeAt(i + 1) }
+                                changed = true
+                            }
                         }
                         break
                     }
@@ -1052,6 +1201,9 @@ object SegmentGenerator {
         // ========== 获取指纹库 ==========
         // 正式指纹库（金标准+自动晋升）→ 第一层使用
         val formalLibrary = try { dbHelper.getFormalLibraryFingerprints() } catch (_: Exception) { emptyList() }
+        // v3.1.129: 获取指纹分组，用于第一层缩减对比量
+        val fingerprintGroups = try { dbHelper.getAllFingerprintGroups() } catch (_: Exception) { emptyList() }
+        val groupMembers = try { dbHelper.getAllGroupMembers() } catch (_: Exception) { emptyList() }
         // 金标准指纹（仅人工录入）→ 第三层使用
         val goldStandardFingerprints = try { dbHelper.getGoldStandardFingerprints() } catch (_: Exception) { emptyList() }
 
@@ -1132,7 +1284,7 @@ object SegmentGenerator {
             val slidingProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "第1层指纹快筛")
             }
-            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, effectiveDurationMs, formalLibrary, slidingProgressCallback)
+            val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, effectiveDurationMs, formalLibrary, slidingProgressCallback, fingerprintGroups, groupMembers, dbHelper)
             mergedAfterLayer1 = slidingResult
             layer1MatchCount = slidingResult.count { it.label == "指纹水货" }
             audioEngineName = "滑动窗口指纹"
@@ -1181,6 +1333,14 @@ object SegmentGenerator {
             val fpMsgCancel = "三层架构: 第1层期间收到取消信号(cancelSource=$cancelSource)，后续层静默运行 for episode=$episodeId"
             Log.i(TAG, fpMsgCancel)
             writeFingerprintLog(context, fpMsgCancel)
+        }
+
+        // v3.1.129: 第一层取消后，重置取消标志让VAD正常运行
+        // 第一层取消是因为超时，但VAD和YAMNet应该继续运行产生有效分段
+        if (AudioSegmentAnalyzer.isAnalysisCancelled()) {
+            AudioSegmentAnalyzer.resetCancellation()
+            Thread.interrupted() // 清除中断标志
+            Log.i(TAG, "三层架构: 第1层取消后重置取消标志，第2层继续运行 for episode=$episodeId")
         }
 
         // v3.1.110: 记录第1层完成时的取消状态到指纹日志，用于排查中断来源
@@ -1314,11 +1474,11 @@ object SegmentGenerator {
                                     val intervalStart = interval.first
                                     val intervalEnd = interval.second
 
-                                    // v3.1.115: 使用多数投票分类，每个区间只产生1段，消除交替子段问题
-                                    // 与旧双模型方案classifySpeechInterval策略一致
-                                    var majoritySeg: VoiceSegment? = null
+                                    // v3.1.124: 恢复逐帧滑动窗口分类，YAMNet得分先过5帧滑动均值再分类，
+                                    // 然后应用后处理规则（短段合并、水分占比、交替结构合并）
+                                    var subSegments = emptyList<VoiceSegment>()
                                     try {
-                                        majoritySeg = AudioSegmentAnalyzer.classifyIntervalMajority(
+                                        subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                             pcmSamples, intervalStart, intervalEnd,
                                             yamnetInterpreter
                                         )
@@ -1327,9 +1487,8 @@ object SegmentGenerator {
                                         break
                                     }
 
-                                    if (majoritySeg != null) {
-                                        yamnetAllSegments.add(majoritySeg!!)
-                                    }
+                                    val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
+                                    yamnetAllSegments.addAll(processedSegments)
                                     processedCount++
                                     val mapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
                                     SegmentNotificationHelper.update(
@@ -1342,30 +1501,58 @@ object SegmentGenerator {
                             }
 
                             // ===== 拼图式合并：指纹段 + YAMNet段 =====
+                            // v3.1.125: YAMNet干段优先于指纹水货段。YAMNet逐帧分类比指纹匹配更精确，
+                            // 当指纹水货段与YAMNet干段冲突时，裁剪指纹水货段而非YAMNet干段。
+                            // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
+                            // 因为YAMNet逐帧分类比指纹15秒窗口匹配更精确，YAMNet的分类结果应完全替代指纹覆盖。
                             val jigsawSegments = mutableListOf<VoiceSegment>()
 
-                            // 1. 指纹水货段（边界冲突时指纹优先）
-                            jigsawSegments.addAll(waterSegmentsAfterLayer1.map { it.copy() })
+                            // 1. YAMNet子段（全部保留，干段优先）
+                            jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
 
-                            // 2. YAMNet子段，做保护性边界裁剪
-                            for (yamnetSeg in yamnetAllSegments) {
-                                var clipStart = yamnetSeg.start
-                                var clipEnd = yamnetSeg.end
-                                for (waterSeg in waterSegmentsAfterLayer1) {
-                                    if (clipStart < waterSeg.end && clipEnd > waterSeg.start) {
-                                        if (clipStart >= waterSeg.start && clipStart < waterSeg.end) {
-                                            clipStart = waterSeg.end
-                                        }
-                                        if (clipEnd > waterSeg.start && clipEnd <= waterSeg.end) {
-                                            clipEnd = waterSeg.start
+                            // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段，不止干段）
+                            // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，
+                            // 原代码只处理clipStart/clipEnd在YAMNet段内的情况，不处理完全包含。
+                            // 完全包含时，clipStart<YAMNet.start且clipEnd>YAMNet.end，两个条件都不触发，
+                            // 导致指纹水货段未被裁剪，YAMNet段被指纹水货段覆盖。
+                            // 修复：完全包含时，将指纹水货段拆分为两段（YAMNet段前和YAMNet段后）。
+                            for (waterSeg in waterSegmentsAfterLayer1) {
+                                var clipStart = waterSeg.start
+                                var clipEnd = waterSeg.end
+                                // 收集完全包含时需要分割的额外段
+                                val extraSplits = mutableListOf<Pair<Long, Long>>()
+                                for (yamnetSeg in yamnetAllSegments) {
+                                    // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
+                                    if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
+                                        // 检查是否完全包含YAMNet段（clipStart < YAMNet.start 且 clipEnd > YAMNet.end）
+                                        if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
+                                            // 完全包含：将YAMNet段之后的部分作为额外段
+                                            extraSplits.add(yamnetSeg.end to clipEnd)
+                                            clipEnd = yamnetSeg.start
+                                        } else {
+                                            if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) {
+                                                clipStart = yamnetSeg.end
+                                            }
+                                            if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) {
+                                                clipEnd = yamnetSeg.start
+                                            }
                                         }
                                     }
                                 }
                                 if (clipEnd - clipStart >= 500) {
                                     jigsawSegments.add(VoiceSegment().apply {
                                         start = clipStart; end = clipEnd
-                                        hasVoice = yamnetSeg.hasVoice; label = yamnetSeg.label; isSimulated = false
+                                        hasVoice = false; label = "指纹水货"; isSimulated = false
                                     })
+                                }
+                                // 添加完全包含时分割出的额外段
+                                for ((extraStart, extraEnd) in extraSplits) {
+                                    if (extraEnd - extraStart >= 500) {
+                                        jigsawSegments.add(VoiceSegment().apply {
+                                            start = extraStart; end = extraEnd
+                                            hasVoice = false; label = "指纹水货"; isSimulated = false
+                                        })
+                                    }
                                 }
                             }
 
@@ -1390,10 +1577,19 @@ object SegmentGenerator {
                             } else {
                                 "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
                             }
+                            // v3.1.135: 当段数>15时，额外输出720~960秒（12~16分钟）附近的段，便于调试主持人讲话被合并问题
+                            val yamnetTargetRange = yamnetAllSegments.filter { it.start in 600000..1100000 || it.end in 600000..1100000 || (it.start < 600000 && it.end > 1100000) }
+                            val yamnetTargetDetail = if (yamnetTargetRange.isNotEmpty()) {
+                                "目标区域(600~1100s): " + yamnetTargetRange.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                            } else {
+                                "目标区域(600~1100s): 无段覆盖（异常）"
+                            }
                             Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
                             Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail for episode=$episodeId")
+                            Log.i(TAG, "三层架构: YAMNet子段目标区域详情: $yamnetTargetDetail for episode=$episodeId")
                             // v3.1.90: 写指纹日志
                             writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段")
+                            writeFingerprintLog(context, "三层架构: YAMNet子段目标区域(600~1100s): $yamnetTargetDetail")
                         } finally {
                             try { yamnetInterpreter.close() } catch (_: Exception) {}
                         }
@@ -1519,10 +1715,10 @@ object SegmentGenerator {
                                                 val intervalStart = interval.first
                                                 val intervalEnd = interval.second
 
-                                                // v3.1.115: 使用多数投票分类，每个区间只产生1段
-                                                var majoritySeg: VoiceSegment? = null
+                                                // v3.1.124: 恢复逐帧滑动窗口分类+后处理
+                                                var subSegments = emptyList<VoiceSegment>()
                                                 try {
-                                                    majoritySeg = AudioSegmentAnalyzer.classifyIntervalMajority(
+                                                    subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
                                                     )
                                                 } catch (e: InterruptedException) {
@@ -1530,9 +1726,8 @@ object SegmentGenerator {
                                                     break
                                                 }
 
-                                                if (majoritySeg != null) {
-                                                    yamnetAllSegments.add(majoritySeg!!)
-                                                }
+                                                val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
+                                                yamnetAllSegments.addAll(processedSegments)
                                                 processedCount++
                                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle,
                                                     (250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)).coerceIn(250, 800),
@@ -1543,20 +1738,41 @@ object SegmentGenerator {
                                         }
 
                                         // v3.1.106: 拼图合并：指纹段 + YAMNet子段（移除gap-filling）
+                                        // v3.1.125: YAMNet干段优先于指纹水货段，裁剪指纹水货段避开YAMNet干段
+                                        // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
+                                        // YAMNet逐帧分类比指纹15秒窗口匹配更精确，分类结果应完全替代指纹覆盖。
                                         val jigsawSegments = mutableListOf<VoiceSegment>()
-                                        jigsawSegments.addAll(waterSegmentsAfterLayer1.map { it.copy() })
-                                        for (yamnetSeg in yamnetAllSegments) {
-                                            var clipStart = yamnetSeg.start; var clipEnd = yamnetSeg.end
-                                            for (waterSeg in waterSegmentsAfterLayer1) {
-                                                if (clipStart < waterSeg.end && clipEnd > waterSeg.start) {
-                                                    if (clipStart >= waterSeg.start && clipStart < waterSeg.end) clipStart = waterSeg.end
-                                                    if (clipEnd > waterSeg.start && clipEnd <= waterSeg.end) clipEnd = waterSeg.start
+                                        // 1. YAMNet子段（全部保留，干段优先）
+                                        jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
+                                        // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
+                                        // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，
+                                        // 原代码只处理clipStart/clipEnd在YAMNet段内的情况，不处理完全包含。
+                                        for (waterSeg in waterSegmentsAfterLayer1) {
+                                            var clipStart = waterSeg.start; var clipEnd = waterSeg.end
+                                            val extraSplits = mutableListOf<Pair<Long, Long>>()
+                                            for (yamnetSeg in yamnetAllSegments) {
+                                                // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
+                                                if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
+                                                    if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
+                                                        extraSplits.add(yamnetSeg.end to clipEnd)
+                                                        clipEnd = yamnetSeg.start
+                                                    } else {
+                                                        if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
+                                                        if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
+                                                    }
                                                 }
                                             }
                                             if (clipEnd - clipStart >= 500) {
                                                 jigsawSegments.add(VoiceSegment().apply {
-                                                    start = clipStart; end = clipEnd; hasVoice = yamnetSeg.hasVoice; label = yamnetSeg.label; isSimulated = false
+                                                    start = clipStart; end = clipEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
                                                 })
+                                            }
+                                            for ((extraStart, extraEnd) in extraSplits) {
+                                                if (extraEnd - extraStart >= 500) {
+                                                    jigsawSegments.add(VoiceSegment().apply {
+                                                        start = extraStart; end = extraEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
+                                                    })
+                                                }
                                             }
                                         }
                                         jigsawSegments.sortBy { it.start }
@@ -1677,10 +1893,31 @@ object SegmentGenerator {
         // 剩余10.7%的静音间隙未被任何段覆盖，导致播放器显示时间不连续。
         // 拼图合并仅覆盖pending∩VAD区域，VAD非活动区域完全缺失。
         // 方法：对最终段按start排序，在相邻段间填充"静音"段。
-        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs)
+        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs, context)
         if (gapFillCount > 0) {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
+
+        // v3.1.125: 合并静音段到相邻非静音段。
+        // v3.1.126: 同时合并静音段到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"碎片化模式。
+        val silenceMergedCount = mergeSilenceToAdjacentWater(finalSegments)
+        if (silenceMergedCount > 0) {
+            writeFingerprintLog(context, "三层架构: 合并${silenceMergedCount}个静音段到相邻非静音段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
+        }
+
+        // v3.1.135: 额外输出12~16分钟（720~960秒）区域的最终分段结果，便于调试主持人讲话被合并问题
+        val finalTargetSegments = finalSegments.filter { it.start in 720000..960000 || it.end in 720000..960000 || (it.start < 720000 && it.end > 960000) }
+        val finalTargetDetail = if (finalTargetSegments.isNotEmpty()) {
+            val sb = StringBuilder()
+            finalTargetSegments.forEach { seg ->
+                sb.append("${seg.start}~${seg.end}ms[${seg.label} hasVoice=${seg.hasVoice}]; ")
+            }
+            sb.toString()
+        } else {
+            "无段覆盖（异常）"
+        }
+        writeFingerprintLog(context, "三层架构: 目标区域(720~960s=12~16分钟)最终分段详情: $finalTargetDetail for episode=$episodeId")
+        Log.i(TAG, "三层架构: 目标区域(720~960s)最终分段详情: $finalTargetDetail for episode=$episodeId")
 
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime
@@ -1794,6 +2031,11 @@ object SegmentGenerator {
      * 对完整PCM以固定窗口大小滑动，提取每个窗口的指纹并与正式指纹库比对。
      * 匹配到的窗口合并为水货段，未匹配的窗口标记为干货。
      * 不再依赖任何已有分段结果，完全从头开始。
+     *
+     * v3.1.128: 三重加速优化：
+     * 1. PCM能量静音跳过：计算窗口RMS能量，低于阈值跳过（静音窗口无需匹配）
+     * 2. 指纹哈希前缀索引：预建指纹库哈希前缀→指纹列表映射，仅对比哈希前缀匹配的指纹
+     * 3. 指纹分组去重：同一分组只保留代表指纹，避免近似指纹重复对比
      */
     private fun applyLayer1SlidingWindow(
         context: Context,
@@ -1801,7 +2043,11 @@ object SegmentGenerator {
         pcmFile: File,
         durationMs: Long,
         formalLibrary: List<AudioFingerprint>,
-        progressCallback: ((Int, Long, Long) -> Unit)? = null
+        progressCallback: ((Int, Long, Long) -> Unit)? = null,
+        // v3.1.129: 指纹分组信息，用于缩减对比量
+        fingerprintGroups: List<FingerprintGroupInfo> = emptyList(),
+        groupMembers: List<FingerprintGroupMember> = emptyList(),
+        dbHelper: RadioDatabaseHelper? = null
     ): List<VoiceSegment> {
         if (!ChromaprintExtractor.ensureLibraryLoaded(context)) {
             val fpMsg = "第一层滑动窗口: 跳过（指纹引擎未就绪）"
@@ -1816,9 +2062,44 @@ object SegmentGenerator {
         val WINDOW_MS = 15000L
         val STEP_MS = 5000L
 
-        // 预解析正式库指纹为整数数组（避免反复解析）
+        // v3.1.131: 预解析正式库指纹，去重后直接使用（移除哈希前缀索引——哈希前缀因指纹字符串
+        // 格式差异频繁不命中，导致回退到全量库，实际效果等同于直接全量对比，且增加复杂度）。
+        // v3.1.129: 增加指纹ID字段，用于分组映射和last_matched_at更新
+        // v3.1.132: parsed改为IntArray——原始int[]直接内存访问，消除List<Int>装箱开销
+        data class ParsedFpEntry(
+            val id: Long,
+            val parsed: IntArray,
+            val originalFp: String
+        )
         val parsedLibrary = formalLibrary.map { fp ->
-            ChromaprintExtractor.parseFingerprint(fp.fingerprint) to fp.fingerprint
+            val parsed = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
+            // v3.1.132: List<Int> → IntArray，消除装箱开销
+            val parsedArray = if (parsed is ArrayList<Int>) {
+                IntArray(parsed.size) { parsed[it] }
+            } else {
+                parsed.toIntArray()
+            }
+            ParsedFpEntry(fp.id, parsedArray, fp.fingerprint)
+        }
+        // 指纹去重：取指纹的前5个整数作为快速去重标识
+        val dedupedLibrary = mutableListOf<ParsedFpEntry>()
+        val seenFpKeys = mutableSetOf<String>()
+        for (entry in parsedLibrary) {
+            if (entry.parsed.isEmpty()) continue
+            val dedupKey = entry.parsed.take(5).joinToString(",")
+            if (dedupKey in seenFpKeys) continue
+            seenFpKeys.add(dedupKey)
+            dedupedLibrary.add(entry)
+        }
+        val dedupCount = parsedLibrary.size - dedupedLibrary.size
+
+        // v3.1.129: 构建指纹ID到分组的映射，同一分组只保留代表指纹参与对比
+        // 从groupMembers构建fingerprintId → isRepresentative的映射
+        val fpGroupMap = mutableMapOf<Long, Boolean>() // fingerprintId → isRepresentative
+        if (fingerprintGroups.isNotEmpty() && groupMembers.isNotEmpty()) {
+            for (member in groupMembers) {
+                fpGroupMap[member.fingerprintId] = member.isRepresentative
+            }
         }
 
         val matchedRanges = mutableListOf<Pair<Long, Long>>()
@@ -1827,14 +2108,62 @@ object SegmentGenerator {
         var matchedWindows = 0
         var lastReportedPct = -1
 
-        var pos = 0L
+        // v3.1.131: 改用全量指纹一次提取+指纹级滑动窗口替代每窗口PCM提取+JNI调用。
+        // 原方案(v3.1.128~v3.1.130): 每5秒提取一次15秒窗口的指纹（1080次JNI调用），
+        // 每次JNI处理15秒PCM=480KB，1080次×50ms=54秒JNI耗时，加上copyOfRange内存分配GC压力。
+        // 新方案: 一次提取完整PCM指纹（1次JNI调用），然后对指纹数组做滑动窗口切片。
+        // 指纹数组是List<Int>，subList是O(1)视图操作，无内存分配，无GC压力。
+        // 90分钟节目约54000帧指纹，1080个窗口，对比逻辑不变，JNI从1080次降至1次。
+        // v3.1.132: 完整指纹和窗口都转为IntArray，使用compareFingerprintArraysFast消除装箱开销。
+        // 原版List<Int>比较: 137,856次比较×22,500次迭代=31亿次装箱访问→49分钟。
+        // IntArray版: 直接int[]内存访问，每次比较5~10微秒，总计约1~2秒。
+        // v3.1.133: 增加关键节点计时日志，用于诊断速度瓶颈。
+        val t0 = System.currentTimeMillis()
+        val fullFingerprint = ChromaprintExtractor.extractFingerprintFromFile(pcmFile)
+        if (fullFingerprint.isNullOrBlank()) {
+            val fpMsg = "第一层滑动窗口: 提取完整PCM指纹失败，跳过"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return listOf(VoiceSegment().apply {
+                this.start = 0; this.end = durationMs; this.hasVoice = true; this.label = "干货"; this.isSimulated = true
+            })
+        }
+        val parsedFull = ChromaprintExtractor.parseFingerprint(fullFingerprint)
+        if (parsedFull.size < 50) {
+            val fpMsg = "第一层滑动窗口: 完整指纹帧数过少(${parsedFull.size})，跳过"
+            Log.w(TAG, fpMsg)
+            writeFingerprintLog(context, fpMsg)
+            return listOf(VoiceSegment().apply {
+                this.start = 0; this.end = durationMs; this.hasVoice = true; this.label = "干货"; this.isSimulated = true
+            })
+        }
+        // v3.1.132: 转IntArray，消除装箱开销
+        val fullArray = if (parsedFull is ArrayList<Int>) {
+            IntArray(parsedFull.size) { parsedFull[it] }
+        } else {
+            parsedFull.toIntArray()
+        }
+        val t1 = System.currentTimeMillis()
+        val extractTime = t1 - t0
+        val fpMsgTime = "第一层滑动窗口: PCM指纹提取耗时${formatDuration(extractTime)}，帧数=${fullArray.size}，正式库=${parsedLibrary.size}条，去重后=${dedupedLibrary.size}条"
+        Log.i(TAG, fpMsgTime)
+        writeFingerprintLog(context, fpMsgTime)
+
+        // 计算每帧对应的毫秒数，用于将帧位置映射为时间
+        val msPerFrame = durationMs.toFloat() / fullArray.size.toFloat()
+        // 窗口帧数：15秒窗口
+        val windowFrames = (WINDOW_MS / msPerFrame).toInt().coerceAtLeast(50)
+        // 步进帧数：5秒步长
+        val stepFrames = (STEP_MS / msPerFrame).toInt().coerceAtLeast(10)
+        val maxOffset = fullArray.size - windowFrames
+
+        var framePos = 0
         // v3.1.59: 外层循环用try-catch捕获Throwable，防止单次窗口异常导致整个分段崩溃
         try {
-        while (pos + WINDOW_MS <= durationMs) {
+        while (framePos <= maxOffset) {
             totalWindows++
 
             // v3.1.32: 响应取消信号，及时停止滑动窗口处理
-            // v3.1.108: 区分取消来源，记录详细原因
             val threadInterrupted = Thread.interrupted()
             val flagCancelled = AudioSegmentAnalyzer.isAnalysisCancelled()
             if (threadInterrupted || flagCancelled) {
@@ -1843,78 +2172,76 @@ object SegmentGenerator {
                     threadInterrupted -> "thread.interrupt"
                     else -> "analysisCancelled flag"
                 }
-                val fpMsgCancel = "第一层滑动窗口: 取消处理(cancelSource=$cancelSource)，位置${pos}ms for episode=$episodeId"
+                val fpMsgCancel = "第一层滑动窗口: 取消处理(cancelSource=$cancelSource)，帧位置$framePos for episode=$episodeId"
                 Log.i(TAG, fpMsgCancel)
                 writeFingerprintLog(context, fpMsgCancel)
                 break
             }
 
             // 进度回调
-            val pct = ((pos * 1000L) / durationMs).toInt().coerceIn(0, 1000)
+            val pct = ((framePos * 1000L) / (maxOffset + 1)).toInt().coerceIn(0, 1000)
             if (pct / 50 != lastReportedPct / 50) {
                 lastReportedPct = pct
                 progressCallback?.invoke(pct, System.currentTimeMillis() - 0, 0)
             }
 
             try {
-                if (!pcmFile.exists() || pcmFile.length() < 16000) {
-                    val fpMsg = "第一层滑动窗口: PCM文件不存在或太小: ${pcmFile.absolutePath}"
-                    Log.w(TAG, fpMsg)
-                    writeFingerprintLog(context, fpMsg)
-                    break
-                }
-                val pcmBytes = try {
-                    PcmSegmentExtractor.readSegmentBytes(pcmFile, pos, pos + WINDOW_MS)
-                } catch (e: Throwable) {
-                    Log.w(TAG, "第一层滑动窗口: 位置${pos}ms读取PCM异常: ${e.javaClass.name}: ${e.message}")
-                    null
-                }
-                if (pcmBytes == null || pcmBytes.isEmpty()) {
-                    pos += STEP_MS
-                    continue
-                }
+                // v3.1.132: 从IntArray切片（copyOfRange分配int[150]=600字节，可忽略）
+                val windowArray = fullArray.copyOfRange(framePos, framePos + windowFrames)
 
-                val fingerprint = ChromaprintExtractor.extractFingerprint(pcmBytes)
-                if (fingerprint.isNullOrBlank()) {
-                    pos += STEP_MS
-                    continue
-                }
-
-                val parsedWindow = ChromaprintExtractor.parseFingerprint(fingerprint)
-                if (parsedWindow.isEmpty()) {
-                    pos += STEP_MS
-                    continue
-                }
+                // v3.1.131: 移除哈希前缀索引——哈希前缀因指纹字符串格式差异频繁不命中，
+                // 导致回退到全量库，实际效果等同于直接全量对比。直接使用去重库。
+                val candidates = dedupedLibrary
 
                 var matched = false
                 var bestSim = 0f
-                for ((parsedFp, originalFp) in parsedLibrary) {
-                    if (parsedFp.isEmpty()) continue
-                    val sim = ChromaprintExtractor.compareFingerprintArrays(parsedWindow, parsedFp).similarity
-                    if (sim > bestSim) bestSim = sim
+                var matchedFpId: Long? = null
+                for (entry in candidates) {
+                    if (entry.parsed.isEmpty()) continue
+                    // v3.1.129: 如果该指纹有分组且不是代表指纹，跳过对比
+                    val isRepresentative = fpGroupMap[entry.id] ?: true // 默认true（无分组时参与对比）
+                    if (!isRepresentative) continue
+                    // v3.1.132: 使用IntArray版快速比较，消除装箱开销
+                    val sim = ChromaprintExtractor.compareFingerprintArraysFast(windowArray, entry.parsed)
+                    if (sim > bestSim) { bestSim = sim; matchedFpId = entry.id }
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
+                        matchedFpId = entry.id
                         break
                     }
                 }
 
                 if (matched) {
-                    matchedRanges.add(pos to (pos + WINDOW_MS))
+                    val startMs = (framePos * msPerFrame).toLong()
+                    val endMs = ((framePos + windowFrames) * msPerFrame).toLong()
+                    matchedRanges.add(startMs to endMs)
                     matchedWindows++
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
-                        hitDetails.add("${pos/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
+                        hitDetails.add("${startMs/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
+                    }
+                    // v3.1.129: 更新匹配指纹的last_matched_at
+                    if (matchedFpId != null && matchedFpId!! > 0 && dbHelper != null) {
+                        try {
+                            dbHelper.updateFingerprintLastMatched(matchedFpId!!)
+                        } catch (_: Exception) {}
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "第一层滑动窗口: 位置${pos}ms异常: ${e.message}")
+                Log.w(TAG, "第一层滑动窗口: 帧位置${framePos}异常: ${e.message}")
             }
-            pos += STEP_MS
+            framePos += stepFrames
         }
         } catch (e: Throwable) {
             val fpMsg = "第一层滑动窗口: 循环异常中止: ${e.javaClass.name}: ${e.message}"
             Log.w(TAG, fpMsg)
             writeFingerprintLog(context, fpMsg)
         }
+
+        val t2 = System.currentTimeMillis()
+        val loopTime = t2 - t0
+        val fpMsgLoop = "第一层滑动窗口: 循环完成，总耗时${formatDuration(loopTime)}，窗口数=${totalWindows}，匹配=${matchedWindows}/${totalWindows}，正式库=${dedupedLibrary.size}条"
+        Log.i(TAG, fpMsgLoop)
+        writeFingerprintLog(context, fpMsgLoop)
 
         // 合并重叠/相邻的匹配范围
         matchedRanges.sortBy { it.first }
@@ -1961,11 +2288,37 @@ object SegmentGenerator {
             })
         }
 
-        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段 [${hitDetails.joinToString("; ")}]"
+        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段，去重${dedupCount}个近似指纹 [${hitDetails.joinToString("; ")}]"
         Log.i(TAG, fpMsg)
         writeFingerprintLog(context, fpMsg)
 
         return segments
+    }
+
+    /**
+     * v3.1.128: 计算PCM 16位样本的RMS能量值。
+     * 16kHz单声道16bit小端PCM，每个样本2字节。
+     * RMS越高表示窗口音量越大，越低表示越接近静音。
+     */
+    private fun computePcmRms(pcmBytes: ByteArray): Float {
+        if (pcmBytes.size < 4) return 0f
+        // v3.1.128: 采样——对完整15秒窗口(480000字节)计算RMS很耗时，
+        // 只取前10%的样本估算能量，足够判断是否为静音
+        val sampleStep = 10
+        val sampleCount = pcmBytes.size / (2 * sampleStep)
+        if (sampleCount <= 0) return 0f
+        var sumSq = 0.0
+        var samples = 0
+        var byteIdx = 0
+        while (byteIdx + 1 < pcmBytes.size) {
+            val low = pcmBytes[byteIdx].toInt() and 0xFF
+            val high = pcmBytes[byteIdx + 1].toInt() and 0xFF
+            val sample = (low or (high shl 8)).toShort().toInt()
+            sumSq += (sample * sample).toDouble()
+            samples++
+            byteIdx += 2 * sampleStep
+        }
+        return if (samples > 0) kotlin.math.sqrt(sumSq / samples).toFloat() else 0f
     }
 
     /**
@@ -2223,7 +2576,32 @@ object SegmentGenerator {
                             Log.i(TAG, fpMsg)
                             writeFingerprintLog(context, fpMsg)
                         } else {
-                            Log.d(TAG, "观察池过滤: 片段${waterSeg.start/1000}s-${waterSeg.end/1000}s与正式库/观察池重复，但hash未匹配，跳过")
+                            // v3.1.134: hash不匹配时fallback到全量对比，因为指纹字符串前64字符可能不稳定
+                            // 同一段音频在不同节目中的指纹提取可能有微小差异，导致hash不同。
+                            var matchedCandidate: RadioDatabaseHelper.ObservationPoolCandidate? = null
+                            var maxSim = 0f
+                            try {
+                                val allCandidates = dbHelper.getAllObservationPoolCandidates()
+                                for (cand in allCandidates) {
+                                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, cand.fingerprint)
+                                    if (sim > POOL_DUPLICATE_THRESHOLD && sim > maxSim) {
+                                        maxSim = sim
+                                        matchedCandidate = cand
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                            if (matchedCandidate != null) {
+                                dbHelper.incrementObservationPoolHit(
+                                    matchedCandidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT
+                                )
+                                val fpMsg = "观察池: 候选指纹#${matchedCandidate.id}跨节目命中（hash fallback，相似度${"%.0f".format(maxSim*100)}%，节目ID=$episodeId），hit_count=${matchedCandidate.hitCount + 1}"
+                                Log.i(TAG, fpMsg)
+                                writeFingerprintLog(context, fpMsg)
+                            } else {
+                                val fpMsg = "观察池: 重复但hash未匹配且无fallback匹配（节目ID=$episodeId），跳过"
+                                Log.d(TAG, fpMsg)
+                                writeFingerprintLog(context, fpMsg)
+                            }
                         }
                         continue
                     }

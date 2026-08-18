@@ -109,6 +109,22 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         holder.tvMeta.text = metaText
         Log.d(TAG, "onBindViewHolder pos=$position time='$timeText' episode='$episodeText' meta='$metaText'")
 
+        // v3.1.129: 显示上次匹配时间和过期标记
+        val twoMonthsAgo = System.currentTimeMillis() - 60L * 24 * 60 * 60 * 1000
+        if (fp.lastMatchedAt == 0L) {
+            holder.tvLastMatched.text = "上次匹配: 从未匹配"
+            holder.tvLastMatched.setTextColor(holder.itemView.context.resources.getColor(android.R.color.darker_gray, null))
+        } else {
+            val matchedDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(fp.lastMatchedAt))
+            if (fp.lastMatchedAt < twoMonthsAgo) {
+                holder.tvLastMatched.text = "上次匹配: $matchedDateStr (已过期)"
+                holder.tvLastMatched.setTextColor(holder.itemView.context.resources.getColor(android.R.color.holo_red_dark, null))
+            } else {
+                holder.tvLastMatched.text = "上次匹配: $matchedDateStr"
+                holder.tvLastMatched.setTextColor(holder.itemView.context.resources.getColor(android.R.color.darker_gray, null))
+            }
+        }
+
         // v3.1.3: 绑定备注，避免滚动时 TextWatcher 触发
         holder.bindNote(fp)
         // 将备注回调通过 tag 传递给 ViewHolder 的失焦监听器
@@ -147,6 +163,7 @@ class AudioFingerprintAdapter : RecyclerView.Adapter<AudioFingerprintAdapter.Vie
         val tvTime: TextView = view.findViewById(R.id.tv_fingerprint_time)
         val tvEpisode: TextView = view.findViewById(R.id.tv_fingerprint_episode)
         val tvMeta: TextView = view.findViewById(R.id.tv_fingerprint_meta)
+        val tvLastMatched: TextView = view.findViewById(R.id.tv_fingerprint_last_matched)
         val btnPlay: Button = view.findViewById(R.id.btn_play_fingerprint)
         val btnTest: Button = view.findViewById(R.id.btn_test_fingerprint)
         val btnRefresh: Button = view.findViewById(R.id.btn_refresh_fingerprint)

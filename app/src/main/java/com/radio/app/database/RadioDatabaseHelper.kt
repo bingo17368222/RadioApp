@@ -1057,6 +1057,32 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     /**
+     * v3.1.129: 获取所有分组的成员列表（跨所有分组）。
+     */
+    fun getAllGroupMembers(): List<FingerprintGroupMember> {
+        val list = mutableListOf<FingerprintGroupMember>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_FINGERPRINT_GROUP_MEMBERS, null,
+                "manually_removed = 0",
+                null, null, null, null
+            )
+            while (cursor.moveToNext()) {
+                list.add(FingerprintGroupMember(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    groupId = cursor.getLong(cursor.getColumnIndexOrThrow("group_id")),
+                    fingerprintId = cursor.getLong(cursor.getColumnIndexOrThrow("fingerprint_id")),
+                    isRepresentative = cursor.getInt(cursor.getColumnIndexOrThrow("is_representative")) == 1,
+                    manuallyRemoved = cursor.getInt(cursor.getColumnIndexOrThrow("manually_removed")) == 1
+                ))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
+    /**
      * 获取指定分组的成员列表。
      */
     fun getGroupMembers(groupId: Long): List<FingerprintGroupMember> {
@@ -1332,8 +1358,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     /**
      * v3.2.2: 增加观察池候选的跨节目命中计数。
-     * 同一节目ID不重复计数。
-     * @return true 表示命中计数已增加，false 表示同一节目不增加
+     * v3.1.129: 移除同一节目ID不重复计数的检查。
+     * 原检查导致候选广告水段因重复出现而无法晋升（用户反馈9条全部命中一次但长时间无晋升）。
+     * 广播广告的同一水位段会在同一节目中重复出现，移除后让同一节目的重复水段也能被识别和计数。
+     * @return true 表示命中计数已增加
      */
     fun incrementObservationPoolHit(poolId: Long, episodeId: String, hitCountThreshold: Int = 3): Boolean {
         val db = writableDatabase
@@ -1346,12 +1374,12 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 null, null, null
             )
             if (!cursor.moveToFirst()) { cursor.close(); return false }
-            val firstEpisodeId = cursor.getString(0)
             val currentHitCount = cursor.getInt(1)
             cursor.close()
 
-            // 同一节目不增加计数
-            if (episodeId == firstEpisodeId) return false
+            // v3.1.129: 移除 episodeId 检查，每次命中都增加计数。
+            // 广播广告的同一水位段会在同一节目中重复出现，
+            // 移除该检查让同一节目的重复水段也能被识别和晋升。
 
             val now = System.currentTimeMillis()
             val newHitCount = currentHitCount + 1

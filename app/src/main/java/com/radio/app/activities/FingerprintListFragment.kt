@@ -112,7 +112,10 @@ class FingerprintListFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
-        loadData()
+        // v3.1.134: 移除重复的loadData()调用，onViewCreated已经加载过数据。
+        // 原代码在onViewCreated和onResume中重复调用，导致ViewPager创建3个Fragment时
+        // 触发6次数据库查询（3×onViewCreated + 3×onResume），其中getAllAudioFingerprints被调用4次。
+        // 虽然查询在IO线程，但Views的频繁更新（setItems→notifyDataSetChanged）仍会造成UI卡顿感。
     }
 
     override fun onDestroyView() {
@@ -922,6 +925,11 @@ class FingerprintListFragment : Fragment() {
     }
 
     // ===== 内部数据封装 =====
+
+    // v3.1.129: 提供给外部调用的刷新方法，用于清理过期指纹后刷新列表
+    fun refreshData() {
+        loadData()
+    }
 
     private class ManualResult(val fingerprints: List<AudioFingerprint>)
     private class CandidateResult(val candidates: List<ObservationPoolCandidate>)

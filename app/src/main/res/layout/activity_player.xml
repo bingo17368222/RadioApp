@@ -19,6 +19,14 @@
             android:src="@drawable/ic_close"
             android:contentDescription="Close" />
         <ImageButton
+            android:id="@+id/btn_schedule"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_toStartOf="@id/btn_history"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_calendar"
+            android:contentDescription="Schedule" />
+        <ImageButton
             android:id="@+id/btn_history"
             android:layout_width="48dp"
             android:layout_height="48dp"

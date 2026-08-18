@@ -11,6 +11,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
+import com.radio.app.utils.ChromaprintExtractor
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -120,8 +121,17 @@ class FingerprintGroupAdapter(
 
     private fun setupMemberAdapter(holder: ViewHolder, group: GroupItem, groupPosition: Int) {
         val memberAdapter = FingerprintGroupMemberAdapter()
+        // v3.1.128: 延迟计算相似度——用户展开分组时才计算，避免进入管理页面时全量计算
+        val parsedRep = ChromaprintExtractor.parseFingerprint(group.representative.fingerprint)
         val memberItems = group.members.map { fp ->
-            val sim = group.memberSimilarities[fp.id] ?: 1f
+            val sim = if (fp.id == group.representative.id) {
+                1f
+            } else if (parsedRep.isNotEmpty()) {
+                val parsedFp = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
+                if (parsedFp.isNotEmpty()) {
+                    ChromaprintExtractor.compareFingerprintArrays(parsedRep, parsedFp).similarity
+                } else 0f
+            } else 0f
             val dbId = group.memberDbIds[fp.id] ?: 0L
             FingerprintGroupMemberAdapter.MemberItem(
                 fingerprint = fp,

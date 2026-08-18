@@ -11,6 +11,10 @@ import java.io.File
 
 class RadioApplication : Application() {
 
+    // v3.1.136: 播放服务实例引用，供各Activity/Fragment获取播放计划
+    @Volatile
+    var playbackService: com.radio.app.services.RadioPlaybackService? = null
+
     companion object {
         const val CHANNEL_ID = "radio_playback_channel"
         const val NOTIFICATION_ID = 1
