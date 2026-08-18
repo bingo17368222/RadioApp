@@ -7,11 +7,13 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="56dp"
+        android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:paddingStart="16dp"
-        android:paddingEnd="16dp">
+        android:paddingEnd="16dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
 
         <TextView
             android:layout_width="0dp"
@@ -22,52 +24,77 @@
             android:textStyle="bold"
             android:textColor="?attr/appTextPrimary" />
 
-        <Button
-            android:id="@+id/btn_date_picker"
+        <HorizontalScrollView
             android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:text="📅 选日期"
-            android:textSize="13sp"
-            android:textColor="?attr/colorOnPrimary"
-            android:backgroundTint="?attr/colorPrimary"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp" />
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
 
-        <Button
-            android:id="@+id/btn_today"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:text="今天"
-            android:textSize="13sp"
-            android:textColor="?attr/colorOnPrimary"
-            android:backgroundTint="?attr/colorPrimary"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:layout_marginStart="8dp" />
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
 
-        <Button
-            android:id="@+id/btn_refresh"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:text="↻ 刷新"
-            android:textSize="13sp"
-            android:textColor="?attr/colorOnPrimary"
-            android:backgroundTint="?attr/colorPrimary"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:layout_marginStart="8dp" />
+                <Button
+                    android:id="@+id/btn_date_picker"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="📅 选日期"
+                    android:textSize="13sp"
+                    android:textColor="?attr/colorOnPrimary"
+                    android:backgroundTint="?attr/colorPrimary"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp" />
 
-        <Button
-            android:id="@+id/btn_history"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:text="🕐 历史"
-            android:textSize="13sp"
-            android:textColor="?attr/colorOnPrimary"
-            android:backgroundTint="?attr/colorPrimary"
-            android:paddingStart="12dp"
-            android:paddingEnd="12dp"
-            android:layout_marginStart="8dp" />
+                <Button
+                    android:id="@+id/btn_today"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="今天"
+                    android:textSize="13sp"
+                    android:textColor="?attr/colorOnPrimary"
+                    android:backgroundTint="?attr/colorPrimary"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:layout_marginStart="8dp" />
+
+                <Button
+                    android:id="@+id/btn_refresh"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="↻ 刷新"
+                    android:textSize="13sp"
+                    android:textColor="?attr/colorOnPrimary"
+                    android:backgroundTint="?attr/colorPrimary"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:layout_marginStart="8dp" />
+
+                <Button
+                    android:id="@+id/btn_history"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="🕐 历史"
+                    android:textSize="13sp"
+                    android:textColor="?attr/colorOnPrimary"
+                    android:backgroundTint="?attr/colorPrimary"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:layout_marginStart="8dp" />
+
+                <Button
+                    android:id="@+id/btn_schedule"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="🗓️ 播放计划"
+                    android:textSize="13sp"
+                    android:textColor="?attr/colorOnPrimary"
+                    android:backgroundTint="?attr/colorPrimary"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+        </HorizontalScrollView>
     </LinearLayout>
 
     <!-- 选中日期显示 -->

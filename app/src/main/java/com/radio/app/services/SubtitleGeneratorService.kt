@@ -4123,7 +4123,9 @@ class SubtitleGeneratorService : Service() {
                 val pm = getSystemService(POWER_SERVICE) as PowerManager
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SubtitleGenService:WakeLock")
             }
-            wakeLock?.acquire(3600000)
+            // v3.1.137: 减少唤醒锁超时时间，从1小时改为5分钟，避免MIUI电源管理显示长时间唤醒
+            // 实际任务通常2-3分钟完成，5分钟超时足够
+            wakeLock?.acquire(300000) // 5分钟
 
             // [v2.0.58] Issue 2+3+4 Fix: Start task directly in onStartCommand
             // When service runs in :subtitle process, Activity binder call fails (BinderProxy != LocalBinder)

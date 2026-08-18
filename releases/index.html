@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.127 安装</title>
+<title>RadioApp v3.1.134 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.127</div>
+  <div class="version">v3.1.134</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.127</h3>
+    <h3>更新内容 v3.1.134</h3>
     <ul>
-      <li>Fix: 拼图合并裁剪指纹水货段避开所有YAMNet段（干段+水段），YAMNet逐帧分类比指纹更精确，分类结果完全替代指纹覆盖</li>
-      <li>Fix: 静音合并到相邻非静音段（干段+水段），消除"静音+干货+静音"碎片化模式</li>
-      <li>Fix: getSegmentList三段式优先策略——内存真实分段→DB真实分段→内存模拟分段→15分钟固定分段，修复API模拟分段盖过DB真实分段问题</li>
+      <li>Fix: 拼图裁剪完全包含场景——指纹水货段完全包含YAMNet段时，拆分水货段避免淹掉主持人讲话</li>
+      <li>Fix: 候选指纹hash不匹配时fallback到全量对比，确保跨节目命中计数</li>
+      <li>Fix: 指纹管理页面移除onResume重复loadData，减少UI卡顿</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.127.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.134.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

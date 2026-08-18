@@ -105,6 +105,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             showPlayHistoryDialog()
         }
 
+        // v3.1.136: 播放计划按钮
+        v.findViewById<Button>(R.id.btn_schedule)?.setOnClickListener {
+            showPlayScheduleDialog()
+        }
+
         // 先恢复上次保存的日期和电台
         restoreLastSelection()
 
@@ -624,7 +629,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                     putExtra("broadcast_at", item.broadcastAt)
                     putExtra("duration", item.duration)
                     putExtra("program_name", item.programName ?: "")
-                    putExtra("start_position", item.lastPosition)
+                    // v3.1.136: 修复extra名不匹配问题——PlayerActivity用seek_position_ms
+                    putExtra("seek_position_ms", item.lastPosition)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 ctx.startActivity(intent)
@@ -637,6 +643,101 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             .setView(recyclerView)
             .setNegativeButton("关闭", null)
             .show()
+    }
+
+    // v3.1.136: 播放计划对话框
+    private fun showPlayScheduleDialog() {
+        val ctx = context ?: return
+        val app = requireActivity().application as? com.radio.app.RadioApplication ?: return
+        val playbackService = app.playbackService
+        if (playbackService == null) {
+            Toast.makeText(ctx, "播放服务未连接", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val scheduleList = playbackService.getPlaybackSchedule()
+        if (scheduleList.isEmpty()) {
+            Toast.makeText(ctx, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val recyclerView = RecyclerView(ctx).apply {
+            layoutManager = LinearLayoutManager(ctx)
+            setHasFixedSize(true)
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.6).toInt()
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
+        }
+
+        val currentId = try {
+            val prefs = ctx.getSharedPreferences("last_episode", android.content.Context.MODE_PRIVATE)
+            prefs.getString("episode_id", null)
+        } catch (_: Exception) { null }
+
+        val adapter = ScheduleListAdapter(scheduleList, currentId)
+        adapter.onItemClicked = { position ->
+            val item = scheduleList.getOrNull(position)
+            if (item != null) {
+                Toast.makeText(ctx, "切换到: ${item.title}", Toast.LENGTH_SHORT).show()
+                val intent = android.content.Intent(ctx, PlayerActivity::class.java)
+                intent.putExtra("episode_title", item.title)
+                intent.putExtra("episode_id", item.id)
+                intent.putExtra("episode_url", item.audioUrl)
+                intent.putExtra("episode_broadcast_at", item.broadcastAt)
+                intent.putExtra("episode_station_id", item.stationId)
+                intent.putExtra("episode_start_time", item.startTime)
+                intent.putExtra("episode_end_time", item.endTime)
+                intent.putExtra("episode_duration", item.duration)
+                ctx.startActivity(intent)
+            }
+        }
+        recyclerView.adapter = adapter
+
+        AlertDialog.Builder(ctx)
+            .setTitle("播放计划")
+            .setView(recyclerView)
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    // v3.1.136: 播放计划列表适配器
+    inner class ScheduleListAdapter(
+        private val scheduleItems: List<Episode>,
+        var currentlyPlayingId: String?
+    ) : RecyclerView.Adapter<ScheduleListAdapter.ViewHolder>() {
+        var onItemClicked: ((Int) -> Unit)? = null
+
+        private val dateFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_schedule, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val item = scheduleItems[position]
+            val isPlaying = item.id == currentlyPlayingId
+            holder.tvIndex.text = if (isPlaying) "▶" else "${position + 1}"
+            holder.tvTitle.text = item.title ?: "未知节目"
+            val ctx = holder.itemView.context
+            holder.tvIndex.setTextColor(if (isPlaying) android.graphics.Color.parseColor("#7ED321") else ctx.resources.getColor(android.R.color.black, ctx.theme))
+            holder.tvTitle.setTextColor(if (isPlaying) android.graphics.Color.parseColor("#7ED321") else ctx.resources.getColor(android.R.color.black, ctx.theme))
+            val timeStr = if (item.startTime > 0) {
+                dateFormat.format(java.util.Date(item.startTime))
+            } else {
+                item.broadcastAt?.takeLast(5) ?: ""
+            }
+            holder.tvTime.text = timeStr
+            holder.itemView.setOnClickListener { onItemClicked?.invoke(position) }
+        }
+
+        override fun getItemCount(): Int = scheduleItems.size
+
+        inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+            val tvIndex: TextView = view.findViewById(R.id.tv_index)
+            val tvTitle: TextView = view.findViewById(R.id.tv_title)
+            val tvTime: TextView = view.findViewById(R.id.tv_time)
+        }
     }
 
     // 历史列表适配器（复用 PlayerActivity 中的逻辑）

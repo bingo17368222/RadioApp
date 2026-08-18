@@ -345,22 +345,67 @@ object SegmentGenerator {
      * 对段列表按start排序，在相邻段间填充"静音"段，最后补全首段前和末段后到总时长。
      * @return 填充的静音段数量
      */
-    private fun fillSilenceGaps(segments: MutableList<VoiceSegment>, totalDurationMs: Long): Int {
+    /**
+     * v3.1.135: 大间隙阈值（3分钟），超过此阈值的间隙标记为"干货"而非"静音"。
+     * 根因：YAMNet可能因VAD间隔或分类偏差跳过主持人讲话区域，
+     * 导致fillSilenceGaps将大段讲话区域填充为静音。
+     * 广播节目中间不会有连续3分钟以上的纯静音，所以大间隙应视为疑似的干货。
+     */
+    private val LARGE_GAP_THRESHOLD_MS = 180000L // 3分钟
+
+    private fun fillSilenceGaps(segments: MutableList<VoiceSegment>, totalDurationMs: Long, context: Context? = null): Int {
         if (segments.isEmpty()) return 0
         segments.sortBy { it.start }
         var fillCount = 0
 
+        // v3.1.137: 大间隙填充时，拆分为60秒一个的小段，避免单个大段覆盖多分钟
+        // 防止12-16分钟（720~960s）与相邻时间段被合并为一个不可分割的段
+        // 拆分后每个小段在后续mergeSilenceToAdjacentWater中会被相邻水段分别吸收
+        // 但不会被合并为一个超长段，从而保护讲话区域不被水段吞没
+        // v3.1.138: 大间隙拆分的小段始终标记为"静音"，不再标记为"干货"。
+        // 根因：标记为"干货"后，mergeSilenceToAdjacentWater只处理"静音"标签的段，
+        // 这些大间隙干货段不会被合并到相邻水段，导致干货比例过高。
+        // 改为"静音"后，mergeSilenceToAdjacentWater会将它们合并到相邻水段，
+        // 既保留了YAMNet缺失区域的覆盖，又不会增加干货比例。
+        fun splitGapIntoChunks(start: Long, end: Long): List<VoiceSegment> {
+            val chunks = mutableListOf<VoiceSegment>()
+            val CHUNK_SIZE_MS = 60000L // 60秒一个块
+            var chunkStart = start
+            while (chunkStart < end) {
+                val chunkEnd = minOf(chunkStart + CHUNK_SIZE_MS, end)
+                chunks.add(VoiceSegment().apply {
+                    this.start = chunkStart
+                    this.end = chunkEnd
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                chunkStart = chunkEnd
+            }
+            return chunks
+        }
+
         // 1. 填充首段之前的间隙（从0到第一段start）
         val firstSeg = segments.first()
         if (firstSeg.start > 50) {
-            segments.add(0, VoiceSegment().apply {
-                start = 0L
-                end = firstSeg.start
-                hasVoice = false
-                label = "静音"
-                isSimulated = false
-            })
-            fillCount++
+            val gapMs = firstSeg.start
+            val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
+            if (isLargeGap) {
+                // v3.1.137: 大间隙拆分为小段
+                // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
+                val chunks = splitGapIntoChunks(0, firstSeg.start)
+                segments.addAll(0, chunks)
+                fillCount += chunks.size
+            } else {
+                segments.add(0, VoiceSegment().apply {
+                    start = 0L
+                    end = firstSeg.start
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                fillCount++
+            }
         }
 
         // 2. 填充相邻段之间的间隙
@@ -370,15 +415,25 @@ object SegmentGenerator {
             val next = segments[i + 1]
             val gapMs = next.start - curr.end
             if (gapMs > 50) {
-                segments.add(i + 1, VoiceSegment().apply {
-                    start = curr.end
-                    end = next.start
-                    hasVoice = false
-                    label = "静音"
-                    isSimulated = false
-                })
-                fillCount++
-                i += 2
+                val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
+                if (isLargeGap) {
+                    // v3.1.137: 大间隙拆分为小段
+                    // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
+                    val chunks = splitGapIntoChunks(curr.end, next.start)
+                    segments.addAll(i + 1, chunks)
+                    fillCount += chunks.size
+                    i += chunks.size + 1
+                } else {
+                    segments.add(i + 1, VoiceSegment().apply {
+                        start = curr.end
+                        end = next.start
+                        hasVoice = false
+                        label = "静音"
+                        isSimulated = false
+                    })
+                    fillCount++
+                    i += 2
+                }
             } else {
                 i++
             }
@@ -387,14 +442,28 @@ object SegmentGenerator {
         // 3. 填充末段之后的间隙（从最后一段end到totalDurationMs）
         val lastSeg = segments.last()
         if (totalDurationMs > 0 && lastSeg.end < totalDurationMs - 50) {
-            segments.add(VoiceSegment().apply {
-                start = lastSeg.end
-                end = totalDurationMs
-                hasVoice = false
-                label = "静音"
-                isSimulated = false
-            })
-            fillCount++
+            val gapMs = totalDurationMs - lastSeg.end
+            val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
+            if (isLargeGap) {
+                // v3.1.137: 大间隙拆分为小段
+                // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
+                val chunks = splitGapIntoChunks(lastSeg.end, totalDurationMs)
+                segments.addAll(chunks)
+                fillCount += chunks.size
+            } else {
+                segments.add(VoiceSegment().apply {
+                    start = lastSeg.end
+                    end = totalDurationMs
+                    hasVoice = false
+                    label = "静音"
+                    isSimulated = false
+                })
+                fillCount++
+            }
+        }
+
+        if (fillCount > 0 && context != null) {
+            writeFingerprintLog(context, "三层架构: 大间隙填充: ${fillCount}个静音段填充完成，总段数: ${segments.size}段(干${segments.count { it.hasVoice }}/水${segments.count { !it.hasVoice }})")
         }
 
         return fillCount
@@ -415,6 +484,8 @@ object SegmentGenerator {
     private fun mergeSilenceToAdjacentWater(segments: MutableList<VoiceSegment>): Int {
         if (segments.size <= 1) return 0
         segments.sortBy { it.start }
+        // v3.1.135: 最大水段长度限制，与mergeAdjacentSegments一致
+        val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
         var mergeCount = 0
         var i = 0
         while (i < segments.size) {
@@ -430,12 +501,22 @@ object SegmentGenerator {
             val nextIsNonSilence = hasNext && segments[i+1].label != "静音"
 
             if (prevIsNonSilence) {
+                // v3.1.135: 如果合并后水段长度超过最大长度，不合并
+                if (isWaterLabel(segments[i-1].label) && seg.end - segments[i-1].start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                    i++
+                    continue
+                }
                 // 合并到前一个非静音段（无论水/干）
                 segments[i-1].end = seg.end
                 segments.removeAt(i)
                 mergeCount++
                 // 不移i，因为removeAt后当前元素后移
             } else if (nextIsNonSilence) {
+                // v3.1.135: 如果合并后水段长度超过最大长度，不合并
+                if (isWaterLabel(segments[i+1].label) && segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                    i++
+                    continue
+                }
                 // 合并到后一个非静音段（无论水/干）
                 segments[i+1].start = seg.start
                 segments.removeAt(i)
@@ -457,8 +538,14 @@ object SegmentGenerator {
 
         // v3.1.98: 合并间隔从10s放宽到20s，减少总分段数
         val MAX_WATER_MERGE_GAP_MS = 20000L // 20秒
+        // v3.1.135: 最大水段长度限制，防止主持人讲话区域被误合并到水段。
+        // 根因：YAMNet可能将12-16分钟的主持人讲话误分类为水，或YAMNet层被跳过，
+        // 导致mergeAdjacentSegments Pass 2将相邻水段无限合并，吞没讲话区域。
+        // 5分钟（300秒）是一个合理的上限——正常水段（纯音乐/广告）不会超过5分钟。
+        val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
 
         // Pass 1: 合并相邻同类型片段（原有合并逻辑）
+        // v3.1.135: 对水段增加MAX_WATER_SEGMENT_LENGTH_MS限制，防止YAMNet水段与指纹水段相邻合并导致超长
         var changed = true
         while (changed) {
             changed = false
@@ -468,6 +555,8 @@ object SegmentGenerator {
                 if (curr.hasVoice == next.hasVoice
                         && isWaterLabel(curr.label) == isWaterLabel(next.label)
                         && next.start <= curr.end + 10) {
+                    // v3.1.135: 水段合并检查长度限制
+                    if (isWaterLabel(curr.label) && (next.end - curr.start) >= MAX_WATER_SEGMENT_LENGTH_MS) continue
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
                     changed = true
@@ -480,12 +569,15 @@ object SegmentGenerator {
         // 场景：指纹水货 → 短静音/待处理 → 指纹水货，应合并为一个大水分段
         // v3.1.87: 不合并通过干货（hasVoice=true且非水分）片段，保护YAMNet产出的干货不被吞没
         // v3.1.90: 静音段（label="静音", hasVoice=false）作为合并屏障，防止对所有水货段无限合并
+        // v3.1.135: 增加MAX_WATER_SEGMENT_LENGTH_MS限制，防止水段无限合并吞没讲话区域
         changed = true
         while (changed) {
             changed = false
             for (i in 0 until sorted.size - 1) {
                 val curr = sorted[i]
                 if (!isWaterLabel(curr.label)) continue
+                // v3.1.135: 如果当前水段已经超过最大长度，不再合并
+                if (curr.end - curr.start >= MAX_WATER_SEGMENT_LENGTH_MS) continue
                 var gapMs = 0L
                 var j = i + 1
                 var hasDryInGap = false
@@ -494,10 +586,14 @@ object SegmentGenerator {
                     val mid = sorted[j]
                     if (isWaterLabel(mid.label)) {
                         if (!hasDryInGap && !hasSilenceInGap) {
-                            // 找到下一个水分片段，且中间没有干货也没有静音，合并（跳过中间的非水分片段）
-                            curr.end = maxOf(curr.end, mid.end)
-                            repeat(j - i) { sorted.removeAt(i + 1) }
-                            changed = true
+                            // v3.1.135: 检查合并后的水段长度是否超过最大长度
+                            val mergedEnd = maxOf(curr.end, mid.end)
+                            if (mergedEnd - curr.start < MAX_WATER_SEGMENT_LENGTH_MS) {
+                                // 找到下一个水分片段，且中间没有干货也没有静音，合并（跳过中间的非水分片段）
+                                curr.end = mergedEnd
+                                repeat(j - i) { sorted.removeAt(i + 1) }
+                                changed = true
+                            }
                         }
                         break
                     }
@@ -1481,10 +1577,19 @@ object SegmentGenerator {
                             } else {
                                 "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
                             }
+                            // v3.1.135: 当段数>15时，额外输出720~960秒（12~16分钟）附近的段，便于调试主持人讲话被合并问题
+                            val yamnetTargetRange = yamnetAllSegments.filter { it.start in 600000..1100000 || it.end in 600000..1100000 || (it.start < 600000 && it.end > 1100000) }
+                            val yamnetTargetDetail = if (yamnetTargetRange.isNotEmpty()) {
+                                "目标区域(600~1100s): " + yamnetTargetRange.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                            } else {
+                                "目标区域(600~1100s): 无段覆盖（异常）"
+                            }
                             Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
                             Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail for episode=$episodeId")
+                            Log.i(TAG, "三层架构: YAMNet子段目标区域详情: $yamnetTargetDetail for episode=$episodeId")
                             // v3.1.90: 写指纹日志
                             writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段")
+                            writeFingerprintLog(context, "三层架构: YAMNet子段目标区域(600~1100s): $yamnetTargetDetail")
                         } finally {
                             try { yamnetInterpreter.close() } catch (_: Exception) {}
                         }
@@ -1788,7 +1893,7 @@ object SegmentGenerator {
         // 剩余10.7%的静音间隙未被任何段覆盖，导致播放器显示时间不连续。
         // 拼图合并仅覆盖pending∩VAD区域，VAD非活动区域完全缺失。
         // 方法：对最终段按start排序，在相邻段间填充"静音"段。
-        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs)
+        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs, context)
         if (gapFillCount > 0) {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
@@ -1799,6 +1904,20 @@ object SegmentGenerator {
         if (silenceMergedCount > 0) {
             writeFingerprintLog(context, "三层架构: 合并${silenceMergedCount}个静音段到相邻非静音段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
+
+        // v3.1.135: 额外输出12~16分钟（720~960秒）区域的最终分段结果，便于调试主持人讲话被合并问题
+        val finalTargetSegments = finalSegments.filter { it.start in 720000..960000 || it.end in 720000..960000 || (it.start < 720000 && it.end > 960000) }
+        val finalTargetDetail = if (finalTargetSegments.isNotEmpty()) {
+            val sb = StringBuilder()
+            finalTargetSegments.forEach { seg ->
+                sb.append("${seg.start}~${seg.end}ms[${seg.label} hasVoice=${seg.hasVoice}]; ")
+            }
+            sb.toString()
+        } else {
+            "无段覆盖（异常）"
+        }
+        writeFingerprintLog(context, "三层架构: 目标区域(720~960s=12~16分钟)最终分段详情: $finalTargetDetail for episode=$episodeId")
+        Log.i(TAG, "三层架构: 目标区域(720~960s)最终分段详情: $finalTargetDetail for episode=$episodeId")
 
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime

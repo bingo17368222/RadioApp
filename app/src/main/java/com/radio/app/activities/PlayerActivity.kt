@@ -2292,6 +2292,10 @@ class PlayerActivity : AppCompatActivity() {
         binding.btnHistory.setOnClickListener {
             showHistoryDialog()
         }
+        // v3.1.135: 播放计划列表按钮
+        binding.btnSchedule.setOnClickListener {
+            showScheduleDialog()
+        }
         // Issue 6 & 11: 点击节目导航提示（如 "1/10"）弹出当前节目列表，可高亮当前播放项并点击切换
         binding.tvEpisodeNavHint.setOnClickListener {
             writeEpisodeLog("tvEpisodeNavHint clicked, showing episode list dialog")
@@ -3435,6 +3439,127 @@ class PlayerActivity : AppCompatActivity() {
             .create()
 
         dialog.show()
+    }
+
+    // v3.1.135: 显示播放计划列表对话框（后续即将播放的节目）
+    private fun showScheduleDialog() {
+        val scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
+        if (scheduleList.isEmpty()) {
+            Toast.makeText(this, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
+            return
+        }
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: scheduleList.size=${scheduleList.size}")
+
+        val recyclerView = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@PlayerActivity)
+            setHasFixedSize(true)
+            val pad = (12 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            val maxHeight = (resources.displayMetrics.heightPixels * 0.6).toInt()
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
+        }
+
+        val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
+        val adapter = PlaybackScheduleListAdapter(scheduleList, currentId)
+        adapter.onItemClicked = { position ->
+            val item = scheduleList.getOrNull(position)
+            if (item != null) {
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: clicked item pos=$position, title=${item.title}")
+                val episode = item
+                // 直接通过 service 播放
+                if (playbackService == null) {
+                    Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
+                } else {
+                    // 保存旧节目播放位置到历史记录
+                    val oldId = currentEpisode?.id
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    if (oldId != null) {
+                        val dbHelper = RadioDatabaseHelper.getInstance(this)
+                        dbHelper.savePlayProgress(com.radio.app.models.PlayProgress(episodeId = oldId, progress = oldPos, recordedAt = System.currentTimeMillis()))
+                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: saved old episode position, id=$oldId, pos=$oldPos")
+                    }
+                    Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
+                    currentEpisode = episode
+                    currentEpisodeIndex = -1
+                    saveLastEpisode()
+                    playbackService?.playEpisode(episode, false)
+                    ensureSegmentsForCurrentEpisode()
+                    updateUI()
+                    setupPreCacheList()
+                }
+            }
+        }
+        recyclerView.adapter = adapter
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("播放计划")
+            .setView(recyclerView)
+            .setNegativeButton("关闭", null)
+            .create()
+
+        dialog.show()
+    }
+
+    // 播放计划列表适配器
+    inner class PlaybackScheduleListAdapter(
+        private val scheduleItems: List<Episode>,
+        var currentlyPlayingId: String?
+    ) : RecyclerView.Adapter<PlaybackScheduleListAdapter.ViewHolder>() {
+        var onItemClicked: ((Int) -> Unit)? = null
+        private val dateFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_schedule, parent, false)
+            return ViewHolder(view)
+        }
+
+        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+            val item = scheduleItems[position]
+            val episodeId = item.id ?: ""
+            val isPlaying = episodeId == currentlyPlayingId
+
+            // 节目序号
+            holder.tvIndex.text = "${position + 1}."
+            // 节目标题
+            holder.tvTitle.text = item.title
+            // 播放时间
+            val timeStr = if (item.startTime > 0) {
+                dateFormat.format(java.util.Date(item.startTime))
+            } else {
+                item.broadcastAt?.take(16) ?: "未知时间"
+            }
+            holder.tvTime.text = timeStr
+            // 当前播放项背景高亮
+            val ctx = holder.itemView.context
+            val typedArray = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.colorBackground, android.R.attr.textColorPrimary, android.R.attr.textColorSecondary))
+            val bgColor = typedArray.getColor(0, android.graphics.Color.TRANSPARENT)
+            val primaryTxtColor = typedArray.getColor(1, android.graphics.Color.BLACK)
+            val secondaryTxtColor = typedArray.getColor(2, android.graphics.Color.GRAY)
+            typedArray.recycle()
+            if (isPlaying) {
+                holder.itemView.setBackgroundColor(0x33000000.toInt())
+                holder.tvTitle.setTextColor(primaryTxtColor)
+                holder.tvTime.setTextColor(secondaryTxtColor)
+                holder.tvIndex.setTextColor(primaryTxtColor)
+            } else {
+                holder.itemView.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                holder.tvTitle.setTextColor(primaryTxtColor)
+                holder.tvTime.setTextColor(secondaryTxtColor)
+                holder.tvIndex.setTextColor(primaryTxtColor)
+            }
+
+            holder.itemView.setOnClickListener {
+                onItemClicked?.invoke(position)
+            }
+        }
+
+        override fun getItemCount(): Int = scheduleItems.size
+
+        inner class ViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+            val tvIndex: TextView = itemView.findViewById(R.id.tv_index)
+            val tvTitle: TextView = itemView.findViewById(R.id.tv_title)
+            val tvTime: TextView = itemView.findViewById(R.id.tv_time)
+        }
     }
 
     // 历史列表适配器
@@ -5010,6 +5135,49 @@ class PlayerActivity : AppCompatActivity() {
 
         val newEpisode = intent.getSerializableExtra("episode") as? Episode
         if (newEpisode == null) {
+            // v3.1.136: 检查是否来自历史列表/播放计划的独立extra（episode_id + audio_url）
+            val historyEpId = intent.getStringExtra("episode_id")
+            val historyAudioUrl = intent.getStringExtra("audio_url")
+            if (!historyEpId.isNullOrBlank() && !historyAudioUrl.isNullOrBlank()) {
+                val historyEpisode = com.radio.app.models.Episode().apply {
+                    id = historyEpId
+                    audioUrl = historyAudioUrl
+                    title = intent.getStringExtra("title") ?: ""
+                    stationId = intent.getStringExtra("station_id") ?: ""
+                    stationName = intent.getStringExtra("station_name") ?: ""
+                    broadcastAt = intent.getStringExtra("broadcast_at") ?: ""
+                    duration = intent.getIntExtra("duration", 0).toLong()
+                    programName = intent.getStringExtra("program_name") ?: ""
+                }
+                writeJitterLog("onNewIntent: constructed episode from history extras: ${historyEpisode.title}")
+                // 保存旧节目播放位置
+                val oldId = currentEpisode?.id
+                val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                if (oldId != null && oldPos > 1000) {
+                    try {
+                        val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+                        dbHelper.savePlayProgress(com.radio.app.models.PlayProgress(episodeId = oldId, progress = oldPos, recordedAt = System.currentTimeMillis()))
+                    } catch (_: Exception) {}
+                }
+                currentEpisode = historyEpisode
+                clearSubtitles()
+                val newIdx = episodeList.indexOfFirst { it.id == historyEpisode.id }
+                if (newIdx >= 0) currentEpisodeIndex = newIdx
+                saveLastEpisode()
+                if (serviceBound && playbackService != null) {
+                    playbackService?.playEpisode(historyEpisode, false)
+                }
+                val seekMs = intent.getLongExtra("seek_position_ms", -1L)
+                if (seekMs > 0) {
+                    pendingSeekMs = seekMs
+                    writeJitterLog("onNewIntent: history episode, will seek to $seekMs ms after playback starts")
+                }
+                ensureSegmentsForCurrentEpisode()
+                updateUI()
+                setupPreCacheList()
+                restoreBackgroundResults()
+                return
+            }
             // Issue 1: 通知点击带来的 intent 不含 episode（v2.0.30 起 createContentIntent 不再附带
             // episode）。此时只需与服务的当前播放状态同步，不要重启播放，避免通知更新引发的抖动循环。
             writeJitterLog("onNewIntent: no episode in intent, syncing to service state")
