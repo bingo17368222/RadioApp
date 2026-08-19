@@ -4413,7 +4413,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     updateNotification()
                 }
                 return
-            } else if (isNearOrPastEnd && !withinEpisodeSwitchWindow && !withinUserSeekWindow && !userSeekedToEnd) {
+            // v3.1.139: 用户在当前节目手动seek过（无论是否末尾），也阻止STUCK-AT-END自动跳转。
+            // 根因：v3.1.138只在isPastEnd路径检查了userSeekCurrentEpisode，但STUCK-AT-END路径未检查。
+            // 用户seek到中间位置后自然播放到结尾，STUCK-AT-END的5秒计时器仍会触发autoPlayNextEpisode。
+            } else if (isNearOrPastEnd && !withinEpisodeSwitchWindow && !withinUserSeekWindow && !userSeekedToEnd && !userSeekCurrentEpisode) {
                 // Position is near the end (within 3s before dur)
                 if (stuckAtEndSince == 0L) {
                     stuckAtEndSince = System.currentTimeMillis()
@@ -6162,7 +6165,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val savedList = loadEpisodeList()
 
         // 合并列表，preCacheList优先，去重
-        val combinedList = (preCacheList + savedList).distinctBy { it.id }
+        // v3.1.139: 改为var，fallback4需要重新赋值
+        var combinedList = (preCacheList + savedList).distinctBy { it.id }
 
         // 找到当前节目的位置
         var currentIdx = combinedList.indexOfFirst { it.id == curId || it.audioUrl == currentPlayingUrl }
@@ -6192,6 +6196,34 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (curStation != null && curDate != null) {
                 currentIdx = combinedList.indexOfFirst { it.stationId == curStation && it.broadcastAt?.take(10) == curDate }
                 writeServiceLog("schedule", "buildPlaybackSchedule: fallback3 (stationId+broadcastAt) -> idx=$currentIdx")
+            }
+        }
+        if (currentIdx < 0) {
+            // Fallback 4: 尝试从API重新获取当前节目的日期列表
+            // 根因：preCacheList可能为空（未加载），savedList可能被跨天获取覆盖，
+            // 导致combinedList中找不到当前节目，返回空列表显示"暂无节目"。
+            val curStation = currentEpisode?.stationId
+            val curDate = currentEpisode?.broadcastAt?.take(10)
+            writeServiceLog("schedule", "buildPlaybackSchedule: fallback4 - trying fresh API fetch for station=$curStation date=$curDate")
+            try {
+                if (curStation != null && !curDate.isNullOrBlank()) {
+                    val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                    val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
+                    if (!freshEpisodes.isNullOrEmpty()) {
+                        saveEpisodeList(freshEpisodes)
+                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }
+                        currentIdx = combinedList.indexOfFirst {
+                            it.id == curId || it.id == curId.removeSuffix("-cross") || it.audioUrl == currentPlayingUrl
+                        }
+                        if (currentIdx >= 0) {
+                            writeServiceLog("schedule", "buildPlaybackSchedule: fallback4 succeeded, fresh list has ${freshEpisodes.size} episodes, idx=$currentIdx")
+                        } else {
+                            writeServiceLog("schedule", "buildPlaybackSchedule: fallback4 fetched ${freshEpisodes.size} episodes but still can't find curId=$curId")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "buildPlaybackSchedule: fallback4 failed", e)
             }
         }
         if (currentIdx < 0) {

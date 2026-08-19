@@ -1408,6 +1408,15 @@ object SegmentGenerator {
                     for (pending in pendingSegments) {
                         rawIntervals.add(pending.start to pending.end)
                     }
+                    // v3.1.139: VAD无活动段且pending也为空时，使用全音频范围作为YAMNet区间。
+                    // 根因：第一层被取消后pending段可能为空（第一层未完成指纹扫描），
+                    // 导致YAMNet区间为空，YAMNet不运行，最终结果退化为第一层少量结果（0干货）。
+                    // 使用全音频范围确保YAMNet始终运行，依靠YAMNet自身的分类能力产生分段。
+                    if (pendingSegments.isEmpty()) {
+                        Log.w(TAG, "三层架构: VAD无活动段且pending为空，使用全音频范围(${effectiveDurationMs}ms)作为YAMNet区间 for episode=$episodeId")
+                        writeFingerprintLog(context, "三层架构: VAD无活动段且pending为空，使用全音频范围作为YAMNet区间")
+                        rawIntervals.add(0L to effectiveDurationMs)
+                    }
                 } else {
                     for (pending in pendingSegments) {
                         for (speech in speechRanges) {
