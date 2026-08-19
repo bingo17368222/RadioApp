@@ -3893,7 +3893,14 @@ object AudioSegmentAnalyzer {
             }
         }
         // 最后一个子段
-        val lastEndMs = (frames.last().timestampMs + halfWindowMs).coerceAtMost(refStartMs + ((rangeEndSample - rangeStartSample).toLong() * 1000L / YAMNET_SAMPLE_RATE))
+        // v3.1.139-fix: 修复coerceAtMost使用区间长度而非绝对位置导致的bug。
+        // 根因：refStartMs=0时，`(rangeEndSample - rangeStartSample) * 1000 / 16000` 是带padding区间的长度，
+        // 但frames.last().timestampMs是绝对时间（如600秒处=600000ms）。
+        // 对于非首区间，帧时间戳远大于区间长度，coerceAtMost将段尾截断到区间长度以内，
+        // 导致所有非首区间的段[start > end]被丢弃，YAMNet仅能在首区间产出段。
+        // 修复：使用rangeEndSample的绝对时间作为限制。
+        val paddedRangeEndMs = (rangeEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+        val lastEndMs = (frames.last().timestampMs + halfWindowMs).coerceAtMost(paddedRangeEndMs)
         segments.add(createSegment(segStartMs, lastEndMs, segType))
 
         return segments

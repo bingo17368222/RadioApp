@@ -3444,24 +3444,15 @@ class PlayerActivity : AppCompatActivity() {
     // v3.1.135: 显示播放计划列表对话框（后续即将播放的节目）
     private fun showScheduleDialog() {
         var scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
-        // v3.1.139: 如果播放计划为空，尝试获取当前节目作为"仅当前"显示
-        // 根因：播放计划基于preCacheList/savedList构建，如果当前节目是列表的最后一个，
-        // 或异步构建尚未完成，getPlaybackSchedule返回空列表显示"暂无后续播放计划"。
+        // v3.1.139: 如果播放计划为空，尝试重新构建
         if (scheduleList.isEmpty()) {
-            // 尝试通过service重新构建播放计划
             playbackService?.rebuildPlaybackSchedule()
-            // 重新获取
             scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
-            // 如果仍然为空，显示当前节目自身
-            if (scheduleList.isEmpty()) {
-                val curEp = currentEpisode
-                if (curEp != null) {
-                    scheduleList = listOf(curEp)
-                } else {
-                    Toast.makeText(this, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
-                    return
-                }
-            }
+        }
+        // v3.1.139-fix: 不再以当前节目作为fallback——播放计划不应包含当前播放节目
+        if (scheduleList.isEmpty()) {
+            Toast.makeText(this, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
+            return
         }
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: scheduleList.size=${scheduleList.size}")
 

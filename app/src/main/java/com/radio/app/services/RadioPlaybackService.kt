@@ -6251,11 +6251,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val curDateParsed = curDateStr?.let { try { dateFormat.parse(it) } catch (_: Exception) { null } }
 
         // 取后续FUTURE_PLAN_COUNT个节目（跳过不喜欢和无需预处理的）
+        // v3.1.139-fix: 放宽日期边界检查——如果当前天不足5个，允许跨天继续寻找。
+        // 根因：日期边界检查（超过1天break）导致列表末尾不足5个节目时直接截断。
+        // 修复：跨天时只记录日志，不再break，继续寻找直到满5个或列表结束。
         val nextPlanned = mutableListOf<Episode>()
         var idx = currentIdx + 1
         while (nextPlanned.size < FUTURE_PLAN_COUNT && idx < combinedList.size) {
             val ep = combinedList[idx]
             // v3.1.135: 日期边界检查——如果下一个节目日期与当前节目日期相差超过1天，停止添加
+            // v3.1.139-fix: 改为仅记录日志，不再break，允许跨天寻找满5个
             if (curDateParsed != null) {
                 val epDateStr = ep.broadcastAt?.take(10)
                 if (epDateStr != null) {
@@ -6264,8 +6268,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         if (epDateParsed != null) {
                             val diffMs = epDateParsed.time - curDateParsed.time
                             if (diffMs > 86400000L) { // 超过1天
-                                writeServiceLog("schedule", "buildPlaybackSchedule: stopping at ep ${ep.id} (date=$epDateStr > curDate=$curDateStr by ${diffMs/86400000L} days) - date gap too large")
-                                break
+                                writeServiceLog("schedule", "buildPlaybackSchedule: cross-day ep ${ep.id} (date=$epDateStr > curDate=$curDateStr by ${diffMs/86400000L} days) - continuing to search for ${FUTURE_PLAN_COUNT - nextPlanned.size} more")
                             }
                         }
                     } catch (_: Exception) {}
