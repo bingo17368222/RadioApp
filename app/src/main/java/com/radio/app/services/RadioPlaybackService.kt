@@ -6282,6 +6282,42 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             idx++
         }
 
+        // v3.1.140-fix: 如果combinedList不足5个节目，尝试从API获取更多后续日期的节目
+        if (nextPlanned.size < FUTURE_PLAN_COUNT) {
+            val curStation = currentEpisode?.stationId
+            val curDate = currentEpisode?.broadcastAt?.take(10)
+            if (curStation != null && !curDate.isNullOrBlank()) {
+                try {
+                    val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                    // 尝试获取当前日期之后最多3天的节目
+                    val dateFormat2 = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                    dateFormat2.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                    val curDateObj = dateFormat2.parse(curDate)
+                    if (curDateObj != null) {
+                        for (dayOffset in 1..3) {
+                            if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
+                            val nextDate = java.util.Date(curDateObj.time + dayOffset * 86400000L)
+                            val nextDateStr = dateFormat2.format(nextDate)
+                            val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, nextDateStr)
+                            if (!freshEpisodes.isNullOrEmpty()) {
+                                writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 $nextDateStr 共${freshEpisodes.size}个节目")
+                                for (ep in freshEpisodes) {
+                                    if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
+                                    val isDisliked2 = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+                                    val isNoPreprocess2 = settings.isNoPreprocess(ep.id ?: "")
+                                    if (!isDisliked2 && !isNoPreprocess2) {
+                                        nextPlanned.add(ep)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取失败: ${e.message}")
+                }
+            }
+        }
+
         // 更新futurePlannedEpisodes
         synchronized(futurePlannedEpisodes) {
             futurePlannedEpisodes.clear()

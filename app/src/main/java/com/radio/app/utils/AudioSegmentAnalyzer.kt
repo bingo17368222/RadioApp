@@ -1887,7 +1887,13 @@ object AudioSegmentAnalyzer {
 
                 for (range in speechRanges) {
                     checkCancelled()
-                    val subSegments = classifySpeechInterval(samplesProvider, range, yamnetInterpreter)
+                    // v3.1.140-fix: 传递区间内进度回调，避免长时间卡在单个区间
+                    val subSegments = classifySpeechInterval(samplesProvider, range, yamnetInterpreter) { subProgress ->
+                        val subMapped = if (totalSpeechDurationMs > 0) {
+                            300 + ((processedSpeechMs + range.durationMs * subProgress / 1000) * 600 / totalSpeechDurationMs).toInt()
+                        } else 300
+                        reportProgress(subMapped.coerceIn(300, 900))
+                    }
                     intervalSegments.addAll(subSegments)
                     processedSpeechMs += range.durationMs
                     val mapped = if (totalSpeechDurationMs > 0) {
@@ -2396,20 +2402,23 @@ object AudioSegmentAnalyzer {
     private fun classifySpeechInterval(
         samples: SampleProvider,
         range: TimeRange,
-        yamnetInterpreter: Interpreter
+        yamnetInterpreter: Interpreter,
+        progressCallback: ((subProgress: Int) -> Unit)? = null
     ): List<VoiceSegment> {
         val startSample = (range.startMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
         val endSample = (range.endMs * YAMNET_SAMPLE_RATE / 1000L).toInt()
         val intervalEndSample = endSample.coerceAtMost(samples.size)
         val intervalEndMs = (intervalEndSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+        val totalIntervalSamples = intervalEndSample - startSample
 
         // Interval too short for a full YAMNet window: VAD already marked it as speech, default to dry.
-        if (intervalEndSample - startSample < YAMNET_WINDOW_SAMPLES) {
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${intervalEndSample - startSample} samples), defaulting to dry")
+        if (totalIntervalSamples < YAMNET_WINDOW_SAMPLES) {
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] Speech interval ${formatDurationMs(range.startMs)}-${formatDurationMs(range.endMs)}: too short for YAMNet (${totalIntervalSamples} samples), defaulting to dry")
             return listOf(createSegment(range.startMs, range.endMs, FrameType.DRY))
         }
 
         val typeVotes = mutableMapOf<FrameType, Int>()
+        var lastProgressMs = 0L
 
         var pos = startSample.coerceIn(0, samples.size)
         while (pos + YAMNET_WINDOW_SAMPLES <= intervalEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
@@ -2419,6 +2428,16 @@ object AudioSegmentAnalyzer {
             val type = classifyYamnetScores(yamnet)
             typeVotes[type] = typeVotes.getOrDefault(type, 0) + 1
             pos += YAMNET_SPEECH_HOP_SAMPLES
+
+            // v3.1.140-fix: 区间内定期回调进度，避免长时间卡在一个区间
+            if (progressCallback != null) {
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastProgressMs >= 5000) { // 每5秒回调一次
+                    lastProgressMs = nowMs
+                    val subProgress = ((pos - startSample) * 1000 / totalIntervalSamples).coerceIn(0, 1000)
+                    progressCallback(subProgress)
+                }
+            }
         }
 
         val dryVotes = typeVotes.getOrDefault(FrameType.DRY, 0)

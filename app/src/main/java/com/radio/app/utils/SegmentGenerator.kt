@@ -1384,6 +1384,11 @@ object SegmentGenerator {
 
         var mergedAfterLayer2: List<VoiceSegment>
         if (vadModelsReady && pcmSourceFile != null) {
+            val pcmFileSize = if (pcmSourceFile.exists()) pcmSourceFile.length() else 0L
+            val pcmDurationMs = (pcmFileSize * 1000L / (AudioSegmentAnalyzer.YAMNET_SAMPLE_RATE * 2)).toLong() // 16bit mono
+            val dualModelInfo = "三层架构: 双模型音频详情 — PCM文件=${pcmSourceFile.name}, 大小=${pcmFileSize / 1024}KB, 音频时长=${pcmDurationMs / 1000}秒, 有效分段时长=${effectiveDurationMs / 1000}秒, VAD模型=Silero, YAMNet模型=TFLite(${AudioSegmentAnalyzer.YAMNET_SAMPLE_RATE}Hz/${AudioSegmentAnalyzer.YAMNET_WINDOW_SAMPLES}样本/帧)"
+            Log.i(TAG, dualModelInfo)
+            writeFingerprintLog(context, dualModelInfo)
             Log.i(TAG, "三层架构: 第二层-A VAD + 第二层-B YAMNet（区间推理） for episode=$episodeId")
             try {
                 // ===== 第二层-A：VAD-only，获取全时间轴活动段 =====
@@ -1482,6 +1487,15 @@ object SegmentGenerator {
                                     if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
                                     val intervalStart = interval.first
                                     val intervalEnd = interval.second
+                                    val intervalDurationMs = intervalEnd - intervalStart
+                                    val intervalStartSec = intervalStart / 1000
+                                    val intervalEndSec = intervalEnd / 1000
+
+                                    // v3.1.140-fix: 记录每个YAMNet区间的音频详情
+                                    if (processedCount < 5 || (processedCount % 10 == 0)) {
+                                        val intervalInfo = "三层架构: 第2层-B YAMNet区间[${processedCount + 1}/$totalIntervals]: ${intervalStartSec}~${intervalEndSec}秒(${intervalDurationMs / 1000}s), 样本数=${(intervalDurationMs * AudioSegmentAnalyzer.YAMNET_SAMPLE_RATE / 1000).toInt()}"
+                                        Log.i(TAG, "$intervalInfo for episode=$episodeId")
+                                    }
 
                                     // v3.1.124: 恢复逐帧滑动窗口分类，YAMNet得分先过5帧滑动均值再分类，
                                     // 然后应用后处理规则（短段合并、水分占比、交替结构合并）
@@ -1499,6 +1513,14 @@ object SegmentGenerator {
                                     val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
                                     yamnetAllSegments.addAll(processedSegments)
                                     processedCount++
+                                    // v3.1.140-fix: 记录每个YAMNet区间的推理结果
+                                    if (processedCount < 5 || (processedCount % 10 == 0) || processedCount == totalIntervals) {
+                                        val dryCount = processedSegments.count { it.label == "干货" }
+                                        val waterCount = processedSegments.count { it.label == "水货" }
+                                        val silenceCount = processedSegments.count { it.label == "静音" }
+                                        val resultInfo = "三层架构: 第2层-B YAMNet区间[${processedCount}/$totalIntervals] 结果: ${processedSegments.size}段(干${dryCount}/水${waterCount}/静${silenceCount})"
+                                        Log.i(TAG, "$resultInfo for episode=$episodeId")
+                                    }
                                     val mapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
                                     SegmentNotificationHelper.update(
                                         context, episodeId, episodeTitle, mapped,
@@ -2141,6 +2163,13 @@ object SegmentGenerator {
                 fpGroupMap[member.fingerprintId] = member.isRepresentative
             }
         }
+        // v3.1.140-fix: 记录指纹分组统计信息，用于诊断分组是否起作用
+        val totalFpInGroups = fpGroupMap.size
+        val representativeCount = fpGroupMap.count { it.value }
+        val nonRepresentativeCount = totalFpInGroups - representativeCount
+        val fpGroupMsg = "指纹分组: ${fingerprintGroups.size}个分组, ${totalFpInGroups}条指纹映射(代表${representativeCount}条/非代表${nonRepresentativeCount}条), 正式库${dedupedLibrary.size}条"
+        Log.i(TAG, fpGroupMsg)
+        writeFingerprintLog(context, fpGroupMsg)
 
         val matchedRanges = mutableListOf<Pair<Long, Long>>()
         val hitDetails = mutableListOf<String>()
