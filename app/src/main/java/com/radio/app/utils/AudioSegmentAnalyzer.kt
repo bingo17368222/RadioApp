@@ -292,8 +292,9 @@ object AudioSegmentAnalyzer {
     }
 
     // YAMNet: 16kHz, 0.975s window = 15600 samples
-    private const val YAMNET_SAMPLE_RATE = 16000
-    private const val YAMNET_WINDOW_SAMPLES = 15600
+    // v3.1.141: 改为internal，供SegmentGenerator等同一模块内的类访问
+    internal const val YAMNET_SAMPLE_RATE = 16000
+    internal const val YAMNET_WINDOW_SAMPLES = 15600
     private const val YAMNET_NUM_CLASSES = 521
 
     // YAMNet class indices (from AudioSet ontology)
