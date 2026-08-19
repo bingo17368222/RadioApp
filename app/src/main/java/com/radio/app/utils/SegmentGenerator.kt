@@ -1509,7 +1509,36 @@ object SegmentGenerator {
                                 try { pcmSamples.close() } catch (_: Exception) {}
                             }
 
-                            // ===== 拼图式合并：指纹段 + YAMNet段 =====
+                            // ===== VAD回退：YAMNet未覆盖的VAD区间保留为干货 =====
+                            // v3.1.139: 当YAMNet对某个VAD区间完全无产出时，该区间的VAD活动段应保留为干货。
+                            // 根因：YAMNet可能在某些音频区域（如连续主持人讲话）不产生任何分类段，
+                            // 导致这些区域在拼图中完全无覆盖，后续被fillSilenceGaps填充为静音，
+                            // 再被mergeSilenceToAdjacentWater合并到相邻水段，造成大段主持人讲话被标记为水。
+                            // 修复：对每个YAMNet处理区间，检查是否有YAMNet段覆盖，无覆盖时回退到VAD干货。
+                            val vadFallbackSegments = mutableListOf<VoiceSegment>()
+                            for (interval in yamnetIntervals) {
+                                val hasYamnetCoverage = yamnetAllSegments.any { seg ->
+                                    seg.start < interval.second && seg.end > interval.first
+                                }
+                                if (!hasYamnetCoverage) {
+                                    val intervalDuration = interval.second - interval.first
+                                    if (intervalDuration >= 1500) {
+                                        vadFallbackSegments.add(VoiceSegment().apply {
+                                            start = interval.first
+                                            end = interval.second
+                                            hasVoice = true
+                                            label = "干货"
+                                            isSimulated = false
+                                        })
+                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为干货 for episode=$episodeId")
+                                    }
+                                }
+                            }
+                            if (vadFallbackSegments.isNotEmpty()) {
+                                writeFingerprintLog(context, "三层架构: VAD回退: ${vadFallbackSegments.size}个VAD区间无YAMNet产出，保留为干货（总${vadFallbackSegments.sumOf { it.end - it.start } / 1000}秒）")
+                            }
+
+                            // ===== 拼图式合并：指纹段 + YAMNet段 + VAD回退段 =====
                             // v3.1.125: YAMNet干段优先于指纹水货段。YAMNet逐帧分类比指纹匹配更精确，
                             // 当指纹水货段与YAMNet干段冲突时，裁剪指纹水货段而非YAMNet干段。
                             // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
@@ -1518,6 +1547,8 @@ object SegmentGenerator {
 
                             // 1. YAMNet子段（全部保留，干段优先）
                             jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
+                            // v3.1.139: VAD回退段（YAMNet未覆盖的区间）
+                            jigsawSegments.addAll(vadFallbackSegments.map { it.copy() })
 
                             // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段，不止干段）
                             // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，

@@ -6042,6 +6042,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
+    /**
+     * v3.1.139: 客户端请求重新构建播放计划，解决"暂无节目"问题。
+     * 当用户点击播放计划按钮时，如果列表为空，客户端会调用此方法强制重建。
+     */
+    fun rebuildPlaybackSchedule() {
+        // 同步重建播放计划，更新futurePlannedEpisodes
+        val newList = buildPlaybackSchedule()
+        synchronized(futurePlannedEpisodes) {
+            futurePlannedEpisodes.clear()
+            futurePlannedEpisodes.addAll(newList)
+        }
+    }
+
     // v2.0.73: Safely get player duration, filtering out invalid values (0, negative, TIME_UNSET).
     // Returns last known valid duration or default 2 hours when player duration is unavailable.
     // [v2.0.77] Issue 6 Fix: Also reject absurdly small durations (< 60s) to prevent "full progress" bug.

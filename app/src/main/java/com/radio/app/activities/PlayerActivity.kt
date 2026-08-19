@@ -3443,10 +3443,25 @@ class PlayerActivity : AppCompatActivity() {
 
     // v3.1.135: 显示播放计划列表对话框（后续即将播放的节目）
     private fun showScheduleDialog() {
-        val scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
+        var scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
+        // v3.1.139: 如果播放计划为空，尝试获取当前节目作为"仅当前"显示
+        // 根因：播放计划基于preCacheList/savedList构建，如果当前节目是列表的最后一个，
+        // 或异步构建尚未完成，getPlaybackSchedule返回空列表显示"暂无后续播放计划"。
         if (scheduleList.isEmpty()) {
-            Toast.makeText(this, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
-            return
+            // 尝试通过service重新构建播放计划
+            playbackService?.rebuildPlaybackSchedule()
+            // 重新获取
+            scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
+            // 如果仍然为空，显示当前节目自身
+            if (scheduleList.isEmpty()) {
+                val curEp = currentEpisode
+                if (curEp != null) {
+                    scheduleList = listOf(curEp)
+                } else {
+                    Toast.makeText(this, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
+                    return
+                }
+            }
         }
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: scheduleList.size=${scheduleList.size}")
 
@@ -3506,7 +3521,10 @@ class PlayerActivity : AppCompatActivity() {
         var currentlyPlayingId: String?
     ) : RecyclerView.Adapter<PlaybackScheduleListAdapter.ViewHolder>() {
         var onItemClicked: ((Int) -> Unit)? = null
-        private val dateFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        private val timeFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        // v3.1.139: 增加日期格式，用于显示节目日期
+        private val dateFormat = java.text.SimpleDateFormat("MM/dd", java.util.Locale.getDefault())
+        private val dateTimeFormat = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault())
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
             val view = LayoutInflater.from(parent.context).inflate(R.layout.item_schedule, parent, false)
@@ -3522,11 +3540,29 @@ class PlayerActivity : AppCompatActivity() {
             holder.tvIndex.text = "${position + 1}."
             // 节目标题
             holder.tvTitle.text = item.title
-            // 播放时间
+            // 播放时间（含日期）
+            // v3.1.139: 增加日期显示，让用户知道节目具体是哪一天
             val timeStr = if (item.startTime > 0) {
-                dateFormat.format(java.util.Date(item.startTime))
+                dateTimeFormat.format(java.util.Date(item.startTime))
             } else {
-                item.broadcastAt?.take(16) ?: "未知时间"
+                val rawDate = item.broadcastAt?.take(16)
+                if (rawDate != null && rawDate.length >= 10) {
+                    // broadcastAt格式如"2024-12-18T09:30"，提取日期和时分
+                    try {
+                        val datePart = rawDate.take(10) // "2024-12-18"
+                        val timePart = rawDate.substring(11, 16) // "09:30"
+                        val parsedDate = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).parse(datePart)
+                        if (parsedDate != null) {
+                            dateFormat.format(parsedDate) + " " + timePart
+                        } else {
+                            rawDate
+                        }
+                    } catch (_: Exception) {
+                        rawDate
+                    }
+                } else {
+                    "未知时间"
+                }
             }
             holder.tvTime.text = timeStr
             // 当前播放项背景高亮
