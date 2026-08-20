@@ -3548,12 +3548,12 @@ object AudioSegmentAnalyzer {
                 return emptyList()
             }
             // v3.1.93: refStartMs=0L，因为PCM文件从时间0开始，样本索引直接对应绝对时间
-            return classifyIntervalRange(samples, origStartSample, origEndSample, 0L, yamnetInterpreter)
+            return classifyIntervalRange(samples, origStartSample, origEndSample, 0L, yamnetInterpreter, progressCallback)
         }
 
         // 使用带padding的区间执行YAMNet推理
         // v3.1.93: refStartMs=0L，PCM文件从时间0开始，样本索引直接对应绝对时间
-        val segments = classifyIntervalRange(samples, startSample, endSample, 0L, yamnetInterpreter)
+        val segments = classifyIntervalRange(samples, startSample, endSample, 0L, yamnetInterpreter, progressCallback)
 
         // 裁回原始边界：修正子段坐标，移除超出原始区间的部分
         val trimmed = mutableListOf<VoiceSegment>()
@@ -3755,7 +3755,8 @@ object AudioSegmentAnalyzer {
         rangeStartSample: Int,
         rangeEndSample: Int,
         refStartMs: Long,
-        yamnetInterpreter: Interpreter
+        yamnetInterpreter: Interpreter,
+        progressCallback: ((Int) -> Unit)? = null
     ): List<VoiceSegment> {
         // 第一阶段：收集所有帧的原始YAMNet得分（不立即分类）
         data class RawFrameScores(
@@ -3767,6 +3768,9 @@ object AudioSegmentAnalyzer {
         val rawScores = mutableListOf<RawFrameScores>()
 
         var pos = rangeStartSample
+        val totalSamples = rangeEndSample - rangeStartSample
+        var lastProgressMs = 0L
+
         while (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             checkCancelled()
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
@@ -3785,6 +3789,16 @@ object AudioSegmentAnalyzer {
                 spectrumRatio = yamnet.spectrumRatio
             ))
             pos += YAMNET_SPEECH_HOP_SAMPLES
+
+            // v3.1.142-fix: 区间内定期回调进度，避免长时间卡在单个大区间
+            if (progressCallback != null) {
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastProgressMs >= 5000) { // 每5秒回调一次
+                    lastProgressMs = nowMs
+                    val subProgress = ((pos - rangeStartSample) * 1000 / totalSamples).coerceIn(0, 1000)
+                    progressCallback(subProgress)
+                }
+            }
         }
 
         if (rawScores.isEmpty()) return emptyList()

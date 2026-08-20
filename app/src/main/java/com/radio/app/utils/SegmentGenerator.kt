@@ -1499,12 +1499,20 @@ object SegmentGenerator {
 
                                     // v3.1.124: 恢复逐帧滑动窗口分类，YAMNet得分先过5帧滑动均值再分类，
                                     // 然后应用后处理规则（短段合并、水分占比、交替结构合并）
+                                    // v3.1.142-fix: 传递区间内进度回调，避免长时间卡在单个大区间
+                                    val baseMapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
                                     var subSegments = emptyList<VoiceSegment>()
                                     try {
                                         subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                             pcmSamples, intervalStart, intervalEnd,
                                             yamnetInterpreter
-                                        )
+                                        ) { subProgress ->
+                                            val subMapped = baseMapped + (subProgress * 500 / totalIntervals / 1000).coerceIn(0, 5)
+                                            SegmentNotificationHelper.update(
+                                                context, episodeId, episodeTitle, subMapped.coerceIn(350, 850),
+                                                "第2层-B YAMNet ${processedCount + 1}/$totalIntervals 区间内${subProgress / 10}%"
+                                            )
+                                        }
                                     } catch (e: InterruptedException) {
                                         if (yamnetAllSegments.isEmpty()) throw
                                         break
@@ -1514,13 +1522,13 @@ object SegmentGenerator {
                                     yamnetAllSegments.addAll(processedSegments)
                                     processedCount++
                                     // v3.1.140-fix: 记录每个YAMNet区间的推理结果
-                                    if (processedCount < 5 || (processedCount % 10 == 0) || processedCount == totalIntervals) {
-                                        val dryCount = processedSegments.count { it.label == "干货" }
-                                        val waterCount = processedSegments.count { it.label == "水货" }
-                                        val silenceCount = processedSegments.count { it.label == "静音" }
-                                        val resultInfo = "三层架构: 第2层-B YAMNet区间[${processedCount}/$totalIntervals] 结果: ${processedSegments.size}段(干${dryCount}/水${waterCount}/静${silenceCount})"
-                                        Log.i(TAG, "$resultInfo for episode=$episodeId")
-                                    }
+                                    // v3.1.142-fix: 每个区间都记录日志，不遗漏
+                                    val dryCount = processedSegments.count { it.label == "干货" }
+                                    val waterCount = processedSegments.count { it.label == "水货" }
+                                    val silenceCount = processedSegments.count { it.label == "静音" }
+                                    val resultInfo = "三层架构: 第2层-B YAMNet区间[${processedCount}/$totalIntervals] ${intervalStartSec}~${intervalEndSec}秒(${intervalDurationMs / 1000}s): ${processedSegments.size}段(干${dryCount}/水${waterCount}/静${silenceCount})"
+                                    Log.i(TAG, "$resultInfo for episode=$episodeId")
+                                    writeFingerprintLog(context, "三层架构: 第2层-B YAMNet区间[${processedCount}/$totalIntervals]: ${processedSegments.size}段(干${dryCount}/水${waterCount}/静${silenceCount})")
                                     val mapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
                                     SegmentNotificationHelper.update(
                                         context, episodeId, episodeTitle, mapped,
@@ -1778,11 +1786,18 @@ object SegmentGenerator {
                                                 val intervalEnd = interval.second
 
                                                 // v3.1.124: 恢复逐帧滑动窗口分类+后处理
+                                                // v3.1.142-fix: 传递区间内进度回调
                                                 var subSegments = emptyList<VoiceSegment>()
+                                                val baseMapped2 = 250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)
                                                 try {
                                                     subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
-                                                    )
+                                                    ) { subProgress ->
+                                                        val subMapped2 = baseMapped2 + (subProgress * 550 / totalIntervals / 1000).coerceIn(0, 5)
+                                                        SegmentNotificationHelper.update(context, episodeId, episodeTitle,
+                                                            subMapped2.coerceIn(250, 800),
+                                                            "第2层-B YAMNet ${processedCount + 1}/$totalIntervals 区间内${subProgress / 10}%")
+                                                    }
                                                 } catch (e: InterruptedException) {
                                                     if (yamnetAllSegments.isEmpty()) throw
                                                     break

@@ -6409,7 +6409,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } else {
                     episodeId
                 }
-                val dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
+                // v3.1.142-fix: 最多重试2次，应对saveVoiceSegments的DELETE+INSERT事务窗口
+                var dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
+                var retryCount = 0
+                while (dbSegments.isEmpty() && retryCount < 2) {
+                    try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+                    dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
+                    retryCount++
+                }
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
                     episode?.voiceSegments = dbSegments
