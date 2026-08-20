@@ -2019,10 +2019,8 @@ object AudioSegmentAnalyzer {
     // v3.1.144-fix: 缓存线程池，用于YAMNet推理超时保护
     // 使用CachedThreadPool而非SingleThreadExecutor：如果TFLite推理挂死且interrupt无法中断，
     // 新提交的任务会创建新线程执行，不会阻塞后续推理
-    companion object {
-        private val yamnetExecutor = Executors.newCachedThreadPool()
-        private const val YAMNET_INFERENCE_TIMEOUT_SECONDS = 15L
-    }
+    private val yamnetExecutor = Executors.newCachedThreadPool()
+    private const val YAMNET_INFERENCE_TIMEOUT_SECONDS = 15L
 
     private fun classifyWithYamnet(
         interpreter: Interpreter,
