@@ -3770,9 +3770,17 @@ object AudioSegmentAnalyzer {
         var pos = rangeStartSample
         val totalSamples = rangeEndSample - rangeStartSample
         var lastProgressMs = 0L
+        // v3.1.143-fix: 单个区间最长时间限制（60秒），防止YAMNet推理卡死
+        val intervalStartTimeMs = System.currentTimeMillis()
+        val MAX_INTERVAL_MS = 60_000L
 
         while (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             checkCancelled()
+            // v3.1.143-fix: 超时保护——单个区间运行超过60秒则跳过
+            if (System.currentTimeMillis() - intervalStartTimeMs >= MAX_INTERVAL_MS) {
+                Log.w("AudioSegmentAnalyzer", "classifyIntervalRange: 区间超时(${MAX_INTERVAL_MS / 1000}秒)，跳过剩余${(rangeEndSample - pos) / YAMNET_SAMPLE_RATE}秒音频")
+                break
+            }
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
             val yamnet = classifyWithYamnet(yamnetInterpreter, window)
 

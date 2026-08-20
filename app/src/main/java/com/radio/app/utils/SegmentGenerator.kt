@@ -1479,6 +1479,9 @@ object SegmentGenerator {
                             val yamnetAllSegments = mutableListOf<VoiceSegment>()
                             var processedCount = 0
                             val totalIntervals = yamnetIntervals.size
+                            // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
+                            val yamnetStartTimeMs = System.currentTimeMillis()
+                            var yamnetProgressWriteTime = 0L
 
                             // v3.1.92: 打开PCM文件一次，避免重复打开316次
                             val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
@@ -1507,7 +1510,8 @@ object SegmentGenerator {
                                             pcmSamples, intervalStart, intervalEnd,
                                             yamnetInterpreter
                                         ) { subProgress ->
-                                            val subMapped = baseMapped + (subProgress * 500 / totalIntervals / 1000).coerceIn(0, 5)
+                                            // v3.1.143-fix: 区间内进度映射到5‰范围内有意义的变化
+                                            val subMapped = baseMapped + (subProgress * 500 / totalIntervals / 1000).coerceIn(0, maxOf(1, 500 / totalIntervals))
                                             SegmentNotificationHelper.update(
                                                 context, episodeId, episodeTitle, subMapped.coerceIn(350, 850),
                                                 "第2层-B YAMNet ${processedCount + 1}/$totalIntervals 区间内${subProgress / 10}%"
@@ -1534,6 +1538,25 @@ object SegmentGenerator {
                                         context, episodeId, episodeTitle, mapped,
                                         "第2层-B YAMNet推理 ${processedCount}/$totalIntervals"
                                     )
+
+                                    // v3.1.143-fix: 每5秒写入一次带elapsed/remaining的进度日志
+                                    val now = System.currentTimeMillis()
+                                    if (now - yamnetProgressWriteTime >= 5000 || processedCount == 1 || processedCount == totalIntervals || processedCount % (totalIntervals / 10).coerceAtLeast(1) == 0) {
+                                        yamnetProgressWriteTime = now
+                                        val elapsedMs = now - yamnetStartTimeMs
+                                        val elapsedStr = formatDuration(elapsedMs)
+                                        val avgPerIntervalMs = elapsedMs.toFloat() / processedCount
+                                        val remainingMs = (avgPerIntervalMs * (totalIntervals - processedCount)).toLong()
+                                        val remainingStr = formatDuration(remainingMs)
+                                        val progressPct = (processedCount * 100 / totalIntervals).coerceIn(0, 100)
+                                        val progressLog = "音频分段进度 Phase2 YAMNet: ${progressPct}% (已用${elapsedStr}/剩余${remainingStr})"
+                                        writeFingerprintLog(context, progressLog)
+                                        // 同时更新通知栏标题，带时间信息
+                                        SegmentNotificationHelper.update(
+                                            context, episodeId, episodeTitle, mapped,
+                                            "第2层-B YAMNet ${processedCount}/$totalIntervals ${elapsedStr}/${remainingStr}"
+                                        )
+                                    }
                                 }
                             } finally {
                                 try { pcmSamples.close() } catch (_: Exception) {}
@@ -1776,6 +1799,9 @@ object SegmentGenerator {
                                         val yamnetAllSegments = mutableListOf<VoiceSegment>()
                                         var processedCount = 0
                                         val totalIntervals = yamnetIntervals.size
+                                        // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
+                                        val yamnetStartTimeMs2 = System.currentTimeMillis()
+                                        var yamnetProgressWriteTime2 = 0L
 
                                         // v3.1.92: 打开PCM文件一次
                                         val pcmSamples2 = AudioSegmentAnalyzer.openPcmSamples(newFullPcm)
@@ -1793,7 +1819,8 @@ object SegmentGenerator {
                                                     subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                                         pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
                                                     ) { subProgress ->
-                                                        val subMapped2 = baseMapped2 + (subProgress * 550 / totalIntervals / 1000).coerceIn(0, 5)
+                                                        // v3.1.143-fix: 区间内进度映射到有意义的变化
+                                                        val subMapped2 = baseMapped2 + (subProgress * 550 / totalIntervals / 1000).coerceIn(0, maxOf(1, 550 / totalIntervals))
                                                         SegmentNotificationHelper.update(context, episodeId, episodeTitle,
                                                             subMapped2.coerceIn(250, 800),
                                                             "第2层-B YAMNet ${processedCount + 1}/$totalIntervals 区间内${subProgress / 10}%")
@@ -1806,9 +1833,27 @@ object SegmentGenerator {
                                                 val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
                                                 yamnetAllSegments.addAll(processedSegments)
                                                 processedCount++
+                                                val mapped2 = (250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)).coerceIn(250, 800)
                                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle,
-                                                    (250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)).coerceIn(250, 800),
+                                                    mapped2,
                                                     "第2层-B YAMNet推理 ${processedCount}/$totalIntervals")
+
+                                                // v3.1.143-fix: 每5秒写入一次带elapsed/remaining的进度日志
+                                                val now2 = System.currentTimeMillis()
+                                                if (now2 - yamnetProgressWriteTime2 >= 5000 || processedCount == 1 || processedCount == totalIntervals || processedCount % (totalIntervals / 10).coerceAtLeast(1) == 0) {
+                                                    yamnetProgressWriteTime2 = now2
+                                                    val elapsedMs2 = now2 - yamnetStartTimeMs2
+                                                    val elapsedStr2 = formatDuration(elapsedMs2)
+                                                    val avgPerIntervalMs2 = elapsedMs2.toFloat() / processedCount
+                                                    val remainingMs2 = (avgPerIntervalMs2 * (totalIntervals - processedCount)).toLong()
+                                                    val remainingStr2 = formatDuration(remainingMs2)
+                                                    val progressPct2 = (processedCount * 100 / totalIntervals).coerceIn(0, 100)
+                                                    val progressLog2 = "音频分段进度 Phase2 YAMNet: ${progressPct2}% (已用${elapsedStr2}/剩余${remainingStr2})"
+                                                    writeFingerprintLog(context, progressLog2)
+                                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle,
+                                                        mapped2,
+                                                        "第2层-B YAMNet ${processedCount}/$totalIntervals ${elapsedStr2}/${remainingStr2}")
+                                                }
                                             }
                                         } finally {
                                             try { pcmSamples2.close() } catch (_: Exception) {}
