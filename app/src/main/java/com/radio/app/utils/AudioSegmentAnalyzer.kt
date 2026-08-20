@@ -14,6 +14,11 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.ShortBuffer
 import java.nio.channels.FileChannel
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.locks.ReentrantLock
 
 /**
@@ -2011,6 +2016,14 @@ object AudioSegmentAnalyzer {
         val spectrumRatio: Float = 0f
     )
 
+    // v3.1.144-fix: 缓存线程池，用于YAMNet推理超时保护
+    // 使用CachedThreadPool而非SingleThreadExecutor：如果TFLite推理挂死且interrupt无法中断，
+    // 新提交的任务会创建新线程执行，不会阻塞后续推理
+    companion object {
+        private val yamnetExecutor = Executors.newCachedThreadPool()
+        private const val YAMNET_INFERENCE_TIMEOUT_SECONDS = 15L
+    }
+
     private fun classifyWithYamnet(
         interpreter: Interpreter,
         samples: FloatArray
@@ -2044,8 +2057,29 @@ object AudioSegmentAnalyzer {
                 org.tensorflow.lite.DataType.FLOAT32
             )
 
+            // v3.1.144-fix: YAMNet推理超时保护——interpreter.run()可能挂死，使用Future+超时
             try {
-                interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
+                val inferenceFuture: Future<Boolean> = yamnetExecutor.submit(Callable {
+                    interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
+                    true
+                })
+                try {
+                    inferenceFuture.get(YAMNET_INFERENCE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                } catch (e: TimeoutException) {
+                    // 推理超时，取消任务并返回默认结果
+                    inferenceFuture.cancel(true)
+                    val timeoutMsg = "classifyWithYamnet: 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒)，跳过当前窗口"
+                    Log.w(TAG, timeoutMsg)
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $timeoutMsg")
+                    // 输出缓冲可能不完整，返回默认结果
+                    return YamnetResult(
+                        speech = 0f, narration = 0f, singing = 0f, music = 0f,
+                        instrumental = 0f, popMusic = 0f, jingle = 0f, song = 0f,
+                        backgroundMusic = 0f, themeMusic = 0f, silence = 0f,
+                        voiceSum = 0f, bgMusicSum = 0f, maxRawScore = 0f,
+                        spectrumRatio = spectrumRatio
+                    )
+                }
             } catch (e: Throwable) {
                 vadLog("classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message}")
                 // 返回默认结果，避免崩溃传播
