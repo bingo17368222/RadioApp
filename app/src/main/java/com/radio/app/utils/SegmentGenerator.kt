@@ -1467,26 +1467,27 @@ object SegmentGenerator {
                     mergedAfterLayer2 = mergedAfterLayer1
                     audioEngineName = "VAD+YAMNet+三层(优化-无pending段)"
                 } else {
-                    // ===== 加载YAMNet模型（所有区间共用） =====
+                    // ===== 加载YAMNet模型（所有区间共用，v3.1.145-fix: 自动设置类级字段） =====
                     val yamnetInterpreter = AudioSegmentAnalyzer.loadYamnetInterpreter(context)
                     if (yamnetInterpreter == null) {
                         Log.w(TAG, "三层架构: YAMNet模型加载失败，使用第1层结果 for episode=$episodeId")
                         mergedAfterLayer2 = mergedAfterLayer1
                         audioEngineName = "VAD+YAMNet+三层(优化-YAMNet加载失败)"
                     } else {
-                        try {
-                            // ===== 第二层-B：对每个区间独立运行YAMNet推理 =====
-                            val yamnetAllSegments = mutableListOf<VoiceSegment>()
-                            var processedCount = 0
-                            val totalIntervals = yamnetIntervals.size
-                            // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
-                            val yamnetStartTimeMs = System.currentTimeMillis()
-                            var yamnetProgressWriteTime = 0L
+                        // v3.1.145-fix: 不再需要try/finally管理yamnetInterpreter生命周期，
+                        // AudioSegmentAnalyzer内部管理类级Interpreter，超时自动重建
+                        // ===== 第二层-B：对每个区间独立运行YAMNet推理 =====
+                        val yamnetAllSegments = mutableListOf<VoiceSegment>()
+                        var processedCount = 0
+                        val totalIntervals = yamnetIntervals.size
+                        // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
+                        val yamnetStartTimeMs = System.currentTimeMillis()
+                        var yamnetProgressWriteTime = 0L
 
-                            // v3.1.92: 打开PCM文件一次，避免重复打开316次
-                            val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
-                            try {
-                                for (interval in yamnetIntervals) {
+                        // v3.1.92: 打开PCM文件一次，避免重复打开316次
+                        val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
+                        try {
+                            for (interval in yamnetIntervals) {
                                     if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
                                     val intervalStart = interval.first
                                     val intervalEnd = interval.second
@@ -1507,8 +1508,7 @@ object SegmentGenerator {
                                     var subSegments = emptyList<VoiceSegment>()
                                     try {
                                         subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
-                                            pcmSamples, intervalStart, intervalEnd,
-                                            yamnetInterpreter
+                                            pcmSamples, intervalStart, intervalEnd
                                         ) { subProgress ->
                                             // v3.1.143-fix: 区间内进度映射到5‰范围内有意义的变化
                                             val subMapped = baseMapped + (subProgress * 500 / totalIntervals / 1000).coerceIn(0, maxOf(1, 500 / totalIntervals))
@@ -1683,9 +1683,7 @@ object SegmentGenerator {
                             // v3.1.90: 写指纹日志
                             writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段")
                             writeFingerprintLog(context, "三层架构: YAMNet子段目标区域(600~1100s): $yamnetTargetDetail")
-                        } finally {
-                            try { yamnetInterpreter.close() } catch (_: Exception) {}
-                        }
+                        // v3.1.145-fix: 不再需要关闭yamnetInterpreter，由AudioSegmentAnalyzer内部管理
                     }
                 }
             } catch (e: Throwable) {
@@ -1795,13 +1793,13 @@ object SegmentGenerator {
                                     mergedAfterLayer2 = mergedAfterLayer1
                                     audioEngineName = "VAD+YAMNet+三层(优化-YAMNet加载失败)"
                                 } else {
-                                    try {
-                                        val yamnetAllSegments = mutableListOf<VoiceSegment>()
-                                        var processedCount = 0
-                                        val totalIntervals = yamnetIntervals.size
-                                        // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
-                                        val yamnetStartTimeMs2 = System.currentTimeMillis()
-                                        var yamnetProgressWriteTime2 = 0L
+                                    // v3.1.145-fix: 不再需要try/finally，AudioSegmentAnalyzer内部管理
+                                    val yamnetAllSegments = mutableListOf<VoiceSegment>()
+                                    var processedCount = 0
+                                    val totalIntervals = yamnetIntervals.size
+                                    // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
+                                    val yamnetStartTimeMs2 = System.currentTimeMillis()
+                                    var yamnetProgressWriteTime2 = 0L
 
                                         // v3.1.92: 打开PCM文件一次
                                         val pcmSamples2 = AudioSegmentAnalyzer.openPcmSamples(newFullPcm)
@@ -1817,7 +1815,7 @@ object SegmentGenerator {
                                                 val baseMapped2 = 250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)
                                                 try {
                                                     subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
-                                                        pcmSamples2, intervalStart, intervalEnd, yamnetInterpreter
+                                                        pcmSamples2, intervalStart, intervalEnd
                                                     ) { subProgress ->
                                                         // v3.1.143-fix: 区间内进度映射到有意义的变化
                                                         val subMapped2 = baseMapped2 + (subProgress * 550 / totalIntervals / 1000).coerceIn(0, maxOf(1, 550 / totalIntervals))
@@ -1914,9 +1912,7 @@ object SegmentGenerator {
                                         Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail2 for episode=$episodeId")
                                         // v3.1.90: 写指纹日志
                                         writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段")
-                                    } finally {
-                                        try { yamnetInterpreter.close() } catch (_: Exception) {}
-                                    }
+                                    // v3.1.145-fix: 不再需要关闭yamnetInterpreter，由AudioSegmentAnalyzer内部管理
                                 }
                             }
                         } catch (e: Throwable) {
