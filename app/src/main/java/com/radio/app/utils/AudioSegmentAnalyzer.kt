@@ -414,15 +414,11 @@ object AudioSegmentAnalyzer {
             return null
         }
         return try {
-            // v3.1.145-fix: 同时设置类级字段，供classifyPcmIntervalInner等使用类级Interpreter
+            // v3.1.146-fix: 同时设置类级字段，供classifyPcmIntervalInner等使用类级Interpreter
+            // 不close旧的Interpreter（可能因推理挂死处于不可用状态），直接放弃
             val modelFile = File(modelDir, "yamnet.tflite")
             yamnetModelFile = modelFile
             val interp = loadYamnetModel(modelFile)
-            // 关闭旧的Interpreter（如果有）
-            val old = currentYamnetInterpreter
-            if (old != null && old !== interp) {
-                try { old.close() } catch (_: Exception) {}
-            }
             currentYamnetInterpreter = interp
             interp
         } catch (e: Throwable) {
@@ -1962,7 +1958,7 @@ object AudioSegmentAnalyzer {
             Log.e(TAG, "analyzePcmFile 分析循环崩溃: ${e.javaClass.name}: ${e.message}")
             return SegmentAnalysisResult(emptyList(), "none", 0L, 0L)
         } finally {
-            try { currentYamnetInterpreter?.close() } catch (_: Exception) {}
+            // v3.1.146-fix: 不close YAMNet Interpreter（可能因推理挂死处于不可用状态，close也会挂死）
             currentYamnetInterpreter = null
             try { vadModel.session.close() } catch (_: Exception) {}
         }
@@ -2041,10 +2037,10 @@ object AudioSegmentAnalyzer {
         val spectrumRatio: Float = 0f
     )
 
-    // v3.1.145-fix: 缓存线程池，用于YAMNet推理超时保护
-    // 使用CachedThreadPool：如果TFLite推理挂死且interrupt无法中断，
-    // 新提交的任务会创建新线程执行，不会阻塞后续推理
-    private val yamnetExecutor = Executors.newCachedThreadPool()
+    // v3.1.146-fix: 单线程执行器，用于YAMNet推理超时保护
+    // 使用SingleThreadExecutor：一次只允许一个推理任务，超时后重建整个executor避免线程爆炸
+    @Volatile
+    private var yamnetExecutor = Executors.newSingleThreadExecutor()
     private const val YAMNET_INFERENCE_TIMEOUT_SECONDS = 15L
 
     // v3.1.145-fix: 获取当前Interpreter（从类级字段读取）
@@ -2053,19 +2049,17 @@ object AudioSegmentAnalyzer {
             ?: throw RuntimeException("YAMNet interpreter not initialized")
     }
 
-    // v3.1.145-fix: 关闭旧Interpreter并重建新实例
-    // 这是唯一能真正从native推理挂死中恢复的方法
+    // v3.1.146-fix: 放弃旧Interpreter并重建新实例
+    // 不close旧Interpreter！interpreter.close()在native推理挂死时同样会挂死
+    // 同时重建SingleThreadExecutor，放弃挂死的旧线程
     private fun reloadYamnetInterpreter() {
         synchronized(yamnetInterpreterLock) {
-            val old = currentYamnetInterpreter
-            try {
-                if (old != null) {
-                    Log.w(TAG, "reloadYamnetInterpreter: closing hung interpreter and creating new one")
-                    old.close()
-                }
-            } catch (e: Throwable) {
-                Log.w(TAG, "reloadYamnetInterpreter: close failed (expected if hung): ${e.message}")
-            }
+            // 放弃旧Interpreter（不close，避免挂死）
+            currentYamnetInterpreter = null
+            // 关闭旧executor（放弃旧线程），创建新executor
+            try { yamnetExecutor.shutdown() } catch (_: Exception) {}
+            yamnetExecutor = Executors.newSingleThreadExecutor()
+            Log.w(TAG, "reloadYamnetInterpreter: abandoned old interpreter + executor, creating new one")
             val modelFile = yamnetModelFile
                 ?: throw RuntimeException("YAMNet model file path not set")
             try {
@@ -2127,7 +2121,7 @@ object AudioSegmentAnalyzer {
                 } catch (e: TimeoutException) {
                     // 推理超时，取消任务
                     inferenceFuture.cancel(true)
-                    val timeoutMsg = "classifyWithYamnet: 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒)，关闭旧Interpreter并重建"
+                    val timeoutMsg = "classifyWithYamnet: 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒)，放弃旧Interpreter并重建"
                     Log.w(TAG, timeoutMsg)
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $timeoutMsg")
                     // v3.1.145-fix: 关闭旧Interpreter并重建新实例，确保后续推理不再挂死

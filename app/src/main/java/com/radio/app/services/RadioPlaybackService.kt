@@ -3965,6 +3965,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun startProgressPolling() {
         progressRunnable = Runnable {
             player?.let { p ->
+                // v3.1.146-fix: 未播放时跳过轮询，减少CPU占用
+                if (!p.isPlaying) {
+                    progressHandler?.postDelayed(progressRunnable!!, 1000)
+                    return@Runnable
+                }
                 callback?.let { cb ->
                     try {
                         // [v2.0.62] Issue 1 Fix: Use authoritative position from getCurrentPosition()
@@ -3993,7 +3998,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     } catch (_: Exception) {}
                 }
             }
-            progressHandler?.postDelayed(progressRunnable!!, 500)
+            // v3.1.146-fix: 从500ms改为1000ms轮询，减少CPU占用50%
+            progressHandler?.postDelayed(progressRunnable!!, 1000)
         }
         progressRunnable?.let { progressHandler?.post(it) }
     }
@@ -4008,7 +4014,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // progress bar (used by compact notifications) stays in sync. Without this, the
             // system progress bar freezes because setPlaybackState is only called on play/pause.
             // [v2.0.94] Removed !isPrecaching guard — notification must update during episode switch
-            if (!isLive && player != null) {
+            // v3.1.146-fix: 用户暂停时跳过，减少CPU占用
+            if (!isLive && player != null && !userPaused) {
                 updateNotificationProgressOnly()
                 // [v2.0.87] Update MediaSession PlaybackState with current position for system progress bar
                 updateMediaSessionState()
@@ -5285,11 +5292,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return
         }
 
-        // [v2.0.73] Issue 1 Fix: Debounce rapid playEpisode calls for the SAME episode within 500ms.
-        // When PlayerActivity reconnects or user taps quickly, duplicate calls cause player reset/prepare
-        // cycles that produce position=0 and seekTo oscillation.
+        // [v2.0.73] Issue 1 Fix: 防抖——500ms内同一节目的重复调用跳过
+        // v3.1.146-fix: 移除防抖，快速切换节目时不应丢弃调用
+        // (保留epId和时间记录，供其他逻辑使用)
+        // [v2.0.91] Reset skip protection state on new episode
         val now = System.currentTimeMillis()
-        // [v2.0.91] Reset skip protection state on new episode (but don't clear active breaker)
         lastEpisodeStartTime = now
         skipRequestCount = 0
         if (now >= skipCircuitBreakerUntil) {
@@ -5298,11 +5305,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         consecutiveBackwardSkips = 0
         firstBackwardSkipWindowStart = now
         val epId = episode.id ?: ""
-        if (epId == lastPlayEpisodeEpisodeId && now - lastPlayEpisodeTime < 500) {
-            Log.d(TAG, "playEpisode: [${com.radio.app.RadioApplication.appVersionTag()}] debounced duplicate call for $epTitle (${now - lastPlayEpisodeTime}ms ago), skipping")
-            writeServiceLog("playback", "playEpisode:  DEBOUNCED duplicate for $epId")
-            return
-        }
         lastPlayEpisodeEpisodeId = epId
         lastPlayEpisodeTime = now
 
@@ -7357,8 +7359,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val segments = currentEpisode?.voiceSegments
                         if (segments != null) {
                             val currentPos = p.currentPosition
-                            for (seg in segments) {
-                                if (currentPos >= seg.start && currentPos < seg.end) {
+                            // v3.1.146-fix: 二分查找代替线性遍历，segments按start排序
+                            var lo = 0
+                            var hi = segments.size - 1
+                            while (lo <= hi) {
+                                val mid = (lo + hi) / 2
+                                val seg = segments[mid]
+                                if (currentPos < seg.start) {
+                                    hi = mid - 1
+                                } else if (currentPos >= seg.end) {
+                                    lo = mid + 1
+                                } else {
                                     if (seg.shouldAutoSkip()) jumpToNextDrySegment(seg)
                                     break
                                 }

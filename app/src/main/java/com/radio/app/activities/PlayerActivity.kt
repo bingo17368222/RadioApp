@@ -1879,6 +1879,14 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 writeJitterLog(" ensureSegmentsForCurrentEpisode: 清除残留的分段处理状态")
             }
+            // v3.1.146-fix: 确保episode_info表中记录分段数，供节目列表显示
+            val episodeId = currentEpisode?.id
+            if (!episodeId.isNullOrBlank()) {
+                try {
+                    com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+                        .updateEpisodeSegmentCount(episodeId, dbSegments.size)
+                } catch (_: Exception) {}
+            }
             // Update if currently empty/simulated or count changed (avoids flickering when identical).
             val shouldUpdate = voiceSegments.isEmpty() ||
                     voiceSegments.all { it.isSimulated } ||
@@ -3275,6 +3283,23 @@ class PlayerActivity : AppCompatActivity() {
         // Issue 10 Fix 2: clear old subtitles when switching episodes
         clearSubtitles()
         saveLastEpisode()
+        // v3.1.146-fix: 提前载入真实分段信息，彻底解决播放时使用模拟分段（15分钟固定跳转）的问题
+        // 在调用playEpisode前，从数据库加载真实分段数据并附加到targetEpisode上
+        // 这样service设置currentEpisode时，voiceSegments已包含真实数据
+        val dbSegments = try {
+            com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(targetEpisode.id)
+        } catch (e: Exception) {
+            writeJitterLog(" playEpisodeAtIndex: getVoiceSegments异常 ${e.message}")
+            emptyList()
+        }
+        if (dbSegments.isNotEmpty()) {
+            targetEpisode = targetEpisode.copy(voiceSegments = dbSegments)
+            currentEpisode = targetEpisode
+            writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: preloaded ${dbSegments.size} real segments from DB for ${targetEpisode.id}")
+            writeJitterLog(" playEpisodeAtIndex: 提前载入${dbSegments.size}个真实分段")
+        } else {
+            writeJitterLog(" playEpisodeAtIndex: 数据库无真实分段，后续使用模拟分段")
+        }
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: BEFORE playEpisode - target=${targetEpisode.title}, id=${targetEpisode.id}, url=${targetEpisode.audioUrl}")
         val beforeEpisode = playbackService?.getCurrentEpisode()
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] playEpisodeAtIndex: BEFORE - service current=${beforeEpisode?.title} (id=${beforeEpisode?.id})")
@@ -3318,6 +3343,7 @@ class PlayerActivity : AppCompatActivity() {
 
     // Issue 6 & 11: 弹出当前节目列表对话框。高亮正在播放的节目（Issue 6），点击任意节目通过
     // playEpisodeAtIndex 切换播放并关闭对话框（Issue 11，修复点击切换失效的回归）。
+    // v3.1.146-fix: 提前载入真实分段数，显示在节目列表中，彻底解决15分钟固定跳转问题
     private fun showEpisodeListDialog() {
         if (episodeList.isEmpty()) {
             Toast.makeText(this, "没有可显示的节目列表", Toast.LENGTH_SHORT).show()
@@ -3330,6 +3356,17 @@ class PlayerActivity : AppCompatActivity() {
         val actualIdx = episodeList.indexOfFirst { it.id == currentId }
         if (actualIdx >= 0) currentEpisodeIndex = actualIdx
 
+        // v3.1.146-fix: 提前从数据库载入所有节目的真实分段数，用于列表显示
+        val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+        val segmentCountMap = HashMap<String, Int>()
+        for (ep in episodeList) {
+            if (ep.id.isNotBlank()) {
+                val count = dbHelper.getEpisodeSegmentCount(ep.id)
+                if (count > 0) segmentCountMap[ep.id] = count
+            }
+        }
+        writeJitterLog("showEpisodeListDialog: preloaded ${segmentCountMap.size} real segment counts from DB")
+
         val recyclerView = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@PlayerActivity)
             setHasFixedSize(true)
@@ -3339,7 +3376,7 @@ class PlayerActivity : AppCompatActivity() {
             val maxHeight = (resources.displayMetrics.heightPixels * 0.7).toInt()
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxHeight)
         }
-        val listAdapter = EpisodeListAdapter(episodeList, currentId)
+        val listAdapter = EpisodeListAdapter(episodeList, currentId, segmentCountMap)
         // Issue 4: 持有适配器引用，切歌后可刷新高亮
         episodeListAdapter = listAdapter
         writeEpisodeLog("showEpisodeListDialog: creating adapter with currentId=$currentId, episodeList.size=${episodeList.size}")
@@ -3716,10 +3753,12 @@ class PlayerActivity : AppCompatActivity() {
 
     // Issue 6: 节目列表适配器，高亮当前正在播放的节目
     // 高亮方式：背景色 + "正在播放" 标签 + 加粗标题 + 播放按钮变为暂停图标
+    // v3.1.146-fix: 添加 segmentCountMap 参数，显示数据库中的真实分段数
     inner class EpisodeListAdapter(
         private val episodes: List<Episode>,
         // Issue 4: 改为 var 以便切歌后更新高亮的当前播放项
-        var currentlyPlayingId: String?
+        var currentlyPlayingId: String?,
+        private val segmentCountMap: Map<String, Int> = emptyMap()
     ) : RecyclerView.Adapter<EpisodeListAdapter.ViewHolder>() {
         var onItemClicked: ((Int) -> Unit)? = null
         var onDismiss: (() -> Unit)? = null
@@ -3749,7 +3788,12 @@ class PlayerActivity : AppCompatActivity() {
                 episode.broadcastAt
             }
             val durationMin = episode.duration / 60
-            val segments = episode.voiceSegments?.size ?: 0
+            // v3.1.146-fix: 优先使用数据库中的真实分段数，仅当episode已加载voiceSegments时使用其size
+            val segments = if (episode.voiceSegments.isNotEmpty()) {
+                episode.voiceSegments.size
+            } else {
+                segmentCountMap[episode.id] ?: 0
+            }
             holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
 
             val ctx = holder.itemView.context
@@ -4221,7 +4265,12 @@ class PlayerActivity : AppCompatActivity() {
                 val episodeKey = ep.id ?: ""
                 val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
-                playbackService?.playEpisode(ep, false, startPos)
+                // v3.1.146-fix: 提前载入真实分段信息，避免播放时使用模拟分段
+                val preloadedEp = try {
+                    val segs = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(ep.id)
+                    if (segs.isNotEmpty()) ep.copy(voiceSegments = segs) else ep
+                } catch (_: Exception) { ep }
+                playbackService?.playEpisode(preloadedEp, false, startPos)
                 // v3.1.117: 记录播放历史
                 PlayHistoryUtils.recordHistory(this@PlayerActivity, ep, if (startPos > 0) startPos else 0L)
                 // v2.4.160: Load DB segments first; only generate simulated if DB has none.
@@ -4278,7 +4327,12 @@ class PlayerActivity : AppCompatActivity() {
                 val episodeKey = ep.id ?: ""
                 val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                 val startPos = if (savedPos > 0) savedPos else -1L
-                playbackService?.playEpisode(ep, false, startPos)
+                // v3.1.146-fix: 提前载入真实分段信息，避免播放时使用模拟分段
+                val preloadedEp = try {
+                    val segs = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(ep.id)
+                    if (segs.isNotEmpty()) ep.copy(voiceSegments = segs) else ep
+                } catch (_: Exception) { ep }
+                playbackService?.playEpisode(preloadedEp, false, startPos)
                 // v3.1.117: 记录播放历史
                 PlayHistoryUtils.recordHistory(this@PlayerActivity, ep, if (startPos > 0) startPos else 0L)
                 // v2.4.160: Load DB segments first; only generate simulated if DB has none.
@@ -4408,7 +4462,12 @@ class PlayerActivity : AppCompatActivity() {
                     val episodeKey = targetEpisode.id ?: ""
                     val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
                     val startPos = if (savedPos > 0) savedPos else -1L
-                    playbackService?.playEpisode(targetEpisode, false, startPos)
+                    // v3.1.146-fix: 提前载入真实分段信息，避免播放时使用模拟分段
+                    val preloadedTarget = try {
+                        val segs = com.radio.app.database.RadioDatabaseHelper.getInstance(this@PlayerActivity).getVoiceSegments(targetEpisode.id)
+                        if (segs.isNotEmpty()) targetEpisode.copy(voiceSegments = segs) else targetEpisode
+                    } catch (_: Exception) { targetEpisode }
+                    playbackService?.playEpisode(preloadedTarget, false, startPos)
                     // v3.1.117: 记录播放历史
                     PlayHistoryUtils.recordHistory(this@PlayerActivity, targetEpisode, if (startPos > 0) startPos else 0L)
                     // v2.4.160: Load DB segments first; only generate simulated if DB has none.
