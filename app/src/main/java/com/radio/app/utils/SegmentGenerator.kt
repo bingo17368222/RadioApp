@@ -1476,6 +1476,8 @@ object SegmentGenerator {
                     } else {
                         // v3.1.145-fix: 不再需要try/finally管理yamnetInterpreter生命周期，
                         // AudioSegmentAnalyzer内部管理类级Interpreter，超时自动重建
+                        // v3.1.147-fix: 重置YAMNet超时计数，避免前一节目残留的计时影响本轮
+                        AudioSegmentAnalyzer.resetYamnetTimeoutCounters()
                         // ===== 第二层-B：对每个区间独立运行YAMNet推理 =====
                         val yamnetAllSegments = mutableListOf<VoiceSegment>()
                         var processedCount = 0

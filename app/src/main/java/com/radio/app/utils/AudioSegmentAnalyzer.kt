@@ -2043,10 +2043,28 @@ object AudioSegmentAnalyzer {
     private var yamnetExecutor = Executors.newSingleThreadExecutor()
     private const val YAMNET_INFERENCE_TIMEOUT_SECONDS = 15L
 
-    // v3.1.145-fix: 获取当前Interpreter（从类级字段读取）
+    // v3.1.147-fix: YAMNet推理连续超时与全局重载计数
+    // 连续3次超时则跳过当前区间，避免interpreter反复挂死导致的死循环
+    @Volatile
+    private var consecutiveTimeoutCount = 0
+    @Volatile
+    private var totalReloadCount = 0
+    private const val MAX_CONSECUTIVE_TIMEOUTS = 3
+    // 全局重载超过20次则跳过剩余YAMNet处理，避免整个分段流程被拖死
+    private const val MAX_TOTAL_RELOADS = 20
+
+    // v3.1.147-fix: 获取当前Interpreter（从类级字段读取）
     private fun getCurrentInterpreter(): Interpreter {
         return currentYamnetInterpreter
             ?: throw RuntimeException("YAMNet interpreter not initialized")
+    }
+
+    // v3.1.147-fix: 重置YAMNet超时计数，每次开始新的YAMNet处理轮次前调用
+    // 避免前一节目残留的计时影响下一轮处理
+    fun resetYamnetTimeoutCounters() {
+        consecutiveTimeoutCount = 0
+        totalReloadCount = 0
+        Log.i(TAG, "resetYamnetTimeoutCounters: 已重置超时计数")
     }
 
     // v3.1.146-fix: 放弃旧Interpreter并重建新实例
@@ -2086,6 +2104,16 @@ object AudioSegmentAnalyzer {
             // v3.1.99: 计算人声频谱比值（1kHz~4kHz能量占比）
             val spectrumRatio = computeSpectrumRatio(normalizedSamples)
 
+            // v3.1.147-fix: 输入校验——检查NaN/Infinity，避免TFLite处理异常数据挂死
+            var hasInvalid = false
+            for (s in normalizedSamples) {
+                if (s.isNaN() || s.isInfinite()) { hasInvalid = true; break }
+            }
+            if (hasInvalid) {
+                Log.w(TAG, "classifyWithYamnet: 输入包含NaN/Infinity，返回默认结果")
+                return YamnetResult(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, spectrumRatio)
+            }
+
             // v2.4.130: Use model's actual input shape instead of hardcoded [1, 15600].
             val inputBuffer = TensorBuffer.createFixedSize(
                 yamnetInputShape,
@@ -2111,6 +2139,7 @@ object AudioSegmentAnalyzer {
 
             // v3.1.145-fix: YAMNet推理超时保护——interpreter.run()可能挂死，使用Future+超时
             // 超时后关闭旧Interpreter并重建新实例，确保后续推理不使用损坏的Interpreter
+            val inferenceStartMs = System.currentTimeMillis()
             try {
                 val inferenceFuture: Future<Boolean> = yamnetExecutor.submit(Callable {
                     interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
@@ -2118,14 +2147,33 @@ object AudioSegmentAnalyzer {
                 })
                 try {
                     inferenceFuture.get(YAMNET_INFERENCE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    // v3.1.147-fix: 推理成功，重置连续超时计数
+                    consecutiveTimeoutCount = 0
                 } catch (e: TimeoutException) {
                     // 推理超时，取消任务
                     inferenceFuture.cancel(true)
-                    val timeoutMsg = "classifyWithYamnet: 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒)，放弃旧Interpreter并重建"
+                    consecutiveTimeoutCount++
+                    totalReloadCount++
+                    val elapsedMs = System.currentTimeMillis() - inferenceStartMs
+                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}"
                     Log.w(TAG, timeoutMsg)
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $timeoutMsg")
                     // v3.1.145-fix: 关闭旧Interpreter并重建新实例，确保后续推理不再挂死
                     reloadYamnetInterpreter()
+                    // v3.1.147-fix: 连续超时超过阈值，抛出异常让调用者跳过当前区间
+                    if (consecutiveTimeoutCount >= MAX_CONSECUTIVE_TIMEOUTS) {
+                        val abortMsg = "classifyWithYamnet: 连续${consecutiveTimeoutCount}次超时，跳过当前区间"
+                        Log.w(TAG, abortMsg)
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $abortMsg")
+                        throw RuntimeException(abortMsg)
+                    }
+                    // v3.1.147-fix: 全局重载超过阈值，抛出异常让调用者跳过剩余YAMNet处理
+                    if (totalReloadCount >= MAX_TOTAL_RELOADS) {
+                        val abortAllMsg = "classifyWithYamnet: 总重载${totalReloadCount}次超过阈值=${MAX_TOTAL_RELOADS}，跳过剩余所有YAMNet处理"
+                        Log.w(TAG, abortAllMsg)
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $abortAllMsg")
+                        throw RuntimeException(abortAllMsg)
+                    }
                     // 输出缓冲可能不完整，返回默认结果
                     return YamnetResult(
                         speech = 0f, narration = 0f, singing = 0f, music = 0f,
@@ -2135,8 +2183,12 @@ object AudioSegmentAnalyzer {
                         spectrumRatio = spectrumRatio
                     )
                 }
+            } catch (e: RuntimeException) {
+                // v3.1.147-fix: 传递连续超时/全局重载异常，不在此处捕获
+                throw e
             } catch (e: Throwable) {
-                vadLog("classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message}")
+                val errMsg = "classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message}"
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $errMsg")
                 // v3.1.145-fix: interpreter崩溃后也重建，确保后续推理可用
                 reloadYamnetInterpreter()
                 // 返回默认结果，避免崩溃传播
@@ -2206,6 +2258,9 @@ object AudioSegmentAnalyzer {
                 maxRawScore = maxRawScore,
                 spectrumRatio = spectrumRatio
             )
+        } catch (e: RuntimeException) {
+            // v3.1.147-fix: 连续超时/全局重载异常，直接向上传播让调用者跳过区间
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "YAMNet classification failed: ${e.message}")
             vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] classifyWithYamnet FAILED: ${e.javaClass.simpleName}: ${e.message}")
@@ -2514,7 +2569,14 @@ object AudioSegmentAnalyzer {
         while (pos + YAMNET_WINDOW_SAMPLES <= intervalEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             checkCancelled()
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
-            val yamnet = classifyWithYamnet(window)
+            val yamnet: YamnetResult
+            try {
+                yamnet = classifyWithYamnet(window)
+            } catch (e: RuntimeException) {
+                // v3.1.147-fix: YAMNet连续超时/全局重载，跳过当前区间
+                Log.w(TAG, "classifyIntervalRange: 跳过区间剩余帧: ${e.message}")
+                break
+            }
             val type = classifyYamnetScores(yamnet)
             typeVotes[type] = typeVotes.getOrDefault(type, 0) + 1
             pos += YAMNET_SPEECH_HOP_SAMPLES
@@ -3578,12 +3640,29 @@ object AudioSegmentAnalyzer {
         val typeVotes = mutableMapOf<FrameType, Int>()
 
         var pos = startSample
+        var skippedIntervals = 0
         while (pos + YAMNET_WINDOW_SAMPLES <= endSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
-            val yamnet = classifyWithYamnet(window)
+            val yamnet: YamnetResult
+            try {
+                yamnet = classifyWithYamnet(window)
+            } catch (e: RuntimeException) {
+                // v3.1.147-fix: YAMNet连续超时/全局重载，跳过当前区间
+                Log.w(TAG, "classifyIntervalMajority: 跳过区间 ${intervalStartMs}~${intervalEndMs}ms: ${e.message}")
+                skippedIntervals++
+                break
+            }
+            // v3.1.147-fix: 如果返回默认结果且连续超时计数>0，说明最近发生过超时，记录但不中断
+            if (consecutiveTimeoutCount > 0) {
+                skippedIntervals++
+            }
             val type = classifyYamnetScores(yamnet)
             typeVotes[type] = typeVotes.getOrDefault(type, 0) + 1
             pos += YAMNET_SPEECH_HOP_SAMPLES
+        }
+
+        if (skippedIntervals > 0) {
+            Log.w(TAG, "classifyIntervalMajority: 区间 ${intervalStartMs}~${intervalEndMs}ms 跳过${skippedIntervals}个帧，剩余${typeVotes.size}个投票")
         }
 
         if (typeVotes.isEmpty()) return null
