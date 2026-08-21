@@ -3479,6 +3479,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // v3.1.135: 显示播放计划列表对话框（后续即将播放的节目）
+    // v3.1.147-fix: 提前载入真实分段信息并显示分段数，彻底解决跨天跨周固定分段跳转
     private fun showScheduleDialog() {
         var scheduleList = playbackService?.getPlaybackSchedule() ?: emptyList()
         // v3.1.139: 如果播放计划为空，尝试重新构建
@@ -3493,6 +3494,17 @@ class PlayerActivity : AppCompatActivity() {
         }
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: scheduleList.size=${scheduleList.size}")
 
+        // v3.1.147-fix: 提前从数据库载入所有计划节目的真实分段数
+        val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
+        val segmentCountMap = HashMap<String, Int>()
+        for (ep in scheduleList) {
+            if (ep.id.isNotBlank()) {
+                val count = dbHelper.getEpisodeSegmentCount(ep.id)
+                if (count > 0) segmentCountMap[ep.id] = count
+            }
+        }
+        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: preloaded ${segmentCountMap.size} real segment counts from DB")
+
         val recyclerView = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@PlayerActivity)
             setHasFixedSize(true)
@@ -3503,12 +3515,20 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         val currentId = currentEpisode?.id ?: playbackService?.getCurrentEpisode()?.id
-        val adapter = PlaybackScheduleListAdapter(scheduleList, currentId)
+        val adapter = PlaybackScheduleListAdapter(scheduleList, currentId, segmentCountMap)
         adapter.onItemClicked = { position ->
             val item = scheduleList.getOrNull(position)
             if (item != null) {
                 writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: clicked item pos=$position, title=${item.title}")
-                val episode = item
+                // v3.1.147-fix: 提前载入真实分段数据，避免使用模拟分段
+                val preloadedEp = try {
+                    val segs = dbHelper.getVoiceSegments(item.id)
+                    if (segs.isNotEmpty()) {
+                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: preloaded ${segs.size} real segments for ${item.id}")
+                        item.copy(voiceSegments = segs)
+                    } else item
+                } catch (_: Exception) { item }
+                val episode = preloadedEp
                 // 直接通过 service 播放
                 if (playbackService == null) {
                     Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
@@ -3517,7 +3537,6 @@ class PlayerActivity : AppCompatActivity() {
                     val oldId = currentEpisode?.id
                     val oldPos = playbackService?.getCurrentPosition() ?: 0L
                     if (oldId != null) {
-                        val dbHelper = RadioDatabaseHelper.getInstance(this)
                         dbHelper.savePlayProgress(com.radio.app.models.PlayProgress(episodeId = oldId, progress = oldPos, recordedAt = System.currentTimeMillis()))
                         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: saved old episode position, id=$oldId, pos=$oldPos")
                     }
@@ -3525,6 +3544,7 @@ class PlayerActivity : AppCompatActivity() {
                     currentEpisode = episode
                     currentEpisodeIndex = -1
                     saveLastEpisode()
+                    // v3.1.147-fix: 使用已载入真实分段的episode
                     playbackService?.playEpisode(episode, false)
                     ensureSegmentsForCurrentEpisode()
                     updateUI()
@@ -3544,9 +3564,11 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // 播放计划列表适配器
+    // v3.1.147-fix: 添加segmentCountMap参数，显示数据库中的真实分段数
     inner class PlaybackScheduleListAdapter(
         private val scheduleItems: List<Episode>,
-        var currentlyPlayingId: String?
+        var currentlyPlayingId: String?,
+        private val segmentCountMap: Map<String, Int> = emptyMap()
     ) : RecyclerView.Adapter<PlaybackScheduleListAdapter.ViewHolder>() {
         var onItemClicked: ((Int) -> Unit)? = null
         private val timeFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
@@ -3593,6 +3615,16 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
             holder.tvTime.text = timeStr
+
+            // v3.1.147-fix: 显示真实分段数
+            val segmentCount = segmentCountMap[episodeId] ?: 0
+            if (segmentCount > 0) {
+                holder.tvDesc.text = "${segmentCount}个片段"
+                holder.tvDesc.visibility = View.VISIBLE
+            } else {
+                holder.tvDesc.visibility = View.GONE
+            }
+
             // 当前播放项背景高亮
             val ctx = holder.itemView.context
             val typedArray = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.colorBackground, android.R.attr.textColorPrimary, android.R.attr.textColorSecondary))
@@ -3623,6 +3655,8 @@ class PlayerActivity : AppCompatActivity() {
             val tvIndex: TextView = itemView.findViewById(R.id.tv_index)
             val tvTitle: TextView = itemView.findViewById(R.id.tv_title)
             val tvTime: TextView = itemView.findViewById(R.id.tv_time)
+            // v3.1.147-fix: 分段数显示
+            val tvDesc: TextView = itemView.findViewById(R.id.tv_desc)
         }
     }
 
