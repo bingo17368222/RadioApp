@@ -1489,8 +1489,16 @@ object SegmentGenerator {
                         // v3.1.92: 打开PCM文件一次，避免重复打开316次
                         val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
                         try {
+                            // v3.1.149-fix: 单个区间最大耗时限制（120秒），防止被某个区间拖死
+                            val yamnetLoopStartMs = System.currentTimeMillis()
+                            val MAX_YAMNET_LOOP_MS = 120_000L
                             for (interval in yamnetIntervals) {
                                     if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+                                    // v3.1.149-fix: 整个YAMNet循环超时保护
+                                    if (System.currentTimeMillis() - yamnetLoopStartMs >= MAX_YAMNET_LOOP_MS) {
+                                        Log.w(TAG, "三层架构: YAMNet循环总耗时超过${MAX_YAMNET_LOOP_MS / 1000}秒，跳过剩余${totalIntervals - processedCount}个区间 for episode=$episodeId")
+                                        break
+                                    }
                                     val intervalStart = interval.first
                                     val intervalEnd = interval.second
                                     val intervalDurationMs = intervalEnd - intervalStart
@@ -1806,8 +1814,16 @@ object SegmentGenerator {
                                         // v3.1.92: 打开PCM文件一次
                                         val pcmSamples2 = AudioSegmentAnalyzer.openPcmSamples(newFullPcm)
                                         try {
+                                            // v3.1.149-fix: YAMNet循环总超时保护
+                                            val yamnetLoopStartMs2 = System.currentTimeMillis()
+                                            val MAX_YAMNET_LOOP_MS2 = 120_000L
                                             for (interval in yamnetIntervals) {
                                                 if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
+                                                // v3.1.149-fix: YAMNet循环总超时保护
+                                                if (System.currentTimeMillis() - yamnetLoopStartMs2 >= MAX_YAMNET_LOOP_MS2) {
+                                                    Log.w(TAG, "三层架构: YAMNet循环总耗时超过${MAX_YAMNET_LOOP_MS2 / 1000}秒，跳过剩余${totalIntervals - processedCount}个区间 for episode=$episodeId")
+                                                    break
+                                                }
                                                 val intervalStart = interval.first
                                                 val intervalEnd = interval.second
 
