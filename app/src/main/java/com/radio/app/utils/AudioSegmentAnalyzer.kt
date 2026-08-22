@@ -2056,11 +2056,11 @@ object AudioSegmentAnalyzer {
     private const val MAX_TOTAL_RELOADS = 15
 
     // v3.1.150-fix: 归一化增益上限，防止极静音频产生超大值导致TFLite推理挂死
-    // 当RMS=0.015时增益=10x，RMS<0.015时增益上限为10x
-    private const val MAX_NORMALIZE_GAIN = 10.0f
+    // 当RMS=0.05时增益=3x，RMS<0.05时增益上限为3x
+    private const val MAX_NORMALIZE_GAIN = 3.0f
     // v3.1.150-fix: YAMNet输入值钳位上限，防止极端值触发TFLite原生bug
-    // 原始YAMNet输入范围约为[-1,1]，钳位到±5.0提供足够动态范围同时避免极端值
-    private const val MAX_YAMNET_INPUT_VALUE = 5.0f
+    // 原始YAMNet输入范围约为[-1,1]，钳位到±3.0提供足够动态范围同时避免极端值
+    private const val MAX_YAMNET_INPUT_VALUE = 3.0f
 
     // v3.1.147-fix: 获取当前Interpreter（从类级字段读取）
     private fun getCurrentInterpreter(): Interpreter {
@@ -3984,33 +3984,8 @@ object AudioSegmentAnalyzer {
         )
         val rawScores = mutableListOf<RawFrameScores>()
 
-        // v3.1.150-fix: 预暖推理——使用随机数据验证interpreter可用，避免挂死在第一个真实帧
-        // 如果预暖超时，reloadYamnetInterpreter()会重建interpreter，最多重试2次
-        var warmupOk = false
-        for (warmupTry in 1..2) {
-            if (warmupTry > 1) {
-                Log.w(TAG, "classifyIntervalRange: 预暖第${warmupTry}次尝试")
-            }
-            // 构造中等幅度的随机数据（非全零，避免触发全零特殊路径）
-            val warmupData = FloatArray(YAMNET_WINDOW_SAMPLES) { ((Math.random() * 2.0 - 1.0) * 0.5).toFloat() }
-            val warmupResult = try {
-                classifyWithYamnet(warmupData)
-            } catch (e: RuntimeException) {
-                Log.w(TAG, "classifyIntervalRange: 预暖推理失败(第${warmupTry}次): ${e.message}")
-                reloadYamnetInterpreter()
-                null
-            }
-            if (warmupResult != null) {
-                warmupOk = true
-                Log.d(TAG, "classifyIntervalRange: 预暖推理成功(第${warmupTry}次), voiceSum=${"%.2f".format(warmupResult.voiceSum)}")
-                break
-            }
-        }
-        if (!warmupOk) {
-            Log.w(TAG, "classifyIntervalRange: 预暖推理全部失败，跳过当前区间")
-            return emptyList()
-        }
-
+        // v3.1.150-fix: 预暖推理——使用实际第一帧数据验证interpreter可用
+        // 如果第一帧数据导致超时，会触发reload并重试，最多2次后仍失败则跳过整个区间
         var pos = rangeStartSample
         val totalSamples = rangeEndSample - rangeStartSample
         var lastProgressMs = 0L
@@ -4019,8 +3994,59 @@ object AudioSegmentAnalyzer {
         val MAX_INTERVAL_MS = 30_000L
         // v3.1.149-fix: 记录区间内每个classifyWithYamnet调用的耗时，用于诊断
         var intervalFrameCount = 0
-        var intervalTotalInferMs = 0L
         var intervalTimeoutCount = 0
+
+        // v3.1.150-fix: 用实际第一帧数据做预暖，比随机数据更可靠
+        if (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
+            var warmupOk = false
+            for (warmupTry in 1..2) {
+                if (warmupTry > 1) {
+                    Log.w(TAG, "classifyIntervalRange: 预暖第${warmupTry}次尝试（重载interpreter后）")
+                }
+                val warmupWindow = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
+                var nonZero = 0; var maxVal = 0f
+                for (s in warmupWindow) { if (s != 0f) nonZero++; if (kotlin.math.abs(s) > maxVal) maxVal = kotlin.math.abs(s) }
+                val warmupResult = try {
+                    classifyWithYamnet(warmupWindow)
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "classifyIntervalRange: 预暖推理超时/失败(第${warmupTry}次, 非零样本=${nonZero}, maxAbs=${"%.4f".format(maxVal)}): ${e.message}")
+                    reloadYamnetInterpreter()
+                    null
+                }
+                if (warmupResult != null) {
+                    warmupOk = true
+                    Log.d(TAG, "classifyIntervalRange: 预暖推理成功(第${warmupTry}次), 非零样本=${nonZero}, maxAbs=${"%.4f".format(maxVal)}, voiceSum=${"%.2f".format(warmupResult.voiceSum)}")
+                    break
+                }
+            }
+            if (!warmupOk) {
+                Log.w(TAG, "classifyIntervalRange: 预暖推理全部失败，跳过当前区间，pos=${pos}, rangeEndSample=${rangeEndSample}")
+                return emptyList()
+            }
+            // 预暖成功，第一帧已经处理，直接将结果加入rawScores
+            val windowCenterSample = pos + YAMNET_WINDOW_SAMPLES / 2
+            val windowCenterMs = 0L + (windowCenterSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
+            // 从预暖结果重建：需要保存预暖的YamnetResult
+            // 由于预暖在for循环中，重新调用一次来获取结果（不会超时，因为刚预暖成功）
+            // 或者直接推进pos不加入结果——安全起见，重新调用一次
+            try {
+                val warmupScores = classifyWithYamnet(samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES))
+                rawScores.add(RawFrameScores(
+                    timestampMs = windowCenterMs,
+                    speech = warmupScores.speech,
+                    narration = warmupScores.narration,
+                    singing = warmupScores.singing,
+                    music = warmupScores.music,
+                    silence = warmupScores.silence,
+                    spectrumRatio = warmupScores.spectrumRatio
+                ))
+                intervalFrameCount++
+            } catch (_: Exception) {
+                // 预暖后第二次调用不应失败，但以防万一
+                Log.w(TAG, "classifyIntervalRange: 预暖后第二次调用失败，跳过预暖帧")
+            }
+            pos += YAMNET_SPEECH_HOP_SAMPLES
+        }
 
         while (pos + YAMNET_WINDOW_SAMPLES <= rangeEndSample && pos + YAMNET_WINDOW_SAMPLES <= samples.size) {
             checkCancelled()
@@ -4031,12 +4057,30 @@ object AudioSegmentAnalyzer {
             }
             val window = samples.copyOfRange(pos, pos + YAMNET_WINDOW_SAMPLES)
             // v3.1.147-fix: 添加try-catch，捕获classifyWithYamnet抛出的连续超时/全局重载异常
-            val yamnet: YamnetResult
-            try {
-                yamnet = classifyWithYamnet(window)
-            } catch (e: RuntimeException) {
-                intervalTimeoutCount++
-                Log.w("AudioSegmentAnalyzer", "classifyIntervalRange: 跳过区间剩余帧(第${intervalTimeoutCount}次): ${e.message}")
+            // v3.1.150-fix: 超时后自动重试一次（重载interpreter后重试同一帧）
+            var yamnet: YamnetResult? = null
+            var frameSucceeded = false
+            for (retry in 0..1) {
+                try {
+                    yamnet = classifyWithYamnet(window)
+                    frameSucceeded = true
+                    break
+                } catch (e: RuntimeException) {
+                    if (retry == 0 && e.message?.contains("跳过") == true) {
+                        // 第一次失败：重载interpreter后重试同一帧
+                        Log.w("AudioSegmentAnalyzer", "classifyIntervalRange: 推理超时/失败，重载interpreter后重试同一帧: ${e.message}")
+                        reloadYamnetInterpreter()
+                        // 继续重试
+                    } else {
+                        // 第二次失败或非跳过异常：跳过整个区间
+                        intervalTimeoutCount++
+                        Log.w("AudioSegmentAnalyzer", "classifyIntervalRange: 跳过区间剩余帧(第${intervalTimeoutCount}次): ${e.message}")
+                        frameSucceeded = false
+                        break
+                    }
+                }
+            }
+            if (!frameSucceeded || yamnet == null) {
                 break
             }
 
@@ -4046,12 +4090,12 @@ object AudioSegmentAnalyzer {
             val windowCenterMs = refStartMs + (windowCenterSample.toLong() * 1000L / YAMNET_SAMPLE_RATE)
             rawScores.add(RawFrameScores(
                 timestampMs = windowCenterMs,
-                speech = yamnet.speech,
-                narration = yamnet.narration,
-                singing = yamnet.singing,
-                music = yamnet.music,
-                silence = yamnet.silence,
-                spectrumRatio = yamnet.spectrumRatio
+                speech = yamnet!!.speech,
+                narration = yamnet!!.narration,
+                singing = yamnet!!.singing,
+                music = yamnet!!.music,
+                silence = yamnet!!.silence,
+                spectrumRatio = yamnet!!.spectrumRatio
             ))
             pos += YAMNET_SPEECH_HOP_SAMPLES
 
