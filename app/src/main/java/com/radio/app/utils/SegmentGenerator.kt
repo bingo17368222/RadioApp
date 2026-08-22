@@ -1493,6 +1493,9 @@ object SegmentGenerator {
                             val yamnetLoopStartMs = System.currentTimeMillis()
                             val MAX_YAMNET_LOOP_MS = 120_000L
                             for (interval in yamnetIntervals) {
+                                    // v3.1.153-fix: 整个区间处理体包裹try-catch(Throwable)，防止单个区间
+                                    // 崩溃（含原生TFLite SIGSEGV导致的进程被杀）拖死整个流程
+                                    try {
                                     if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
                                     // v3.1.149-fix: 整个YAMNet循环超时保护
                                     if (System.currentTimeMillis() - yamnetLoopStartMs >= MAX_YAMNET_LOOP_MS) {
@@ -1566,6 +1569,19 @@ object SegmentGenerator {
                                             context, episodeId, episodeTitle, mapped,
                                             "第2层-B YAMNet ${processedCount}/$totalIntervals ${elapsedStr}/${remainingStr}"
                                         )
+                                    }
+                                    } catch (e: Throwable) {
+                                        // v3.1.153-fix: 捕获任何Java异常（含OutOfMemoryError），记录日志后继续下一个区间
+                                        // 原生TFLite崩溃（SIGSEGV）仍会杀死进程，但所有Java级异常不会中断流程
+                                        val crashMsg = "三层架构: 第2层-B YAMNet区间[${processedCount + 1}/$totalIntervals] 处理异常: ${e.javaClass.name}: ${e.message}"
+                                        Log.e(TAG, "$crashMsg for episode=$episodeId")
+                                        writeFingerprintLog(context, crashMsg)
+                                        val sw = java.io.StringWriter()
+                                        val pw = java.io.PrintWriter(sw)
+                                        e.printStackTrace(pw)
+                                        writeFingerprintLog(context, "异常详情:\n${sw.toString().take(500)}")
+                                        processedCount++
+                                        continue
                                     }
                                 }
                             } finally {
