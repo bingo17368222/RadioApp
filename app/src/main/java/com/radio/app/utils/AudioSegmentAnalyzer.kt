@@ -2055,6 +2055,13 @@ object AudioSegmentAnalyzer {
     // v3.1.149-fix: 全局重载超过15次则跳过剩余YAMNet处理，避免整个分段流程被拖死
     private const val MAX_TOTAL_RELOADS = 15
 
+    // v3.1.150-fix: 归一化增益上限，防止极静音频产生超大值导致TFLite推理挂死
+    // 当RMS=0.015时增益=10x，RMS<0.015时增益上限为10x
+    private const val MAX_NORMALIZE_GAIN = 10.0f
+    // v3.1.150-fix: YAMNet输入值钳位上限，防止极端值触发TFLite原生bug
+    // 原始YAMNet输入范围约为[-1,1]，钳位到±5.0提供足够动态范围同时避免极端值
+    private const val MAX_YAMNET_INPUT_VALUE = 5.0f
+
     // v3.1.147-fix: 获取当前Interpreter（从类级字段读取）
     private fun getCurrentInterpreter(): Interpreter {
         return currentYamnetInterpreter
@@ -2189,10 +2196,10 @@ object AudioSegmentAnalyzer {
                     totalReloadCount++
                     val elapsedMs = System.currentTimeMillis() - inferenceStartMs
                     // v3.1.149-fix: 记录卡住样本的详细信息，包含步骤耗时，用于诊断根因
-                    var nonZero = 0; var sum = 0.0
-                    for (s in normalizedSamples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s) }
+                    var nonZero = 0; var sum = 0.0; var maxVal = 0f; var minVal = 0f
+                    for (s in normalizedSamples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s); if (s > maxVal) maxVal = s; if (s < minVal) minVal = s }
                     val avgAbs = (sum / normalizedSamples.size).toFloat()
-                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}，前置步骤耗时(ms) getInterpreter=$getInterpreterElapsed normalize=$normalizeElapsed spectrum=$spectrumElapsed buffer=$bufferElapsed，样本非零=${nonZero}，平均绝对值=${"%.4f".format(avgAbs)}，首位10=${normalizedSamples.take(10).joinToString(",") { "%.4f".format(it) }}"
+                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}，前置步骤耗时(ms) getInterpreter=$getInterpreterElapsed normalize=$normalizeElapsed spectrum=$spectrumElapsed buffer=$bufferElapsed，样本非零=${nonZero}，平均绝对值=${"%.4f".format(avgAbs)}，max=${"%.4f".format(maxVal)}，min=${"%.4f".format(minVal)}，首位10=${normalizedSamples.take(10).joinToString(",") { "%.4f".format(it) }}"
                     Log.w(TAG, timeoutMsg)
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $timeoutMsg")
                     // v3.1.145-fix: 关闭旧Interpreter并重建新实例，确保后续推理不再挂死
@@ -2318,7 +2325,9 @@ object AudioSegmentAnalyzer {
         return (1.0 / (1.0 + exp)).toFloat()
     }
 
-    // v3.1.99: 响度归一化：计算RMS并归一化到目标RMS
+    // v3.1.150-fix: 响度归一化：计算RMS并归一化到目标RMS
+    // 新增增益上限MAX_NORMALIZE_GAIN和值域钳位MAX_YAMNET_INPUT_VALUE，
+    // 防止极静音频产生超大值导致TFLite原生推理挂死
     private fun normalizeLoudness(samples: FloatArray, targetRms: Float = 0.15f): FloatArray {
         var sumSq = 0.0
         for (s in samples) {
@@ -2326,10 +2335,12 @@ object AudioSegmentAnalyzer {
         }
         val rms = kotlin.math.sqrt(sumSq / samples.size)
         if (rms < 1e-6f) return samples.copyOf() // 避免除零
-        val gain = targetRms / rms.toFloat()
+        // v3.1.150-fix: 限制最大增益，防止极静音频产生超大值导致TFLite推理挂死
+        val rawGain = targetRms / rms.toFloat()
+        val gain = kotlin.math.min(rawGain, MAX_NORMALIZE_GAIN)
         val result = FloatArray(samples.size)
         for (i in samples.indices) {
-            result[i] = samples[i] * gain
+            result[i] = (samples[i] * gain).coerceIn(-MAX_YAMNET_INPUT_VALUE, MAX_YAMNET_INPUT_VALUE)
         }
         return result
     }
@@ -3972,6 +3983,33 @@ object AudioSegmentAnalyzer {
             val spectrumRatio: Float
         )
         val rawScores = mutableListOf<RawFrameScores>()
+
+        // v3.1.150-fix: 预暖推理——使用随机数据验证interpreter可用，避免挂死在第一个真实帧
+        // 如果预暖超时，reloadYamnetInterpreter()会重建interpreter，最多重试2次
+        var warmupOk = false
+        for (warmupTry in 1..2) {
+            if (warmupTry > 1) {
+                Log.w(TAG, "classifyIntervalRange: 预暖第${warmupTry}次尝试")
+            }
+            // 构造中等幅度的随机数据（非全零，避免触发全零特殊路径）
+            val warmupData = FloatArray(YAMNET_WINDOW_SAMPLES) { ((Math.random() * 2.0 - 1.0) * 0.5).toFloat() }
+            val warmupResult = try {
+                classifyWithYamnet(warmupData)
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "classifyIntervalRange: 预暖推理失败(第${warmupTry}次): ${e.message}")
+                reloadYamnetInterpreter()
+                null
+            }
+            if (warmupResult != null) {
+                warmupOk = true
+                Log.d(TAG, "classifyIntervalRange: 预暖推理成功(第${warmupTry}次), voiceSum=${"%.2f".format(warmupResult.voiceSum)}")
+                break
+            }
+        }
+        if (!warmupOk) {
+            Log.w(TAG, "classifyIntervalRange: 预暖推理全部失败，跳过当前区间")
+            return emptyList()
+        }
 
         var pos = rangeStartSample
         val totalSamples = rangeEndSample - rangeStartSample
