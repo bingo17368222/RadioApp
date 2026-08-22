@@ -2128,24 +2128,35 @@ object AudioSegmentAnalyzer {
             stepMs = System.currentTimeMillis()
             val getInterpreterElapsed = stepMs - entryMs
 
-            // v3.1.99: 输入侧响度归一化，归一化到目标RMS 0.15后再喂给YAMNet
+            // v3.1.152-fix: YAMNet使用原始PCM样本（范围[-1,1]），不做响度归一化
+            // 归一化会放大静音段的噪声，产生极端值触发TFLite原生推理bug
+            // 保留normalizeLoudness仅用于computeSpectrumRatio诊断
             val normalizedSamples = normalizeLoudness(samples)
             val normalizeElapsed = System.currentTimeMillis() - stepMs
+            // v3.1.99: 计算人声频谱比值（1kHz~4kHz能量占比），使用归一化样本
             stepMs = System.currentTimeMillis()
-
-            // v3.1.99: 计算人声频谱比值（1kHz~4kHz能量占比）
             val spectrumRatio = computeSpectrumRatio(normalizedSamples)
             val spectrumElapsed = System.currentTimeMillis() - stepMs
             stepMs = System.currentTimeMillis()
 
-            // v3.1.147-fix: 输入校验——检查NaN/Infinity，避免TFLite处理异常数据挂死
+            // v3.1.152-fix: 对原始样本做NaN/Infinity检查和值域钳位
+            // 原始PCM样本应在[-1,1]范围内，钳位到±1.0作为安全边界
             var hasInvalid = false
-            for (s in normalizedSamples) {
+            var rawMaxVal = 0f
+            for (s in samples) {
                 if (s.isNaN() || s.isInfinite()) { hasInvalid = true; break }
+                if (kotlin.math.abs(s) > rawMaxVal) rawMaxVal = kotlin.math.abs(s)
             }
             if (hasInvalid) {
-                Log.w(TAG, "classifyWithYamnet: 输入包含NaN/Infinity，返回默认结果")
+                Log.w(TAG, "classifyWithYamnet: 原始输入包含NaN/Infinity，返回默认结果")
                 return YamnetResult(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, spectrumRatio)
+            }
+            // 钳位原始样本到安全范围，避免极端值触发TFLite bug
+            val clampedSamples: FloatArray = if (rawMaxVal > 1.0f) {
+                val scale = 1.0f / rawMaxVal
+                FloatArray(samples.size) { (samples[it] * scale).coerceIn(-1.0f, 1.0f) }
+            } else {
+                samples
             }
 
             // v2.4.130: Use model's actual input shape instead of hardcoded [1, 15600].
@@ -2153,7 +2164,8 @@ object AudioSegmentAnalyzer {
                 yamnetInputShape,
                 org.tensorflow.lite.DataType.FLOAT32
             )
-            inputBuffer.loadArray(normalizedSamples)
+            // v3.1.152-fix: 使用原始PCM样本（钳位后），而非归一化样本
+            inputBuffer.loadArray(clampedSamples)
             val bufferElapsed = System.currentTimeMillis() - stepMs
             stepMs = System.currentTimeMillis()
 
@@ -2195,11 +2207,11 @@ object AudioSegmentAnalyzer {
                     consecutiveTimeoutCount++
                     totalReloadCount++
                     val elapsedMs = System.currentTimeMillis() - inferenceStartMs
-                    // v3.1.149-fix: 记录卡住样本的详细信息，包含步骤耗时，用于诊断根因
+                    // v3.1.152-fix: 记录原始样本信息（而非归一化样本），用于诊断根因
                     var nonZero = 0; var sum = 0.0; var maxVal = 0f; var minVal = 0f
-                    for (s in normalizedSamples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s); if (s > maxVal) maxVal = s; if (s < minVal) minVal = s }
-                    val avgAbs = (sum / normalizedSamples.size).toFloat()
-                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}，前置步骤耗时(ms) getInterpreter=$getInterpreterElapsed normalize=$normalizeElapsed spectrum=$spectrumElapsed buffer=$bufferElapsed，样本非零=${nonZero}，平均绝对值=${"%.4f".format(avgAbs)}，max=${"%.4f".format(maxVal)}，min=${"%.4f".format(minVal)}，首位10=${normalizedSamples.take(10).joinToString(",") { "%.4f".format(it) }}"
+                    for (s in samples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s); if (s > maxVal) maxVal = s; if (s < minVal) minVal = s }
+                    val avgAbs = (sum / samples.size).toFloat()
+                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}，前置步骤耗时(ms) getInterpreter=$getInterpreterElapsed normalize=$normalizeElapsed spectrum=$spectrumElapsed buffer=$bufferElapsed，原始样本非零=${nonZero}，平均绝对值=${"%.4f".format(avgAbs)}，max=${"%.4f".format(maxVal)}，min=${"%.4f".format(minVal)}，首位10=${samples.take(10).joinToString(",") { "%.4f".format(it) }}"
                     Log.w(TAG, timeoutMsg)
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $timeoutMsg")
                     // v3.1.145-fix: 关闭旧Interpreter并重建新实例，确保后续推理不再挂死
