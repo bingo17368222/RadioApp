@@ -1,6 +1,9 @@
 package com.radio.app.utils
 
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.ResultReceiver
 import android.util.Log
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.FingerprintGroupInfo
@@ -8,12 +11,15 @@ import com.radio.app.database.FingerprintGroupMember
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
 import com.radio.app.models.VoiceSegment
+import com.radio.app.services.YamnetService
 import com.radio.app.utils.ChromaprintExtractor
 import com.radio.app.utils.PcmSegmentExtractor
 import org.tensorflow.lite.Interpreter
 import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * v2.4.91: Shared segment generation utility.
@@ -1467,249 +1473,129 @@ object SegmentGenerator {
                     mergedAfterLayer2 = mergedAfterLayer1
                     audioEngineName = "VAD+YAMNet+三层(优化-无pending段)"
                 } else {
-                    // ===== 加载YAMNet模型（所有区间共用，v3.1.145-fix: 自动设置类级字段） =====
-                    val yamnetInterpreter = AudioSegmentAnalyzer.loadYamnetInterpreter(context)
-                    if (yamnetInterpreter == null) {
-                        Log.w(TAG, "三层架构: YAMNet模型加载失败，使用第1层结果 for episode=$episodeId")
-                        mergedAfterLayer2 = mergedAfterLayer1
-                        audioEngineName = "VAD+YAMNet+三层(优化-YAMNet加载失败)"
-                    } else {
-                        // v3.1.145-fix: 不再需要try/finally管理yamnetInterpreter生命周期，
-                        // AudioSegmentAnalyzer内部管理类级Interpreter，超时自动重建
-                        // v3.1.147-fix: 重置YAMNet超时计数，避免前一节目残留的计时影响本轮
-                        AudioSegmentAnalyzer.resetYamnetTimeoutCounters()
-                        // ===== 第二层-B：对每个区间独立运行YAMNet推理 =====
-                        val yamnetAllSegments = mutableListOf<VoiceSegment>()
-                        var processedCount = 0
-                        val totalIntervals = yamnetIntervals.size
-                        // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
-                        val yamnetStartTimeMs = System.currentTimeMillis()
-                        var yamnetProgressWriteTime = 0L
+                    // ===== v3.1.154: 使用独立进程YamnetService进行YAMNet推理 =====
+                    // 根因：TFLite原生SIGSEGV崩溃会杀死主进程，try-catch无法捕获。
+                    // 修复：通过独立进程(:yamnet)隔离TFLite推理，崩溃只影响子进程。
+                    val yamnetAllSegments = mutableListOf<VoiceSegment>()
+                    val totalIntervals = yamnetIntervals.size
+                    var yamnetServiceSuccess = false
+                    var yamnetErrorMsg: String? = null
 
-                        // v3.1.92: 打开PCM文件一次，避免重复打开316次
-                        val pcmSamples = AudioSegmentAnalyzer.openPcmSamples(pcmSourceFile)
-                        try {
-                            // v3.1.149-fix: 单个区间最大耗时限制（120秒），防止被某个区间拖死
-                            val yamnetLoopStartMs = System.currentTimeMillis()
-                            val MAX_YAMNET_LOOP_MS = 120_000L
-                            for (interval in yamnetIntervals) {
-                                    // v3.1.153-fix: 整个区间处理体包裹try-catch(Throwable)，防止单个区间
-                                    // 崩溃（含原生TFLite SIGSEGV导致的进程被杀）拖死整个流程
-                                    try {
-                                    if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
-                                    // v3.1.149-fix: 整个YAMNet循环超时保护
-                                    if (System.currentTimeMillis() - yamnetLoopStartMs >= MAX_YAMNET_LOOP_MS) {
-                                        Log.w(TAG, "三层架构: YAMNet循环总耗时超过${MAX_YAMNET_LOOP_MS / 1000}秒，跳过剩余${totalIntervals - processedCount}个区间 for episode=$episodeId")
-                                        break
-                                    }
-                                    val intervalStart = interval.first
-                                    val intervalEnd = interval.second
-                                    val intervalDurationMs = intervalEnd - intervalStart
-                                    val intervalStartSec = intervalStart / 1000
-                                    val intervalEndSec = intervalEnd / 1000
+                    try {
+                        // v3.1.155: 使用辅助函数调用YamnetService
+                        val intervalStarts = yamnetIntervals.map { it.first }.toLongArray()
+                        val intervalEnds = yamnetIntervals.map { it.second }.toLongArray()
 
-                                    // v3.1.140-fix: 记录每个YAMNet区间的音频详情
-                                    if (processedCount < 5 || (processedCount % 10 == 0)) {
-                                        val intervalInfo = "三层架构: 第2层-B YAMNet区间[${processedCount + 1}/$totalIntervals]: ${intervalStartSec}~${intervalEndSec}秒(${intervalDurationMs / 1000}s), 样本数=${(intervalDurationMs * AudioSegmentAnalyzer.YAMNET_SAMPLE_RATE / 1000).toInt()}"
-                                        Log.i(TAG, "$intervalInfo for episode=$episodeId")
-                                    }
+                        val serviceResult = runYamnetService(
+                            context, pcmSourceFile.absolutePath,
+                            intervalStarts, intervalEnds
+                        )
+                        if (serviceResult != null) {
+                            yamnetAllSegments.addAll(serviceResult)
+                            yamnetServiceSuccess = true
+                            Log.i(TAG, "三层架构: YamnetService完成，${totalIntervals}个区间产出${serviceResult.size}段 for episode=$episodeId")
+                        } else {
+                            yamnetErrorMsg = "YamnetService失败"
+                            Log.w(TAG, "三层架构: $yamnetErrorMsg for episode=$episodeId")
+                        }
+                    } catch (e: Throwable) {
+                        yamnetErrorMsg = "YamnetService调用异常: ${e.javaClass.name}: ${e.message}"
+                        Log.e(TAG, "三层架构: YamnetService调用异常: ${e.javaClass.name}: ${e.message} for episode=$episodeId")
+                    }
 
-                                    // v3.1.124: 恢复逐帧滑动窗口分类，YAMNet得分先过5帧滑动均值再分类，
-                                    // 然后应用后处理规则（短段合并、水分占比、交替结构合并）
-                                    // v3.1.142-fix: 传递区间内进度回调，避免长时间卡在单个大区间
-                                    val baseMapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
-                                    var subSegments = emptyList<VoiceSegment>()
-                                    try {
-                                        subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
-                                            pcmSamples, intervalStart, intervalEnd
-                                        ) { subProgress ->
-                                            // v3.1.143-fix: 区间内进度映射到5‰范围内有意义的变化
-                                            val subMapped = baseMapped + (subProgress * 500 / totalIntervals / 1000).coerceIn(0, maxOf(1, 500 / totalIntervals))
-                                            SegmentNotificationHelper.update(
-                                                context, episodeId, episodeTitle, subMapped.coerceIn(350, 850),
-                                                "第2层-B YAMNet ${processedCount + 1}/$totalIntervals 区间内${subProgress / 10}%"
-                                            )
-                                        }
-                                    } catch (e: InterruptedException) {
-                                        if (yamnetAllSegments.isEmpty()) throw
-                                        break
-                                    }
-
-                                    val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
-                                    yamnetAllSegments.addAll(processedSegments)
-                                    processedCount++
-                                    // v3.1.140-fix: 记录每个YAMNet区间的推理结果
-                                    // v3.1.142-fix: 每个区间都记录日志，不遗漏
-                                    val dryCount = processedSegments.count { it.label == "干货" }
-                                    val waterCount = processedSegments.count { it.label == "水货" }
-                                    val silenceCount = processedSegments.count { it.label == "静音" }
-                                    val resultInfo = "三层架构: 第2层-B YAMNet区间[${processedCount}/$totalIntervals] ${intervalStartSec}~${intervalEndSec}秒(${intervalDurationMs / 1000}s): ${processedSegments.size}段(干${dryCount}/水${waterCount}/静${silenceCount})"
-                                    Log.i(TAG, "$resultInfo for episode=$episodeId")
-                                    writeFingerprintLog(context, "三层架构: 第2层-B YAMNet区间[${processedCount}/$totalIntervals]: ${processedSegments.size}段(干${dryCount}/水${waterCount}/静${silenceCount})")
-                                    val mapped = 350 + (processedCount * 500 / totalIntervals).coerceIn(0, 500)
-                                    SegmentNotificationHelper.update(
-                                        context, episodeId, episodeTitle, mapped,
-                                        "第2层-B YAMNet推理 ${processedCount}/$totalIntervals"
-                                    )
-
-                                    // v3.1.143-fix: 每5秒写入一次带elapsed/remaining的进度日志
-                                    val now = System.currentTimeMillis()
-                                    if (now - yamnetProgressWriteTime >= 5000 || processedCount == 1 || processedCount == totalIntervals || processedCount % (totalIntervals / 10).coerceAtLeast(1) == 0) {
-                                        yamnetProgressWriteTime = now
-                                        val elapsedMs = now - yamnetStartTimeMs
-                                        val elapsedStr = formatDuration(elapsedMs)
-                                        val avgPerIntervalMs = elapsedMs.toFloat() / processedCount
-                                        val remainingMs = (avgPerIntervalMs * (totalIntervals - processedCount)).toLong()
-                                        val remainingStr = formatDuration(remainingMs)
-                                        val progressPct = (processedCount * 100 / totalIntervals).coerceIn(0, 100)
-                                        val progressLog = "音频分段进度 Phase2 YAMNet: ${progressPct}% (已用${elapsedStr}/剩余${remainingStr})"
-                                        writeFingerprintLog(context, progressLog)
-                                        // 同时更新通知栏标题，带时间信息
-                                        SegmentNotificationHelper.update(
-                                            context, episodeId, episodeTitle, mapped,
-                                            "第2层-B YAMNet ${processedCount}/$totalIntervals ${elapsedStr}/${remainingStr}"
-                                        )
-                                    }
-                                    } catch (e: Throwable) {
-                                        // v3.1.153-fix: 捕获任何Java异常（含OutOfMemoryError），记录日志后继续下一个区间
-                                        // 原生TFLite崩溃（SIGSEGV）仍会杀死进程，但所有Java级异常不会中断流程
-                                        val crashMsg = "三层架构: 第2层-B YAMNet区间[${processedCount + 1}/$totalIntervals] 处理异常: ${e.javaClass.name}: ${e.message}"
-                                        Log.e(TAG, "$crashMsg for episode=$episodeId")
-                                        writeFingerprintLog(context, crashMsg)
-                                        val sw = java.io.StringWriter()
-                                        val pw = java.io.PrintWriter(sw)
-                                        e.printStackTrace(pw)
-                                        writeFingerprintLog(context, "异常详情:\n${sw.toString().take(500)}")
-                                        processedCount++
-                                        continue
-                                    }
-                                }
-                            } finally {
-                                try { pcmSamples.close() } catch (_: Exception) {}
+                    if (yamnetServiceSuccess) {
+                        // ===== VAD回退：YAMNet未覆盖的VAD区间保留为干货 =====
+                        // v3.1.139: 当YAMNet对某个VAD区间完全无产出时，该区间的VAD活动段应保留为干货。
+                        val vadFallbackSegments = mutableListOf<VoiceSegment>()
+                        for (interval in yamnetIntervals) {
+                            val hasYamnetCoverage = yamnetAllSegments.any { seg ->
+                                seg.start < interval.second && seg.end > interval.first
                             }
-
-                            // ===== VAD回退：YAMNet未覆盖的VAD区间保留为干货 =====
-                            // v3.1.139: 当YAMNet对某个VAD区间完全无产出时，该区间的VAD活动段应保留为干货。
-                            // 根因：YAMNet可能在某些音频区域（如连续主持人讲话）不产生任何分类段，
-                            // 导致这些区域在拼图中完全无覆盖，后续被fillSilenceGaps填充为静音，
-                            // 再被mergeSilenceToAdjacentWater合并到相邻水段，造成大段主持人讲话被标记为水。
-                            // 修复：对每个YAMNet处理区间，检查是否有YAMNet段覆盖，无覆盖时回退到VAD干货。
-                            val vadFallbackSegments = mutableListOf<VoiceSegment>()
-                            for (interval in yamnetIntervals) {
-                                val hasYamnetCoverage = yamnetAllSegments.any { seg ->
-                                    seg.start < interval.second && seg.end > interval.first
+                            if (!hasYamnetCoverage) {
+                                val intervalDuration = interval.second - interval.first
+                                if (intervalDuration >= 1500) {
+                                    vadFallbackSegments.add(VoiceSegment().apply {
+                                        start = interval.first
+                                        end = interval.second
+                                        hasVoice = true
+                                        label = "干货"
+                                        isSimulated = false
+                                    })
+                                    Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为干货 for episode=$episodeId")
                                 }
-                                if (!hasYamnetCoverage) {
-                                    val intervalDuration = interval.second - interval.first
-                                    if (intervalDuration >= 1500) {
-                                        vadFallbackSegments.add(VoiceSegment().apply {
-                                            start = interval.first
-                                            end = interval.second
-                                            hasVoice = true
-                                            label = "干货"
-                                            isSimulated = false
-                                        })
-                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为干货 for episode=$episodeId")
+                            }
+                        }
+                        if (vadFallbackSegments.isNotEmpty()) {
+                            writeFingerprintLog(context, "三层架构: VAD回退: ${vadFallbackSegments.size}个VAD区间无YAMNet产出，保留为干货（总${vadFallbackSegments.sumOf { it.end - it.start } / 1000}秒）")
+                        }
+
+                        // ===== 拼图式合并：指纹段 + YAMNet段 + VAD回退段 =====
+                        val jigsawSegments = mutableListOf<VoiceSegment>()
+                        // 1. YAMNet子段（全部保留）
+                        jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
+                        // 2. VAD回退段
+                        jigsawSegments.addAll(vadFallbackSegments.map { it.copy() })
+                        // 3. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
+                        for (waterSeg in waterSegmentsAfterLayer1) {
+                            var clipStart = waterSeg.start
+                            var clipEnd = waterSeg.end
+                            val extraSplits = mutableListOf<Pair<Long, Long>>()
+                            for (yamnetSeg in yamnetAllSegments) {
+                                if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
+                                    if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
+                                        extraSplits.add(yamnetSeg.end to clipEnd)
+                                        clipEnd = yamnetSeg.start
+                                    } else {
+                                        if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
+                                        if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
                                     }
                                 }
                             }
-                            if (vadFallbackSegments.isNotEmpty()) {
-                                writeFingerprintLog(context, "三层架构: VAD回退: ${vadFallbackSegments.size}个VAD区间无YAMNet产出，保留为干货（总${vadFallbackSegments.sumOf { it.end - it.start } / 1000}秒）")
+                            if (clipEnd - clipStart >= 500) {
+                                jigsawSegments.add(VoiceSegment().apply {
+                                    start = clipStart; end = clipEnd
+                                    hasVoice = false; label = "指纹水货"; isSimulated = false
+                                })
                             }
-
-                            // ===== 拼图式合并：指纹段 + YAMNet段 + VAD回退段 =====
-                            // v3.1.125: YAMNet干段优先于指纹水货段。YAMNet逐帧分类比指纹匹配更精确，
-                            // 当指纹水货段与YAMNet干段冲突时，裁剪指纹水货段而非YAMNet干段。
-                            // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
-                            // 因为YAMNet逐帧分类比指纹15秒窗口匹配更精确，YAMNet的分类结果应完全替代指纹覆盖。
-                            val jigsawSegments = mutableListOf<VoiceSegment>()
-
-                            // 1. YAMNet子段（全部保留，干段优先）
-                            jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
-                            // v3.1.139: VAD回退段（YAMNet未覆盖的区间）
-                            jigsawSegments.addAll(vadFallbackSegments.map { it.copy() })
-
-                            // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段，不止干段）
-                            // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，
-                            // 原代码只处理clipStart/clipEnd在YAMNet段内的情况，不处理完全包含。
-                            // 完全包含时，clipStart<YAMNet.start且clipEnd>YAMNet.end，两个条件都不触发，
-                            // 导致指纹水货段未被裁剪，YAMNet段被指纹水货段覆盖。
-                            // 修复：完全包含时，将指纹水货段拆分为两段（YAMNet段前和YAMNet段后）。
-                            for (waterSeg in waterSegmentsAfterLayer1) {
-                                var clipStart = waterSeg.start
-                                var clipEnd = waterSeg.end
-                                // 收集完全包含时需要分割的额外段
-                                val extraSplits = mutableListOf<Pair<Long, Long>>()
-                                for (yamnetSeg in yamnetAllSegments) {
-                                    // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
-                                    if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
-                                        // 检查是否完全包含YAMNet段（clipStart < YAMNet.start 且 clipEnd > YAMNet.end）
-                                        if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
-                                            // 完全包含：将YAMNet段之后的部分作为额外段
-                                            extraSplits.add(yamnetSeg.end to clipEnd)
-                                            clipEnd = yamnetSeg.start
-                                        } else {
-                                            if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) {
-                                                clipStart = yamnetSeg.end
-                                            }
-                                            if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) {
-                                                clipEnd = yamnetSeg.start
-                                            }
-                                        }
-                                    }
-                                }
-                                if (clipEnd - clipStart >= 500) {
+                            for ((extraStart, extraEnd) in extraSplits) {
+                                if (extraEnd - extraStart >= 500) {
                                     jigsawSegments.add(VoiceSegment().apply {
-                                        start = clipStart; end = clipEnd
+                                        start = extraStart; end = extraEnd
                                         hasVoice = false; label = "指纹水货"; isSimulated = false
                                     })
                                 }
-                                // 添加完全包含时分割出的额外段
-                                for ((extraStart, extraEnd) in extraSplits) {
-                                    if (extraEnd - extraStart >= 500) {
-                                        jigsawSegments.add(VoiceSegment().apply {
-                                            start = extraStart; end = extraEnd
-                                            hasVoice = false; label = "指纹水货"; isSimulated = false
-                                        })
-                                    }
-                                }
                             }
+                        }
+                        // 4. 排序合并同类型相邻段
+                        jigsawSegments.sortBy { it.start }
+                        mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
+                        audioEngineName = "VAD+YAMNet+三层(优化)"
 
-                            // v3.1.106: 彻底移除gap-filling填充
-                            // 原因：
-                            // 1. pendingSegments = 指纹未覆盖区间
-                            // 2. 每个pending已经通过VAD∩pending得到yamnetIntervals，每个区间都已经做了YAMNet分类
-                            // 3. 剩余未覆盖的都是VAD非活动段（静音），保持原样即可，不需要强行填充
-                            // 4. 错误的gap-filling导致过度合并，总分段数过少，有时变成一个大段
-
-                            // 4. 排序合并同类型相邻段
-                            jigsawSegments.sortBy { it.start }
-                            mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
-                            audioEngineName = "VAD+YAMNet+三层(优化)"
-
-                            // v3.1.86: 详细日志，输出YAMNet子段产出的干/水分类统计
-                            val yamnetDryCount = yamnetAllSegments.count { it.hasVoice }
-                            val yamnetWaterCount = yamnetAllSegments.count { !it.hasVoice }
-                            val yamnetSilenceCount = yamnetAllSegments.count { it.label == "静音" }
-                            val yamnetDetail = if (yamnetAllSegments.size <= 15) {
-                                yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
-                            } else {
-                                "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
-                            }
-                            // v3.1.135: 当段数>15时，额外输出720~960秒（12~16分钟）附近的段，便于调试主持人讲话被合并问题
-                            val yamnetTargetRange = yamnetAllSegments.filter { it.start in 600000..1100000 || it.end in 600000..1100000 || (it.start < 600000 && it.end > 1100000) }
-                            val yamnetTargetDetail = if (yamnetTargetRange.isNotEmpty()) {
-                                "目标区域(600~1100s): " + yamnetTargetRange.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
-                            } else {
-                                "目标区域(600~1100s): 无段覆盖（异常）"
-                            }
-                            Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
-                            Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail for episode=$episodeId")
-                            Log.i(TAG, "三层架构: YAMNet子段目标区域详情: $yamnetTargetDetail for episode=$episodeId")
-                            // v3.1.90: 写指纹日志
-                            writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段")
-                            writeFingerprintLog(context, "三层架构: YAMNet子段目标区域(600~1100s): $yamnetTargetDetail")
-                        // v3.1.145-fix: 不再需要关闭yamnetInterpreter，由AudioSegmentAnalyzer内部管理
+                        // 日志统计
+                        val yamnetDryCount = yamnetAllSegments.count { it.hasVoice }
+                        val yamnetWaterCount = yamnetAllSegments.count { !it.hasVoice }
+                        val yamnetSilenceCount = yamnetAllSegments.count { it.label == "静音" }
+                        val yamnetDetail = if (yamnetAllSegments.size <= 15) {
+                            yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                        } else {
+                            "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
+                        }
+                        val yamnetTargetRange = yamnetAllSegments.filter { it.start in 600000..1100000 || it.end in 600000..1100000 || (it.start < 600000 && it.end > 1100000) }
+                        val yamnetTargetDetail = if (yamnetTargetRange.isNotEmpty()) {
+                            "目标区域(600~1100s): " + yamnetTargetRange.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                        } else {
+                            "目标区域(600~1100s): 无段覆盖（异常）"
+                        }
+                        Log.i(TAG, "三层架构: 第二层-B YAMNet完成，${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                        Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail for episode=$episodeId")
+                        Log.i(TAG, "三层架构: YAMNet子段目标区域详情: $yamnetTargetDetail for episode=$episodeId")
+                        writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount}/水${yamnetWaterCount}/静音${yamnetSilenceCount})，合并后${mergedAfterLayer2.size}段")
+                        writeFingerprintLog(context, "三层架构: YAMNet子段目标区域(600~1100s): $yamnetTargetDetail")
+                    } else {
+                        Log.w(TAG, "三层架构: $yamnetErrorMsg，使用第1层结果 for episode=$episodeId")
+                        writeFingerprintLog(context, "三层架构: $yamnetErrorMsg，使用第1层结果")
+                        mergedAfterLayer2 = mergedAfterLayer1
+                        audioEngineName = "VAD+YAMNet+三层(优化-YamnetService失败)"
                     }
                 }
             } catch (e: Throwable) {
@@ -1813,140 +1699,87 @@ object SegmentGenerator {
                                 mergedAfterLayer2 = mergedAfterLayer1
                                 audioEngineName = "VAD+YAMNet+三层(优化-无pending段)"
                             } else {
-                                val yamnetInterpreter = AudioSegmentAnalyzer.loadYamnetInterpreter(context)
-                                if (yamnetInterpreter == null) {
-                                    Log.w(TAG, "三层架构: YAMNet模型加载失败，使用第1层结果 for episode=$episodeId")
-                                    mergedAfterLayer2 = mergedAfterLayer1
-                                    audioEngineName = "VAD+YAMNet+三层(优化-YAMNet加载失败)"
-                                } else {
-                                    // v3.1.145-fix: 不再需要try/finally，AudioSegmentAnalyzer内部管理
-                                    val yamnetAllSegments = mutableListOf<VoiceSegment>()
-                                    var processedCount = 0
-                                    val totalIntervals = yamnetIntervals.size
-                                    // v3.1.143-fix: 跟踪进度起止时间，计算elapsed/remaining
-                                    val yamnetStartTimeMs2 = System.currentTimeMillis()
-                                    var yamnetProgressWriteTime2 = 0L
+                                // v3.1.155: PCM再生后也使用YamnetService进行YAMNet推理
+                                val yamnetAllSegments = mutableListOf<VoiceSegment>()
+                                var yamnetRegenSuccess = false
+                                var yamnetRegenError: String? = null
 
-                                        // v3.1.92: 打开PCM文件一次
-                                        val pcmSamples2 = AudioSegmentAnalyzer.openPcmSamples(newFullPcm)
-                                        try {
-                                            // v3.1.149-fix: YAMNet循环总超时保护
-                                            val yamnetLoopStartMs2 = System.currentTimeMillis()
-                                            val MAX_YAMNET_LOOP_MS2 = 120_000L
-                                            for (interval in yamnetIntervals) {
-                                                if (AudioSegmentAnalyzer.isAnalysisCancelled()) break
-                                                // v3.1.149-fix: YAMNet循环总超时保护
-                                                if (System.currentTimeMillis() - yamnetLoopStartMs2 >= MAX_YAMNET_LOOP_MS2) {
-                                                    Log.w(TAG, "三层架构: YAMNet循环总耗时超过${MAX_YAMNET_LOOP_MS2 / 1000}秒，跳过剩余${totalIntervals - processedCount}个区间 for episode=$episodeId")
-                                                    break
-                                                }
-                                                val intervalStart = interval.first
-                                                val intervalEnd = interval.second
+                                try {
+                                    val intervalStarts = yamnetIntervals.map { it.first }.toLongArray()
+                                    val intervalEnds = yamnetIntervals.map { it.second }.toLongArray()
 
-                                                // v3.1.124: 恢复逐帧滑动窗口分类+后处理
-                                                // v3.1.142-fix: 传递区间内进度回调
-                                                var subSegments = emptyList<VoiceSegment>()
-                                                val baseMapped2 = 250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)
-                                                try {
-                                                    subSegments = AudioSegmentAnalyzer.classifyPcmIntervalInner(
-                                                        pcmSamples2, intervalStart, intervalEnd
-                                                    ) { subProgress ->
-                                                        // v3.1.143-fix: 区间内进度映射到有意义的变化
-                                                        val subMapped2 = baseMapped2 + (subProgress * 550 / totalIntervals / 1000).coerceIn(0, maxOf(1, 550 / totalIntervals))
-                                                        SegmentNotificationHelper.update(context, episodeId, episodeTitle,
-                                                            subMapped2.coerceIn(250, 800),
-                                                            "第2层-B YAMNet ${processedCount + 1}/$totalIntervals 区间内${subProgress / 10}%")
-                                                    }
-                                                } catch (e: InterruptedException) {
-                                                    if (yamnetAllSegments.isEmpty()) throw
-                                                    break
-                                                }
+                                    val serviceResult = runYamnetService(
+                                        context, newFullPcm.absolutePath,
+                                        intervalStarts, intervalEnds
+                                    )
+                                    if (serviceResult != null) {
+                                        yamnetAllSegments.addAll(serviceResult)
+                                        yamnetRegenSuccess = true
+                                        Log.i(TAG, "三层架构: YamnetService(PCM再生后)完成，${yamnetIntervals.size}个区间产出${serviceResult.size}段 for episode=$episodeId")
+                                    } else {
+                                        yamnetRegenError = "YamnetService(PCM再生后)失败"
+                                        Log.w(TAG, "三层架构: $yamnetRegenError for episode=$episodeId")
+                                    }
+                                } catch (e: Throwable) {
+                                    yamnetRegenError = "YamnetService(PCM再生后)异常: ${e.javaClass.name}: ${e.message}"
+                                    Log.e(TAG, "三层架构: $yamnetRegenError for episode=$episodeId")
+                                }
 
-                                                val processedSegments = AudioSegmentAnalyzer.postProcessYamnetSubSegments(subSegments)
-                                                yamnetAllSegments.addAll(processedSegments)
-                                                processedCount++
-                                                val mapped2 = (250 + (processedCount * 550 / totalIntervals).coerceIn(0, 550)).coerceIn(250, 800)
-                                                SegmentNotificationHelper.update(context, episodeId, episodeTitle,
-                                                    mapped2,
-                                                    "第2层-B YAMNet推理 ${processedCount}/$totalIntervals")
-
-                                                // v3.1.143-fix: 每5秒写入一次带elapsed/remaining的进度日志
-                                                val now2 = System.currentTimeMillis()
-                                                if (now2 - yamnetProgressWriteTime2 >= 5000 || processedCount == 1 || processedCount == totalIntervals || processedCount % (totalIntervals / 10).coerceAtLeast(1) == 0) {
-                                                    yamnetProgressWriteTime2 = now2
-                                                    val elapsedMs2 = now2 - yamnetStartTimeMs2
-                                                    val elapsedStr2 = formatDuration(elapsedMs2)
-                                                    val avgPerIntervalMs2 = elapsedMs2.toFloat() / processedCount
-                                                    val remainingMs2 = (avgPerIntervalMs2 * (totalIntervals - processedCount)).toLong()
-                                                    val remainingStr2 = formatDuration(remainingMs2)
-                                                    val progressPct2 = (processedCount * 100 / totalIntervals).coerceIn(0, 100)
-                                                    val progressLog2 = "音频分段进度 Phase2 YAMNet: ${progressPct2}% (已用${elapsedStr2}/剩余${remainingStr2})"
-                                                    writeFingerprintLog(context, progressLog2)
-                                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle,
-                                                        mapped2,
-                                                        "第2层-B YAMNet ${processedCount}/$totalIntervals ${elapsedStr2}/${remainingStr2}")
+                                if (yamnetRegenSuccess) {
+                                    // v3.1.106: 拼图合并：指纹段 + YAMNet子段（移除gap-filling）
+                                    // v3.1.125: YAMNet干段优先于指纹水货段，裁剪指纹水货段避开YAMNet干段
+                                    // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
+                                    // YAMNet逐帧分类比指纹15秒窗口匹配更精确，分类结果应完全替代指纹覆盖。
+                                    val jigsawSegments = mutableListOf<VoiceSegment>()
+                                    // 1. YAMNet子段（全部保留，干段优先）
+                                    jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
+                                    // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
+                                    for (waterSeg in waterSegmentsAfterLayer1) {
+                                        var clipStart = waterSeg.start; var clipEnd = waterSeg.end
+                                        val extraSplits = mutableListOf<Pair<Long, Long>>()
+                                        for (yamnetSeg in yamnetAllSegments) {
+                                            if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
+                                                if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
+                                                    extraSplits.add(yamnetSeg.end to clipEnd)
+                                                    clipEnd = yamnetSeg.start
+                                                } else {
+                                                    if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
+                                                    if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
                                                 }
                                             }
-                                        } finally {
-                                            try { pcmSamples2.close() } catch (_: Exception) {}
                                         }
-
-                                        // v3.1.106: 拼图合并：指纹段 + YAMNet子段（移除gap-filling）
-                                        // v3.1.125: YAMNet干段优先于指纹水货段，裁剪指纹水货段避开YAMNet干段
-                                        // v3.1.126: 裁剪指纹水货段避开所有YAMNet段（干段和水段），
-                                        // YAMNet逐帧分类比指纹15秒窗口匹配更精确，分类结果应完全替代指纹覆盖。
-                                        val jigsawSegments = mutableListOf<VoiceSegment>()
-                                        // 1. YAMNet子段（全部保留，干段优先）
-                                        jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
-                                        // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
-                                        // v3.1.134: 修复完全包含场景——当指纹水货段完全包含YAMNet段时，
-                                        // 原代码只处理clipStart/clipEnd在YAMNet段内的情况，不处理完全包含。
-                                        for (waterSeg in waterSegmentsAfterLayer1) {
-                                            var clipStart = waterSeg.start; var clipEnd = waterSeg.end
-                                            val extraSplits = mutableListOf<Pair<Long, Long>>()
-                                            for (yamnetSeg in yamnetAllSegments) {
-                                                // v3.1.126: 避开所有YAMNet段（干段和水段），YAMNet逐帧分类比指纹更精确
-                                                if (clipStart < yamnetSeg.end && clipEnd > yamnetSeg.start) {
-                                                    if (clipStart < yamnetSeg.start && clipEnd > yamnetSeg.end) {
-                                                        extraSplits.add(yamnetSeg.end to clipEnd)
-                                                        clipEnd = yamnetSeg.start
-                                                    } else {
-                                                        if (clipStart >= yamnetSeg.start && clipStart < yamnetSeg.end) clipStart = yamnetSeg.end
-                                                        if (clipEnd > yamnetSeg.start && clipEnd <= yamnetSeg.end) clipEnd = yamnetSeg.start
-                                                    }
-                                                }
-                                            }
-                                            if (clipEnd - clipStart >= 500) {
+                                        if (clipEnd - clipStart >= 500) {
+                                            jigsawSegments.add(VoiceSegment().apply {
+                                                start = clipStart; end = clipEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
+                                            })
+                                        }
+                                        for ((extraStart, extraEnd) in extraSplits) {
+                                            if (extraEnd - extraStart >= 500) {
                                                 jigsawSegments.add(VoiceSegment().apply {
-                                                    start = clipStart; end = clipEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
+                                                    start = extraStart; end = extraEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
                                                 })
                                             }
-                                            for ((extraStart, extraEnd) in extraSplits) {
-                                                if (extraEnd - extraStart >= 500) {
-                                                    jigsawSegments.add(VoiceSegment().apply {
-                                                        start = extraStart; end = extraEnd; hasVoice = false; label = "指纹水货"; isSimulated = false
-                                                    })
-                                                }
-                                            }
                                         }
-                                        jigsawSegments.sortBy { it.start }
-                                        mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
-                                        audioEngineName = "VAD+YAMNet+三层(优化-PCM重新生成)"
+                                    }
+                                    jigsawSegments.sortBy { it.start }
+                                    mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
+                                    audioEngineName = "VAD+YAMNet+三层(优化-PCM重新生成)"
 
-                                        // v3.1.86: 详细日志
-                                        val yamnetDryCount2 = yamnetAllSegments.count { it.hasVoice }
-                                        val yamnetWaterCount2 = yamnetAllSegments.count { !it.hasVoice }
-                                        val yamnetSilenceCount2 = yamnetAllSegments.count { it.label == "静音" }
-                                        val yamnetDetail2 = if (yamnetAllSegments.size <= 15) {
-                                            yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
-                                        } else {
-                                            "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
-                                        }
-                                        Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
-                                        Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail2 for episode=$episodeId")
-                                        // v3.1.90: 写指纹日志
-                                        writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段")
-                                    // v3.1.145-fix: 不再需要关闭yamnetInterpreter，由AudioSegmentAnalyzer内部管理
+                                    val yamnetDryCount2 = yamnetAllSegments.count { it.hasVoice }
+                                    val yamnetWaterCount2 = yamnetAllSegments.count { !it.hasVoice }
+                                    val yamnetSilenceCount2 = yamnetAllSegments.count { it.label == "静音" }
+                                    val yamnetDetail2 = if (yamnetAllSegments.size <= 15) {
+                                        yamnetAllSegments.joinToString("; ") { "${it.start}~${it.end}ms[${it.label}]" }
+                                    } else {
+                                        "首段[${yamnetAllSegments.first().start}~${yamnetAllSegments.first().end}ms/${yamnetAllSegments.first().label}], 末段[${yamnetAllSegments.last().start}~${yamnetAllSegments.last().end}ms/${yamnetAllSegments.last().label}]"
+                                    }
+                                    Log.i(TAG, "三层架构: 第二层优化完成（PCM重新生成后），${yamnetIntervals.size}个区间产出${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段 for episode=$episodeId")
+                                    Log.i(TAG, "三层架构: YAMNet子段详情: $yamnetDetail2 for episode=$episodeId")
+                                    writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段")
+                                } else {
+                                    Log.w(TAG, "三层架构: PCM再生后YamnetService失败($yamnetRegenError)，使用第1层结果 for episode=$episodeId")
+                                    mergedAfterLayer2 = mergedAfterLayer1
+                                    audioEngineName = "VAD+YAMNet+三层(优化-YamnetService失败)"
                                 }
                             }
                         } catch (e: Throwable) {
@@ -2175,6 +2008,80 @@ object SegmentGenerator {
             SegmentNotificationHelper.isSegmenting = false
             // v3.1.59: 崩溃后清除segmentingEpisodes条目，防止后续请求被永久拒绝
             segmentingEpisodes.remove(episodeId)
+        }
+    }
+
+    /**
+     * v3.1.155: 使用YamnetService进行YAMNet推理的辅助函数。
+     * 在独立进程(:yamnet)中运行TFLite推理，即使原生SIGSEGV崩溃也不会影响主进程。
+     *
+     * @param context Android上下文
+     * @param pcmPath PCM文件绝对路径
+     * @param intervalStarts 区间起始时间数组(ms)
+     * @param intervalEnds 区间结束时间数组(ms)
+     * @param timeoutMs 整体超时时间(ms)
+     * @return 成功时返回segments列表，失败时返回null（错误信息通过日志输出）
+     */
+    private fun runYamnetService(
+        context: Context,
+        pcmPath: String,
+        intervalStarts: LongArray,
+        intervalEnds: LongArray,
+        timeoutMs: Long = 120_000L
+    ): List<VoiceSegment>? {
+        val cancelFileName = "yamnet_cancel_${System.currentTimeMillis()}_${Thread.currentThread().id}.tmp"
+        val cancelFile = File(context.cacheDir, cancelFileName)
+        try { cancelFile.delete() } catch (_: Exception) {}
+
+        try {
+            val latch = CountDownLatch(1)
+            // 不需要@Volatile：CountDownLatch的await()提供happens-before保证
+            var serviceSegments = ArrayList<VoiceSegment>()
+            var serviceError: String? = null
+
+            val intent = Intent(context, YamnetService::class.java).apply {
+                putExtra(YamnetService.EXTRA_PCM_PATH, pcmPath)
+                putExtra(YamnetService.EXTRA_INTERVAL_STARTS, intervalStarts)
+                putExtra(YamnetService.EXTRA_INTERVAL_ENDS, intervalEnds)
+                putExtra(YamnetService.EXTRA_CANCEL_FILE, cancelFile.absolutePath)
+                // 使用null Handler使回调在Binder线程执行，避免主线程latch.await()死锁
+                putExtra(YamnetService.EXTRA_RECEIVER, object : ResultReceiver(null) {
+                    override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
+                        when (resultCode) {
+                            YamnetService.CODE_SUCCESS -> {
+                                resultData?.getParcelableArrayList<VoiceSegment>(YamnetService.RESULT_SEGMENTS)?.let { serviceSegments = it }
+                                latch.countDown()
+                            }
+                            YamnetService.CODE_ERROR -> {
+                                serviceError = resultData?.getString(YamnetService.RESULT_ERROR)
+                                latch.countDown()
+                            }
+                            YamnetService.CODE_PROGRESS -> {
+                                // 进度回调在Binder线程，不需要更新UI，只用于日志
+                            }
+                        }
+                    }
+                })
+            }
+            context.startService(intent)
+
+            val waited = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+
+            if (!waited) {
+                try { cancelFile.createNewFile() } catch (_: Exception) {}
+                Log.w(TAG, "runYamnetService: 超时(${timeoutMs/1000}秒)")
+                return null
+            }
+            if (serviceError != null) {
+                Log.w(TAG, "runYamnetService: 异常: $serviceError")
+                return null
+            }
+            return serviceSegments
+        } catch (e: Throwable) {
+            Log.e(TAG, "runYamnetService: 调用异常: ${e.javaClass.name}: ${e.message}")
+            return null
+        } finally {
+            try { cancelFile.delete() } catch (_: Exception) {}
         }
     }
 
