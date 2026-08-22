@@ -1594,7 +1594,10 @@ object SegmentGenerator {
                     } else {
                         Log.w(TAG, "三层架构: $yamnetErrorMsg，使用第1层结果 for episode=$episodeId")
                         writeFingerprintLog(context, "三层架构: $yamnetErrorMsg，使用第1层结果")
-                        mergedAfterLayer2 = mergedAfterLayer1
+                        // v3.1.156-fix: YamnetService失败时，将"待处理"段转为干货。
+                        // 根因：第一层的"待处理"段 hasVoice=false，YAMNet无法分类时全部变为水货。
+                        // 修复：将所有非"指纹水货"段标记为干货（hasVoice=true）。
+                        mergedAfterLayer2 = layer1WithPendingAsDry(mergedAfterLayer1)
                         audioEngineName = "VAD+YAMNet+三层(优化-YamnetService失败)"
                     }
                 }
@@ -1778,7 +1781,8 @@ object SegmentGenerator {
                                     writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段")
                                 } else {
                                     Log.w(TAG, "三层架构: PCM再生后YamnetService失败($yamnetRegenError)，使用第1层结果 for episode=$episodeId")
-                                    mergedAfterLayer2 = mergedAfterLayer1
+                                    // v3.1.156-fix: 同样将"待处理"段转为干货
+                                    mergedAfterLayer2 = layer1WithPendingAsDry(mergedAfterLayer1)
                                     audioEngineName = "VAD+YAMNet+三层(优化-YamnetService失败)"
                                 }
                             }
@@ -2009,6 +2013,24 @@ object SegmentGenerator {
             // v3.1.59: 崩溃后清除segmentingEpisodes条目，防止后续请求被永久拒绝
             segmentingEpisodes.remove(episodeId)
         }
+    }
+
+    /**
+     * v3.1.156: 当YamnetService失败时，将第一层结果中的"待处理"段转为干货。
+     * 根因：第一层的"待处理"段 hasVoice=false，YAMNet无法分类时全部变为水货。
+     */
+    private fun layer1WithPendingAsDry(layer1: List<VoiceSegment>): List<VoiceSegment> {
+        val fixed = layer1.map { seg ->
+            if (!seg.hasVoice && !isWaterLabel(seg.label)) {
+                seg.copy().apply {
+                    hasVoice = true
+                    label = "干货"
+                }
+            } else {
+                seg
+            }
+        }
+        return mergeAdjacentSegments(fixed)
     }
 
     /**
