@@ -1,5 +1,6 @@
 package com.radio.app.utils
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -2071,8 +2072,7 @@ object SegmentGenerator {
      * @param intervalStarts 区间起始时间数组(ms)
      * @param intervalEnds 区间结束时间数组(ms)
      * @param timeoutMs 整体超时时间(ms)，默认600秒
-     * v3.1.159: 从300秒增加到600秒，根因：354个区间×~1秒/区间>300秒
-     * 注意：实际处理时间已通过复用Executor优化，600秒仅为安全网
+     * v3.1.160: 改为轮询检测服务进程崩溃，避免等满600秒才知道进程已死
      * @return 成功时返回segments列表，失败时返回null（错误信息通过日志输出）
      */
     private fun runYamnetService(
@@ -2120,7 +2120,36 @@ object SegmentGenerator {
             }
             context.startService(intent)
 
-            val waited = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            // v3.1.160: 使用轮询等待，每30秒检查服务进程是否存活
+            // 根因：YamnetService进程在TFLite调用时SIGSEGV崩溃，latch.await()永远等不到回调
+            val startTime = System.currentTimeMillis()
+            var waited = false
+            while (System.currentTimeMillis() - startTime < timeoutMs) {
+                waited = latch.await(30, TimeUnit.SECONDS)
+                if (waited) break
+                // 每30秒检查一次服务进程是否还活着
+                try {
+                    val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val processes = am.runningAppProcesses
+                    var yamnetAlive = false
+                    if (processes != null) {
+                        for (p in processes) {
+                            if (p.processName == "com.radio.app:yamnet") {
+                                yamnetAlive = true
+                                break
+                            }
+                        }
+                    }
+                    if (!yamnetAlive) {
+                        val crashMsg = "YamnetService进程崩溃(TFLite SIGSEGV)，已等待${(System.currentTimeMillis()-startTime)/1000}秒"
+                        Log.w(TAG, "runYamnetService: $crashMsg")
+                        writeFingerprintLog(context, "runYamnetService: $crashMsg")
+                        // 进程已死，无需继续等待，提前返回
+                        serviceError = "YamnetService进程崩溃"
+                        return null
+                    }
+                } catch (_: Exception) {}
+            }
 
             if (!waited) {
                 try { cancelFile.createNewFile() } catch (_: Exception) {}
