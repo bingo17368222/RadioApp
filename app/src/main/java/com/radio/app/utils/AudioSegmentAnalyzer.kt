@@ -404,25 +404,38 @@ object AudioSegmentAnalyzer {
      * 返回null表示加载失败（模型未安装或native库未就绪）。
      */
     fun loadYamnetInterpreter(context: Context): Interpreter? {
+        val pid = android.os.Process.myPid()
+        val processName = getProcessName()
+        Log.i(TAG, "loadYamnetInterpreter: 开始加载 (进程PID=$pid, process=$processName)")
+
+        // 记录Native库加载状态
+        Log.i(TAG, "loadYamnetInterpreter: 调用NativeLibLoader.ensureLoaded (PID=$pid)")
+        val loadStartMs = System.currentTimeMillis()
         if (!NativeLibLoader.ensureLoaded(context)) {
-            Log.e(TAG, "loadYamnetInterpreter: Native libraries not loaded.")
+            Log.e(TAG, "loadYamnetInterpreter: Native libraries not loaded. (PID=$pid)")
             return null
         }
+        Log.i(TAG, "loadYamnetInterpreter: NativeLibLoader.ensureLoaded成功 耗时=${System.currentTimeMillis()-loadStartMs}ms (PID=$pid)")
+
         val modelDir = getModelDir(context)
         if (!isYamnetInstalled(modelDir)) {
-            Log.w(TAG, "loadYamnetInterpreter: YAMNet模型未安装")
+            Log.w(TAG, "loadYamnetInterpreter: YAMNet模型未安装 (PID=$pid)")
             return null
         }
+        val modelFile = File(modelDir, "yamnet.tflite")
+        Log.i(TAG, "loadYamnetInterpreter: 模型文件存在: ${modelFile.absolutePath} size=${modelFile.length()/1024}KB (PID=$pid)")
+
         return try {
             // v3.1.146-fix: 同时设置类级字段，供classifyPcmIntervalInner等使用类级Interpreter
             // 不close旧的Interpreter（可能因推理挂死处于不可用状态），直接放弃
-            val modelFile = File(modelDir, "yamnet.tflite")
             yamnetModelFile = modelFile
+            Log.i(TAG, "loadYamnetInterpreter: 调用loadYamnetModel (PID=$pid)")
             val interp = loadYamnetModel(modelFile)
             currentYamnetInterpreter = interp
+            Log.i(TAG, "loadYamnetInterpreter: YAMNet Interpreter加载成功 interp=$interp (PID=$pid)")
             interp
         } catch (e: Throwable) {
-            Log.e(TAG, "loadYamnetInterpreter failed: ${e.message}")
+            Log.e(TAG, "loadYamnetInterpreter failed: ${e.javaClass.name}: ${e.message} (PID=$pid)")
             null
         }
     }
@@ -609,6 +622,21 @@ object AudioSegmentAnalyzer {
         Log.d(TAG, msg)
         FileLogUtils.logInfoFile(msg)
         return info
+    }
+
+    /**
+     * v3.1.161: 获取当前进程名，用于日志区分主进程和:yamnet进程。
+     */
+    private fun getProcessName(): String {
+        return try {
+            val pid = android.os.Process.myPid()
+            val reader = java.io.BufferedReader(java.io.FileReader("/proc/$pid/cmdline"))
+            val name = reader.readLine()?.trim()?.replace('\u0000', ' ')?.trim() ?: "unknown"
+            reader.close()
+            name
+        } catch (_: Exception) {
+            "unknown"
+        }
     }
 
     /**
@@ -1972,24 +2000,47 @@ object AudioSegmentAnalyzer {
     // ===== YAMNet (TFLite) =====
 
     private fun loadYamnetModel(modelFile: File): Interpreter {
+        val pid = android.os.Process.myPid()
         try {
             // v2.4.129: Log model file info to file log for diagnostics
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] loadYamnetModel: file=${modelFile.name}, size=${modelFile.length()} bytes, exists=${modelFile.exists()}")
-            val mappedBuffer = FileInputStream(modelFile).channel.map(
-                FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
-            )
+            Log.i(TAG, "loadYamnetModel: 开始加载模型 (PID=$pid) file=${modelFile.name}, size=${modelFile.length()} bytes")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] loadYamnetModel: file=${modelFile.name}, size=${modelFile.length()} bytes, exists=${modelFile.exists()} (PID=$pid)")
+
+            // 记录模型文件映射前的日志（如果这一步崩溃，日志会显示最后到达这里）
+            Log.i(TAG, "loadYamnetModel: [A] 开始内存映射模型文件 (PID=$pid)")
+            val mappedBuffer = try {
+                FileInputStream(modelFile).channel.map(
+                    FileChannel.MapMode.READ_ONLY, 0, modelFile.length()
+                )
+            } catch (e: Throwable) {
+                Log.e(TAG, "loadYamnetModel: [A] 模型文件映射失败: ${e.javaClass.name}: ${e.message} (PID=$pid)")
+                throw RuntimeException("YAMNet模型文件映射失败: ${e.message}", e)
+            }
+            Log.i(TAG, "loadYamnetModel: [A] 模型文件映射成功 (PID=$pid)")
+
+            // 记录Interpreter创建前的日志
+            Log.i(TAG, "loadYamnetModel: [B] 创建TFLite Interpreter (PID=$pid)")
             val options = Interpreter.Options()
             options.setNumThreads(2)
-            val interp = Interpreter(mappedBuffer, options)
+            val interp = try {
+                Interpreter(mappedBuffer, options)
+            } catch (e: Throwable) {
+                Log.e(TAG, "loadYamnetModel: [B] Interpreter创建失败: ${e.javaClass.name}: ${e.message} (PID=$pid)")
+                throw RuntimeException("TFLite Interpreter创建失败: ${e.message}", e)
+            }
+            Log.i(TAG, "loadYamnetModel: [B] Interpreter创建成功 interp=$interp (PID=$pid)")
+
+            // 记录获取输入输出张量信息的日志
+            Log.i(TAG, "loadYamnetModel: [C] 获取输入输出张量信息 (PID=$pid)")
             val inputShape = interp.getInputTensor(0).shape()
             val inputType = interp.getInputTensor(0).dataType()
             val outputShape = interp.getOutputTensor(0).shape()
             val outputType = interp.getOutputTensor(0).dataType()
             // v2.4.130: Store actual input shape for use in classifyWithYamnet
             yamnetInputShape = inputShape
-            Log.i(TAG, "YAMNet loaded: input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
+            Log.i(TAG, "YAMNet loaded: input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType) (PID=$pid)")
             // v2.4.129: Log to file log for diagnostics
-            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] loadYamnetModel: loaded successfully. input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType)")
+            vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] loadYamnetModel: loaded successfully. input=${inputShape.contentToString()} ($inputType), output=${outputShape.contentToString()} ($outputType) (PID=$pid)")
             // v2.4.130: Removed the warning about unexpected input shape.
             // The model's input shape [15600] is valid — YAMNet expects 1D raw waveform input.
             return interp
@@ -1997,7 +2048,8 @@ object AudioSegmentAnalyzer {
             // v2.4.112: Catch Throwable (not Exception) to catch UnsatisfiedLinkError
             // which extends Error, not Exception. When libtensorflowlite_jni.so is not
             // loaded, the Interpreter constructor throws UnsatisfiedLinkError.
-            vadLog("Failed to load YAMNet TFLite model: ${e.javaClass.name}: ${e.message}")
+            Log.e(TAG, "loadYamnetModel: 异常: ${e.javaClass.name}: ${e.message} (PID=$pid)")
+            vadLog("Failed to load YAMNet TFLite model: ${e.javaClass.name}: ${e.message} (PID=$pid)")
             throw RuntimeException("YAMNet模型加载失败(${e.javaClass.simpleName}): ${e.message}", e)
         }
     }
@@ -2103,10 +2155,17 @@ object AudioSegmentAnalyzer {
     private fun classifyWithYamnet(
         samples: FloatArray
     ): YamnetResult {
+        val pid = android.os.Process.myPid()
+        // v3.1.161: 每100次或在服务进程中记录PID
+        yamnetCallCount++
+        if (yamnetCallCount <= 5 || yamnetCallCount % 100 == 0) {
+            Log.d(TAG, "classifyWithYamnet #$yamnetCallCount 入口 (PID=$pid)")
+        }
+
         // v3.1.149-fix: 在入口处检查全局重载阈值，避免不必要的推理尝试
         val currentTotalReload = totalReloadCount
         if (currentTotalReload >= MAX_TOTAL_RELOADS) {
-            val skipMsg = "classifyWithYamnet: 入口检查总重载${currentTotalReload}≥${MAX_TOTAL_RELOADS}，跳过推理，返回默认结果"
+            val skipMsg = "classifyWithYamnet: 入口检查总重载${currentTotalReload}≥${MAX_TOTAL_RELOADS}，跳过推理，返回默认结果 (PID=$pid)"
             Log.w(TAG, skipMsg)
             return YamnetResult(
                 speech = 0f, narration = 0f, singing = 0f, music = 0f,
@@ -2170,7 +2229,7 @@ object AudioSegmentAnalyzer {
             stepMs = System.currentTimeMillis()
 
             // v2.4.129: Log input diagnostics for first 3 calls
-            yamnetCallCount++
+            // v3.1.161: yamnetCallCount++已在classifyWithYamnet入口处执行，这里不再重复自增
             if (yamnetCallCount <= 3) {
                 var nonZero = 0
                 var sum = 0.0
@@ -2192,8 +2251,14 @@ object AudioSegmentAnalyzer {
             // v3.1.145-fix: YAMNet推理超时保护——interpreter.run()可能挂死，使用Future+超时
             // 超时后关闭旧Interpreter并重建新实例，确保后续推理不使用损坏的Interpreter
             val inferenceStartMs = System.currentTimeMillis()
+            // v3.1.161: 记录推理前的日志，用于定位崩溃点
+            if (yamnetCallCount <= 5 || yamnetCallCount % 50 == 0) {
+                Log.d(TAG, "classifyWithYamnet #$yamnetCallCount: 提交推理任务 (PID=$pid)")
+            }
             try {
                 val inferenceFuture: Future<Boolean> = yamnetExecutor.submit(Callable {
+                    // 这里的interpreter.run()是原生代码，如果发生SIGSEGV，进程在此处崩溃
+                    // 日志到此为止，后续日志不会被执行
                     interpreter.run(inputBuffer.buffer, outputBuffer.buffer)
                     true
                 })
@@ -2211,21 +2276,21 @@ object AudioSegmentAnalyzer {
                     var nonZero = 0; var sum = 0.0; var maxVal = 0f; var minVal = 0f
                     for (s in samples) { if (s != 0f) nonZero++; sum += kotlin.math.abs(s); if (s > maxVal) maxVal = s; if (s < minVal) minVal = s }
                     val avgAbs = (sum / samples.size).toFloat()
-                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}，前置步骤耗时(ms) getInterpreter=$getInterpreterElapsed normalize=$normalizeElapsed spectrum=$spectrumElapsed buffer=$bufferElapsed，原始样本非零=${nonZero}，平均绝对值=${"%.4f".format(avgAbs)}，max=${"%.4f".format(maxVal)}，min=${"%.4f".format(minVal)}，首位10=${samples.take(10).joinToString(",") { "%.4f".format(it) }}"
+                    val timeoutMsg = "classifyWithYamnet: #${yamnetCallCount} 推理超时(${YAMNET_INFERENCE_TIMEOUT_SECONDS}秒，实际${elapsedMs}ms)，连续超时=${consecutiveTimeoutCount}，总重载=${totalReloadCount}，前置步骤耗时(ms) getInterpreter=$getInterpreterElapsed normalize=$normalizeElapsed spectrum=$spectrumElapsed buffer=$bufferElapsed，原始样本非零=${nonZero}，平均绝对值=${"%.4f".format(avgAbs)}，max=${"%.4f".format(maxVal)}，min=${"%.4f".format(minVal)}，首位10=${samples.take(10).joinToString(",") { "%.4f".format(it) }} (PID=$pid)"
                     Log.w(TAG, timeoutMsg)
                     vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $timeoutMsg")
                     // v3.1.145-fix: 关闭旧Interpreter并重建新实例，确保后续推理不再挂死
                     reloadYamnetInterpreter()
                     // v3.1.149-fix: 连续超时超过阈值(2次)，抛出异常让调用者跳过当前区间
                     if (consecutiveTimeoutCount >= MAX_CONSECUTIVE_TIMEOUTS) {
-                        val abortMsg = "classifyWithYamnet: 连续${consecutiveTimeoutCount}次超时(${elapsedMs}ms/次)，跳过当前区间，总重载=${totalReloadCount}"
+                        val abortMsg = "classifyWithYamnet: 连续${consecutiveTimeoutCount}次超时(${elapsedMs}ms/次)，跳过当前区间，总重载=${totalReloadCount} (PID=$pid)"
                         Log.w(TAG, abortMsg)
                         vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $abortMsg")
                         throw RuntimeException(abortMsg)
                     }
                     // v3.1.149-fix: 全局重载超过阈值(15次)，抛出异常让调用者跳过剩余所有YAMNet处理
                     if (totalReloadCount >= MAX_TOTAL_RELOADS) {
-                        val abortAllMsg = "classifyWithYamnet: 总重载${totalReloadCount}次超过阈值=${MAX_TOTAL_RELOADS}，跳过剩余所有YAMNet处理"
+                        val abortAllMsg = "classifyWithYamnet: 总重载${totalReloadCount}次超过阈值=${MAX_TOTAL_RELOADS}，跳过剩余所有YAMNet处理 (PID=$pid)"
                         Log.w(TAG, abortAllMsg)
                         vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $abortAllMsg")
                         throw RuntimeException(abortAllMsg)
@@ -2242,15 +2307,15 @@ object AudioSegmentAnalyzer {
             } catch (e: RuntimeException) {
                 // v3.1.147-fix: 传递连续超时/全局重载异常，不在此处捕获
                 if (e.message?.contains("跳过") == true) {
-                    Log.w(TAG, "classifyWithYamnet: 传递跳过异常: ${e.message}")
+                    Log.w(TAG, "classifyWithYamnet: 传递跳过异常: ${e.message} (PID=$pid)")
                 }
                 throw e
             } catch (e: Throwable) {
                 // v3.1.149-fix: 区分InterruptedException和其他异常
                 if (e is InterruptedException) {
-                    Log.w(TAG, "classifyWithYamnet: Future.get被中断(InterruptedException)，总重载=${totalReloadCount}")
+                    Log.w(TAG, "classifyWithYamnet: Future.get被中断(InterruptedException)，总重载=${totalReloadCount} (PID=$pid)")
                 }
-                val errMsg = "classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message}"
+                val errMsg = "classifyWithYamnet: interpreter.run 崩溃: ${e.javaClass.name}: ${e.message} (PID=$pid)"
                 Log.w(TAG, errMsg)
                 vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] $errMsg")
                 // v3.1.145-fix: interpreter崩溃后也重建，确保后续推理可用
@@ -3182,21 +3247,28 @@ object AudioSegmentAnalyzer {
         private val shortBuffer: ShortBuffer
 
         init {
-            // 检查文件大小，超过500MB的PCM文件使用分块读取而非内存映射
+            val pid = android.os.Process.myPid()
             val fileSize = pcmFile.length()
+            Log.i(TAG, "MappedPcmSampleProvider: 初始化 (PID=$pid) file=${pcmFile.name}, size=${fileSize / 1024 / 1024}MB, path=${pcmFile.absolutePath}")
+            // 检查文件大小，超过500MB的PCM文件使用分块读取而非内存映射
             if (fileSize > 500 * 1024 * 1024L) {
+                Log.e(TAG, "MappedPcmSampleProvider: PCM文件过大 (PID=$pid): ${fileSize / 1024 / 1024}MB")
                 throw RuntimeException("PCM文件过大: ${fileSize / 1024 / 1024}MB，无法映射")
             }
+            Log.i(TAG, "MappedPcmSampleProvider: 打开RandomAccessFile (PID=$pid)")
             raf = RandomAccessFile(pcmFile, "r")
             channel = raf.channel
+            Log.i(TAG, "MappedPcmSampleProvider: 开始内存映射 (PID=$pid) size=${fileSize / 1024 / 1024}MB")
             mapped = try {
                 channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize)
             } catch (e: Exception) {
+                Log.e(TAG, "MappedPcmSampleProvider: 内存映射失败 (PID=$pid): ${e.javaClass.name}: ${e.message}")
                 try { channel.close() } catch (_: Exception) {}
                 try { raf.close() } catch (_: Exception) {}
                 throw RuntimeException("PCM文件映射失败: ${e.message}", e)
             }
             shortBuffer = mapped.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            Log.i(TAG, "MappedPcmSampleProvider: 初始化完成 (PID=$pid) 样本数=${shortBuffer.remaining()}")
         }
 
         override val size: Int = shortBuffer.remaining()
