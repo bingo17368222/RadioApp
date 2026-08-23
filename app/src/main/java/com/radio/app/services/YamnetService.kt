@@ -9,6 +9,8 @@ import android.util.Log
 import com.radio.app.models.VoiceSegment
 import com.radio.app.utils.AudioSegmentAnalyzer
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -39,6 +41,7 @@ class YamnetService : Service() {
         const val EXTRA_RECEIVER = "receiver"
         const val RESULT_SEGMENTS = "segments"
         const val RESULT_ERROR = "error"
+        const val RESULT_ERROR_DETAIL = "error_detail"
         const val RESULT_PROGRESS_COUNT = "progress_count"
         const val RESULT_PROGRESS_TOTAL = "progress_total"
         const val CODE_SUCCESS = 0
@@ -151,7 +154,11 @@ class YamnetService : Service() {
 
                         if (intervalError != null) {
                             val err = intervalError!!
+                            val sw = StringWriter()
+                            val pw = PrintWriter(sw)
+                            err.printStackTrace(pw)
                             Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 异常: ${err.javaClass.name}: ${err.message}")
+                            Log.w(TAG, "YamnetService: 区间异常堆栈:\n${sw.toString().take(500)}")
                             processedCount++
                             continue
                         }
@@ -189,9 +196,15 @@ class YamnetService : Service() {
                 }
                 try { receiver.send(CODE_SUCCESS, resultBundle) } catch (_: Exception) {}
             } catch (e: Throwable) {
+                val sw = StringWriter()
+                val pw = PrintWriter(sw)
+                e.printStackTrace(pw)
+                val stackTrace = sw.toString().take(800)
                 Log.e(TAG, "YamnetService: 处理异常: ${e.javaClass.name}: ${e.message}")
+                Log.e(TAG, "YamnetService: 异常堆栈:\n$stackTrace")
                 val errBundle = Bundle().apply {
                     putString(RESULT_ERROR, "${e.javaClass.name}: ${e.message}")
+                    putString(RESULT_ERROR_DETAIL, stackTrace)
                 }
                 try { intent?.getParcelableExtra<ResultReceiver>(EXTRA_RECEIVER)?.send(CODE_ERROR, errBundle) } catch (_: Exception) {}
             } finally {

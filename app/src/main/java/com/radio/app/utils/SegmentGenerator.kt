@@ -16,6 +16,8 @@ import com.radio.app.utils.ChromaprintExtractor
 import com.radio.app.utils.PcmSegmentExtractor
 import org.tensorflow.lite.Interpreter
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -1593,12 +1595,12 @@ object SegmentGenerator {
                         writeFingerprintLog(context, "三层架构: YAMNet子段目标区域(600~1100s): $yamnetTargetDetail")
                     } else {
                         Log.w(TAG, "三层架构: $yamnetErrorMsg，使用第1层结果 for episode=$episodeId")
-                        writeFingerprintLog(context, "三层架构: $yamnetErrorMsg，使用第1层结果")
-                        // v3.1.156-fix: YamnetService失败时，将"待处理"段转为干货。
-                        // 根因：第一层的"待处理"段 hasVoice=false，YAMNet无法分类时全部变为水货。
-                        // 修复：将所有非"指纹水货"段标记为干货（hasVoice=true）。
-                        mergedAfterLayer2 = layer1WithPendingAsDry(mergedAfterLayer1)
-                        audioEngineName = "VAD+YAMNet+三层(优化-YamnetService失败)"
+                        writeFingerprintLog(context, "三层架构: $yamnetErrorMsg，使用第1层结果（已将pending段标记为分类失败，失败原因已记录到fingerprint日志）")
+                        // v3.1.157: YamnetService失败时，不再默认转为干货。
+                        // 将pending段标记为"分类失败"，保持hasVoice=false。
+                        // 失败原因已由runYamnetService记录到fingerprint日志。
+                        mergedAfterLayer2 = markYamnetFailedSegments(mergedAfterLayer1)
+                        audioEngineName = "VAD+YAMNet+三层(YamnetService失败-不默认分类)"
                     }
                 }
             } catch (e: Throwable) {
@@ -1781,9 +1783,10 @@ object SegmentGenerator {
                                     writeFingerprintLog(context, "三层架构: 第2层-B YAMNet完成: ${yamnetIntervals.size}个区间→${yamnetAllSegments.size}段(干${yamnetDryCount2}/水${yamnetWaterCount2}/静音${yamnetSilenceCount2})，合并后${mergedAfterLayer2.size}段")
                                 } else {
                                     Log.w(TAG, "三层架构: PCM再生后YamnetService失败($yamnetRegenError)，使用第1层结果 for episode=$episodeId")
-                                    // v3.1.156-fix: 同样将"待处理"段转为干货
-                                    mergedAfterLayer2 = layer1WithPendingAsDry(mergedAfterLayer1)
-                                    audioEngineName = "VAD+YAMNet+三层(优化-YamnetService失败)"
+                                    writeFingerprintLog(context, "三层架构: PCM再生后$yamnetRegenError，使用第1层结果（已将pending段标记为分类失败，失败原因已记录到fingerprint日志）")
+                                    // v3.1.157: 同样不再默认转为干货，标记为"分类失败"
+                                    mergedAfterLayer2 = markYamnetFailedSegments(mergedAfterLayer1)
+                                    audioEngineName = "VAD+YAMNet+三层(YamnetService失败-不默认分类)"
                                 }
                             }
                         } catch (e: Throwable) {
@@ -2016,15 +2019,17 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.1.156: 当YamnetService失败时，将第一层结果中的"待处理"段转为干货。
-     * 根因：第一层的"待处理"段 hasVoice=false，YAMNet无法分类时全部变为水货。
+     * v3.1.157: 当YamnetService失败时，将第一层结果中的"待处理"段标记为"分类失败"。
+     * 不再默认转为干货——用户要求：不允许因为处理失败而默认为干货或水分。
+     * 失败原因已由runYamnetService记录到指纹日志，此处仅标记分类状态。
      */
-    private fun layer1WithPendingAsDry(layer1: List<VoiceSegment>): List<VoiceSegment> {
+    private fun markYamnetFailedSegments(layer1: List<VoiceSegment>): List<VoiceSegment> {
         val fixed = layer1.map { seg ->
             if (!seg.hasVoice && !isWaterLabel(seg.label)) {
                 seg.copy().apply {
-                    hasVoice = true
-                    label = "干货"
+                    // 保持hasVoice=false（YAMNet未确认是人声）
+                    // 修改label为"分类失败"以明确标识YAMNet未完成分类
+                    label = "分类失败"
                 }
             } else {
                 seg
@@ -2060,6 +2065,7 @@ object SegmentGenerator {
             // 不需要@Volatile：CountDownLatch的await()提供happens-before保证
             var serviceSegments = ArrayList<VoiceSegment>()
             var serviceError: String? = null
+            var serviceErrorDetail: String? = null
 
             val intent = Intent(context, YamnetService::class.java).apply {
                 putExtra(YamnetService.EXTRA_PCM_PATH, pcmPath)
@@ -2076,6 +2082,7 @@ object SegmentGenerator {
                             }
                             YamnetService.CODE_ERROR -> {
                                 serviceError = resultData?.getString(YamnetService.RESULT_ERROR)
+                                serviceErrorDetail = resultData?.getString(YamnetService.RESULT_ERROR_DETAIL)
                                 latch.countDown()
                             }
                             YamnetService.CODE_PROGRESS -> {
@@ -2091,16 +2098,32 @@ object SegmentGenerator {
 
             if (!waited) {
                 try { cancelFile.createNewFile() } catch (_: Exception) {}
-                Log.w(TAG, "runYamnetService: 超时(${timeoutMs/1000}秒)")
+                val timeoutMsg = "YamnetService超时(${timeoutMs/1000}秒): pcm=$pcmPath, 区间数=${intervalStarts.size}"
+                Log.w(TAG, "runYamnetService: $timeoutMsg")
+                writeFingerprintLog(context, "runYamnetService: $timeoutMsg")
                 return null
             }
             if (serviceError != null) {
-                Log.w(TAG, "runYamnetService: 异常: $serviceError")
+                val errMsg = "YamnetService异常: $serviceError"
+                Log.w(TAG, "runYamnetService: $errMsg")
+                if (serviceErrorDetail != null) {
+                    Log.w(TAG, "runYamnetService: 异常详情:\n${serviceErrorDetail!!.take(500)}")
+                }
+                writeFingerprintLog(context, "runYamnetService: $errMsg")
+                if (serviceErrorDetail != null) {
+                    writeFingerprintLog(context, "runYamnetService异常详情: ${serviceErrorDetail!!.take(500)}")
+                }
                 return null
             }
             return serviceSegments
         } catch (e: Throwable) {
-            Log.e(TAG, "runYamnetService: 调用异常: ${e.javaClass.name}: ${e.message}")
+            val errMsg = "runYamnetService: 调用异常: ${e.javaClass.name}: ${e.message}"
+            Log.e(TAG, errMsg)
+            writeFingerprintLog(context, errMsg)
+            val sw = StringWriter()
+            val pw = PrintWriter(sw)
+            e.printStackTrace(pw)
+            writeFingerprintLog(context, "runYamnetService调用异常堆栈: ${sw.toString().take(500)}")
             return null
         } finally {
             try { cancelFile.delete() } catch (_: Exception) {}
