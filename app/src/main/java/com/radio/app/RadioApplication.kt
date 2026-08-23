@@ -180,6 +180,11 @@ class RadioApplication : Application() {
         writeVersionMarkers(this, currentVersionName)
         // Warm up log dir
         getLogDir(this)
+        // v3.1.161: 应用启动时保存当前logcat快照，用于崩溃后排查
+        try {
+            com.radio.app.utils.LogcatCapture.dumpLogcat(this, maxLines = 500)
+        } catch (_: Exception) {}
+
         // [v2.1.0] Warm up cache dir + migrate legacy PCM cache
         migrateLegacyPcmCache()
 

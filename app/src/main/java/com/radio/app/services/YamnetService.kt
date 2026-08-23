@@ -181,6 +181,11 @@ class YamnetService : Service() {
                 Log.i(TAG, "YamnetService: [STEP 7] 开始处理区间: 共$total 个区间 PID=$pid")
                 writeFingerprintLog("YamnetService: [STEP 7] 开始处理 $total 个区间")
 
+                // v3.1.161: 处理前保存logcat快照，崩溃后可用此文件回溯
+                try {
+                    com.radio.app.utils.LogcatCapture.dumpLogcat(this, maxLines = 1000, tags = emptyList())
+                } catch (_: Exception) {}
+
                 // v3.1.159: 复用单个Executor处理所有区间
                 val intervalExecutor = Executors.newSingleThreadExecutor()
                 try {

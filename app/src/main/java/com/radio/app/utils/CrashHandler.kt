@@ -35,6 +35,10 @@ class CrashHandler private constructor() : Thread.UncaughtExceptionHandler {
     override fun uncaughtException(thread: Thread, throwable: Throwable) {
         try {
             saveCrashLog(thread, throwable)
+            // v3.1.161: 崩溃时自动保存logcat日志，便于排查原生崩溃（SIGSEGV等）
+            try {
+                LogcatCapture.dumpLogcat(appContext, maxLines = 3000, tags = emptyList())
+            } catch (_: Exception) {}
         } catch (e: Exception) {
             e.printStackTrace()
         }
