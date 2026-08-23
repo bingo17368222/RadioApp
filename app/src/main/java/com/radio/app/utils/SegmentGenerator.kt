@@ -2070,8 +2070,9 @@ object SegmentGenerator {
      * @param pcmPath PCM文件绝对路径
      * @param intervalStarts 区间起始时间数组(ms)
      * @param intervalEnds 区间结束时间数组(ms)
-     * @param timeoutMs 整体超时时间(ms)，默认300秒
-     * v3.1.158: 从120秒增加到300秒，根因：291个区间×~0.5秒/区间>120秒
+     * @param timeoutMs 整体超时时间(ms)，默认600秒
+     * v3.1.159: 从300秒增加到600秒，根因：354个区间×~1秒/区间>300秒
+     * 注意：实际处理时间已通过复用Executor优化，600秒仅为安全网
      * @return 成功时返回segments列表，失败时返回null（错误信息通过日志输出）
      */
     private fun runYamnetService(
@@ -2079,7 +2080,7 @@ object SegmentGenerator {
         pcmPath: String,
         intervalStarts: LongArray,
         intervalEnds: LongArray,
-        timeoutMs: Long = 300_000L
+        timeoutMs: Long = 600_000L
     ): List<VoiceSegment>? {
         val cancelFileName = "yamnet_cancel_${System.currentTimeMillis()}_${Thread.currentThread().id}.tmp"
         val cancelFile = File(context.cacheDir, cancelFileName)

@@ -11,9 +11,10 @@ import com.radio.app.utils.AudioSegmentAnalyzer
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * v3.1.154: YAMNet推理服务，运行在独立进程(:yamnet)中。
@@ -48,9 +49,10 @@ class YamnetService : Service() {
         const val CODE_ERROR = 1
         const val CODE_PROGRESS = 2
 
-        // 整体超时：300秒（5分钟），用于处理大量区间（如291个）
-        // v3.1.158: 从120秒增加到300秒，根因：291个区间×~0.5秒/区间+模型加载+文件映射>120秒
-        private const val OVERALL_TIMEOUT_MS = 300_000L
+        // 整体超时：600秒（10分钟），用于处理大量区间（如354个）
+        // v3.1.159: 从300秒增加到600秒，根因：354个区间×~1秒/区间>300秒
+        // 注意：实际处理时间已通过复用Executor优化，600秒仅为安全网
+        private const val OVERALL_TIMEOUT_MS = 600_000L
         // 单个区间超时：30秒
         private const val INTERVAL_TIMEOUT_MS = 30_000L
     }
@@ -100,95 +102,86 @@ class YamnetService : Service() {
                 var processedCount = 0
                 val overallStartMs = System.currentTimeMillis()
 
-                for (i in 0 until total) {
-                    // 检查取消
-                    if (isCancelled()) {
-                        Log.w(TAG, "YamnetService: 检测到取消信号，停止处理")
-                        break
-                    }
-
-                    // 整体超时检查
-                    if (System.currentTimeMillis() - overallStartMs >= OVERALL_TIMEOUT_MS) {
-                        Log.w(TAG, "YamnetService: 整体处理超时(${OVERALL_TIMEOUT_MS / 1000}秒)，停止处理")
-                        break
-                    }
-
-                    try {
-                        val startMs = intervalStarts[i]
-                        val endMs = intervalEnds[i]
-                        val intervalDurationMs = endMs - startMs
-
-                        // 单个区间过长？跳过超大区间
-                        if (intervalDurationMs > 300_000L) {
-                            Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 过长(${intervalDurationMs / 1000}秒)，跳过")
-                            processedCount++
-                            continue
+                // v3.1.159: 复用单个Executor处理所有区间，避免每区间创建线程池的巨大开销
+                // 根因：291个区间×每个区间创建/销毁线程池≈数百毫秒开销/区间，累计超300秒
+                val intervalExecutor = Executors.newSingleThreadExecutor()
+                try {
+                    for (i in 0 until total) {
+                        // 检查取消
+                        if (isCancelled()) {
+                            Log.w(TAG, "YamnetService: 检测到取消信号，停止处理")
+                            break
                         }
 
-                        // 单个区间超时保护：使用 Future 包裹
-                        val intervalLatch = CountDownLatch(1)
-                        var intervalResult = emptyList<VoiceSegment>()
-                        var intervalError: Throwable? = null
+                        // 整体超时检查（仅作为安全网）
+                        if (System.currentTimeMillis() - overallStartMs >= OVERALL_TIMEOUT_MS) {
+                            Log.w(TAG, "YamnetService: 整体处理超时(${OVERALL_TIMEOUT_MS / 1000}秒)，停止处理")
+                            break
+                        }
 
-                        val executor = Executors.newSingleThreadExecutor()
-                        executor.submit {
-                            try {
-                                intervalResult = AudioSegmentAnalyzer.classifyPcmIntervalInner(
-                                    pcmSamples, startMs, endMs
-                                )
-                            } catch (e: Throwable) {
-                                intervalError = e
-                            } finally {
-                                intervalLatch.countDown()
+                        try {
+                            val startMs = intervalStarts[i]
+                            val endMs = intervalEnds[i]
+                            val intervalDurationMs = endMs - startMs
+
+                            // 单个区间过长？跳过超大区间
+                            if (intervalDurationMs > 300_000L) {
+                                Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 过长(${intervalDurationMs / 1000}秒)，跳过")
+                                processedCount++
+                                continue
                             }
-                        }
-                        executor.shutdown()
 
-                        val intervalDone = intervalLatch.await(INTERVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                        if (!intervalDone) {
-                            // 区间超时，强制关闭 executor
-                            executor.shutdownNow()
-                            Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 超时(${INTERVAL_TIMEOUT_MS / 1000}秒)，跳过")
-                            processedCount++
-                            continue
-                        }
-
-                        if (intervalError != null) {
-                            val err = intervalError!!
-                            val sw = StringWriter()
-                            val pw = PrintWriter(sw)
-                            err.printStackTrace(pw)
-                            Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 异常: ${err.javaClass.name}: ${err.message}")
-                            Log.w(TAG, "YamnetService: 区间异常堆栈:\n${sw.toString().take(500)}")
-                            processedCount++
-                            continue
-                        }
-
-                        val processed = AudioSegmentAnalyzer.postProcessYamnetSubSegments(intervalResult)
-                        allSegments.addAll(processed)
-                        processedCount++
-
-                        // 每处理5个区间或关键节点发送进度回调
-                        if (i % 5 == 0 || i == total - 1) {
+                            // 单个区间超时保护：使用复用的Executor + Future.get(timeout)
+                            var intervalResult: List<VoiceSegment> = emptyList()
                             try {
-                                val progressBundle = Bundle().apply {
-                                    putInt(RESULT_PROGRESS_COUNT, processedCount)
-                                    putInt(RESULT_PROGRESS_TOTAL, total)
-                                }
-                                receiver.send(CODE_PROGRESS, progressBundle)
-                            } catch (_: Exception) {}
-                        }
+                                val future = intervalExecutor.submit(Callable {
+                                    AudioSegmentAnalyzer.classifyPcmIntervalInner(
+                                        pcmSamples, startMs, endMs
+                                    )
+                                })
+                                intervalResult = future.get(INTERVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                            } catch (e: TimeoutException) {
+                                Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 超时(${INTERVAL_TIMEOUT_MS / 1000}秒)，跳过")
+                                processedCount++
+                                continue
+                            } catch (e: Exception) {
+                                val sw = StringWriter()
+                                val pw = PrintWriter(sw)
+                                e.printStackTrace(pw)
+                                Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 异常: ${e.javaClass.name}: ${e.message}")
+                                Log.w(TAG, "YamnetService: 区间异常堆栈:\n${sw.toString().take(500)}")
+                                processedCount++
+                                continue
+                            }
 
-                        Log.i(TAG, "YamnetService: 区间[${i+1}/$total] 完成，${processed.size}段")
-                    } catch (e: InterruptedException) {
-                        Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 被中断")
-                        if (allSegments.isEmpty()) throw
-                        break
-                    } catch (e: Throwable) {
-                        // 单个区间异常不中断整体流程，继续处理下一个区间
-                        Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 异常: ${e.javaClass.name}: ${e.message}")
-                        processedCount++
+                            val processed = AudioSegmentAnalyzer.postProcessYamnetSubSegments(intervalResult)
+                            allSegments.addAll(processed)
+                            processedCount++
+
+                            // 每处理5个区间或关键节点发送进度回调
+                            if (i % 5 == 0 || i == total - 1) {
+                                try {
+                                    val progressBundle = Bundle().apply {
+                                        putInt(RESULT_PROGRESS_COUNT, processedCount)
+                                        putInt(RESULT_PROGRESS_TOTAL, total)
+                                    }
+                                    receiver.send(CODE_PROGRESS, progressBundle)
+                                } catch (_: Exception) {}
+                            }
+
+                            Log.i(TAG, "YamnetService: 区间[${i+1}/$total] 完成，${processed.size}段")
+                        } catch (e: InterruptedException) {
+                            Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 被中断")
+                            if (allSegments.isEmpty()) throw
+                            break
+                        } catch (e: Throwable) {
+                            // 单个区间异常不中断整体流程，继续处理下一个区间
+                            Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 异常: ${e.javaClass.name}: ${e.message}")
+                            processedCount++
+                        }
                     }
+                } finally {
+                    intervalExecutor.shutdownNow()
                 }
 
                 Log.i(TAG, "YamnetService: 处理完成，共${allSegments.size}段(成功${processedCount}/${total}个区间)")
