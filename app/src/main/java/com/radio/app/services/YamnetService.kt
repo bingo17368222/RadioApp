@@ -187,7 +187,10 @@ class YamnetService : Service() {
                 } catch (_: Exception) {}
 
                 // v3.1.159: 复用单个Executor处理所有区间
-                val intervalExecutor = Executors.newSingleThreadExecutor()
+                // v3.1.163: 当Future.get()超时时，说明TFLite interpreter.run()卡住了，
+                // 必须重建Executor放弃被卡住的线程，否则后续所有区间都会超时。
+                var intervalExecutor = Executors.newSingleThreadExecutor()
+                var executorStuck = false
                 try {
                     for (i in 0 until total) {
                         // 检查取消
@@ -200,6 +203,15 @@ class YamnetService : Service() {
                         if (System.currentTimeMillis() - overallStartMs >= OVERALL_TIMEOUT_MS) {
                             Log.w(TAG, "YamnetService: 整体处理超时(${OVERALL_TIMEOUT_MS / 1000}秒)，停止处理")
                             break
+                        }
+
+                        // 如果上一个区间导致Executor线程卡住，重建新Executor
+                        if (executorStuck) {
+                            Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 重建Executor(上一个区间TFLite卡住)")
+                            writeFingerprintLog("YamnetService: 区间[${i+1}/$total] 重建Executor")
+                            try { intervalExecutor.shutdownNow() } catch (_: Exception) {}
+                            intervalExecutor = Executors.newSingleThreadExecutor()
+                            executorStuck = false
                         }
 
                         try {
@@ -223,14 +235,17 @@ class YamnetService : Service() {
                                     writeFingerprintLog("YamnetService: 区间[${i+1}/$total] 提交推理 duration=${intervalDurationMs}ms")
                                 }
                                 val future = intervalExecutor.submit(Callable {
-                                    // 在classifyPcmIntervalInner内部的日志会记录更详细的信息
                                     AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                         pcmSamples!!, startMs, endMs
                                     )
                                 })
                                 intervalResult = future.get(INTERVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                             } catch (e: TimeoutException) {
-                                Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 超时(${INTERVAL_TIMEOUT_MS / 1000}秒)，跳过")
+                                // v3.1.163: TFLite interpreter.run()卡住，标记executorStuck=true
+                                // 后续区间会重建Executor，避免所有区间都超时
+                                executorStuck = true
+                                Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 超时(${INTERVAL_TIMEOUT_MS / 1000}秒，TFLite卡住)，跳过")
+                                writeFingerprintLog("YamnetService: 区间[${i+1}/$total] TFLite卡住超时，跳过")
                                 processedCount++
                                 continue
                             } catch (e: Exception) {
@@ -260,6 +275,10 @@ class YamnetService : Service() {
 
                             if (i % 10 == 0) {
                                 Log.i(TAG, "YamnetService: 区间[${i+1}/$total] 完成，${processed.size}段，累计${allSegments.size}段")
+                                // v3.1.163: 每10个区间保存logcat快照，捕获崩溃/卡住上下文
+                                try {
+                                    com.radio.app.utils.LogcatCapture.dumpLogcat(this, maxLines = 500, tags = emptyList())
+                                } catch (_: Exception) {}
                             }
                         } catch (e: InterruptedException) {
                             Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 被中断")
@@ -271,7 +290,7 @@ class YamnetService : Service() {
                         }
                     }
                 } finally {
-                    intervalExecutor.shutdownNow()
+                    try { intervalExecutor.shutdownNow() } catch (_: Exception) {}
                 }
 
                 Log.i(TAG, "YamnetService: 处理完成，共${allSegments.size}段(成功${processedCount}/${total}个区间)")
