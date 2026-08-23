@@ -48,8 +48,9 @@ class YamnetService : Service() {
         const val CODE_ERROR = 1
         const val CODE_PROGRESS = 2
 
-        // 整体超时：120秒
-        private const val OVERALL_TIMEOUT_MS = 120_000L
+        // 整体超时：300秒（5分钟），用于处理大量区间（如291个）
+        // v3.1.158: 从120秒增加到300秒，根因：291个区间×~0.5秒/区间+模型加载+文件映射>120秒
+        private const val OVERALL_TIMEOUT_MS = 300_000L
         // 单个区间超时：30秒
         private const val INTERVAL_TIMEOUT_MS = 30_000L
     }

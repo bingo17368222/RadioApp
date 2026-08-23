@@ -1868,6 +1868,7 @@ object SegmentGenerator {
         // v3.1.112: 记录合并前后的分段数，用于排查干货间丢失
         val dryBeforePost = merged.count { it.hasVoice }
         val waterBeforePost = merged.count { !it.hasVoice && isWaterLabel(it.label) }
+        val failedBeforePost = merged.count { it.label == "分类失败" }
         val finalSegments = AudioSegmentAnalyzer.postProcessSegments(merged).toMutableList().apply {
             for (seg in this) {
                 if (!seg.hasVoice && seg.label == null) {
@@ -1876,9 +1877,24 @@ object SegmentGenerator {
             }
         }
         val dryAfterPost = finalSegments.count { it.hasVoice }
-        val waterAfterPost = finalSegments.count { !it.hasVoice }
+        // v3.1.158: 分类失败段不应计入水段统计，独立统计
+        val waterAfterPost = finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }
+        val failedAfterPost = finalSegments.count { it.label == "分类失败" }
+        val silenceAfterPost = finalSegments.count { it.label == "静音" }
         // v3.1.112: 详细记录后处理变化
-        writeFingerprintLog(context, "三层架构: 后处理结果: ${merged.size}段(干${dryBeforePost}/水${waterBeforePost}) → ${finalSegments.size}段(干${dryAfterPost}/水${waterAfterPost}), 合并前${layer3Result.size}段")
+        // v3.1.158: 分类失败段独立统计
+        val beforeDetail = buildString {
+            append("干${dryBeforePost}")
+            if (waterBeforePost > 0) append("/水${waterBeforePost}")
+            if (failedBeforePost > 0) append("/分类失败${failedBeforePost}")
+        }
+        val afterDetail = buildString {
+            append("干${dryAfterPost}")
+            if (waterAfterPost > 0) append("/水${waterAfterPost}")
+            if (failedAfterPost > 0) append("/分类失败${failedAfterPost}")
+            if (silenceAfterPost > 0) append("/静音${silenceAfterPost}")
+        }
+        writeFingerprintLog(context, "三层架构: 后处理结果: ${merged.size}段($beforeDetail) → ${finalSegments.size}段($afterDetail), 合并前${layer3Result.size}段")
 
         // v3.1.116: 填充段间间隙为静音段，确保时间轴100%连续
         // 根因：VAD活动段只覆盖了约89.3%的时间轴（见日志第2层-A VAD占比），
@@ -1914,8 +1930,16 @@ object SegmentGenerator {
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime
         val finalDryCount = finalSegments.count { it.hasVoice }
+        val finalWaterCount = finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }
+        val finalFailedCount = finalSegments.count { it.label == "分类失败" }
         val dryRatio = if (finalSegments.isNotEmpty()) "%.1f".format(finalDryCount * 100.0 / finalSegments.size) else "0.0"
-        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${formatDuration(totalTimeMs)}（第1层${formatDuration(layer1TimeMs)}，第2层${formatDuration(layer2TimeMs)}，第3层${formatDuration(layer3TimeMs)}）"
+        // v3.1.158: 详细统计各分类段数
+        val statsDetail = buildString {
+            append("干货${finalDryCount}")
+            if (finalWaterCount > 0) append("/水${finalWaterCount}")
+            if (finalFailedCount > 0) append("/分类失败${finalFailedCount}")
+        }
+        val fpMsgStats = "三层架构完成: ${finalSegments.size}个片段（${statsDetail}，干货占比${dryRatio}%），总耗时${formatDuration(totalTimeMs)}（第1层${formatDuration(layer1TimeMs)}，第2层${formatDuration(layer2TimeMs)}，第3层${formatDuration(layer3TimeMs)}）"
         Log.i(TAG, fpMsgStats)
         writeFingerprintLog(context, fpMsgStats)
 
@@ -1961,7 +1985,7 @@ object SegmentGenerator {
         // v3.1.28: 更新通知为100%完成
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "三层分段完成")
 
-        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（干货${finalDryCount}段，占比${dryRatio}%），总耗时${formatDuration(totalTimeMs)}（第1层${formatDuration(layer1TimeMs)}，第2层${formatDuration(layer2TimeMs)}，第3层${formatDuration(layer3TimeMs)}）"
+        val fpMsgDone = "就AI听三层架构完成: ${finalSegments.size}个片段（${statsDetail}，干货占比${dryRatio}%），总耗时${formatDuration(totalTimeMs)}（第1层${formatDuration(layer1TimeMs)}，第2层${formatDuration(layer2TimeMs)}，第3层${formatDuration(layer3TimeMs)}）"
         Log.i(TAG, fpMsgDone)
         writeFingerprintLog(context, fpMsgDone)
 
@@ -2046,7 +2070,8 @@ object SegmentGenerator {
      * @param pcmPath PCM文件绝对路径
      * @param intervalStarts 区间起始时间数组(ms)
      * @param intervalEnds 区间结束时间数组(ms)
-     * @param timeoutMs 整体超时时间(ms)
+     * @param timeoutMs 整体超时时间(ms)，默认300秒
+     * v3.1.158: 从120秒增加到300秒，根因：291个区间×~0.5秒/区间>120秒
      * @return 成功时返回segments列表，失败时返回null（错误信息通过日志输出）
      */
     private fun runYamnetService(
@@ -2054,7 +2079,7 @@ object SegmentGenerator {
         pcmPath: String,
         intervalStarts: LongArray,
         intervalEnds: LongArray,
-        timeoutMs: Long = 120_000L
+        timeoutMs: Long = 300_000L
     ): List<VoiceSegment>? {
         val cancelFileName = "yamnet_cancel_${System.currentTimeMillis()}_${Thread.currentThread().id}.tmp"
         val cancelFile = File(context.cacheDir, cancelFileName)
@@ -2777,14 +2802,22 @@ object SegmentGenerator {
             return "分段结果为空"
         }
 
-        val waterCount = segments.count { !it.hasVoice }
+        val waterCount = segments.count { !it.hasVoice && isWaterLabel(it.label) }
         val dryCount = segments.count { it.hasVoice }
+        val failedCount = segments.count { it.label == "分类失败" }
 
+        if (waterCount == 0 && dryCount == 0 && failedCount > 0) {
+            return "全部${segments.size}个分段均为分类失败（0个干货，0个水分，${failedCount}个分类失败）"
+        }
         if (waterCount == segments.size) {
             return "全部${segments.size}个分段均为水分（0个干货）"
         }
         if (dryCount == segments.size) {
             return "全部${segments.size}个分段均为干货（0个水分）"
+        }
+        // v3.1.158: 如果只有分类失败+水分，没有干货，也算异常
+        if (dryCount == 0 && failedCount > 0) {
+            return "全部${segments.size}个分段无干货（水${waterCount}/分类失败${failedCount}）"
         }
 
         // 两小时节目应有60~100个分段，小于20个为异常
