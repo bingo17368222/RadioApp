@@ -181,7 +181,11 @@ class YamnetService : Service() {
                 Log.i(TAG, "YamnetService: [STEP 7] 开始处理区间: 共$total 个区间 PID=$pid")
                 writeFingerprintLog("YamnetService: [STEP 7] 开始处理 $total 个区间")
 
-                // v3.1.161: 处理前保存logcat快照，崩溃后可用此文件回溯
+                // v3.1.164: 处理前保存logcat快照（按PID过滤），崩溃后可用此文件回溯
+                try {
+                    com.radio.app.utils.LogcatCapture.dumpLogcatForPid(this, pid, maxLines = 500, suffix = "start")
+                } catch (_: Exception) {}
+                // v3.1.164: 同时保存一份全量快照用于对比
                 try {
                     com.radio.app.utils.LogcatCapture.dumpLogcat(this, maxLines = 1000, tags = emptyList())
                 } catch (_: Exception) {}
@@ -230,9 +234,17 @@ class YamnetService : Service() {
                             var intervalResult: List<VoiceSegment> = emptyList()
                             try {
                                 // 记录每个区间开始前的日志，用于定位崩溃点
-                                if (i % 10 == 0 || i == 0) {
+                                // v3.1.164: 前30个区间每个都记录日志（崩溃通常发生在区间20~25）
+                                // 之后每10个区间记录一次
+                                if (i < 30 || i % 10 == 0 || i == 0) {
                                     Log.i(TAG, "YamnetService: 区间[${i+1}/$total] 提交推理 startMs=${startMs}ms, endMs=${endMs}ms, duration=${intervalDurationMs}ms  PID=$pid")
                                     writeFingerprintLog("YamnetService: 区间[${i+1}/$total] 提交推理 duration=${intervalDurationMs}ms")
+                                }
+                                // v3.1.164: 前30个区间每个区间前保存PID快照，捕获崩溃点上下文
+                                if (i < 30) {
+                                    try {
+                                        com.radio.app.utils.LogcatCapture.dumpLogcatForPid(this, pid, maxLines = 200, suffix = "pre_${i+1}")
+                                    } catch (_: Exception) {}
                                 }
                                 val future = intervalExecutor.submit(Callable {
                                     AudioSegmentAnalyzer.classifyPcmIntervalInner(
@@ -275,7 +287,11 @@ class YamnetService : Service() {
 
                             if (i % 10 == 0) {
                                 Log.i(TAG, "YamnetService: 区间[${i+1}/$total] 完成，${processed.size}段，累计${allSegments.size}段")
-                                // v3.1.163: 每10个区间保存logcat快照，捕获崩溃/卡住上下文
+                                // v3.1.164: 每10个区间保存logcat快照（按PID过滤），崩溃时可用此文件回溯
+                                try {
+                                    com.radio.app.utils.LogcatCapture.dumpLogcatForPid(this, pid, maxLines = 500, suffix = "i${i+1}")
+                                } catch (_: Exception) {}
+                                // v3.1.163: 同时保存全量快照用于对比
                                 try {
                                     com.radio.app.utils.LogcatCapture.dumpLogcat(this, maxLines = 500, tags = emptyList())
                                 } catch (_: Exception) {}

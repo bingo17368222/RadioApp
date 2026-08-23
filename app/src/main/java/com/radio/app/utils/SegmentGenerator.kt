@@ -1489,7 +1489,8 @@ object SegmentGenerator {
                         val intervalStarts = yamnetIntervals.map { it.first }.toLongArray()
                         val intervalEnds = yamnetIntervals.map { it.second }.toLongArray()
 
-                        val serviceResult = runYamnetService(
+                        // v3.1.164: 使用分批处理，避免单个YamnetService崩溃导致全部区间丢失
+                        val serviceResult = runYamnetServiceWithBatches(
                             context, pcmSourceFile.absolutePath,
                             intervalStarts, intervalEnds
                         )
@@ -1714,7 +1715,8 @@ object SegmentGenerator {
                                     val intervalStarts = yamnetIntervals.map { it.first }.toLongArray()
                                     val intervalEnds = yamnetIntervals.map { it.second }.toLongArray()
 
-                                    val serviceResult = runYamnetService(
+                                    // v3.1.164: 使用分批处理，避免单个YamnetService崩溃导致全部区间丢失
+                                    val serviceResult = runYamnetServiceWithBatches(
                                         context, newFullPcm.absolutePath,
                                         intervalStarts, intervalEnds
                                     )
@@ -2061,6 +2063,83 @@ object SegmentGenerator {
             }
         }
         return mergeAdjacentSegments(fixed)
+    }
+
+    /**
+     * v3.1.164: 分批调用YamnetService，每批最多BATCH_SIZE个区间。
+     * 根因：YamnetService在TFLite推理时可能发生SIGSEGV原生崩溃。
+     * 如果一次发送全部291个区间，崩溃在第21个区间，则损失全部291个区间的结果。
+     * 分批后，如果崩溃在第3批的第1个区间（即区间21），只损失本批的10个区间，
+     * 前两批（区间1~20）的结果已成功返回。
+     *
+     * @param context Android上下文
+     * @param pcmPath PCM文件绝对路径
+     * @param intervalStarts 区间起始时间数组(ms)
+     * @param intervalEnds 区间结束时间数组(ms)
+     * @param batchSize 每批区间数，默认10
+     * @param batchTimeoutMs 每批超时时间(ms)，默认120秒（10个区间×每个区间30秒超时上限）
+     * @return 成功时返回所有批次的合并segments列表，全部失败时返回null
+     */
+    private fun runYamnetServiceWithBatches(
+        context: Context,
+        pcmPath: String,
+        intervalStarts: LongArray,
+        intervalEnds: LongArray,
+        batchSize: Int = 10,
+        batchTimeoutMs: Long = 120_000L
+    ): List<VoiceSegment>? {
+        val totalIntervals = intervalStarts.size
+        if (totalIntervals == 0) return emptyList()
+
+        // 如果区间数少于batchSize，直接调用原始runYamnetService
+        if (totalIntervals <= batchSize) {
+            return runYamnetService(context, pcmPath, intervalStarts, intervalEnds)
+        }
+
+        val allResults = mutableListOf<VoiceSegment>()
+        var anySuccess = false
+        val totalBatches = (totalIntervals + batchSize - 1) / batchSize
+
+        Log.i(TAG, "runYamnetServiceWithBatches: ${totalIntervals}个区间，分${totalBatches}批，每批${batchSize}个 for pcm=$pcmPath")
+        writeFingerprintLog(context, "runYamnetServiceWithBatches: ${totalIntervals}个区间，分${totalBatches}批，每批${batchSize}个")
+
+        for (batchIndex in 0 until totalBatches) {
+            val startIdx = batchIndex * batchSize
+            val endIdx = minOf(startIdx + batchSize, totalIntervals)
+            val batchCount = endIdx - startIdx
+
+            val batchStarts = LongArray(batchCount) { intervalStarts[startIdx + it] }
+            val batchEnds = LongArray(batchCount) { intervalEnds[startIdx + it] }
+
+            Log.i(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批 (区间${startIdx+1}~${endIdx}, ${batchCount}个)")
+            writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批 区间${startIdx+1}~${endIdx}")
+
+            // 每批启动独立的YamnetService，崩溃只影响本批
+            val batchResult = runYamnetService(
+                context, pcmPath, batchStarts, batchEnds, batchTimeoutMs
+            )
+
+            if (batchResult != null) {
+                allResults.addAll(batchResult)
+                anySuccess = true
+                Log.i(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批完成，产出${batchResult.size}段，累计${allResults.size}段")
+                writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批完成，产出${batchResult.size}段")
+            } else {
+                Log.w(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败(服务崩溃或超时)，跳过本批")
+                writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败，跳过")
+                // 继续下一批，不中断整体流程
+            }
+        }
+
+        if (!anySuccess) {
+            Log.w(TAG, "runYamnetServiceWithBatches: 全部${totalBatches}批均失败，返回null")
+            writeFingerprintLog(context, "runYamnetServiceWithBatches: 全部${totalBatches}批均失败，返回null")
+            return null
+        }
+
+        Log.i(TAG, "runYamnetServiceWithBatches: 完成，${totalBatches}批中部分成功，共${allResults.size}段")
+        writeFingerprintLog(context, "runYamnetServiceWithBatches: 完成，共${allResults.size}段")
+        return allResults
     }
 
     /**

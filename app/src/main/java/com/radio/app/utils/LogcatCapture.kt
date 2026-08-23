@@ -44,6 +44,8 @@ object LogcatCapture {
      * 保存logcat日志到文件。
      * 如果指定了tags，只保存匹配这些tag的行；否则保存所有行。
      * 崩溃时调用此方法，可以捕获导致崩溃的上下文日志。
+     *
+     * v3.1.164: 崩溃时不再截取，保存全部日志（最多5000行），避免YamnetService日志被截断。
      */
     @JvmStatic
     fun dumpLogcat(
@@ -62,8 +64,7 @@ object LogcatCapture {
             val targetTags = tags ?: RELEVANT_TAGS
 
             // 使用 logcat -d（dump一次后退出，不持续监听） + -v threadtime（带线程时间）
-            // 通过 -s 过滤tag（但多个tag用逗号分隔的 -s 在Android上可能不完全可靠）
-            // 更可靠的方式：获取所有日志后在Java层过滤
+            // v3.1.164: 崩溃时保存全部行（不截取），避免YamnetService日志滚动出缓冲区
             val process = Runtime.getRuntime().exec(
                 arrayOf(
                     "logcat",
@@ -76,7 +77,6 @@ object LogcatCapture {
             val reader = BufferedReader(InputStreamReader(process.inputStream))
             val errorReader = BufferedReader(InputStreamReader(process.errorStream))
 
-            var lineCount = 0
             val allLines = mutableListOf<String>()
 
             // 读取所有行
@@ -86,7 +86,6 @@ object LogcatCapture {
             }
             // 读取错误流（如果有）
             while (errorReader.readLine().also { line = it } != null) {
-                // 忽略空行
                 if (line!!.isNotBlank()) {
                     Log.w(TAG, "logcat stderr: $line")
                 }
@@ -95,9 +94,15 @@ object LogcatCapture {
             errorReader.close()
             process.waitFor()
 
-            // 取最近N行
-            val recentLines = if (allLines.size > maxLines) {
-                allLines.subList(allLines.size - maxLines, allLines.size)
+            // v3.1.164: 崩溃时保存全部行（最多5000行），不再截取
+            // 避免YamnetService的日志在被截断的部分
+            val effectiveMaxLines = if (maxLines == DEFAULT_MAX_LINES && targetTags.isEmpty()) {
+                5000  // 崩溃时保存全部
+            } else {
+                maxLines
+            }
+            val recentLines = if (allLines.size > effectiveMaxLines) {
+                allLines.subList(allLines.size - effectiveMaxLines, allLines.size)
             } else {
                 allLines
             }
@@ -108,8 +113,6 @@ object LogcatCapture {
             } else {
                 recentLines.filter { line ->
                     targetTags.any { tag ->
-                        // logcat -v threadtime 格式：
-                        // "08-23 10:00:00.000  1234  5678 I TagName: message"
                         line.contains(" $tag:") || line.contains("($tag:)") ||
                         line.contains(" $tag (") || line.contains(" $tag (")
                     }
@@ -122,7 +125,7 @@ object LogcatCapture {
                 writer.appendLine("保存时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())}")
                 writer.appendLine("版本: ${RadioApplication.appVersionTag()}")
                 writer.appendLine("过滤标签: ${if (targetTags.isEmpty()) "全部" else targetTags.joinToString(", ")}")
-                writer.appendLine("总行数: ${allLines.size}, 过滤后: ${filteredLines.size}, 截取最近: ${maxLines}行")
+                writer.appendLine("总行数: ${allLines.size}, 过滤后: ${filteredLines.size}, 截取最近: ${effectiveMaxLines}行")
                 writer.appendLine("进程PID: ${android.os.Process.myPid()}")
                 writer.appendLine("===== 日志内容开始 =====")
                 writer.appendLine("")
@@ -143,6 +146,78 @@ object LogcatCapture {
             file
         } catch (e: Exception) {
             Log.e(TAG, "保存logcat失败: ${e.javaClass.name}: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * v3.1.164: 按进程PID保存logcat日志。
+     * 使用 `logcat -d --pid=<PID>` 只获取指定进程的日志，避免被其他进程日志淹没。
+     * 用于YamnetService在崩溃前保存自己的关键日志。
+     */
+    @JvmStatic
+    fun dumpLogcatForPid(
+        context: Context,
+        pid: Int,
+        maxLines: Int = 2000,
+        suffix: String = ""
+    ): File? {
+        return try {
+            val logDir = File(RadioApplication.getLogDir(context), "logcat")
+            if (!logDir.exists()) logDir.mkdirs()
+
+            val timestamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+            val pidLabel = if (suffix.isNotEmpty()) "_pid${pid}_${suffix}" else "_pid${pid}"
+            val fileName = "logcat${pidLabel}_${timestamp}.txt"
+            val file = File(logDir, fileName)
+
+            // 使用 --pid 只获取指定进程的日志
+            val process = Runtime.getRuntime().exec(
+                arrayOf(
+                    "logcat",
+                    "-d",
+                    "--pid", pid.toString(),
+                    "-v", "threadtime"
+                )
+            )
+
+            val reader = BufferedReader(InputStreamReader(process.inputStream))
+            val allLines = mutableListOf<String>()
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                allLines.add(line!!)
+            }
+            reader.close()
+            process.waitFor()
+
+            // 取最近N行
+            val recentLines = if (allLines.size > maxLines) {
+                allLines.subList(allLines.size - maxLines, allLines.size)
+            } else {
+                allLines
+            }
+
+            FileWriter(file).use { writer ->
+                writer.appendLine("===== RadioApp Logcat 按PID快照 =====")
+                writer.appendLine("保存时间: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())}")
+                writer.appendLine("版本: ${RadioApplication.appVersionTag()}")
+                writer.appendLine("目标PID: $pid")
+                writer.appendLine("总行数: ${allLines.size}, 保存: ${recentLines.size}行")
+                writer.appendLine("===== 日志内容开始 =====")
+                writer.appendLine("")
+                for (logLine in recentLines) {
+                    writer.appendLine(logLine)
+                }
+                writer.appendLine("")
+                writer.appendLine("===== 日志结束 =====")
+            }
+
+            Log.i(TAG, "logcat(PID=$pid)已保存: ${file.absolutePath} (${recentLines.size}行)")
+
+            cleanupOldFiles(logDir)
+            file
+        } catch (e: Exception) {
+            Log.e(TAG, "保存logcat(PID=$pid)失败: ${e.javaClass.name}: ${e.message}")
             null
         }
     }
