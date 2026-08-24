@@ -350,7 +350,9 @@ object AudioSegmentAnalyzer {
     private const val MAX_PURE_MUSIC_GAP_MS = 1000L
     // v3.1.112: 干货合并间隔从3s降到500ms，仅合并极短间隔的相邻干货
     // 3s导致Pass3转换水段→干后层叠触发Pass4合并，分段数从180→72
-    private const val MAX_DRY_GAP_MS = 500L
+    // v3.1.167: 从500ms恢复到5000ms，因为3层架构的YAMNet子段内部已做精细合并，
+    // 且VAD区间之间本身就有边界，500ms导致相邻干货无法合并，303段→85段后仍过多
+    private const val MAX_DRY_GAP_MS = 5000L
     // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
     // Ad breaks and song blocks often have 5-10s pauses between them.
     // v3.1.98: 水分合并间隔从10s放宽到15s
@@ -2026,11 +2028,14 @@ object AudioSegmentAnalyzer {
             // XNNPACK delegate在某些设备上会导致interpreter.run()永久挂起（SIGSEGV/死锁）
             // 日志观察: "Replacing 41 out of 47 node(s) with delegate (TfLiteXNNPackDelegate)"
             // 自TFLite 2.10起支持setUseXNNPACK()
+            // v3.1.167: 恢复XNNPACK delegate。YAMNet运行在独立进程(:yamnet)，即使SIGSEGV也只会
+            // 杀死服务进程，主进程不受影响。分批处理（10区间/批）已优雅处理服务崩溃，失败批次自动跳过。
+            // XNNPACK可提供2-3x推理加速，减少超时概率。
             try {
-                options.setUseXNNPACK(false)
-                Log.i(TAG, "loadYamnetModel: 已禁用XNNPACK delegate (PID=$pid)")
+                options.setUseXNNPACK(true)
+                Log.i(TAG, "loadYamnetModel: 已启用XNNPACK delegate (PID=$pid)")
             } catch (e: Throwable) {
-                Log.w(TAG, "loadYamnetModel: 禁用XNNPACK失败: ${e.javaClass.name}: ${e.message} (PID=$pid)")
+                Log.w(TAG, "loadYamnetModel: 启用XNNPACK失败: ${e.javaClass.name}: ${e.message} (PID=$pid)")
             }
             val interp = try {
                 Interpreter(mappedBuffer, options)
@@ -2541,7 +2546,12 @@ object AudioSegmentAnalyzer {
         }
 
         // 优先级4：YAMNet判定
-        if ((yamnet.music - effectiveSpeechScore) > 0.42f && effectiveSpeechScore < 0.35f) {
+        // v3.1.167: 收紧水分类阈值。music-speech差从0.42降到0.30，让更多音乐片段被识别为水；
+        // 新增music > 0.65单独条件，覆盖纯音乐/广告曲（music分高、speech分低，但差值可能不够大）
+        if ((yamnet.music - effectiveSpeechScore) > 0.30f && effectiveSpeechScore < 0.35f) {
+            return FrameType.WATER
+        }
+        if (yamnet.music > 0.65f && effectiveSpeechScore < 0.30f) {
             return FrameType.WATER
         }
 
@@ -4002,13 +4012,15 @@ object AudioSegmentAnalyzer {
             }
         }
 
-        // ===== 规则3：单VAD区间水分占比＜30%全合并为干货 =====
+        // ===== 规则3：单VAD区间水分占比＜20%全合并为干货 =====
+        // v3.1.167: 从30%降到20%，让更多水段保留而不是被吞并到干货
+        // 根因：VAD区间内若有少量音乐/广告（<30%），会被整段合并为干货，丢失水段边界
         val totalDuration = result.sumOf { it.end - it.start }
         val waterDuration = result.filter { !it.hasVoice }.sumOf { it.end - it.start }
         val waterRatio = if (totalDuration > 0) waterDuration.toFloat() / totalDuration else 0f
 
-        if (waterRatio < 0.30f) {
-            // 水分占比＜30%，全合并为干货
+        if (waterRatio < 0.20f) {
+            // 水分占比＜20%，全合并为干货
             val mergedStart = result.minOf { it.start }
             val mergedEnd = result.maxOf { it.end }
             return listOf(createSegment(mergedStart, mergedEnd, FrameType.DRY))
