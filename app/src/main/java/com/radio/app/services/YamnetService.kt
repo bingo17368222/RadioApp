@@ -58,8 +58,8 @@ class YamnetService : Service() {
 
         // 整体超时：600秒（10分钟），用于处理大量区间（如354个）
         private const val OVERALL_TIMEOUT_MS = 600_000L
-        // 单个区间超时：30秒
-        private const val INTERVAL_TIMEOUT_MS = 30_000L
+        // v3.1.165: 缩短单个区间超时从30s→15s，配合XNNPACK禁用更快检测挂死
+        private const val INTERVAL_TIMEOUT_MS = 15_000L
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

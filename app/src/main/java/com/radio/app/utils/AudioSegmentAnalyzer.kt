@@ -2022,6 +2022,16 @@ object AudioSegmentAnalyzer {
             Log.i(TAG, "loadYamnetModel: [B] 创建TFLite Interpreter (PID=$pid)")
             val options = Interpreter.Options()
             options.setNumThreads(2)
+            // v3.1.165: 禁用XNNPACK delegate，避免推理挂死
+            // XNNPACK delegate在某些设备上会导致interpreter.run()永久挂起（SIGSEGV/死锁）
+            // 日志观察: "Replacing 41 out of 47 node(s) with delegate (TfLiteXNNPackDelegate)"
+            // 自TFLite 2.10起支持setUseXNNPACK()
+            try {
+                options.setUseXNNPACK(false)
+                Log.i(TAG, "loadYamnetModel: 已禁用XNNPACK delegate (PID=$pid)")
+            } catch (e: Throwable) {
+                Log.w(TAG, "loadYamnetModel: 禁用XNNPACK失败: ${e.javaClass.name}: ${e.message} (PID=$pid)")
+            }
             val interp = try {
                 Interpreter(mappedBuffer, options)
             } catch (e: Throwable) {
@@ -4073,9 +4083,9 @@ object AudioSegmentAnalyzer {
         var pos = rangeStartSample
         val totalSamples = rangeEndSample - rangeStartSample
         var lastProgressMs = 0L
-        // v3.1.149-fix: 单个区间最长时间限制（30秒），防止YAMNet推理卡死
+        // v3.1.165: 缩短单个区间最长时间限制从30s→15s，与YamnetService的INTERVAL_TIMEOUT_MS保持一致
         val intervalStartTimeMs = System.currentTimeMillis()
-        val MAX_INTERVAL_MS = 30_000L
+        val MAX_INTERVAL_MS = 15_000L
         // v3.1.149-fix: 记录区间内每个classifyWithYamnet调用的耗时，用于诊断
         var intervalFrameCount = 0
         var intervalTimeoutCount = 0
