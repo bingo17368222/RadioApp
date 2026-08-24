@@ -2182,7 +2182,14 @@ object SegmentGenerator {
                     override fun onReceiveResult(resultCode: Int, resultData: Bundle?) {
                         when (resultCode) {
                             YamnetService.CODE_SUCCESS -> {
-                                resultData?.getParcelableArrayList<VoiceSegment>(YamnetService.RESULT_SEGMENTS)?.let { serviceSegments = it }
+                                // v3.1.166: 跨进程Bundle反序列化前设置正确的ClassLoader
+                                // 根因：Bundle通过Binder传输后，Parcel使用BootClassLoader查找VoiceSegment，
+                                // 导致ClassNotFoundException → BadParcelableException → latch.countDown()永不执行
+                                resultData?.setClassLoader(VoiceSegment::class.java.classLoader)
+                                val segments = resultData?.getParcelableArrayList<VoiceSegment>(YamnetService.RESULT_SEGMENTS)
+                                if (segments != null) {
+                                    serviceSegments = segments
+                                }
                                 latch.countDown()
                             }
                             YamnetService.CODE_ERROR -> {
