@@ -1897,19 +1897,32 @@ class PlayerActivity : AppCompatActivity() {
                 restoreSegmentModelInfo()
             }
         } else if (voiceSegments.isEmpty()) {
-            val simulated = try {
-                generateSimulatedSegments()
-            } catch (e: Throwable) {
-                writeJitterLog(" ensureSegmentsForCurrentEpisode: generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}")
-                val sw = java.io.StringWriter()
-                val pw = java.io.PrintWriter(sw)
-                e.printStackTrace(pw)
-                writeFingerprintLog("ensureSegmentsForCurrentEpisode generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}\n${sw.toString().take(500)}")
-                emptyList()
-            }
-            if (simulated.isNotEmpty()) {
-                voiceSegments = simulated
+            // v3.1.168-fix: 先检查service的currentEpisode是否有预加载的真实分段
+            // 根因：playEpisodeAtIndex等路径已提前从DB加载voiceSegments并附加到episode对象，
+            // 但voiceSegments(PlayerActivity字段)仍为空，导致直接回退到模拟分段
+            val svcEpisode = playbackService?.getCurrentEpisode()
+            val svcSegments = svcEpisode?.voiceSegments
+            if (svcSegments != null && svcSegments.isNotEmpty() && svcSegments.any { !it.isSimulated }) {
+                writeJitterLog(" ensureSegmentsForCurrentEpisode: 使用service预加载的${svcSegments.size}个真实分段")
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] ensureSegmentsForCurrentEpisode: 使用service预加载的${svcSegments.size}个真实分段")
+                voiceSegments = svcSegments
                 updateSegmentsUI()
+                restoreSegmentModelInfo()
+            } else {
+                val simulated = try {
+                    generateSimulatedSegments()
+                } catch (e: Throwable) {
+                    writeJitterLog(" ensureSegmentsForCurrentEpisode: generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}")
+                    val sw = java.io.StringWriter()
+                    val pw = java.io.PrintWriter(sw)
+                    e.printStackTrace(pw)
+                    writeFingerprintLog("ensureSegmentsForCurrentEpisode generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}\n${sw.toString().take(500)}")
+                    emptyList()
+                }
+                if (simulated.isNotEmpty()) {
+                    voiceSegments = simulated
+                    updateSegmentsUI()
+                }
             }
         }
     }
@@ -3357,11 +3370,27 @@ class PlayerActivity : AppCompatActivity() {
         if (actualIdx >= 0) currentEpisodeIndex = actualIdx
 
         // v3.1.146-fix: 提前从数据库载入所有节目的真实分段数，用于列表显示
+        // v3.1.168-fix: 优先查segment_analysis_info表，再查voiceSegments表，最后回退episode_info
         val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
         val segmentCountMap = HashMap<String, Int>()
         for (ep in episodeList) {
             if (ep.id.isNotBlank()) {
-                val count = dbHelper.getEpisodeSegmentCount(ep.id)
+                var count = 0
+                // 1. segment_analysis_info表（分段完成后一定有值）
+                val analysis = dbHelper.getSegmentAnalysisInfo(ep.id)
+                if (analysis != null && analysis.segmentCount > 0) {
+                    count = analysis.segmentCount
+                } else {
+                    // 2. voice_segments_ai表（真实分段数）
+                    val segs = dbHelper.getVoiceSegments(ep.id)
+                    val realSegs = segs.filter { !it.isSimulated }
+                    if (realSegs.isNotEmpty()) {
+                        count = realSegs.size
+                    } else {
+                        // 3. episode_info.segment_count
+                        count = dbHelper.getEpisodeSegmentCount(ep.id)
+                    }
+                }
                 if (count > 0) segmentCountMap[ep.id] = count
             }
         }
@@ -3495,11 +3524,27 @@ class PlayerActivity : AppCompatActivity() {
         writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showScheduleDialog: scheduleList.size=${scheduleList.size}")
 
         // v3.1.147-fix: 提前从数据库载入所有计划节目的真实分段数
+        // v3.1.168-fix: 优先查segment_analysis_info表，再查voiceSegments表，最后回退episode_info
         val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
         val segmentCountMap = HashMap<String, Int>()
         for (ep in scheduleList) {
             if (ep.id.isNotBlank()) {
-                val count = dbHelper.getEpisodeSegmentCount(ep.id)
+                var count = 0
+                // 1. segment_analysis_info表（分段完成后一定有值）
+                val analysis = dbHelper.getSegmentAnalysisInfo(ep.id)
+                if (analysis != null && analysis.segmentCount > 0) {
+                    count = analysis.segmentCount
+                } else {
+                    // 2. voice_segments_ai表（真实分段数）
+                    val segs = dbHelper.getVoiceSegments(ep.id)
+                    val realSegs = segs.filter { !it.isSimulated }
+                    if (realSegs.isNotEmpty()) {
+                        count = realSegs.size
+                    } else {
+                        // 3. episode_info.segment_count
+                        count = dbHelper.getEpisodeSegmentCount(ep.id)
+                    }
+                }
                 if (count > 0) segmentCountMap[ep.id] = count
             }
         }

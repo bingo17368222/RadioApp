@@ -1,0 +1,299 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.radio.app"
+4    android:versionCode="567"
+5    android:versionName="3.1.168" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="24"
+8-->/workspace/radioapp/app/src/main/AndroidManifest.xml
+9        android:targetSdkVersion="33" />
+9-->/workspace/radioapp/app/src/main/AndroidManifest.xml
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/workspace/radioapp/app/src/main/AndroidManifest.xml:4:5-67
+11-->/workspace/radioapp/app/src/main/AndroidManifest.xml:4:22-64
+12    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+12-->/workspace/radioapp/app/src/main/AndroidManifest.xml:5:5-79
+12-->/workspace/radioapp/app/src/main/AndroidManifest.xml:5:22-76
+13    <uses-permission android:name="android.permission.BLUETOOTH" />
+13-->/workspace/radioapp/app/src/main/AndroidManifest.xml:6:5-68
+13-->/workspace/radioapp/app/src/main/AndroidManifest.xml:6:22-65
+14    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+14-->/workspace/radioapp/app/src/main/AndroidManifest.xml:7:5-77
+14-->/workspace/radioapp/app/src/main/AndroidManifest.xml:7:22-74
+15    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+15-->/workspace/radioapp/app/src/main/AndroidManifest.xml:8:5-92
+15-->/workspace/radioapp/app/src/main/AndroidManifest.xml:8:22-89
+16    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+16-->/workspace/radioapp/app/src/main/AndroidManifest.xml:9:5-87
+16-->/workspace/radioapp/app/src/main/AndroidManifest.xml:9:22-84
+17    <uses-permission android:name="android.permission.WAKE_LOCK" />
+17-->/workspace/radioapp/app/src/main/AndroidManifest.xml:10:5-68
+17-->/workspace/radioapp/app/src/main/AndroidManifest.xml:10:22-65
+18    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+18-->/workspace/radioapp/app/src/main/AndroidManifest.xml:11:5-77
+18-->/workspace/radioapp/app/src/main/AndroidManifest.xml:11:22-74
+19    <uses-permission
+19-->/workspace/radioapp/app/src/main/AndroidManifest.xml:12:5-13:38
+20        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+20-->/workspace/radioapp/app/src/main/AndroidManifest.xml:12:22-78
+21        android:maxSdkVersion="32" />
+21-->/workspace/radioapp/app/src/main/AndroidManifest.xml:13:9-35
+22    <uses-permission
+22-->/workspace/radioapp/app/src/main/AndroidManifest.xml:14:5-15:38
+23        android:name="android.permission.READ_EXTERNAL_STORAGE"
+23-->/workspace/radioapp/app/src/main/AndroidManifest.xml:14:22-77
+24        android:maxSdkVersion="32" />
+24-->/workspace/radioapp/app/src/main/AndroidManifest.xml:15:9-35
+25    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+25-->/workspace/radioapp/app/src/main/AndroidManifest.xml:16:5-82
+25-->/workspace/radioapp/app/src/main/AndroidManifest.xml:16:22-79
+26
+27    <permission
+27-->[androidx.core:core:1.10.1] /root/.gradle/caches/transforms-3/6fe3e64a80094b4316c7006f0bcdcf47/transformed/core-1.10.1/AndroidManifest.xml:22:5-24:47
+28        android:name="com.radio.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+28-->[androidx.core:core:1.10.1] /root/.gradle/caches/transforms-3/6fe3e64a80094b4316c7006f0bcdcf47/transformed/core-1.10.1/AndroidManifest.xml:23:9-81
+29        android:protectionLevel="signature" />
+29-->[androidx.core:core:1.10.1] /root/.gradle/caches/transforms-3/6fe3e64a80094b4316c7006f0bcdcf47/transformed/core-1.10.1/AndroidManifest.xml:24:9-44
+30
+31    <uses-permission android:name="com.radio.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+31-->[androidx.core:core:1.10.1] /root/.gradle/caches/transforms-3/6fe3e64a80094b4316c7006f0bcdcf47/transformed/core-1.10.1/AndroidManifest.xml:26:5-97
+31-->[androidx.core:core:1.10.1] /root/.gradle/caches/transforms-3/6fe3e64a80094b4316c7006f0bcdcf47/transformed/core-1.10.1/AndroidManifest.xml:26:22-94
+32
+33    <application
+33-->/workspace/radioapp/app/src/main/AndroidManifest.xml:18:5-114:19
+34        android:name="com.radio.app.RadioApplication"
+34-->/workspace/radioapp/app/src/main/AndroidManifest.xml:20:9-41
+35        android:allowBackup="true"
+35-->/workspace/radioapp/app/src/main/AndroidManifest.xml:21:9-35
+36        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+36-->[androidx.core:core:1.10.1] /root/.gradle/caches/transforms-3/6fe3e64a80094b4316c7006f0bcdcf47/transformed/core-1.10.1/AndroidManifest.xml:28:18-86
+37        android:extractNativeLibs="false"
+38        android:icon="@mipmap/ic_launcher"
+38-->/workspace/radioapp/app/src/main/AndroidManifest.xml:22:9-43
+39        android:label="@string/app_name"
+39-->/workspace/radioapp/app/src/main/AndroidManifest.xml:23:9-41
+40        android:largeHeap="true"
+40-->/workspace/radioapp/app/src/main/AndroidManifest.xml:19:9-33
+41        android:requestLegacyExternalStorage="true"
+41-->/workspace/radioapp/app/src/main/AndroidManifest.xml:25:9-52
+42        android:supportsRtl="true"
+42-->/workspace/radioapp/app/src/main/AndroidManifest.xml:24:9-35
+43        android:theme="@style/Theme.RadioApp.Fresh" >
+43-->/workspace/radioapp/app/src/main/AndroidManifest.xml:26:9-52
+44        <activity
+44-->/workspace/radioapp/app/src/main/AndroidManifest.xml:28:9-35:20
+45            android:name="com.radio.app.activities.MainActivity"
+45-->/workspace/radioapp/app/src/main/AndroidManifest.xml:29:13-52
+46            android:exported="true" >
+46-->/workspace/radioapp/app/src/main/AndroidManifest.xml:30:13-36
+47            <intent-filter>
+47-->/workspace/radioapp/app/src/main/AndroidManifest.xml:31:13-34:29
+48                <action android:name="android.intent.action.MAIN" />
+48-->/workspace/radioapp/app/src/main/AndroidManifest.xml:32:17-69
+48-->/workspace/radioapp/app/src/main/AndroidManifest.xml:32:25-66
+49
+50                <category android:name="android.intent.category.LAUNCHER" />
+50-->/workspace/radioapp/app/src/main/AndroidManifest.xml:33:17-77
+50-->/workspace/radioapp/app/src/main/AndroidManifest.xml:33:27-74
+51            </intent-filter>
+52        </activity>
+53        <activity
+53-->/workspace/radioapp/app/src/main/AndroidManifest.xml:37:9-42:157
+54            android:name="com.radio.app.activities.PlayerActivity"
+54-->/workspace/radioapp/app/src/main/AndroidManifest.xml:38:13-54
+55            android:alwaysRetainTaskState="true"
+55-->/workspace/radioapp/app/src/main/AndroidManifest.xml:41:13-49
+56            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|fontScale|locale|layoutDirection|smallestScreenSize|density"
+56-->/workspace/radioapp/app/src/main/AndroidManifest.xml:42:13-154
+57            android:exported="false"
+57-->/workspace/radioapp/app/src/main/AndroidManifest.xml:39:13-37
+58            android:launchMode="singleTop" />
+58-->/workspace/radioapp/app/src/main/AndroidManifest.xml:40:13-43
+59        <activity
+59-->/workspace/radioapp/app/src/main/AndroidManifest.xml:44:9-47:69
+60            android:name="com.radio.app.activities.KeywordSettingsActivity"
+60-->/workspace/radioapp/app/src/main/AndroidManifest.xml:45:13-63
+61            android:exported="false"
+61-->/workspace/radioapp/app/src/main/AndroidManifest.xml:46:13-37
+62            android:parentActivityName="com.radio.app.activities.MainActivity" />
+62-->/workspace/radioapp/app/src/main/AndroidManifest.xml:47:13-66
+63        <activity
+63-->/workspace/radioapp/app/src/main/AndroidManifest.xml:49:9-52:69
+64            android:name="com.radio.app.activities.OfflineEngineActivity"
+64-->/workspace/radioapp/app/src/main/AndroidManifest.xml:50:13-61
+65            android:exported="false"
+65-->/workspace/radioapp/app/src/main/AndroidManifest.xml:51:13-37
+66            android:parentActivityName="com.radio.app.activities.MainActivity" />
+66-->/workspace/radioapp/app/src/main/AndroidManifest.xml:52:13-66
+67        <activity
+67-->/workspace/radioapp/app/src/main/AndroidManifest.xml:54:9-57:69
+68            android:name="com.radio.app.activities.DislikedEpisodesActivity"
+68-->/workspace/radioapp/app/src/main/AndroidManifest.xml:55:13-64
+69            android:exported="false"
+69-->/workspace/radioapp/app/src/main/AndroidManifest.xml:56:13-37
+70            android:parentActivityName="com.radio.app.activities.MainActivity" />
+70-->/workspace/radioapp/app/src/main/AndroidManifest.xml:57:13-66
+71        <activity
+71-->/workspace/radioapp/app/src/main/AndroidManifest.xml:59:9-62:80
+72            android:name="com.radio.app.activities.FingerprintGroupActivity"
+72-->/workspace/radioapp/app/src/main/AndroidManifest.xml:60:13-64
+73            android:exported="false"
+73-->/workspace/radioapp/app/src/main/AndroidManifest.xml:61:13-37
+74            android:parentActivityName="com.radio.app.activities.KeywordSettingsActivity" />
+74-->/workspace/radioapp/app/src/main/AndroidManifest.xml:62:13-77
+75        <activity
+75-->/workspace/radioapp/app/src/main/AndroidManifest.xml:64:9-67:80
+76            android:name="com.radio.app.activities.FingerprintManagementActivity"
+76-->/workspace/radioapp/app/src/main/AndroidManifest.xml:65:13-69
+77            android:exported="false"
+77-->/workspace/radioapp/app/src/main/AndroidManifest.xml:66:13-37
+78            android:parentActivityName="com.radio.app.activities.KeywordSettingsActivity" />
+78-->/workspace/radioapp/app/src/main/AndroidManifest.xml:67:13-77
+79
+80        <service
+80-->/workspace/radioapp/app/src/main/AndroidManifest.xml:69:9-73:44
+81            android:name="com.radio.app.services.RadioPlaybackService"
+81-->/workspace/radioapp/app/src/main/AndroidManifest.xml:70:13-58
+82            android:exported="false"
+82-->/workspace/radioapp/app/src/main/AndroidManifest.xml:71:13-37
+83            android:foregroundServiceType="mediaPlayback"
+83-->/workspace/radioapp/app/src/main/AndroidManifest.xml:72:13-58
+84            android:stopWithTask="false" />
+84-->/workspace/radioapp/app/src/main/AndroidManifest.xml:73:13-41
+85        <service
+85-->/workspace/radioapp/app/src/main/AndroidManifest.xml:75:9-79:56
+86            android:name="com.radio.app.services.SubtitleGeneratorService"
+86-->/workspace/radioapp/app/src/main/AndroidManifest.xml:76:13-62
+87            android:exported="false"
+87-->/workspace/radioapp/app/src/main/AndroidManifest.xml:77:13-37
+88            android:foregroundServiceType="dataSync"
+88-->/workspace/radioapp/app/src/main/AndroidManifest.xml:79:13-53
+89            android:process=":subtitle" />
+89-->/workspace/radioapp/app/src/main/AndroidManifest.xml:78:13-40
+90        <service
+90-->/workspace/radioapp/app/src/main/AndroidManifest.xml:81:9-84:56
+91            android:name="com.radio.app.services.AudioFingerprintService"
+91-->/workspace/radioapp/app/src/main/AndroidManifest.xml:82:13-61
+92            android:exported="false"
+92-->/workspace/radioapp/app/src/main/AndroidManifest.xml:83:13-37
+93            android:foregroundServiceType="dataSync" />
+93-->/workspace/radioapp/app/src/main/AndroidManifest.xml:84:13-53
+94        <service
+94-->/workspace/radioapp/app/src/main/AndroidManifest.xml:86:9-89:41
+95            android:name="com.radio.app.services.YamnetService"
+95-->/workspace/radioapp/app/src/main/AndroidManifest.xml:87:13-51
+96            android:exported="false"
+96-->/workspace/radioapp/app/src/main/AndroidManifest.xml:88:13-37
+97            android:process=":yamnet" />
+97-->/workspace/radioapp/app/src/main/AndroidManifest.xml:89:13-38
+98
+99        <receiver
+99-->/workspace/radioapp/app/src/main/AndroidManifest.xml:91:9-97:20
+100            android:name="com.radio.app.utils.SegmentCancelReceiver"
+100-->/workspace/radioapp/app/src/main/AndroidManifest.xml:92:13-56
+101            android:exported="false" >
+101-->/workspace/radioapp/app/src/main/AndroidManifest.xml:93:13-37
+102            <intent-filter>
+102-->/workspace/radioapp/app/src/main/AndroidManifest.xml:94:13-96:29
+103                <action android:name="com.radio.app.CANCEL_SEGMENT" />
+103-->/workspace/radioapp/app/src/main/AndroidManifest.xml:95:17-71
+103-->/workspace/radioapp/app/src/main/AndroidManifest.xml:95:25-68
+104            </intent-filter>
+105        </receiver>
+106        <receiver
+106-->/workspace/radioapp/app/src/main/AndroidManifest.xml:99:9-105:20
+107            android:name="com.radio.app.utils.PcmPregenCancelReceiver"
+107-->/workspace/radioapp/app/src/main/AndroidManifest.xml:100:13-58
+108            android:exported="false" >
+108-->/workspace/radioapp/app/src/main/AndroidManifest.xml:101:13-37
+109            <intent-filter>
+109-->/workspace/radioapp/app/src/main/AndroidManifest.xml:102:13-104:29
+110                <action android:name="com.radio.app.CANCEL_PCM_PREGEN" />
+110-->/workspace/radioapp/app/src/main/AndroidManifest.xml:103:17-74
+110-->/workspace/radioapp/app/src/main/AndroidManifest.xml:103:25-71
+111            </intent-filter>
+112        </receiver>
+113        <receiver
+113-->/workspace/radioapp/app/src/main/AndroidManifest.xml:107:9-113:20
+114            android:name="com.radio.app.utils.FingerprintTestCancelReceiver"
+114-->/workspace/radioapp/app/src/main/AndroidManifest.xml:108:13-64
+115            android:exported="false" >
+115-->/workspace/radioapp/app/src/main/AndroidManifest.xml:109:13-37
+116            <intent-filter>
+116-->/workspace/radioapp/app/src/main/AndroidManifest.xml:110:13-112:29
+117                <action android:name="com.radio.app.CANCEL_FINGERPRINT_TEST" />
+117-->/workspace/radioapp/app/src/main/AndroidManifest.xml:111:17-80
+117-->/workspace/radioapp/app/src/main/AndroidManifest.xml:111:25-77
+118            </intent-filter>
+119        </receiver>
+120
+121        <provider
+121-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:24:9-32:20
+122            android:name="androidx.startup.InitializationProvider"
+122-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:25:13-67
+123            android:authorities="com.radio.app.androidx-startup"
+123-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:26:13-68
+124            android:exported="false" >
+124-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:27:13-37
+125            <meta-data
+125-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:29:13-31:52
+126                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+126-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:30:17-75
+127                android:value="androidx.startup" />
+127-->[androidx.emoji2:emoji2:1.2.0] /root/.gradle/caches/transforms-3/f5bce95adc2736b0739e9bbfa23aa81b/transformed/emoji2-1.2.0/AndroidManifest.xml:31:17-49
+128            <meta-data
+128-->[androidx.lifecycle:lifecycle-process:2.6.2] /root/.gradle/caches/transforms-3/528220477bb0de7e09c8e7a27d526f19/transformed/lifecycle-process-2.6.2/AndroidManifest.xml:29:13-31:52
+129                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+129-->[androidx.lifecycle:lifecycle-process:2.6.2] /root/.gradle/caches/transforms-3/528220477bb0de7e09c8e7a27d526f19/transformed/lifecycle-process-2.6.2/AndroidManifest.xml:30:17-78
+130                android:value="androidx.startup" />
+130-->[androidx.lifecycle:lifecycle-process:2.6.2] /root/.gradle/caches/transforms-3/528220477bb0de7e09c8e7a27d526f19/transformed/lifecycle-process-2.6.2/AndroidManifest.xml:31:17-49
+131            <meta-data
+131-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:29:13-31:52
+132                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+132-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:30:17-85
+133                android:value="androidx.startup" />
+133-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:31:17-49
+134        </provider>
+135
+136        <receiver
+136-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:34:9-52:20
+137            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+137-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:35:13-76
+138            android:directBootAware="false"
+138-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:36:13-44
+139            android:enabled="true"
+139-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:37:13-35
+140            android:exported="true"
+140-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:38:13-36
+141            android:permission="android.permission.DUMP" >
+141-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:39:13-57
+142            <intent-filter>
+142-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:40:13-42:29
+143                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+143-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:41:17-91
+143-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:41:25-88
+144            </intent-filter>
+145            <intent-filter>
+145-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:43:13-45:29
+146                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+146-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:44:17-85
+146-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:44:25-82
+147            </intent-filter>
+148            <intent-filter>
+148-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:46:13-48:29
+149                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+149-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:47:17-88
+149-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:47:25-85
+150            </intent-filter>
+151            <intent-filter>
+151-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:49:13-51:29
+152                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+152-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:50:17-95
+152-->[androidx.profileinstaller:profileinstaller:1.3.0] /root/.gradle/caches/transforms-3/855f345d0f57b580ddb9a53f14817127/transformed/profileinstaller-1.3.0/AndroidManifest.xml:50:25-92
+153            </intent-filter>
+154        </receiver>
+155    </application>
+156
+157</manifest>

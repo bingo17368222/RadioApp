@@ -646,6 +646,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     // v3.1.136: 播放计划对话框
+    // v3.1.168-fix: 预加载分段数并显示在播放计划列表中
     private fun showPlayScheduleDialog() {
         val ctx = context ?: return
         val app = requireActivity().application as? com.radio.app.RadioApplication ?: return
@@ -658,6 +659,26 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         if (scheduleList.isEmpty()) {
             Toast.makeText(ctx, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
             return
+        }
+
+        // v3.1.168-fix: 提前从数据库加载所有计划节目的真实分段数
+        val dbHelper = RadioDatabaseHelper.getInstance(ctx)
+        val segmentCountMap = HashMap<String, Int>()
+        for (ep in scheduleList) {
+            if (ep.id.isNotBlank()) {
+                // 优先查segment_analysis_info表
+                val analysis = dbHelper.getSegmentAnalysisInfo(ep.id)
+                if (analysis != null && analysis.segmentCount > 0) {
+                    segmentCountMap[ep.id] = analysis.segmentCount
+                } else {
+                    // 回退查voiceSegments
+                    val segs = dbHelper.getVoiceSegments(ep.id)
+                    val realSegs = segs.filter { !it.isSimulated }
+                    if (realSegs.isNotEmpty()) {
+                        segmentCountMap[ep.id] = realSegs.size
+                    }
+                }
+            }
         }
 
         val recyclerView = RecyclerView(ctx).apply {
@@ -674,7 +695,7 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             prefs.getString("episode_id", null)
         } catch (_: Exception) { null }
 
-        val adapter = ScheduleListAdapter(scheduleList, currentId)
+        val adapter = ScheduleListAdapter(scheduleList, currentId, segmentCountMap)
         adapter.onItemClicked = { position ->
             val item = scheduleList.getOrNull(position)
             if (item != null) {
@@ -688,6 +709,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                 intent.putExtra("episode_start_time", item.startTime)
                 intent.putExtra("episode_end_time", item.endTime)
                 intent.putExtra("episode_duration", item.duration)
+                // v3.1.168-fix: 传递真实分段数到PlayerActivity
+                val segCount = segmentCountMap[item.id] ?: 0
+                if (segCount > 0) {
+                    intent.putExtra("episode_segment_count", segCount)
+                }
                 ctx.startActivity(intent)
             }
         }
@@ -701,9 +727,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     }
 
     // v3.1.136: 播放计划列表适配器
+    // v3.1.168-fix: 添加segmentCountMap参数，显示分段数
     inner class ScheduleListAdapter(
         private val scheduleItems: List<Episode>,
-        var currentlyPlayingId: String?
+        var currentlyPlayingId: String?,
+        private val segmentCountMap: Map<String, Int> = emptyMap()
     ) : RecyclerView.Adapter<ScheduleListAdapter.ViewHolder>() {
         var onItemClicked: ((Int) -> Unit)? = null
 
@@ -728,6 +756,16 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                 item.broadcastAt?.takeLast(5) ?: ""
             }
             holder.tvTime.text = timeStr
+
+            // v3.1.168-fix: 显示分段数
+            val segCount = segmentCountMap[item.id ?: ""] ?: 0
+            if (segCount > 0) {
+                holder.tvDesc.text = "${segCount}个片段"
+                holder.tvDesc.visibility = View.VISIBLE
+            } else {
+                holder.tvDesc.visibility = View.GONE
+            }
+
             holder.itemView.setOnClickListener { onItemClicked?.invoke(position) }
         }
 
@@ -737,6 +775,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             val tvIndex: TextView = view.findViewById(R.id.tv_index)
             val tvTitle: TextView = view.findViewById(R.id.tv_title)
             val tvTime: TextView = view.findViewById(R.id.tv_time)
+            // v3.1.168-fix: 分段数显示
+            val tvDesc: TextView = view.findViewById(R.id.tv_desc)
         }
     }
 
