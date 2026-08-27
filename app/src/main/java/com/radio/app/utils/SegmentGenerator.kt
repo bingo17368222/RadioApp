@@ -2127,7 +2127,13 @@ object SegmentGenerator {
             } else {
                 Log.w(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败(服务崩溃或超时)，跳过本批")
                 writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败，跳过")
-                // 继续下一批，不中断整体流程
+                // v3.1.169: 如果服务进程已崩溃，等待其重启后再继续下一批
+                // 根因：SIGSEGV杀死:yamnet进程后，立即调用startService()可能因进程未完全重启而丢失Intent
+                if (!isYamnetProcessAlive(context)) {
+                    Log.w(TAG, "runYamnetServiceWithBatches: YamnetService进程已死，等待重启...")
+                    writeFingerprintLog(context, "runYamnetServiceWithBatches: 等待YamnetService进程重启")
+                    waitForYamnetProcessAlive(context, 30_000L)
+                }
             }
         }
 
@@ -2269,6 +2275,39 @@ object SegmentGenerator {
         } finally {
             try { cancelFile.delete() } catch (_: Exception) {}
         }
+    }
+
+    // v3.1.169: 检查YamnetService进程(:yamnet)是否存活
+    private fun isYamnetProcessAlive(context: Context): Boolean {
+        try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val processes = am.runningAppProcesses
+            if (processes != null) {
+                for (p in processes) {
+                    if (p.processName == "com.radio.app:yamnet") {
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    // v3.1.169: 等待YamnetService进程重新启动（SIGSEGV崩溃后等待系统重启进程）
+    private fun waitForYamnetProcessAlive(context: Context, maxWaitMs: Long): Boolean {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < maxWaitMs) {
+            if (isYamnetProcessAlive(context)) {
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.i(TAG, "waitForYamnetProcessAlive: 服务进程已重启，等待${elapsed}ms")
+                writeFingerprintLog(context, "waitForYamnetProcessAlive: 服务进程已重启，等待${elapsed}ms")
+                return true
+            }
+            try { Thread.sleep(1000) } catch (_: InterruptedException) { break }
+        }
+        Log.w(TAG, "waitForYamnetProcessAlive: 服务进程在${maxWaitMs}ms内未重启")
+        writeFingerprintLog(context, "waitForYamnetProcessAlive: 服务进程在${maxWaitMs}ms内未重启")
+        return false
     }
 
     /**
