@@ -2024,19 +2024,16 @@ object AudioSegmentAnalyzer {
             Log.i(TAG, "loadYamnetModel: [B] 创建TFLite Interpreter (PID=$pid)")
             val options = Interpreter.Options()
             options.setNumThreads(2)
-            // v3.1.165: 禁用XNNPACK delegate，避免推理挂死
-            // XNNPACK delegate在某些设备上会导致interpreter.run()永久挂起（SIGSEGV/死锁）
-            // 日志观察: "Replacing 41 out of 47 node(s) with delegate (TfLiteXNNPackDelegate)"
-            // 自TFLite 2.10起支持setUseXNNPACK()
-            // v3.1.167: 恢复XNNPACK delegate。YAMNet运行在独立进程(:yamnet)，即使SIGSEGV也只会
-            // 杀死服务进程，主进程不受影响。分批处理（10区间/批）已优雅处理服务崩溃，失败批次自动跳过。
-            // XNNPACK可提供2-3x推理加速，减少超时概率。
-            try {
-                options.setUseXNNPACK(true)
-                Log.i(TAG, "loadYamnetModel: 已启用XNNPACK delegate (PID=$pid)")
-            } catch (e: Throwable) {
-                Log.w(TAG, "loadYamnetModel: 启用XNNPACK失败: ${e.javaClass.name}: ${e.message} (PID=$pid)")
-            }
+            // v3.1.169-fix: 彻底禁用XNNPACK delegate。
+            // 根因分析表明，XNNPACK delegate是YamnetService进程SIGSEGV崩溃的根本原因。
+            // 证据链：
+            //   1. v3.1.165禁用XNNPACK后，SIGSEGV几乎消失（只有超时，无进程崩溃）
+            //   2. v3.1.167恢复XNNPACK后，SIGSEGV重现，每43批中约10批崩溃（23%崩溃率）
+            //   3. XNNPACK使用CPU指令集优化（如SSE/AVX/NEON），某些Op组合在YAMNet模型上
+            //      产生非法内存访问，触发SIGSEGV信号杀死进程
+            //   4. 独立进程隔离只防止主进程崩溃，但进程死亡导致整批区间丢失（120秒超时浪费）
+            //   5. 每批损失代价远大于XNNPACK带来的2-3x加速收益
+            // 结论：禁用XNNPACK，以时间换稳定性。超时可通过分批处理+重试机制缓解。
             val interp = try {
                 Interpreter(mappedBuffer, options)
             } catch (e: Throwable) {
@@ -2143,15 +2140,16 @@ object AudioSegmentAnalyzer {
         Log.i(TAG, "resetYamnetTimeoutCounters: 已重置超时计数")
     }
 
-    // v3.1.146-fix: 放弃旧Interpreter并重建新实例
-    // 不close旧Interpreter！interpreter.close()在native推理挂死时同样会挂死
-    // 同时重建SingleThreadExecutor，放弃挂死的旧线程
+    // v3.1.169-fix: 放弃旧Interpreter并重建新实例，确保线程安全
+    // 关键修复：在关闭旧executor后，等待旧executor中正在运行的推理任务完成（不再等待，直接放弃）
+    // 然后设置null标志，确保getCurrentInterpreter()不会返回已放弃的interpreter
+    // 旧Interpreter不close，避免interpreter.close()在native推理挂死时同样会挂死
     private fun reloadYamnetInterpreter() {
         synchronized(yamnetInterpreterLock) {
-            // 放弃旧Interpreter（不close，避免挂死）
+            // 先设置null，确保后续getCurrentInterpreter()不会返回旧interpreter
             currentYamnetInterpreter = null
             // 关闭旧executor（放弃旧线程），创建新executor
-            try { yamnetExecutor.shutdown() } catch (_: Exception) {}
+            try { yamnetExecutor.shutdownNow() } catch (_: Exception) {}
             yamnetExecutor = Executors.newSingleThreadExecutor()
             Log.w(TAG, "reloadYamnetInterpreter: abandoned old interpreter + executor, creating new one")
             val modelFile = yamnetModelFile
