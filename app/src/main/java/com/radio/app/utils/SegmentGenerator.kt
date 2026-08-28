@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.ResultReceiver
 import android.util.Log
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.FingerprintGroupInfo
 import com.radio.app.database.FingerprintGroupMember
@@ -83,13 +84,15 @@ object SegmentGenerator {
     // v3.1.131: 移除SILENCE_RMS_THRESHOLD和PCM_BYTES_PER_MS（第1层改用全量指纹提取，不再需要PCM切片）
 
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
+    // v3.1.175-fix: 每一行加上版本标志，避免版本混淆
     private fun writeFingerprintLog(context: Context, message: String) {
         try {
             val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(context), "fingerprint")
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = java.io.File(logDir, "fingerprint_segment.log")
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-            java.io.FileWriter(logFile, true).use { it.append("[$ts] $message\n") }
+            val versionTag = com.radio.app.RadioApplication.appVersionTag()
+            java.io.FileWriter(logFile, true).use { it.append("[$ts] [$versionTag] $message\n") }
         } catch (e: Exception) {
             Log.e(TAG, "writeFingerprintLog failed: ${e.message}")
         }
@@ -908,6 +911,16 @@ object SegmentGenerator {
                     Log.e(TAG, "postSegmentKeyword: failed to save segment analysis info: ${e.message}")
                 }
                 Log.i(TAG, "postSegmentKeyword: saved ${segments.size} segments for episode=$episodeId")
+
+                // v3.1.177-fix: 分段完成后广播通知
+                try {
+                    val intent = Intent("com.radio.app.SEGMENTS_UPDATED")
+                    intent.putExtra("episode_id", episodeId)
+                    LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                    Log.i(TAG, "postSegmentKeyword: 已发送SEGMENTS_UPDATED广播 for episode=$episodeId")
+                } catch (e: Exception) {
+                    Log.w(TAG, "postSegmentKeyword: 发送SEGMENTS_UPDATED广播失败: ${e.message}")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "postSegmentKeyword failed: ${e.message}")
@@ -1057,6 +1070,19 @@ object SegmentGenerator {
             }
 
             Log.i(TAG, "preSegmentAudio: saved ${segments.size} segments for episode=$episodeId (engine=${engineName}, time=${processingTimeMs}ms)")
+
+            // v3.1.177-fix: 分段完成后广播通知，RadioPlaybackService 收到后更新内存中的 voiceSegments
+            // 根因：分段保存到DB后，RadioPlaybackService 的 getSegmentList() 虽然会查DB，
+            // 但某些场景下（如分段导航按钮）需要立即刷新内存中的分段，否则可能使用旧的模拟分段
+            try {
+                val intent = Intent("com.radio.app.SEGMENTS_UPDATED")
+                intent.putExtra("episode_id", episodeId)
+                LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                Log.i(TAG, "preSegmentAudio: 已发送SEGMENTS_UPDATED广播 for episode=$episodeId")
+            } catch (e: Exception) {
+                Log.w(TAG, "preSegmentAudio: 发送SEGMENTS_UPDATED广播失败: ${e.message}")
+            }
+
             return true
         } catch (e: Exception) {
             Log.e(TAG, "preSegmentAudio failed: ${e.message}")
@@ -1479,6 +1505,8 @@ object SegmentGenerator {
                     // ===== v3.1.154: 使用独立进程YamnetService进行YAMNet推理 =====
                     // 根因：TFLite原生SIGSEGV崩溃会杀死主进程，try-catch无法捕获。
                     // 修复：通过独立进程(:yamnet)隔离TFLite推理，崩溃只影响子进程。
+                    // v3.1.xxx: 进入YAMNet处理前更新通知，避免通知栏长时间卡在"2层-A"
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, 350, "第2层-B YAMNet分类中")
                     val yamnetAllSegments = mutableListOf<VoiceSegment>()
                     val totalIntervals = yamnetIntervals.size
                     var yamnetServiceSuccess = false
@@ -1492,7 +1520,12 @@ object SegmentGenerator {
                         // v3.1.164: 使用分批处理，避免单个YamnetService崩溃导致全部区间丢失
                         val serviceResult = runYamnetServiceWithBatches(
                             context, pcmSourceFile.absolutePath,
-                            intervalStarts, intervalEnds
+                            intervalStarts, intervalEnds,
+                            batchProgressCallback = { batchIdx, totalBatches ->
+                                // v3.1.xxx: 每批完成后更新进度通知，进度范围350~800
+                                val batchProgress = 350 + ((batchIdx + 1) * 450 / totalBatches).coerceIn(0, 450)
+                                SegmentNotificationHelper.update(context, episodeId, episodeTitle, batchProgress, "第2层-B YAMNet分类中")
+                            }
                         )
                         if (serviceResult != null) {
                             yamnetAllSegments.addAll(serviceResult)
@@ -1707,6 +1740,8 @@ object SegmentGenerator {
                                 audioEngineName = "VAD+YAMNet+三层(优化-无pending段)"
                             } else {
                                 // v3.1.155: PCM再生后也使用YamnetService进行YAMNet推理
+                                // v3.1.xxx: 进入YAMNet处理前更新通知，避免通知栏长时间卡在"2层-A"
+                                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 250, "第2层-B YAMNet分类中")
                                 val yamnetAllSegments = mutableListOf<VoiceSegment>()
                                 var yamnetRegenSuccess = false
                                 var yamnetRegenError: String? = null
@@ -1718,7 +1753,12 @@ object SegmentGenerator {
                                     // v3.1.164: 使用分批处理，避免单个YamnetService崩溃导致全部区间丢失
                                     val serviceResult = runYamnetServiceWithBatches(
                                         context, newFullPcm.absolutePath,
-                                        intervalStarts, intervalEnds
+                                        intervalStarts, intervalEnds,
+                                        batchProgressCallback = { batchIdx, totalBatches ->
+                                            // v3.1.xxx: 每批完成后更新进度通知，进度范围250~800
+                                            val batchProgress = 250 + ((batchIdx + 1) * 550 / totalBatches).coerceIn(0, 550)
+                                            SegmentNotificationHelper.update(context, episodeId, episodeTitle, batchProgress, "第2层-B YAMNet分类中")
+                                        }
                                     )
                                     if (serviceResult != null) {
                                         yamnetAllSegments.addAll(serviceResult)
@@ -1992,6 +2032,8 @@ object SegmentGenerator {
         Log.i(TAG, fpMsgDone)
         writeFingerprintLog(context, fpMsgDone)
 
+        // v3.1.xxx: 短暂停留让用户看到"三层分段完成"通知，再结束会话
+        try { Thread.sleep(500) } catch (_: InterruptedException) {}
         SegmentNotificationHelper.endSession(context, episodeId)
         return JiuAiTingResult(
             segments = finalSegments,
@@ -2077,7 +2119,7 @@ object SegmentGenerator {
      * @param intervalStarts 区间起始时间数组(ms)
      * @param intervalEnds 区间结束时间数组(ms)
      * @param batchSize 每批区间数，默认10
-     * @param batchTimeoutMs 每批超时时间(ms)，默认120秒（10个区间×每个区间30秒超时上限）
+     * @param batchTimeoutMs 每批超时时间(ms)，默认60秒（XNNPACK加速后每批仅需8-20秒，60秒足够）
      * @return 成功时返回所有批次的合并segments列表，全部失败时返回null
      */
     private fun runYamnetServiceWithBatches(
@@ -2086,7 +2128,8 @@ object SegmentGenerator {
         intervalStarts: LongArray,
         intervalEnds: LongArray,
         batchSize: Int = 10,
-        batchTimeoutMs: Long = 120_000L
+        batchTimeoutMs: Long = 60_000L,
+        batchProgressCallback: ((batchIndex: Int, totalBatches: Int) -> Unit)? = null
     ): List<VoiceSegment>? {
         val totalIntervals = intervalStarts.size
         if (totalIntervals == 0) return emptyList()
@@ -2114,6 +2157,9 @@ object SegmentGenerator {
             Log.i(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批 (区间${startIdx+1}~${endIdx}, ${batchCount}个)")
             writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批 区间${startIdx+1}~${endIdx}")
 
+            // v3.1.xxx: 每批处理前更新进度通知
+            batchProgressCallback?.invoke(batchIndex, totalBatches)
+
             // 每批启动独立的YamnetService，崩溃只影响本批
             val batchResult = runYamnetService(
                 context, pcmPath, batchStarts, batchEnds, batchTimeoutMs
@@ -2129,10 +2175,12 @@ object SegmentGenerator {
                 writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败，跳过")
                 // v3.1.169: 如果服务进程已崩溃，等待其重启后再继续下一批
                 // 根因：SIGSEGV杀死:yamnet进程后，立即调用startService()可能因进程未完全重启而丢失Intent
+                // v3.1.175-fix: 减少等待时间从30秒到2秒，30秒内进程几乎不会自动重启
+                // 2秒后立即发送startService()，Android会自动创建新进程
                 if (!isYamnetProcessAlive(context)) {
-                    Log.w(TAG, "runYamnetServiceWithBatches: YamnetService进程已死，等待重启...")
+                    Log.w(TAG, "runYamnetServiceWithBatches: YamnetService进程已死，等待2秒后重启...")
                     writeFingerprintLog(context, "runYamnetServiceWithBatches: 等待YamnetService进程重启")
-                    waitForYamnetProcessAlive(context, 30_000L)
+                    waitForYamnetProcessAlive(context, 2_000L)
                 }
             }
         }
@@ -2212,14 +2260,15 @@ object SegmentGenerator {
             }
             context.startService(intent)
 
-            // v3.1.160: 使用轮询等待，每30秒检查服务进程是否存活
+            // v3.1.160: 使用轮询等待，每5秒检查服务进程是否存活
             // 根因：YamnetService进程在TFLite调用时SIGSEGV崩溃，latch.await()永远等不到回调
+            // v3.1.175-fix: 从30秒缩短到5秒，减少崩溃后等待时间
             val startTime = System.currentTimeMillis()
             var waited = false
             while (System.currentTimeMillis() - startTime < timeoutMs) {
-                waited = latch.await(30, TimeUnit.SECONDS)
+                waited = latch.await(5, TimeUnit.SECONDS)
                 if (waited) break
-                // 每30秒检查一次服务进程是否还活着
+                // 每5秒检查一次服务进程是否还活着
                 try {
                     val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                     val processes = am.runningAppProcesses
@@ -2294,8 +2343,23 @@ object SegmentGenerator {
     }
 
     // v3.1.169: 等待YamnetService进程重新启动（SIGSEGV崩溃后等待系统重启进程）
+    // v3.1.175-fix: 检测到进程不存活时，立即force-stop杀死僵尸进程，确保下一次startService触发全新进程
     private fun waitForYamnetProcessAlive(context: Context, maxWaitMs: Long): Boolean {
         val startTime = System.currentTimeMillis()
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+
+        // v3.1.175-fix: 检测到进程已死，先强制杀死僵尸进程
+        // 根因：Android有时会保留僵尸进程，新的startService仍然发送到同一个进程，导致继续超时
+        if (!isYamnetProcessAlive(context)) {
+            try {
+                val killed = am.killBackgroundProcesses("com.radio.app:yamnet")
+                Log.i(TAG, "waitForYamnetProcessAlive: 强制杀死:yamnet僵尸进程，killBackgroundProcesses返回=$killed")
+                writeFingerprintLog(context, "waitForYamnetProcessAlive: 强制杀死:yamnet僵尸进程")
+            } catch (_: Exception) {
+                Log.w(TAG, "waitForYamnetProcessAlive: 强制杀死:yamnet进程失败")
+            }
+        }
+
         while (System.currentTimeMillis() - startTime < maxWaitMs) {
             if (isYamnetProcessAlive(context)) {
                 val elapsed = System.currentTimeMillis() - startTime

@@ -264,8 +264,9 @@ object AudioSegmentAnalyzer {
                 logFile = File(logDir, "audio_segment.log")
             }
             val timestamp = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            val versionTag = com.radio.app.RadioApplication.appVersionTag()
             logFile?.let { f ->
-                f.appendText("[$timestamp] $msg\n")
+                f.appendText("[$timestamp] [$versionTag] $msg\n")
             }
         } catch (_: Exception) {}
     }
@@ -279,7 +280,8 @@ object AudioSegmentAnalyzer {
             if (!logDir.exists()) logDir.mkdirs()
             val logFile = File(logDir, "fingerprint_segment.log")
             val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-            logFile.appendText("[$ts] $msg\n")
+            val versionTag = com.radio.app.RadioApplication.appVersionTag()
+            logFile.appendText("[$ts] [$versionTag] $msg\n")
         } catch (_: Exception) {}
     }
 
@@ -2024,16 +2026,15 @@ object AudioSegmentAnalyzer {
             Log.i(TAG, "loadYamnetModel: [B] 创建TFLite Interpreter (PID=$pid)")
             val options = Interpreter.Options()
             options.setNumThreads(2)
-            // v3.1.169-fix: 彻底禁用XNNPACK delegate。
-            // 根因分析表明，XNNPACK delegate是YamnetService进程SIGSEGV崩溃的根本原因。
-            // 证据链：
-            //   1. v3.1.165禁用XNNPACK后，SIGSEGV几乎消失（只有超时，无进程崩溃）
-            //   2. v3.1.167恢复XNNPACK后，SIGSEGV重现，每43批中约10批崩溃（23%崩溃率）
-            //   3. XNNPACK使用CPU指令集优化（如SSE/AVX/NEON），某些Op组合在YAMNet模型上
-            //      产生非法内存访问，触发SIGSEGV信号杀死进程
-            //   4. 独立进程隔离只防止主进程崩溃，但进程死亡导致整批区间丢失（120秒超时浪费）
-            //   5. 每批损失代价远大于XNNPACK带来的2-3x加速收益
-            // 结论：禁用XNNPACK，以时间换稳定性。超时可通过分批处理+重试机制缓解。
+            // v3.1.178-fix: 再次禁用XNNPACK delegate。v3.1.176恢复XNNPACK后的实测日志表明：
+            //   - XNNPACK导致YAMNet推理死锁：部分区间推理后进程卡死（非SIGSEGV），
+            //     每批120秒超时后仍无法恢复，仅能通过重启进程解决
+            //   - 死锁率约10%（61批中6批死锁），每批损失120秒，总耗时34分钟
+            //   - 禁用XNNPACK后无死锁，每批稳定8-20秒完成
+            // TFLite 2.15.0修复了SIGSEGV崩溃，但XNNPACK死锁是独立问题，
+            // 是XNNPACK某些CPU优化op在YAMNet模型上的兼容性问题，无法通过升级解决。
+            // 结论：YAMNet推理禁用XNNPACK，确保稳定性和可完成性。
+            options.setUseXNNPACK(false)
             val interp = try {
                 Interpreter(mappedBuffer, options)
             } catch (e: Throwable) {
@@ -2127,9 +2128,10 @@ object AudioSegmentAnalyzer {
     private const val MAX_YAMNET_INPUT_VALUE = 3.0f
 
     // v3.1.147-fix: 获取当前Interpreter（从类级字段读取）
-    private fun getCurrentInterpreter(): Interpreter {
+    // v3.1.174-fix: 改为internal，供YamnetService检查是否已有缓存的Interpreter
+    // 返回null表示尚未初始化，调用方需要先调用loadYamnetInterpreter()
+    internal fun getCurrentInterpreter(): Interpreter? {
         return currentYamnetInterpreter
-            ?: throw RuntimeException("YAMNet interpreter not initialized")
     }
 
     // v3.1.147-fix: 重置YAMNet超时计数，每次开始新的YAMNet处理轮次前调用
@@ -2138,6 +2140,18 @@ object AudioSegmentAnalyzer {
         consecutiveTimeoutCount = 0
         totalReloadCount = 0
         Log.i(TAG, "resetYamnetTimeoutCounters: 已重置超时计数")
+    }
+
+    /**
+     * v3.1.172-fix: 重置静态yamnetExecutor。
+     * 根因：YamnetService进程被Android复用时，旧executor的线程可能卡在TFLite调用上，
+     * 新submit()任务排队在卡住线程之后，导致整个批次永远无法执行回调。
+     * 修复：每批开始时关闭旧executor、创建新executor，确保无任务堆积。
+     */
+    fun resetYamnetExecutor() {
+        try { yamnetExecutor.shutdownNow() } catch (_: Exception) {}
+        yamnetExecutor = Executors.newSingleThreadExecutor()
+        Log.i(TAG, "resetYamnetExecutor: 已重置executor")
     }
 
     // v3.1.169-fix: 放弃旧Interpreter并重建新实例，确保线程安全
@@ -2196,7 +2210,12 @@ object AudioSegmentAnalyzer {
 
             // v3.1.145-fix: 通过类级字段获取当前Interpreter，而非参数传入
             // 这样超时后reloadYamnetInterpreter()替换字段值，后续推理自动使用新Interpreter
+            // v3.1.174-fix: getCurrentInterpreter()返回Interpreter?，需要null检查
             val interpreter = getCurrentInterpreter()
+            if (interpreter == null) {
+                Log.w(TAG, "classifyWithYamnet: Interpreter未初始化，返回默认结果 (PID=$pid)")
+                return YamnetResult(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            }
             stepMs = System.currentTimeMillis()
             val getInterpreterElapsed = stepMs - entryMs
 

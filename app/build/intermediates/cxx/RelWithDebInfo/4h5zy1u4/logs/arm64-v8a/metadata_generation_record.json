@@ -11,11 +11,11 @@
       "fieldsDescending": {}
     },
     "memoizedSize": -1,
-    "memoizedHashCode": -1929697556
+    "memoizedHashCode": -136706938
   },
   {
     "level_": 0,
-    "message_": "rebuilding JSON /workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a/android_gradle_build.json due to:",
+    "message_": "JSON \u0027/workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a/android_gradle_build.json\u0027 was up-to-date",
     "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
     "tag_": "release|arm64-v8a",
     "diagnosticCode_": 0,
@@ -25,119 +25,7 @@
       "fieldsDescending": {}
     },
     "memoizedSize": -1,
-    "memoizedHashCode": 585624532
-  },
-  {
-    "level_": 0,
-    "message_": "- no fingerprint file, will remove stale configuration folder",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": 884097358
-  },
-  {
-    "level_": 0,
-    "message_": "removing stale contents from \u0027/workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a\u0027",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": -391322669
-  },
-  {
-    "level_": 0,
-    "message_": "created folder \u0027/workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a\u0027",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": 1043176263
-  },
-  {
-    "level_": 0,
-    "message_": "executing cmake /workspace/android-sdk/cmake/3.22.1/bin/cmake \\\n  -H/workspace/radioapp/app/src/main/cpp \\\n  -DCMAKE_SYSTEM_NAME\u003dAndroid \\\n  -DCMAKE_EXPORT_COMPILE_COMMANDS\u003dON \\\n  -DCMAKE_SYSTEM_VERSION\u003d24 \\\n  -DANDROID_PLATFORM\u003dandroid-24 \\\n  -DANDROID_ABI\u003darm64-v8a \\\n  -DCMAKE_ANDROID_ARCH_ABI\u003darm64-v8a \\\n  -DANDROID_NDK\u003d/workspace/android-sdk/ndk/25.1.8937393 \\\n  -DCMAKE_ANDROID_NDK\u003d/workspace/android-sdk/ndk/25.1.8937393 \\\n  -DCMAKE_TOOLCHAIN_FILE\u003d/workspace/android-sdk/ndk/25.1.8937393/build/cmake/android.toolchain.cmake \\\n  -DCMAKE_MAKE_PROGRAM\u003d/workspace/android-sdk/cmake/3.22.1/bin/ninja \\\n  -DCMAKE_C_FLAGS\u003d-DSTDC_HEADERS \\\n  -DCMAKE_LIBRARY_OUTPUT_DIRECTORY\u003d/workspace/radioapp/app/build/intermediates/cxx/RelWithDebInfo/4h5zy1u4/obj/arm64-v8a \\\n  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY\u003d/workspace/radioapp/app/build/intermediates/cxx/RelWithDebInfo/4h5zy1u4/obj/arm64-v8a \\\n  -DCMAKE_BUILD_TYPE\u003dRelWithDebInfo \\\n  -B/workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a \\\n  -GNinja\n",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": -1575891826
-  },
-  {
-    "level_": 0,
-    "message_": "/workspace/android-sdk/cmake/3.22.1/bin/cmake \\\n  -H/workspace/radioapp/app/src/main/cpp \\\n  -DCMAKE_SYSTEM_NAME\u003dAndroid \\\n  -DCMAKE_EXPORT_COMPILE_COMMANDS\u003dON \\\n  -DCMAKE_SYSTEM_VERSION\u003d24 \\\n  -DANDROID_PLATFORM\u003dandroid-24 \\\n  -DANDROID_ABI\u003darm64-v8a \\\n  -DCMAKE_ANDROID_ARCH_ABI\u003darm64-v8a \\\n  -DANDROID_NDK\u003d/workspace/android-sdk/ndk/25.1.8937393 \\\n  -DCMAKE_ANDROID_NDK\u003d/workspace/android-sdk/ndk/25.1.8937393 \\\n  -DCMAKE_TOOLCHAIN_FILE\u003d/workspace/android-sdk/ndk/25.1.8937393/build/cmake/android.toolchain.cmake \\\n  -DCMAKE_MAKE_PROGRAM\u003d/workspace/android-sdk/cmake/3.22.1/bin/ninja \\\n  -DCMAKE_C_FLAGS\u003d-DSTDC_HEADERS \\\n  -DCMAKE_LIBRARY_OUTPUT_DIRECTORY\u003d/workspace/radioapp/app/build/intermediates/cxx/RelWithDebInfo/4h5zy1u4/obj/arm64-v8a \\\n  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY\u003d/workspace/radioapp/app/build/intermediates/cxx/RelWithDebInfo/4h5zy1u4/obj/arm64-v8a \\\n  -DCMAKE_BUILD_TYPE\u003dRelWithDebInfo \\\n  -B/workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a \\\n  -GNinja\n",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": -44283089
-  },
-  {
-    "level_": 0,
-    "message_": "Exiting generation of /workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a/compile_commands.json.bin normally",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": 399080812
-  },
-  {
-    "level_": 0,
-    "message_": "done executing cmake",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": -1525914162
-  },
-  {
-    "level_": 0,
-    "message_": "hard linked /workspace/radioapp/app/.cxx/RelWithDebInfo/4h5zy1u4/arm64-v8a/compile_commands.json to /workspace/radioapp/app/.cxx/tools/release/arm64-v8a/compile_commands.json",
-    "file_": "/workspace/radioapp/app/src/main/cpp/CMakeLists.txt",
-    "tag_": "release|arm64-v8a",
-    "diagnosticCode_": 0,
-    "memoizedIsInitialized": 1,
-    "unknownFields": {
-      "fields": {},
-      "fieldsDescending": {}
-    },
-    "memoizedSize": -1,
-    "memoizedHashCode": 208254266
+    "memoizedHashCode": -147700539
   },
   {
     "level_": 0,
@@ -151,6 +39,6 @@
       "fieldsDescending": {}
     },
     "memoizedSize": -1,
-    "memoizedHashCode": 412158922
+    "memoizedHashCode": -2089817756
   }
 ]

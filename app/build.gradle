@@ -10,10 +10,10 @@ android {
 
     defaultConfig {
         applicationId "com.radio.app"
-        minSdk 24
+        minSdk 26
         targetSdk 33
-        versionCode 569
-        versionName "3.1.170"
+        versionCode 577
+        versionName "3.1.180"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -120,6 +120,6 @@ dependencies {
     implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
     implementation 'com.alphacephei:vosk-android:0.3.47'
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.16.3'
-    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+    implementation 'org.tensorflow:tensorflow-lite:2.15.0'
     implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
 }

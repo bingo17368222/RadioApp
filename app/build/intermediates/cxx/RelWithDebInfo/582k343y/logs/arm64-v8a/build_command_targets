@@ -1,0 +1,6 @@
+/workspace/android-sdk/cmake/3.22.1/bin/ninja \
+  -C \
+  /workspace/radioapp/app/.cxx/RelWithDebInfo/582k343y/arm64-v8a \
+  chromaprint_jni \
+  mnn_llm_jni \
+  whisper_jni

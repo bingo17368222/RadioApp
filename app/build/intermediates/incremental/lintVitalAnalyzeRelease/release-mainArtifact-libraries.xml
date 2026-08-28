@@ -514,10 +514,10 @@
       externalAnnotations="annotations.zip"
       proguardRules="proguard.txt"/>
   <library
-      name="org.tensorflow:tensorflow-lite:2.14.0@aar"
-      jars="/root/.gradle/caches/transforms-3/55bd78a28a99afb464cbd8cb921fa1c6/transformed/tensorflow-lite-2.14.0/jars/classes.jar"
-      resolved="org.tensorflow:tensorflow-lite:2.14.0"
-      folder="/root/.gradle/caches/transforms-3/55bd78a28a99afb464cbd8cb921fa1c6/transformed/tensorflow-lite-2.14.0"
+      name="org.tensorflow:tensorflow-lite:2.15.0@aar"
+      jars="/root/.gradle/caches/transforms-3/6c0e6db50858eb08e1b7941725ad5a84/transformed/tensorflow-lite-2.15.0/jars/classes.jar"
+      resolved="org.tensorflow:tensorflow-lite:2.15.0"
+      folder="/root/.gradle/caches/transforms-3/6c0e6db50858eb08e1b7941725ad5a84/transformed/tensorflow-lite-2.15.0"
       manifest="AndroidManifest.xml"
       resFolder="res"
       assetsFolder="assets"
@@ -685,6 +685,36 @@
       externalAnnotations="annotations.zip"
       proguardRules="proguard.txt"/>
   <library
+      name="org.tensorflow:tensorflow-lite-support-api:0.4.4@aar"
+      jars="/root/.gradle/caches/transforms-3/a9c61f867758de73ea3679efaeaa1c9d/transformed/tensorflow-lite-support-api-0.4.4/jars/classes.jar"
+      resolved="org.tensorflow:tensorflow-lite-support-api:0.4.4"
+      folder="/root/.gradle/caches/transforms-3/a9c61f867758de73ea3679efaeaa1c9d/transformed/tensorflow-lite-support-api-0.4.4"
+      manifest="AndroidManifest.xml"
+      resFolder="res"
+      assetsFolder="assets"
+      lintJar="lint.jar"
+      publicResources="public.txt"
+      symbolFile="R.txt"
+      externalAnnotations="annotations.zip"
+      proguardRules="proguard.txt"/>
+  <library
+      name="org.tensorflow:tensorflow-lite-api:2.15.0@aar"
+      jars="/root/.gradle/caches/transforms-3/411725fc1df86592f3fee63936822a32/transformed/tensorflow-lite-api-2.15.0/jars/classes.jar"
+      resolved="org.tensorflow:tensorflow-lite-api:2.15.0"
+      folder="/root/.gradle/caches/transforms-3/411725fc1df86592f3fee63936822a32/transformed/tensorflow-lite-api-2.15.0"
+      manifest="AndroidManifest.xml"
+      resFolder="res"
+      assetsFolder="assets"
+      lintJar="lint.jar"
+      publicResources="public.txt"
+      symbolFile="R.txt"
+      externalAnnotations="annotations.zip"
+      proguardRules="proguard.txt"/>
+  <library
+      name="com.google.inject:guice:5.1.0@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/com.google.inject/guice/5.1.0/da25056c694c54ba16e78e4fc35f17fc60f0d1b4/guice-5.1.0.jar"
+      resolved="com.google.inject:guice:5.1.0"/>
+  <library
       name="com.google.guava:guava:31.1-android@jar"
       jars="/root/.gradle/caches/modules-2/files-2.1/com.google.guava/guava/31.1-android/9222c47cc3ae890f07f7c961bbb3cb69050fe4aa/guava-31.1-android.jar"
       resolved="com.google.guava:guava:31.1-android"/>
@@ -706,9 +736,25 @@
       externalAnnotations="annotations.zip"
       proguardRules="proguard.txt"/>
   <library
+      name="com.google.errorprone:error_prone_annotations:2.15.0@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/com.google.errorprone/error_prone_annotations/2.15.0/38c8485a652f808c8c149150da4e5c2b0bd17f9a/error_prone_annotations-2.15.0.jar"
+      resolved="com.google.errorprone:error_prone_annotations:2.15.0"/>
+  <library
       name="com.google.guava:failureaccess:1.0.1@jar"
       jars="/root/.gradle/caches/modules-2/files-2.1/com.google.guava/failureaccess/1.0.1/1dcf1de382a0bf95a3d8b0849546c88bac1292c9/failureaccess-1.0.1.jar"
       resolved="com.google.guava:failureaccess:1.0.1"/>
+  <library
+      name="com.google.code.findbugs:jsr305:3.0.2@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/com.google.code.findbugs/jsr305/3.0.2/25ea2e8b0c338a877313bd4672d3fe056ea78f0d/jsr305-3.0.2.jar"
+      resolved="com.google.code.findbugs:jsr305:3.0.2"/>
+  <library
+      name="org.checkerframework:checker-qual:3.12.0@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/org.checkerframework/checker-qual/3.12.0/d5692f0526415fcc6de94bb5bfbd3afd9dd3b3e5/checker-qual-3.12.0.jar"
+      resolved="org.checkerframework:checker-qual:3.12.0"/>
+  <library
+      name="com.google.j2objc:j2objc-annotations:1.3@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/com.google.j2objc/j2objc-annotations/1.3/ba035118bc8bac37d7eff77700720999acd9986d/j2objc-annotations-1.3.jar"
+      resolved="com.google.j2objc:j2objc-annotations:1.3"/>
   <library
       name="com.google.android.exoplayer:exoplayer-database:2.19.1@aar"
       jars="/root/.gradle/caches/transforms-3/1912915b9ae201ad6442485eb74a44b3/transformed/exoplayer-database-2.19.1/jars/classes.jar"
@@ -840,35 +886,13 @@
       externalAnnotations="annotations.zip"
       proguardRules="proguard.txt"/>
   <library
-      name="org.tensorflow:tensorflow-lite-support-api:0.4.4@aar"
-      jars="/root/.gradle/caches/transforms-3/a9c61f867758de73ea3679efaeaa1c9d/transformed/tensorflow-lite-support-api-0.4.4/jars/classes.jar"
-      resolved="org.tensorflow:tensorflow-lite-support-api:0.4.4"
-      folder="/root/.gradle/caches/transforms-3/a9c61f867758de73ea3679efaeaa1c9d/transformed/tensorflow-lite-support-api-0.4.4"
-      manifest="AndroidManifest.xml"
-      resFolder="res"
-      assetsFolder="assets"
-      lintJar="lint.jar"
-      publicResources="public.txt"
-      symbolFile="R.txt"
-      externalAnnotations="annotations.zip"
-      proguardRules="proguard.txt"/>
+      name="javax.inject:javax.inject:1@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/javax.inject/javax.inject/1/6975da39a7040257bd51d21a231b76c915872d38/javax.inject-1.jar"
+      resolved="javax.inject:javax.inject:1"/>
   <library
-      name="org.tensorflow:tensorflow-lite-api:2.14.0@aar"
-      jars="/root/.gradle/caches/transforms-3/5331a43ad0996f193caa5b6b021d7296/transformed/tensorflow-lite-api-2.14.0/jars/classes.jar"
-      resolved="org.tensorflow:tensorflow-lite-api:2.14.0"
-      folder="/root/.gradle/caches/transforms-3/5331a43ad0996f193caa5b6b021d7296/transformed/tensorflow-lite-api-2.14.0"
-      manifest="AndroidManifest.xml"
-      resFolder="res"
-      assetsFolder="assets"
-      lintJar="lint.jar"
-      publicResources="public.txt"
-      symbolFile="R.txt"
-      externalAnnotations="annotations.zip"
-      proguardRules="proguard.txt"/>
-  <library
-      name="org.checkerframework:checker-qual:2.5.8@jar"
-      jars="/root/.gradle/caches/modules-2/files-2.1/org.checkerframework/checker-qual/2.5.8/41c6fa63cba0fea55ebd3581d42b3d2c5cca98b2/checker-qual-2.5.8.jar"
-      resolved="org.checkerframework:checker-qual:2.5.8"/>
+      name="aopalliance:aopalliance:1.0@jar"
+      jars="/root/.gradle/caches/modules-2/files-2.1/aopalliance/aopalliance/1.0/235ba8b489512805ac13a8f9ea77a1ca5ebe3e8/aopalliance-1.0.jar"
+      resolved="aopalliance:aopalliance:1.0"/>
   <library
       name="com.google.android.odml:image:1.0.0-beta1@aar"
       jars="/root/.gradle/caches/transforms-3/74d0845bf59a0a4b1b82fb9a6da945a6/transformed/image-1.0.0-beta1/jars/classes.jar"
@@ -955,10 +979,6 @@
       name="androidx.concurrent:concurrent-futures:1.1.0@jar"
       jars="/root/.gradle/caches/modules-2/files-2.1/androidx.concurrent/concurrent-futures/1.1.0/50b7fb98350d5f42a4e49704b03278542293ba48/concurrent-futures-1.1.0.jar"
       resolved="androidx.concurrent:concurrent-futures:1.1.0"/>
-  <library
-      name="com.google.errorprone:error_prone_annotations:2.15.0@jar"
-      jars="/root/.gradle/caches/modules-2/files-2.1/com.google.errorprone/error_prone_annotations/2.15.0/38c8485a652f808c8c149150da4e5c2b0bd17f9a/error_prone_annotations-2.15.0.jar"
-      resolved="com.google.errorprone:error_prone_annotations:2.15.0"/>
   <library
       name="androidx.constraintlayout:constraintlayout-core:1.0.4@jar"
       jars="/root/.gradle/caches/modules-2/files-2.1/androidx.constraintlayout/constraintlayout-core/1.0.4/29cdbe03ded6b0980f63fa5da2579a430e911c40/constraintlayout-core-1.0.4.jar"

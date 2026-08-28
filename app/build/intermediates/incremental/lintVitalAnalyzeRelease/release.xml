@@ -1,7 +1,7 @@
 <variant
     name="release"
     package="com.radio.app"
-    minSdkVersion="24"
+    minSdkVersion="26"
     targetSdkVersion="33"
     mergedManifest="build/intermediates/merged_manifest/release/AndroidManifest.xml"
     proguardFiles="build/intermediates/default_proguard_files/global/proguard-android-optimize.txt-7.4.2:proguard-rules.pro"

@@ -735,7 +735,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
     ) : RecyclerView.Adapter<ScheduleListAdapter.ViewHolder>() {
         var onItemClicked: ((Int) -> Unit)? = null
 
-        private val dateFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        // v3.1.xxx: 日期格式加上月日，显示"MM/dd HH:mm"
+        private val dateFormat = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault())
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
             val view = LayoutInflater.from(parent.context).inflate(R.layout.item_schedule, parent, false)
@@ -753,7 +754,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             val timeStr = if (item.startTime > 0) {
                 dateFormat.format(java.util.Date(item.startTime))
             } else {
-                item.broadcastAt?.takeLast(5) ?: ""
+                // v3.1.xxx: 显示日期+时间，而非仅取最后5位
+                item.broadcastAt?.take(16) ?: ""
             }
             holder.tvTime.text = timeStr
 

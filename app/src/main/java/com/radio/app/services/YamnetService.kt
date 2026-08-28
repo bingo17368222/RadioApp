@@ -72,6 +72,13 @@ class YamnetService : Service() {
         Log.i(TAG, "========================================")
         Log.i(TAG, "YamnetService: 启动，进程PID=$pid, 线程=${Thread.currentThread().name}")
         writeFingerprintLog("YamnetService: 启动 PID=$pid")
+        
+        // v3.1.174-fix: 重置NativeLibLoader加载标志，每个全新进程必须重新加载所有native库
+        // 根因：NativeLibLoader是单例，静态loaded标志在进程复用过程中保持true
+        // 但每次YamnetService启动都应该是全新进程，必须重置让ensureLoaded重新执行
+        com.radio.app.utils.NativeLibLoader.reset()
+        Log.i(TAG, "YamnetService: NativeLibLoader.reset() 已调用，保证本进程重新加载所有native库 (PID=$pid)")
+        writeFingerprintLog("YamnetService: NativeLibLoader.reset() 已调用")
 
         // 使用独立线程执行，避免服务主线程阻塞
         Thread {
@@ -144,21 +151,43 @@ class YamnetService : Service() {
                 }
                 writeFingerprintLog("YamnetService: Native库检查完成")
 
-                // ===== STEP 5: 加载YAMNet模型 =====
+                // ===== STEP 5: 加载YAMNet模型（复用静态Interpreter，避免每批创建新Interpreter导致SIGSEGV）=====
                 Log.i(TAG, "YamnetService: [STEP 5] 加载YAMNet模型 PID=$pid")
                 writeFingerprintLog("YamnetService: [STEP 5] 开始加载YAMNet模型")
                 AudioSegmentAnalyzer.resetYamnetTimeoutCounters()
 
-                // 在loadYamnetInterpreter前记录详细信息
-                Log.i(TAG, "YamnetService: 调用loadYamnetInterpreter(this)")
-                val interp = AudioSegmentAnalyzer.loadYamnetInterpreter(this)
+                // v3.1.174-fix: 复用静态currentYamnetInterpreter，不每批创建新Interpreter。
+                // 根因分析：SIGSEGV崩溃率在有/无XNNPACK时都是23%，说明崩溃不是XNNPACK导致的。
+                // 真正根因是v3.1.171引入的"每批创建新Interpreter"方案：
+                //   - 每次创建新Interpreter时，旧Interpreter的native内存无法释放（close()可能卡住）
+                //   - 多批次后native内存累积导致SIGSEGV
+                //   - 而v3.1.165（静态Interpreter复用）从未出现过SIGSEGV
+                // 修复：如果currentYamnetInterpreter已存在（同一进程内），直接复用，不创建新的。
+                var interp = AudioSegmentAnalyzer.getCurrentInterpreter()
                 if (interp == null) {
-                    Log.e(TAG, "YamnetService: loadYamnetInterpreter返回null")
-                    writeFingerprintLog("YamnetService: loadYamnetInterpreter返回null")
-                    throw RuntimeException("YAMNet模型加载失败")
+                    // 首次启动（新进程），需要加载模型
+                    Log.i(TAG, "YamnetService: currentYamnetInterpreter为null，首次加载模型 PID=$pid")
+                    writeFingerprintLog("YamnetService: 首次加载模型")
+                    interp = AudioSegmentAnalyzer.loadYamnetInterpreter(this)
+                    if (interp == null) {
+                        Log.e(TAG, "YamnetService: loadYamnetInterpreter返回null")
+                        writeFingerprintLog("YamnetService: loadYamnetInterpreter返回null")
+                        throw RuntimeException("YAMNet模型加载失败")
+                    }
+                    Log.i(TAG, "YamnetService: YAMNet模型首次加载成功 interp=$interp")
+                    writeFingerprintLog("YamnetService: YAMNet模型首次加载成功")
+                } else {
+                    // 进程复用，直接复用已有Interpreter
+                    Log.i(TAG, "YamnetService: 复用已有currentYamnetInterpreter=$interp PID=$pid")
+                    writeFingerprintLog("YamnetService: 复用已有Interpreter")
                 }
-                Log.i(TAG, "YamnetService: YAMNet模型加载成功 interp=$interp")
-                writeFingerprintLog("YamnetService: YAMNet模型加载成功")
+
+                // v3.1.172-fix: 重置静态yamnetExecutor，避免旧executor卡住线程导致新任务排队永远无法执行
+                // 根因：:yamnet进程被Android复用时，旧executor的线程可能卡在TFLite interpreter.run()上，
+                // 新submit()任务排队在卡住线程之后，导致Future.get(15s)永远超时，整批120秒后TIMEOUT
+                AudioSegmentAnalyzer.resetYamnetExecutor()
+                Log.i(TAG, "YamnetService: 静态yamnetExecutor已重置 PID=$pid")
+                writeFingerprintLog("YamnetService: 静态yamnetExecutor已重置")
 
                 // ===== STEP 6: 打开PCM文件（内存映射） =====
                 Log.i(TAG, "YamnetService: [STEP 6] 打开PCM文件(内存映射) PID=$pid")
@@ -190,7 +219,12 @@ class YamnetService : Service() {
                     com.radio.app.utils.LogcatCapture.dumpLogcat(this, maxLines = 1000, tags = emptyList())
                 } catch (_: Exception) {}
 
-                // v3.1.159: 复用单个Executor处理所有区间
+                // v3.1.172-fix: loadYamnetInterpreter已在STEP 5中调用，同时重置了静态yamnetExecutor。
+                // 不再创建单独的interp变量——classifyPcmIntervalInner使用getCurrentInterpreter()获取静态interpreter，
+                // 该interpreter已在STEP 5中被loadYamnetInterpreter正确设置。
+                // 静态yamnetExecutor也已在STEP 5中被resetYamnetExecutor()重置，避免旧卡住线程阻塞新任务。
+
+                // v3.1.159: 使用本地Executor处理所有区间，不共享静态
                 // v3.1.163: 当Future.get()超时时，说明TFLite interpreter.run()卡住了，
                 // 必须重建Executor放弃被卡住的线程，否则后续所有区间都会超时。
                 var intervalExecutor = Executors.newSingleThreadExecutor()
@@ -230,7 +264,7 @@ class YamnetService : Service() {
                                 continue
                             }
 
-                            // 单个区间超时保护：使用复用的Executor + Future.get(timeout)
+                            // 单个区间超时保护：使用本地Executor + Future.get(timeout)
                             var intervalResult: List<VoiceSegment> = emptyList()
                             try {
                                 // 记录每个区间开始前的日志，用于定位崩溃点
@@ -307,6 +341,8 @@ class YamnetService : Service() {
                     }
                 } finally {
                     try { intervalExecutor.shutdownNow() } catch (_: Exception) {}
+                    // v3.1.171-fix: 不关闭Interpreter（可能卡住），让进程结束时自动回收
+                    // 本进程即将结束，即使Interpreter卡住也不会影响后续批次
                 }
 
                 Log.i(TAG, "YamnetService: 处理完成，共${allSegments.size}段(成功${processedCount}/${total}个区间)")

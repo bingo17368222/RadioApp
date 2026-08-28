@@ -5326,6 +5326,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // pre-cached episode_info table so the notification always shows title/date/time.
         var episode = enrichEpisodeFromDbIfNeeded(episode)
         currentEpisode = episode; currentStation = null; isLive = live
+        // v3.1.179-fix: 立即同步加载当前节目的分段到内存，消除异步竞态条件
+        // 根因：之前updatePlaybackSchedule异步加载，如果getSegmentList()提前被调用（如分段导航），
+        // 会因为voiceSegments为空回退到生成15分钟固定分段。畅行早高峰是跨天第一个节目，最容易触发。
+        val loadedSync = loadEpisodeSegmentsFromDb(currentEpisode)
+        val segCount = episode.voiceSegments.size
+        writeServiceLog("segment", "playEpisode: sync loaded segments for current ep=$epId ($epTitle), loaded=$loadedSync, segmentCount=$segCount")
         // v3.1.136: 切换到新节目时重置末尾seek标志
         // v3.1.138: 同时重置userSeekOnCurrentEpisode，允许新节目正常auto-play
         lastUserSeekNearEnd = false
@@ -5555,8 +5561,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         forceNotificationUpdate = true  // Issue 3: bypass content hash check
         notifyNotification()
 
-        // v3.1.133: 节目切换后立即加载真实分段到内存，避免分段导航使用固定15分钟分段
-        // 同时预载下个节目的分段和更新播放计划
+        // v3.1.133: 节目切换后异步更新播放计划，预载下下个节目的分段和构建播放计划列表
+        // v3.1.179-fix: 当前节目的分段已在 playEpisode 中同步加载（loadEpisodeSegmentsFromDb），
+        // 不再依赖此异步调用。此异步调用仅用于预载下下个节目的分段和更新播放计划列表。
         serviceScope.launch(Dispatchers.IO) {
             updatePlaybackSchedule()
         }
@@ -6050,11 +6057,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     fun rebuildPlaybackSchedule() {
         // 同步重建播放计划，更新futurePlannedEpisodes
-        val newList = buildPlaybackSchedule()
-        synchronized(futurePlannedEpisodes) {
-            futurePlannedEpisodes.clear()
-            futurePlannedEpisodes.addAll(newList)
-        }
+        // v3.1.xxx: buildPlaybackSchedule()内部已写入futurePlannedEpisodes（已富化），无需重复写入
+        buildPlaybackSchedule()
     }
 
     // v2.0.73: Safely get player duration, filtering out invalid values (0, negative, TIME_UNSET).
@@ -6125,12 +6129,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 episodeId
             }
             val dbSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
-            if (dbSegments.isNotEmpty() && dbSegments.any { !it.isSimulated }) {
+            if (dbSegments.isNotEmpty()) {
                 episode.voiceSegments = dbSegments
-                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${dbSegments.size} real segments for $episodeId")
+                val realCount = dbSegments.count { !it.isSimulated }
+                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${dbSegments.size} segments (${realCount} real, ${dbSegments.size - realCount} simulated) for $episodeId")
                 return true
             } else {
-                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: no real segments found for $episodeId (db=${dbSegments.size} segs)")
+                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: no segments found for $episodeId")
             }
         } catch (e: Exception) {
             writeServiceLog("segment", "loadEpisodeSegmentsFromDb: failed for $episodeId: ${e.message}")
@@ -6321,9 +6326,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // 更新futurePlannedEpisodes
+        // v3.1.xxx: 对每个节目进行富化，确保标题/起止时间完整
+        val enrichedPlanned = nextPlanned.map { enrichEpisodeFromDbIfNeeded(it) }
         synchronized(futurePlannedEpisodes) {
             futurePlannedEpisodes.clear()
-            futurePlannedEpisodes.addAll(nextPlanned)
+            futurePlannedEpisodes.addAll(enrichedPlanned)
         }
 
         // 构建日志
@@ -6396,8 +6403,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.121移除了模拟分段检查，导致即使DB有真实分段也永远不会被查询到。
         // 本版本重新引入检查，但保留了DB为空时的模拟分段回退机制，避免竞态条件下生成新分段。
 
-        // 第1步：内存中有真实分段 → 直接使用
-        if (segments != null && segments.isNotEmpty() && segments.any { !it.isSimulated }) {
+        // 第1步：内存中有分段（模拟或真实均可）→ 直接使用
+        // v3.1.178-fix: 移除 isSimulated 检查。loadEpisodeSegmentsFromDb 现在会加载任意分段，
+        // 包括 preSegmentFixed 生成的模拟分段，避免 getSegmentList 回退到第4步生成15分钟固定分段。
+        if (segments != null && segments.isNotEmpty()) {
             return segments.sortedBy { it.start }
         }
 
@@ -7180,18 +7189,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (crossDayEp != null) {
                     writeNotifDetailLog("autoPlayNextEpisode: cross-day episode found, switching - title=${crossDayEp.title}, id=${crossDayEp.id}")
                     writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
-                    playEpisode(crossDayEp, false)
+                    // v3.1.xxx: 富化跨天节目，确保通知显示标题/起止时间
+                    val enrichedEp = enrichEpisodeFromDbIfNeeded(crossDayEp)
+                    playEpisode(enrichedEp, false)
                     updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
                     forceNotificationUpdate = true
                     // v2.4.117: removed — forceNotificationUpdate=true is sufficient
                     updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
-                    callback?.onEpisodeChanged(crossDayEp)
+                    callback?.onEpisodeChanged(enrichedEp)
                     // [v2.0.93] Fix: Send broadcast for cross-day episode change so main UI updates
                     // even when callback is null (App in background, Activity not bound)
                     try {
                         val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
-                        broadcastIntent.putExtra("episode_title", crossDayEp.title)
-                        broadcastIntent.putExtra("episode_id", crossDayEp.id)
+                        broadcastIntent.putExtra("episode_title", enrichedEp.title)
+                        broadcastIntent.putExtra("episode_id", enrichedEp.id)
                         broadcastIntent.setPackage(packageName)
                         LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
                     } catch (e: Exception) { Log.w(TAG, "Failed to broadcast cross-day episode change", e) }
@@ -7203,21 +7214,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             writeNotifDetailLog("autoPlayNextEpisode: found next episode in pre-cache list, switching - title=${nextEpisode.title}, id=${nextEpisode.id}")
             Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")
-            val episodeKey = nextEpisode.id ?: ""
+            // v3.1.xxx: 富化下一节目，确保通知显示标题/起止时间
+            val enrichedEp = enrichEpisodeFromDbIfNeeded(nextEpisode)
+            val episodeKey = enrichedEp.id ?: ""
             val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
             val startPos = if (savedPos > 0) savedPos else -1L
-            playEpisode(nextEpisode, false, startPos)
+            playEpisode(enrichedEp, false, startPos)
             updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
             forceNotificationUpdate = true
             // v2.4.117: removed — forceNotificationUpdate=true is sufficient
             updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
             // 通过回调通知 Activity 更新界面
-            callback?.onEpisodeChanged(nextEpisode)
+            callback?.onEpisodeChanged(enrichedEp)
             // [v2.0.93] Fix: Send broadcast so main UI updates even when callback is null
             try {
                 val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
-                broadcastIntent.putExtra("episode_title", nextEpisode.title)
-                broadcastIntent.putExtra("episode_id", nextEpisode.id)
+                broadcastIntent.putExtra("episode_title", enrichedEp.title)
+                broadcastIntent.putExtra("episode_id", enrichedEp.id)
                 broadcastIntent.setPackage(packageName)
                 LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
             } catch (e: Exception) { Log.w(TAG, "Failed to broadcast episode change", e) }

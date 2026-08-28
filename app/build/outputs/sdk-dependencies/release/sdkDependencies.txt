@@ -860,6 +860,45 @@ library {
 }
 library {
   maven_library {
+    groupId: "com.google.code.findbugs"
+    artifactId: "jsr305"
+    version: "3.0.2"
+  }
+  digests {
+    sha256: "vj\322\240x?&\207\226,\212\327L\356\3148\242\213\237r\242\320\205\356C\213x\023\351(\320\307"
+  }
+  repo_index {
+    value: 1
+  }
+}
+library {
+  maven_library {
+    groupId: "org.checkerframework"
+    artifactId: "checker-qual"
+    version: "3.12.0"
+  }
+  digests {
+    sha256: "\377\020xZ\302\243W\354]\351\302\223\313\230*,\273`\\\003\t\352L\301\313\233\233\306\333\347\363\313"
+  }
+  repo_index {
+    value: 1
+  }
+}
+library {
+  maven_library {
+    groupId: "com.google.j2objc"
+    artifactId: "j2objc-annotations"
+    version: "1.3"
+  }
+  digests {
+    sha256: "!\2570\311\"g\275a\"\300\340\264\322\f\314\266d\0327\352\371V\306T\016\304q\325\204\346J{"
+  }
+  repo_index {
+    value: 1
+  }
+}
+library {
+  maven_library {
     groupId: "com.google.android.exoplayer"
     artifactId: "exoplayer-database"
     version: "2.19.1"
@@ -1033,10 +1072,49 @@ library {
   maven_library {
     groupId: "org.tensorflow"
     artifactId: "tensorflow-lite"
-    version: "2.14.0"
+    version: "2.15.0"
   }
   digests {
-    sha256: "p\235\270\037\277\272F\033\036\322~\234\036\203\201|-|\306\004i\aN\2526\310\217\270\333\352H\206"
+    sha256: "}o\261\300\022\264\304\244R\364\017\261\260Vr\207\031\027\327<\307\205B\363W~i\006\277\241\345\v"
+  }
+  repo_index {
+    value: 1
+  }
+}
+library {
+  maven_library {
+    groupId: "com.google.inject"
+    artifactId: "guice"
+    version: "5.1.0"
+  }
+  digests {
+    sha256: "A0\345\v\372\304\200\231\310`\360\331\003\271\030`\310\032$\234\220\363\202E\370\376\325\217\310\027\274&"
+  }
+  repo_index {
+    value: 1
+  }
+}
+library {
+  maven_library {
+    groupId: "javax.inject"
+    artifactId: "javax.inject"
+    version: "1"
+  }
+  digests {
+    sha256: "\221\307pD\245\fH\0266\303-\221o\330\234\221\030\247!\2259\004R\310\020e\b\017\225}\347\377"
+  }
+  repo_index {
+    value: 1
+  }
+}
+library {
+  maven_library {
+    groupId: "aopalliance"
+    artifactId: "aopalliance"
+    version: "1.0"
+  }
+  digests {
+    sha256: "\n\335\354g\017\355\315?\021<\\\200\221\327\203(\r#\367^:\313\204\033a\251\315\260y7j\b"
   }
   repo_index {
     value: 1
@@ -1046,10 +1124,10 @@ library {
   maven_library {
     groupId: "org.tensorflow"
     artifactId: "tensorflow-lite-api"
-    version: "2.14.0"
+    version: "2.15.0"
   }
   digests {
-    sha256: "\035\037\377\376\235\025\226\230\202\310V$\2320\030\314\322\031\223\031\341\225\246;{Xi\237\310\313\203o"
+    sha256: "n\004Y\361\a\266\321\321\335!\374\237\247\221\373\026\"\342\216\340N\375\261\316-{P\257}\3746\200"
   }
   repo_index {
     value: 1
@@ -1076,19 +1154,6 @@ library {
   }
   digests {
     sha256: "\a$\201\367\363\202 t\231j\006\257\261\327\204\357\330(s\031\263\216>HW+\262\231\a\222\230\344"
-  }
-  repo_index {
-    value: 1
-  }
-}
-library {
-  maven_library {
-    groupId: "org.checkerframework"
-    artifactId: "checker-qual"
-    version: "2.5.8"
-  }
-  digests {
-    sha256: "\275e]\2455\337\036\353\226\374\210t\320]\017p) \235\351P\226\344\370K\320|fh\212!\r"
   }
   repo_index {
     value: 1
@@ -1582,16 +1647,16 @@ library_dependencies {
 library_dependencies {
   library_index: 67
   library_dep_index: 68
-  library_dep_index: 71
-  library_dep_index: 72
-  library_dep_index: 73
   library_dep_index: 74
+  library_dep_index: 75
   library_dep_index: 76
   library_dep_index: 77
-  library_dep_index: 78
   library_dep_index: 79
   library_dep_index: 80
   library_dep_index: 81
+  library_dep_index: 82
+  library_dep_index: 83
+  library_dep_index: 84
 }
 library_dependencies {
   library_index: 68
@@ -1602,91 +1667,106 @@ library_dependencies {
   library_index: 69
   library_dep_index: 70
   library_dep_index: 14
-}
-library_dependencies {
-  library_index: 71
-  library_dep_index: 68
-  library_dep_index: 1
-}
-library_dependencies {
-  library_index: 72
-  library_dep_index: 68
   library_dep_index: 71
-  library_dep_index: 1
-}
-library_dependencies {
-  library_index: 73
-  library_dep_index: 68
-  library_dep_index: 1
+  library_dep_index: 72
+  library_dep_index: 50
+  library_dep_index: 73
 }
 library_dependencies {
   library_index: 74
-  library_dep_index: 1
   library_dep_index: 68
-  library_dep_index: 75
-  library_dep_index: 73
+  library_dep_index: 1
 }
 library_dependencies {
   library_index: 75
   library_dep_index: 68
+  library_dep_index: 74
   library_dep_index: 1
 }
 library_dependencies {
   library_index: 76
-  library_dep_index: 1
-  library_dep_index: 11
   library_dep_index: 68
-  library_dep_index: 75
-  library_dep_index: 72
-  library_dep_index: 73
-  library_dep_index: 74
-  library_dep_index: 71
+  library_dep_index: 1
 }
 library_dependencies {
   library_index: 77
-  library_dep_index: 76
   library_dep_index: 1
+  library_dep_index: 68
+  library_dep_index: 78
+  library_dep_index: 76
 }
 library_dependencies {
   library_index: 78
+  library_dep_index: 68
   library_dep_index: 1
-  library_dep_index: 76
 }
 library_dependencies {
   library_index: 79
   library_dep_index: 1
+  library_dep_index: 11
+  library_dep_index: 68
+  library_dep_index: 78
+  library_dep_index: 75
   library_dep_index: 76
+  library_dep_index: 77
+  library_dep_index: 74
 }
 library_dependencies {
   library_index: 80
-  library_dep_index: 76
+  library_dep_index: 79
   library_dep_index: 1
 }
 library_dependencies {
   library_index: 81
+  library_dep_index: 1
+  library_dep_index: 79
+}
+library_dependencies {
+  library_index: 82
+  library_dep_index: 1
+  library_dep_index: 79
+}
+library_dependencies {
+  library_index: 83
+  library_dep_index: 79
+  library_dep_index: 1
+}
+library_dependencies {
+  library_index: 84
   library_dep_index: 68
   library_dep_index: 1
   library_dep_index: 60
   library_dep_index: 65
 }
 library_dependencies {
-  library_index: 82
-  library_dep_index: 83
-}
-library_dependencies {
   library_index: 85
   library_dep_index: 86
 }
 library_dependencies {
-  library_index: 87
-  library_dep_index: 88
-  library_dep_index: 85
-}
-library_dependencies {
   library_index: 88
   library_dep_index: 89
-  library_dep_index: 86
+  library_dep_index: 92
+}
+library_dependencies {
+  library_index: 89
   library_dep_index: 90
+  library_dep_index: 91
+  library_dep_index: 69
+}
+library_dependencies {
+  library_index: 92
+  library_dep_index: 89
+}
+library_dependencies {
+  library_index: 93
+  library_dep_index: 94
+  library_dep_index: 88
+}
+library_dependencies {
+  library_index: 94
+  library_dep_index: 72
+  library_dep_index: 92
+  library_dep_index: 95
 }
 module_dependencies {
   module_name: "base"
@@ -1708,10 +1788,10 @@ module_dependencies {
   dependency_index: 20
   dependency_index: 62
   dependency_index: 67
-  dependency_index: 82
-  dependency_index: 84
   dependency_index: 85
   dependency_index: 87
+  dependency_index: 88
+  dependency_index: 93
 }
 repositories {
   maven_repo {
