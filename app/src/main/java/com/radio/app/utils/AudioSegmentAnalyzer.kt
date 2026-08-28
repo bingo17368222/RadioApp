@@ -2525,18 +2525,19 @@ object AudioSegmentAnalyzer {
     }
 
     /**
-     * v3.1.104: 新优先级体系。
+     * v3.1.99: 使用相对差值判据。
+     * v3.1.182: 从v3.1.167收紧的阈值恢复到v3.1.99的值，防止片头音乐与主持人讲话合并。
      *
      * 判定优先级（从高到低）：
      * 1. 静音检测：silence > 0.60 且 speech < 0.15 → SILENCE
-     * 2. 频谱比值 > 0.16 → DRY（连续3帧生效由classifyIntervalRange保证）
+     * 2. 频谱比值 > 0.20 → DRY（人声频谱前置检测，连续3帧生效由classifyIntervalRange保证）
      * 3. VAD语音帧占比 > 20% → speech_prob锁定0.30
-     * 4. (music - effectiveSpeechScore) > 0.42 且 effectiveSpeechScore < 0.35 → WATER
+     * 4. (music - effectiveSpeechScore) > 0.35 且 effectiveSpeechScore < 0.30 → WATER
      * 5. 其余 → DRY（模糊段，等指纹二次校验）
      *
      * 上下文保护（classifyIntervalRange中执行）：
      * - 人声保护范围仅前后1.5秒
-     * - 仅spectrumRatio>0.16（实际人声）触发保护
+     * - 仅spectrumRatio>0.20（实际人声）触发保护
      * - 间隔超出1.5s不再触发上下文豁免
      *
      * @param enableSpectrumCheck 是否启用频谱比值检查（用于classifyIntervalRange的3帧约束）
@@ -2550,8 +2551,9 @@ object AudioSegmentAnalyzer {
             return FrameType.SILENCE
         }
 
-        // 优先级2：频谱比值 > 0.16 → DRY（连续3帧生效由外层保证）
-        if (enableSpectrumCheck && yamnet.spectrumRatio > 0.16f) {
+        // v3.1.99: 频谱比值 > 0.20 → DRY（人声频谱前置检测，豁免水分）
+        // v3.1.182: 从0.16恢复到0.20，防止片头音乐含部分人声频谱能量被误判为DRY
+        if (enableSpectrumCheck && yamnet.spectrumRatio > 0.20f) {
             return FrameType.DRY
         }
 
@@ -2563,12 +2565,10 @@ object AudioSegmentAnalyzer {
         }
 
         // 优先级4：YAMNet判定
-        // v3.1.167: 收紧水分类阈值。music-speech差从0.42降到0.30，让更多音乐片段被识别为水；
-        // 新增music > 0.65单独条件，覆盖纯音乐/广告曲（music分高、speech分低，但差值可能不够大）
-        if ((yamnet.music - effectiveSpeechScore) > 0.30f && effectiveSpeechScore < 0.35f) {
-            return FrameType.WATER
-        }
-        if (yamnet.music > 0.65f && effectiveSpeechScore < 0.30f) {
+        // v3.1.99: 使用相对差值判据。(music - speech) > 0.35 且 speech < 0.30 → WATER
+        // v3.1.182: 从0.30/0.35恢复到0.35/0.30，移除music>0.65条件，防止片头音乐被误判为WATER
+        // 同时确保片头音乐保持为WATER段，不会与主持人讲话DRY段合并
+        if ((yamnet.music - effectiveSpeechScore) > 0.35f && effectiveSpeechScore < 0.30f) {
             return FrameType.WATER
         }
 
@@ -4290,39 +4290,41 @@ object AudioSegmentAnalyzer {
             val type = classifyYamnetScores(smoothedYamnet)                           // 含频谱检查
             val typeNoSpectrum = classifyYamnetScores(smoothedYamnet, false)          // 无频谱检查
 
-            // v3.1.104: 判断是否含人声（仅频谱比值>0.16，不依赖YAMNet的DRY标记）
-            // 避免将音乐、静音等非语音干帧误判为"含语音"而触发上下文保护
-            val isSpeechContaining = (smoothSpectrumRatio > 0.16f)
+            // v3.1.99: 判断是否含人声（仅频谱比值>0.20，不依赖YAMNet的DRY标记）
+            // v3.1.182: 从0.16恢复到0.20，防止片头音乐含部分人声频谱能量触发上下文保护
+            val isSpeechContaining = (smoothSpectrumRatio > 0.20f)
 
             frames.add(FrameInfo(rawScores[i].timestampMs, type, typeNoSpectrum, isSpeechContaining, smoothSpectrumRatio))
         }
 
         // v3.1.103: 频谱比值连续3帧生效约束
-        // 如果某帧因spectrumRatio>0.16被判DRY但不在连续3帧内，回退到YAMNet-only判定
+        // 如果某帧因spectrumRatio>0.20被判DRY但不在连续3帧内，回退到YAMNet-only判定
+        // v3.1.182: 阈值从0.16恢复到0.20，防止片头音乐偶发高频能量被误判为人声
         for (i in frames.indices) {
             if (frames[i].type == FrameType.DRY &&
                 frames[i].typeNoSpectrum != FrameType.DRY &&
-                frames[i].spectrumRatio > 0.16f) {
+                frames[i].spectrumRatio > 0.20f) {
                 val inThreeInARow = (i >= 2 &&
-                    frames[i-1].spectrumRatio > 0.16f &&
-                    frames[i-2].spectrumRatio > 0.16f) ||
+                    frames[i-1].spectrumRatio > 0.20f &&
+                    frames[i-2].spectrumRatio > 0.20f) ||
                     (i >= 1 && i < frames.size - 1 &&
-                        frames[i-1].spectrumRatio > 0.16f &&
-                        frames[i+1].spectrumRatio > 0.16f) ||
+                        frames[i-1].spectrumRatio > 0.20f &&
+                        frames[i+1].spectrumRatio > 0.20f) ||
                     (i < frames.size - 2 &&
-                        frames[i+1].spectrumRatio > 0.16f &&
-                        frames[i+2].spectrumRatio > 0.16f)
+                        frames[i+1].spectrumRatio > 0.20f &&
+                        frames[i+2].spectrumRatio > 0.20f)
                 if (!inThreeInARow) {
                     frames[i] = frames[i].copy(type = frames[i].typeNoSpectrum,
-                        isSpeechContaining = (frames[i].spectrumRatio > 0.16f))
+                        isSpeechContaining = (frames[i].spectrumRatio > 0.20f))
                 }
             }
         }
 
         // v3.1.104: 上下文连续性约束（人声保护范围仅前后1.5秒）
-        // 对每个WATER帧，检查前后1.5s内是否有其他帧含人声（spectrumRatio>0.16）
+        // 对每个WATER帧，检查前后1.5s内是否有其他帧含人声（spectrumRatio>0.20）
         // 如果超出1.5s间隔，不再触发上下文豁免
-        // 只有在频谱比值>0.16（实际人声）时才触发保护，避免音乐帧误触发
+        // 只有在频谱比值>0.20（实际人声）时才触发保护，避免音乐帧误触发
+        // v3.1.182: 阈值从0.16恢复到0.20，防止片头音乐触发上下文保护将WATER降级为DRY
         val contextWindowMs = 1500L
         for (i in frames.indices) {
             val frame = frames[i]
