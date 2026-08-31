@@ -7134,13 +7134,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     break
                 }
             }
+            // v3.1.xxx: 当日期验证导致preCacheList中找不到下一节目时，尝试无条件扫描（不限制日期）。
+            // 根因：preCacheList可能包含次日节目，但日期验证严格限制同一天，导致全部跳过，
+            // 然后fallback到fetchCrossDayEpisode构造的跨天节目（无标题/起止时间）。
+            // 修复：允许使用preCacheList中下一个可用的节目（跨天），避免fallback到构造的跨天节目。
+            if (nextEpisode == null) {
+                writeNotifDetailLog("autoPlayNextEpisode: preCacheList date scan found no match (size=${preCacheList.size}), trying unconditional scan")
+                for (ep in preCacheList) {
+                    if (!foundCurrent) {
+                        if (ep.id == curId) foundCurrent = true
+                        continue
+                    }
+                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                        && !settings.isNoPreprocess(ep.id ?: "")) {
+                        nextEpisode = ep
+                        writeNotifDetailLog("autoPlayNextEpisode: unconditional scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
+                        writeServiceLog("notification", "autoPlayNext: unconditional scan found ${ep.title} (${ep.id}) from preCacheList, bypassing date filter")
+                        break
+                    }
+                }
+            }
             // v2.4.62: Fallback to saved episode list (contains ALL episodes for current day, including current).
             // The preCacheList is built starting from currentEpisodeIndex+1, so the current episode's ID
             // is NOT in it. When the current episode is not found in preCacheList, we fall back to the
             // full saved list which DOES contain the current episode, allowing findNextInList to correctly
             // find the next episode on the same day instead of jumping to cross-day.
             if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: curId=$curId not found in preCacheList (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
+                writeNotifDetailLog("autoPlayNextEpisode: preCacheList unconditional scan also failed (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
                 // v3.1.124: 当savedList中找不到当前节目时，说明savedList可能被fetchCrossDayEpisode覆盖了
                 // （跨天获取成功时调用了saveEpisodeList覆盖了当天的节目列表）。
                 // 尝试根据当前节目的broadcastAt和stationId重建正确的节目列表。
