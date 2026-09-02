@@ -7129,6 +7129,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             var foundCurrent = false
             // v3.1.135: 获取当前节目的broadcastAt日期，用于限制同一天搜索
             val curDate = currentEpisode?.broadcastAt?.take(10)
+            // 详细日志：记录preCacheList中所有节目信息，便于调试跳过原因
+            val preCacheSummary = preCacheList.map { "${it.title}(${it.id})[${it.broadcastAt?.take(10) ?: "no_date"}]" }
+            writeServiceLog("notification", "autoPlayNextEpisode: preCacheList content (${preCacheList.size}): ${preCacheSummary.joinToString(", ")}")
+            writeServiceLog("notification", "autoPlayNextEpisode: savedList content (${savedList.size}): ${savedList.map { "${it.title}(${it.id})" }.joinToString(", ")}")
             // v2.4.62: Search preCacheList first (contains future episodes + cross-day episodes)
             // v3.1.135: 增加日期验证，防止preCacheList中包含跨月节目时跳转到错误日期
             for (ep in preCacheList) {
@@ -7140,35 +7144,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (curDate != null) {
                     val epDate = ep.broadcastAt?.take(10)
                     if (epDate != null && epDate != curDate) {
-                        writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ep ${ep.id} (date=$epDate != curDate=$curDate) - date mismatch")
+                        writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - date mismatch (current: $curDate, episode: $epDate)")
                         continue
                     }
                 }
-                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                    && !settings.isNoPreprocess(ep.id ?: "")) {
-                    nextEpisode = ep
-                    break
+                if (settings.isDisliked(ep.id)) {
+                    writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - marked as disliked by id")
+                    continue
                 }
-            }
-            // v3.1.xxx: 当日期验证导致preCacheList中找不到下一节目时，尝试无条件扫描（不限制日期）。
-            // 根因：preCacheList可能包含次日节目，但日期验证严格限制同一天，导致全部跳过，
-            // 然后fallback到fetchCrossDayEpisode构造的跨天节目（无标题/起止时间）。
-            // 修复：允许使用preCacheList中下一个可用的节目（跨天），避免fallback到构造的跨天节目。
-            if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: preCacheList date scan found no match (size=${preCacheList.size}), trying unconditional scan")
-                for (ep in preCacheList) {
-                    if (!foundCurrent) {
-                        if (ep.id == curId) foundCurrent = true
-                        continue
-                    }
-                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                        && !settings.isNoPreprocess(ep.id ?: "")) {
-                        nextEpisode = ep
-                        writeNotifDetailLog("autoPlayNextEpisode: unconditional scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
-                        writeServiceLog("notification", "autoPlayNext: unconditional scan found ${ep.title} (${ep.id}) from preCacheList, bypassing date filter")
-                        break
-                    }
+                if (settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                    writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - marked as disliked by title")
+                    continue
                 }
+                if (settings.isNoPreprocess(ep.id ?: "")) {
+                    writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - marked as no-preprocess")
+                    continue
+                }
+                nextEpisode = ep
+                break
             }
             // v2.4.62: Fallback to saved episode list (contains ALL episodes for current day, including current).
             // The preCacheList is built starting from currentEpisodeIndex+1, so the current episode's ID
@@ -7176,7 +7169,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // full saved list which DOES contain the current episode, allowing findNextInList to correctly
             // find the next episode on the same day instead of jumping to cross-day.
             if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: preCacheList unconditional scan also failed (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
+                writeNotifDetailLog("autoPlayNextEpisode: preCacheList date scan found no match (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
                 // v3.1.124: 当savedList中找不到当前节目时，说明savedList可能被fetchCrossDayEpisode覆盖了
                 // （跨天获取成功时调用了saveEpisodeList覆盖了当天的节目列表）。
                 // 尝试根据当前节目的broadcastAt和stationId重建正确的节目列表。
@@ -7211,6 +7204,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     savedList
                 }
                 nextEpisode = findNextInList(listToSearch, curId, settings)
+            }
+            // v3.1.xxx: 当日期验证导致preCacheList中找不到下一节目，且savedList也找不到时，尝试无条件扫描（不限制日期）。
+            // 根因：preCacheList可能包含次日节目，但日期验证严格限制同一天，导致全部跳过，
+            // 且savedList也为空，此时fallback到无条件扫描找到跨天节目，避免fallback到构造的跨天节目（无标题/起止时间）。
+            // 修复顺序：先检查同一天savedList，再允许使用preCacheList中下一个可用的节目（跨天）。
+            // 用户问题：20240121老杨说车播放完后，旅行大玩家和下班路上全程娱乐在savedList（同一天），
+            // 但原代码在无条件扫描时先找到了preCacheList中的次日节目，导致savedList从未被检查。
+            if (nextEpisode == null) {
+                writeNotifDetailLog("autoPlayNextEpisode: savedList found no match, trying preCacheList unconditional scan (size=${preCacheList.size})")
+                for (ep in preCacheList) {
+                    if (!foundCurrent) {
+                        if (ep.id == curId) foundCurrent = true
+                        continue
+                    }
+                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                        && !settings.isNoPreprocess(ep.id ?: "")) {
+                        nextEpisode = ep
+                        writeNotifDetailLog("autoPlayNextEpisode: unconditional scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
+                        writeServiceLog("notification", "autoPlayNext: unconditional scan found ${ep.title} (${ep.id}) from preCacheList, bypassing date filter")
+                        break
+                    }
+                }
             }
             // v2.4.62: Anti-loop check
             if (nextEpisode != null && nextEpisode.id == curId) {
