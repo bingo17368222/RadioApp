@@ -1076,6 +1076,53 @@ class PlayerActivity : AppCompatActivity() {
             android.util.Log.d("PlayerActivity", "setupPreCacheList: pre-cache disabled (autoCache=false)")
             return
         }
+        // v3.1.186: 如果当前节目不在episodeList中（跨天播放后episodeList未更新），
+        // 尝试从SharedPreferences或API重新加载正确的节目列表
+        val curEp = currentEpisode
+        if (curEp != null && (episodeList.isEmpty() || episodeList.indexOfFirst { it.id == curEp.id } < 0)) {
+            val curStation = curEp.stationId
+            val curDate = curEp.broadcastAt?.take(10)
+            android.util.Log.d("PlayerActivity", "setupPreCacheList: current episode not in episodeList, trying to reload (station=$curStation, date=$curDate)")
+            writeJitterLog("setupPreCacheList: current episode not in episodeList (id=${curEp.id}), reloading...")
+            // 先尝试从SharedPreferences加载
+            var reloaded = false
+            if (!curStation.isNullOrBlank() && !curDate.isNullOrBlank()) {
+                try {
+                    val prefs = getSharedPreferences("episode_list", MODE_PRIVATE)
+                    val json = prefs.getString("list", null)
+                    if (json != null) {
+                        val gson = com.google.gson.Gson()
+                        val type = object : com.google.gson.reflect.TypeToken<List<com.radio.app.models.Episode>>() {}.type
+                        val savedList = gson.fromJson<List<com.radio.app.models.Episode>>(json, type)
+                        if (savedList != null && savedList.any { it.id == curEp.id }) {
+                            episodeList = ArrayList(savedList)
+                            currentEpisodeIndex = savedList.indexOfFirst { it.id == curEp.id }.coerceAtLeast(0)
+                            reloaded = true
+                            android.util.Log.d("PlayerActivity", "setupPreCacheList: reloaded from SharedPreferences, ${episodeList.size} episodes, idx=$currentEpisodeIndex")
+                            writeJitterLog("setupPreCacheList: reloaded from SharedPreferences, size=${episodeList.size}, idx=$currentEpisodeIndex")
+                        }
+                    }
+                } catch (_: Exception) {}
+                // 如果SharedPreferences中也没有，从API获取
+                if (!reloaded) {
+                    try {
+                        val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                        val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
+                        if (freshEpisodes != null && freshEpisodes.isNotEmpty()) {
+                            episodeList = ArrayList(freshEpisodes)
+                            currentEpisodeIndex = freshEpisodes.indexOfFirst { it.id == curEp.id }.coerceAtLeast(0)
+                            reloaded = true
+                            android.util.Log.d("PlayerActivity", "setupPreCacheList: reloaded from API, ${episodeList.size} episodes, idx=$currentEpisodeIndex")
+                            writeJitterLog("setupPreCacheList: reloaded from API, size=${episodeList.size}, idx=$currentEpisodeIndex")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            if (!reloaded) {
+                android.util.Log.d("PlayerActivity", "setupPreCacheList: failed to reload episode list for station=$curStation date=$curDate")
+                writeJitterLog("setupPreCacheList: FAILED to reload episode list")
+            }
+        }
         if (episodeList.isEmpty() || currentEpisodeIndex < 0) {
             android.util.Log.d("PlayerActivity", "setupPreCacheList: no episode list available (size=${episodeList.size}, index=$currentEpisodeIndex)")
             return
@@ -1087,7 +1134,8 @@ class PlayerActivity : AppCompatActivity() {
         }
         // 传递所有后续节目（不限数量），服务端会根据preloadCacheCount控制下载数
         val upcomingEpisodes = episodeList.subList(startIdx, episodeList.size)
-        android.util.Log.d("PlayerActivity", "setupPreCacheList: setting ${upcomingEpisodes.size} upcoming episodes: ${upcomingEpisodes.joinToString(", ") { it.title ?: "?" }}")
+        android.util.Log.d("PlayerActivity", "setupPreCacheList: setting ${upcomingEpisodes.size} upcoming episodes: ${upcomingEpisodes.joinToString(", ") { "${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }}")
+        writeJitterLog("setupPreCacheList: ${upcomingEpisodes.size} episodes from idx=$startIdx, episodes: ${upcomingEpisodes.joinToString(", ") { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }}")
         playbackService?.setPreCacheEpisodeList(upcomingEpisodes)
         playbackService?.triggerPreCacheIndependently()
     }

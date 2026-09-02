@@ -1499,7 +1499,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
         writeServiceLog("notification", "triggerPreCache: preCacheList.size=${preCacheList.size}, currentIdx=$currentIdx, cachedFiles.size=${cachedFiles.size}")
-        writeServiceLog("notification", "triggerPreCache: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(10)}")
+        writeServiceLog("notification", "triggerPreCache: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }}")
+        writeServiceLog("notification", "triggerPreCache: currentEp id=${currentEp.id}, title=${currentEp.title}, date=${currentEp.broadcastAt?.take(10) ?: "?"}")
 
         // v3.0.5-fix: 按顺序填充当前节目之后前 targetCount 个有效节目中的空缺，
         // 避免因为更后面已有足够缓存而过早停止，导致中间的节目（如周四/周五）被跳过。
@@ -1797,11 +1798,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // duplicates, disliked status and no-preprocess status — the download logic already skips cached files.
                 // v3.0.5-fix: 恢复“无需预处理”节目的预缓存跳过设置。
                 val validNewEpisodes = newEpisodes.filter { ep ->
-                    ep.audioUrl.isNotBlank() &&
-                    ep.audioUrl !in existingUrls &&
-                    ep.audioUrl.startsWith("http") &&
-                    !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title) &&
-                    !settings.isNoPreprocess(ep.id ?: "")
+                    if (ep.audioUrl.isBlank()) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - blank audioUrl")
+                        false
+                    } else if (ep.audioUrl in existingUrls) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - already in existingUrls")
+                        false
+                    } else if (!ep.audioUrl.startsWith("http")) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - non-http url: ${ep.audioUrl}")
+                        false
+                    } else if (settings.isDisliked(ep.id)) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - disliked by id")
+                        false
+                    } else if (settings.isDislikedByTitle(ep.stationId, ep.title)) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - disliked by title")
+                        false
+                    } else if (settings.isNoPreprocess(ep.id ?: "")) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - no-preprocess")
+                        false
+                    } else {
+                        true
+                    }
                 }
                 writePreCacheLog("fetchMoreDaysForPreCache: got ${newEpisodes.size} episodes for $targetDate, ${validNewEpisodes.size} valid new")
                 // v3.1.118: 将API返回的节目信息（duration、startTime、endTime、title等）持久化到数据库，
@@ -2009,6 +2026,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             .putInt("days_fetched", 0)  // 重置跨天计数
             .apply()
         writePreCacheLog("setPreCacheEpisodeList: updated ${episodes.size} episodes, station=$stationId, date=$currentDate")
+        writePreCacheLog("setPreCacheEpisodeList: episodes: ${episodes.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }}")
         Log.d(TAG, "Pre-cache list updated: ${episodes.size} episodes, station=$stationId, date=$currentDate")
         // 立即触发预缓存检查（独立于下载状态）
         writePreCacheLog("setPreCacheEpisodeList: triggering pre-cache check")
@@ -6188,6 +6206,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.139: 改为var，fallback4需要重新赋值
         var combinedList = (preCacheList + savedList).distinctBy { it.id }
 
+        // 详细日志：记录combinedList中的所有节目，便于排查遗漏
+        val combinedSummary = combinedList.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }
+        writeServiceLog("schedule", "buildPlaybackSchedule: preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}, combinedList.size=${combinedList.size}")
+        writeServiceLog("schedule", "buildPlaybackSchedule: combinedList content: ${combinedSummary.joinToString(", ")}")
+        writeServiceLog("schedule", "buildPlaybackSchedule: curId=$curId, curTitle=${currentEpisode?.title}, curDate=${currentEpisode?.broadcastAt?.take(10) ?: "?"}")
+
         // 找到当前节目的位置
         var currentIdx = combinedList.indexOfFirst { it.id == curId || it.audioUrl == currentPlayingUrl }
         // v3.1.138: 增强fallback匹配逻辑，防止"暂无节目"。
@@ -6281,10 +6305,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     } catch (_: Exception) {}
                 }
             }
-            val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+            val isDislikedById = settings.isDisliked(ep.id)
+            val isDislikedByTitle = settings.isDislikedByTitle(ep.stationId, ep.title)
             val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
+            val isDisliked = isDislikedById || isDislikedByTitle
             if (!isDisliked && !isNoPreprocess) {
                 nextPlanned.add(ep)
+            } else {
+                val reason = when {
+                    isDislikedById -> "disliked-by-id"
+                    isDislikedByTitle -> "disliked-by-title"
+                    isNoPreprocess -> "no-preprocess"
+                    else -> "unknown"
+                }
+                writeServiceLog("schedule", "buildPlaybackSchedule: SKIP ep=${ep.id}, title=${ep.title}, date=${ep.broadcastAt?.take(10) ?: "?"}, reason=$reason")
             }
             idx++
         }
@@ -6310,10 +6344,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 $nextDateStr 共${freshEpisodes.size}个节目")
                                 for (ep in freshEpisodes) {
                                     if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
-                                    val isDisliked2 = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
+                                    val isDislikedById2 = settings.isDisliked(ep.id)
+                                    val isDislikedByTitle2 = settings.isDislikedByTitle(ep.stationId, ep.title)
                                     val isNoPreprocess2 = settings.isNoPreprocess(ep.id ?: "")
+                                    val isDisliked2 = isDislikedById2 || isDislikedByTitle2
                                     if (!isDisliked2 && !isNoPreprocess2) {
                                         nextPlanned.add(ep)
+                                    } else {
+                                        val reason2 = when {
+                                            isDislikedById2 -> "disliked-by-id"
+                                            isDislikedByTitle2 -> "disliked-by-title"
+                                            isNoPreprocess2 -> "no-preprocess"
+                                            else -> "unknown"
+                                        }
+                                        writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 SKIP ${ep.id} (${ep.title}) - $reason2")
                                     }
                                 }
                             }
