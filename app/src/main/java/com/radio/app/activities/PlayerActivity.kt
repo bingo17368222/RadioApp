@@ -1841,7 +1841,8 @@ class PlayerActivity : AppCompatActivity() {
                 val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
                 ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
             } else ""
-            val savedEngineWithVersion = "$savedEngine v${BuildConfig.VERSION_NAME}"
+            val savedVersion = dbAnalysisInfo?.versionName?.takeIf { it.isNotBlank() } ?: BuildConfig.VERSION_NAME
+            val savedEngineWithVersion = "$savedEngine v$savedVersion"
             val restoredText = "片段列表  分段引擎：$savedEngineWithVersion (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)$fingerprintSuffix"
             binding.tvAiStatus.text = restoredText
             segmentListDisplayText = restoredText
@@ -2482,6 +2483,7 @@ class PlayerActivity : AppCompatActivity() {
                                     com.radio.app.database.SegmentAnalysisInfo(
                                         episodeId = episode.id,
                                         engineName = result.engineName,
+                                        versionName = BuildConfig.VERSION_NAME,
                                         generatedAt = System.currentTimeMillis(),
                                         processingTimeMs = result.processingTimeMs,
                                         audioDurationMs = result.audioDurationMs,
@@ -2667,6 +2669,7 @@ class PlayerActivity : AppCompatActivity() {
                                         com.radio.app.database.SegmentAnalysisInfo(
                                             episodeId = episode.id,
                                             engineName = jiuResult.engineName,
+                                            versionName = BuildConfig.VERSION_NAME,
                                             generatedAt = System.currentTimeMillis(),
                                             processingTimeMs = jiuResult.processingTimeMs,
                                             audioDurationMs = maxEnd.toLong(),
@@ -2706,6 +2709,7 @@ class PlayerActivity : AppCompatActivity() {
                                 com.radio.app.database.SegmentAnalysisInfo(
                                     episodeId = episode.id,
                                     engineName = segEngineName,
+                                    versionName = BuildConfig.VERSION_NAME,
                                     generatedAt = System.currentTimeMillis(),
                                     processingTimeMs = segElapsed,
                                     audioDurationMs = maxEnd.toLong(),
@@ -2760,7 +2764,8 @@ class PlayerActivity : AppCompatActivity() {
                                 val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
                                 ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
                             } else ""
-                            val displayEngineWithVersion = "$displayEngine v${BuildConfig.VERSION_NAME}"
+                            val displayVersion = dbAnalysisInfo?.versionName?.takeIf { it.isNotBlank() } ?: BuildConfig.VERSION_NAME
+                            val displayEngineWithVersion = "$displayEngine v$displayVersion"
                             binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngineWithVersion (耗时: $displayTimeText, 干货 $dryPercentText%)$fingerprintSuffix"
                             segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
                             // v2.4.57: Also persist to SharedPreferences so it survives Activity recreation

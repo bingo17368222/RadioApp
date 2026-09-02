@@ -1,0 +1,126 @@
+[
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_audio_fingerprint.xml",
+        "source": "com.radio.app-main-43:/layout/item_audio_fingerprint.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/view_title_bar.xml",
+        "source": "com.radio.app-main-43:/layout/view_title_bar.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/notification_media_expanded.xml",
+        "source": "com.radio.app-main-43:/layout/notification_media_expanded.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_player.xml",
+        "source": "com.radio.app-main-43:/layout/activity_player.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/view_subtitle.xml",
+        "source": "com.radio.app-main-43:/layout/view_subtitle.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/notification_minimal.xml",
+        "source": "com.radio.app-main-43:/layout/notification_minimal.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/fragment_home.xml",
+        "source": "com.radio.app-main-43:/layout/fragment_home.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_schedule.xml",
+        "source": "com.radio.app-main-43:/layout/item_schedule.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_fingerprint_group.xml",
+        "source": "com.radio.app-main-43:/layout/activity_fingerprint_group.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_fingerprint_group_member.xml",
+        "source": "com.radio.app-main-43:/layout/item_fingerprint_group_member.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_voice_segment.xml",
+        "source": "com.radio.app-main-43:/layout/item_voice_segment.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_keyword_settings.xml",
+        "source": "com.radio.app-main-43:/layout/activity_keyword_settings.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_station.xml",
+        "source": "com.radio.app-main-43:/layout/item_station.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_engine_card.xml",
+        "source": "com.radio.app-main-43:/layout/item_engine_card.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_disliked_episode.xml",
+        "source": "com.radio.app-main-43:/layout/item_disliked_episode.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_disliked_episodes.xml",
+        "source": "com.radio.app-main-43:/layout/activity_disliked_episodes.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_candidate_fingerprint.xml",
+        "source": "com.radio.app-main-43:/layout/item_candidate_fingerprint.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_fingerprint_group.xml",
+        "source": "com.radio.app-main-43:/layout/item_fingerprint_group.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_main.xml",
+        "source": "com.radio.app-main-43:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_history.xml",
+        "source": "com.radio.app-main-43:/layout/item_history.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/fragment_settings.xml",
+        "source": "com.radio.app-main-43:/layout/fragment_settings.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/notification_custom.xml",
+        "source": "com.radio.app-main-43:/layout/notification_custom.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/fragment_search.xml",
+        "source": "com.radio.app-main-43:/layout/fragment_search.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/fragment_episodes.xml",
+        "source": "com.radio.app-main-43:/layout/fragment_episodes.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_search_result.xml",
+        "source": "com.radio.app-main-43:/layout/item_search_result.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/fragment_fingerprint_list.xml",
+        "source": "com.radio.app-main-43:/layout/fragment_fingerprint_list.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_keyword_chip.xml",
+        "source": "com.radio.app-main-43:/layout/item_keyword_chip.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/item_episode.xml",
+        "source": "com.radio.app-main-43:/layout/item_episode.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/notification_compact.xml",
+        "source": "com.radio.app-main-43:/layout/notification_compact.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_offline_engine.xml",
+        "source": "com.radio.app-main-43:/layout/activity_offline_engine.xml"
+    },
+    {
+        "merged": "com.radio.app-mergeDebugResources-40:/layout/activity_fingerprint_management.xml",
+        "source": "com.radio.app-main-43:/layout/activity_fingerprint_management.xml"
+    }
+]

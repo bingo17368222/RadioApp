@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- [就AI听] 关键词管理中的单个标签 Chip（Entry 风格，带关闭图标可删除） -->
+<com.google.android.material.chip.Chip xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    style="@style/Widget.MaterialComponents.Chip.Entry"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    app:chipBackgroundColor="?attr/appAccent"
+    app:chipStrokeColor="?attr/appBorder"
+    app:chipStrokeWidth="1dp"
+    android:textColor="@color/white"
+    app:closeIconTint="@color/white"
+    app:ensureMinTouchTargetSize="false" />
