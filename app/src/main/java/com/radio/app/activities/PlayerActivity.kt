@@ -23,6 +23,7 @@ import android.widget.SeekBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.radio.app.BuildConfig
 import com.radio.app.R
 import com.radio.app.databinding.ActivityPlayerBinding
 import com.radio.app.models.Episode
@@ -1840,7 +1841,8 @@ class PlayerActivity : AppCompatActivity() {
                 val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
                 ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
             } else ""
-            val restoredText = "片段列表  分段引擎：$savedEngine (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)$fingerprintSuffix"
+            val savedEngineWithVersion = "$savedEngine v${BuildConfig.VERSION_NAME}"
+            val restoredText = "片段列表  分段引擎：$savedEngineWithVersion (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)$fingerprintSuffix"
             binding.tvAiStatus.text = restoredText
             segmentListDisplayText = restoredText
             binding.tvAiStatus.visibility = View.VISIBLE
@@ -2758,7 +2760,8 @@ class PlayerActivity : AppCompatActivity() {
                                 val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
                                 ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
                             } else ""
-                            binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngine (耗时: $displayTimeText, 干货 $dryPercentText%)$fingerprintSuffix"
+                            val displayEngineWithVersion = "$displayEngine v${BuildConfig.VERSION_NAME}"
+                            binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngineWithVersion (耗时: $displayTimeText, 干货 $dryPercentText%)$fingerprintSuffix"
                             segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
                             // v2.4.57: Also persist to SharedPreferences so it survives Activity recreation
                             getSharedPreferences("segment_info", MODE_PRIVATE).edit()
@@ -2887,7 +2890,7 @@ class PlayerActivity : AppCompatActivity() {
                                     AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
                                     else -> "关键词"
                                 }
-                                val flow2Text = "片段列表  分段引擎：$flow2Engine"
+                                val flow2Text = "片段列表  分段引擎：$flow2Engine v${BuildConfig.VERSION_NAME}"
                                 binding.tvAiStatus.text = flow2Text
                                 segmentListDisplayText = flow2Text
                                 // v2.4.57: Persist to SharedPreferences
@@ -3025,7 +3028,7 @@ class PlayerActivity : AppCompatActivity() {
                                     AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
                                     else -> "关键词"
                                 }
-                                val flow2Text2 = "片段列表  分段引擎：$flow2Engine2"
+                                val flow2Text2 = "片段列表  分段引擎：$flow2Engine2 v${BuildConfig.VERSION_NAME}"
                                 binding.tvAiStatus.text = flow2Text2
                                 segmentListDisplayText = flow2Text2
                                 // v2.4.57: Persist to SharedPreferences
