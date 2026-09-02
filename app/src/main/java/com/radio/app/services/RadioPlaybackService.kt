@@ -1474,6 +1474,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodesDir.exists()) episodesDir.mkdirs()
 
         var preCacheList = loadPreCacheList()
+        // v3.0.3: 对预缓存列表中的周末节目补标记为无需预处理
+        markWeekendEpisodesNoPreprocess(preCacheList)
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
 
         // Find current episode index in the list
@@ -1628,7 +1630,37 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
-    // v3.1.xxx: 移除markWeekendEpisodesNoPreprocess，不再自动跳过周末节目
+    /**
+     * v3.0.3: 对预缓存列表中的周末节目自动标记为无需预处理。
+     * 用于覆盖列表中历史保存、尚未被标记的周末节目。
+     */
+    private fun markWeekendEpisodesNoPreprocess(episodes: List<Episode>) {
+        try {
+            val settings = AppSettings.getInstance(this)
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+            dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+            var markedCount = 0
+            for (ep in episodes) {
+                val dateStr = ep.broadcastAt?.take(10) ?: continue
+                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                cal.time = dateFormat.parse(dateStr) ?: continue
+                val dayOfWeek = cal.get(java.util.Calendar.DAY_OF_WEEK)
+                if (dayOfWeek == java.util.Calendar.SATURDAY || dayOfWeek == java.util.Calendar.SUNDAY) {
+                    ep.id?.let { episodeId ->
+                        if (!settings.isNoPreprocess(episodeId)) {
+                            settings.markNoPreprocess(this, episodeId)
+                            markedCount++
+                        }
+                    }
+                }
+            }
+            if (markedCount > 0) {
+                writePreCacheLog("markWeekendEpisodesNoPreprocess: marked $markedCount weekend episodes as no-preprocess")
+            }
+        } catch (e: Exception) {
+            writePreCacheLog("markWeekendEpisodesNoPreprocess: error: ${e.message}")
+        }
+    }
 
     /**
      * 预缓存完成后显示一次汇总通知（仅当有下载时）
@@ -7019,6 +7051,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             nextEpisode = null
         }
 
+        // v3.1.xxx: 当所有搜索（preCacheList、savedList、fresh API）都失败时，
+        // 从preCacheList直接取第一个有效节目，不依赖foundCurrent。
+        // 根因：当前节目可能是当天最后一个节目，preCacheList只有后续日期的节目（不含当前节目），
+        // savedList也为空，导致findNextInList找不到下一节目，触发跨天获取构造的节目（无标题/起止时间）。
+        // 此兜底直接从preCacheList取第一个有效节目，优先使用真实节目而非构造的跨天节目。
+        if (nextEpisode == null && preCacheList.isNotEmpty()) {
+            for (ep in preCacheList) {
+                if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                    && !settings.isNoPreprocess(ep.id ?: "")) {
+                    nextEpisode = ep
+                    writeServiceLog("notification", "notifyNextEpisode: fallback scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
+                    break
+                }
+            }
+        }
+
         if (nextEpisode != null) {
             val episodeKey = nextEpisode.id ?: ""
             val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
@@ -7168,6 +7216,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (nextEpisode != null && nextEpisode.id == curId) {
                 writeNotifDetailLog("autoPlayNextEpisode: [ANTI-LOOP] nextEpisode.id == curId ($curId), skipping to cross-day")
                 nextEpisode = null
+            }
+            // v3.1.xxx: 当所有搜索（preCacheList带日期、preCacheList无条件、savedList）都失败时，
+            // 从preCacheList直接取第一个有效节目，不依赖foundCurrent。
+            // 根因：当前节目可能是当天最后一个节目，preCacheList只有后续日期的节目（不含当前节目），
+            // savedList也为空，导致findNextInList找不到下一节目，触发跨天获取构造的节目（无标题/起止时间）。
+            // 此兜底直接从preCacheList取第一个有效节目，优先使用真实节目而非构造的跨天节目。
+            if (nextEpisode == null && preCacheList.isNotEmpty()) {
+                for (ep in preCacheList) {
+                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                        && !settings.isNoPreprocess(ep.id ?: "")) {
+                        nextEpisode = ep
+                        writeNotifDetailLog("autoPlayNextEpisode: fallback scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
+                        writeServiceLog("notification", "autoPlayNext: fallback scan found ${ep.title} (${ep.id}) from preCacheList, bypassing foundCurrent check")
+                        break
+                    }
+                }
             }
             if (nextEpisode == null) {
                 Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list or saved list, trying cross-day")
