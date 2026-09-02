@@ -1,2 +1,0 @@
-ninja: Entering directory `/workspace/radioapp/app/.cxx/Debug/216g2b5s/arm64-v8a'
-ninja: no work to do.
