@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="?attr/appBackground">
+
+    <include layout="@layout/view_title_bar" />
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- v3.0.2: 音频指纹管理说明 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="水分音频指纹素材"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="16dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="在播放器中长按某个片段，选择&#x201C;添加为水分指纹&#x201D;，即可将该片段的音频指纹保存到素材库。就AI听方案会使用这些指纹对干货片段进行二次判定。"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="13sp"
+                    android:lineSpacingMultiplier="1.2" />
+            </LinearLayout>
+
+            <!-- v3.1.47: 恢复指纹列表（每一条带播放/测试按钮），移除v3.1.55多余的顶部播放控件 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="16dp"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="指纹管理与测试"
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="15sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="8dp" />
+
+                <TextView
+                    android:id="@+id/tv_fingerprint_count"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="已保存 0 条指纹"
+                    android:textColor="?attr/appTextPrimary"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- v3.1.2: 批量测试按钮 -->
+                <Button
+                    android:id="@+id/btn_test_all_fingerprints"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="批量测试：所有指纹 vs 所有完整PCM"
+                    android:textColor="@color/white"
+                    android:backgroundTint="?attr/appAccent"
+                    android:layout_marginBottom="8dp"
+                    android:textSize="13sp" />
+
+                <!-- v3.1.6: 指纹分组管理入口 -->
+                <Button
+                    android:id="@+id/btn_fingerprint_groups"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="指纹分组管理"
+                    android:textColor="@color/white"
+                    android:backgroundTint="#4CAF50"
+                    android:layout_marginBottom="8dp"
+                    android:textSize="13sp" />
+
+                <!-- v3.2.3: 指纹分类管理入口（人工/候选/自动） -->
+                <Button
+                    android:id="@+id/btn_fingerprint_management"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="指纹分类管理（人工/候选/自动）"
+                    android:textColor="@color/white"
+                    android:backgroundTint="#FF9800"
+                    android:layout_marginBottom="8dp"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <!-- v3.1.44: 恢复指纹列表，每一条带播放/测试按钮 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="音频指纹素材列表"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="8dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:id="@+id/tv_fingerprints_empty"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_margin="16dp"
+                    android:text="暂无音频指纹素材"
+                    android:textColor="?attr/appTextMuted"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/recycler_audio_fingerprints"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="120dp"
+                    android:nestedScrollingEnabled="false" />
+            </LinearLayout>
+
+            <!-- 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用） -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="水货分段开头/结尾组合管理"
+                android:textColor="?attr/appTextPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@drawable/bg_card"
+                android:padding="16dp"
+                android:layout_marginBottom="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="当分段的字幕文本以『开头』开始且以『结尾』结束时，判定为水货。点击右侧 × 图标删除组合。"
+                    android:textColor="?attr/appTextSecondary"
+                    android:textSize="12sp"
+                    android:layout_marginBottom="8dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <EditText
+                        android:id="@+id/et_combination_start"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:hint="开头文字"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textColorHint="?attr/appTextSecondary"
+                        android:background="@drawable/bg_card"
+                        android:padding="12dp"
+                        android:textSize="14sp"
+                        android:singleLine="true"
+                        android:imeOptions="actionNext" />
+
+                    <EditText
+                        android:id="@+id/et_combination_end"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:hint="结尾文字"
+                        android:textColor="?attr/appTextPrimary"
+                        android:textColorHint="?attr/appTextSecondary"
+                        android:background="@drawable/bg_card"
+                        android:padding="12dp"
+                        android:textSize="14sp"
+                        android:layout_marginStart="8dp"
+                        android:singleLine="true"
+                        android:imeOptions="actionDone" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_add_combination"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="添加组合"
+                    android:textColor="@color/white"
+                    android:backgroundTint="?attr/appAccent"
+                    android:layout_marginTop="8dp" />
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chip_group_combinations"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    app:singleSelection="false"
+                    app:chipSpacingHorizontal="8dp"
+                    app:chipSpacingVertical="8dp" />
+
+                <TextView
+                    android:id="@+id/tv_combinations_empty"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="暂无组合，请在上方输入并添加"
+                    android:textColor="?attr/appTextMuted"
+                    android:textSize="13sp"
+                    android:layout_marginTop="4dp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</LinearLayout>

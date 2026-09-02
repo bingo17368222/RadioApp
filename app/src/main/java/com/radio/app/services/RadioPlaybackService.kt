@@ -1474,8 +1474,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodesDir.exists()) episodesDir.mkdirs()
 
         var preCacheList = loadPreCacheList()
-        // v3.0.3: 对预缓存列表中的周末节目补标记为无需预处理
-        markWeekendEpisodesNoPreprocess(preCacheList)
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
 
         // Find current episode index in the list
@@ -1630,37 +1628,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
-    /**
-     * v3.0.3: 对预缓存列表中的周末节目自动标记为无需预处理。
-     * 用于覆盖列表中历史保存、尚未被标记的周末节目。
-     */
-    private fun markWeekendEpisodesNoPreprocess(episodes: List<Episode>) {
-        try {
-            val settings = AppSettings.getInstance(this)
-            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-            dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-            var markedCount = 0
-            for (ep in episodes) {
-                val dateStr = ep.broadcastAt?.take(10) ?: continue
-                val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-                cal.time = dateFormat.parse(dateStr) ?: continue
-                val dayOfWeek = cal.get(java.util.Calendar.DAY_OF_WEEK)
-                if (dayOfWeek == java.util.Calendar.SATURDAY || dayOfWeek == java.util.Calendar.SUNDAY) {
-                    ep.id?.let { episodeId ->
-                        if (!settings.isNoPreprocess(episodeId)) {
-                            settings.markNoPreprocess(this, episodeId)
-                            markedCount++
-                        }
-                    }
-                }
-            }
-            if (markedCount > 0) {
-                writePreCacheLog("markWeekendEpisodesNoPreprocess: marked $markedCount weekend episodes as no-preprocess")
-            }
-        } catch (e: Exception) {
-            writePreCacheLog("markWeekendEpisodesNoPreprocess: error: ${e.message}")
-        }
-    }
+    // v3.1.xxx: 移除markWeekendEpisodesNoPreprocess，不再自动跳过周末节目
 
     /**
      * 预缓存完成后显示一次汇总通知（仅当有下载时）
