@@ -7211,8 +7211,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 修复顺序：先检查同一天savedList，再允许使用preCacheList中下一个可用的节目（跨天）。
             // 用户问题：20240121老杨说车播放完后，旅行大玩家和下班路上全程娱乐在savedList（同一天），
             // 但原代码在无条件扫描时先找到了preCacheList中的次日节目，导致savedList从未被检查。
+            // 用户问题2：2025-01-21下班路上全程娱乐播放完后，跳转到同一天的旅行大玩家（反向跳转）。
+            // 根因：foundCurrent变量在步骤1和步骤3之间共享，步骤1设为true后，步骤3不从列表开头重找当前节目，
+            // 导致排在当前节目之前的旅行大玩家被选中。修复：无条件扫描前重置foundCurrent。
             if (nextEpisode == null) {
                 writeNotifDetailLog("autoPlayNextEpisode: savedList found no match, trying preCacheList unconditional scan (size=${preCacheList.size})")
+                foundCurrent = false  // 重置，确保从当前节目之后开始搜索，避免反向跳转
                 for (ep in preCacheList) {
                     if (!foundCurrent) {
                         if (ep.id == curId) foundCurrent = true
@@ -7237,8 +7241,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 根因：当前节目可能是当天最后一个节目，preCacheList只有后续日期的节目（不含当前节目），
             // savedList也为空，导致findNextInList找不到下一节目，触发跨天获取构造的节目（无标题/起止时间）。
             // 此兜底直接从preCacheList取第一个有效节目，优先使用真实节目而非构造的跨天节目。
+            // v3.1.184: 添加foundCurrent检查，防止排在当前节目之前的节目被选中（反向跳转）。
             if (nextEpisode == null && preCacheList.isNotEmpty()) {
+                var fallbackFound = false
                 for (ep in preCacheList) {
+                    if (!fallbackFound) {
+                        if (ep.id == curId) fallbackFound = true
+                        continue
+                    }
                     if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                         && !settings.isNoPreprocess(ep.id ?: "")) {
                         nextEpisode = ep
