@@ -6209,6 +6209,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.139: 改为var，fallback4需要重新赋值
         var combinedList = (preCacheList + savedList).distinctBy { it.id }
 
+        // v3.1.xxx-fix: 按startTime排序，确保同天节目按时间顺序排列
+        // 根因：preCacheList和savedList的合并顺序不一定按时间排列（可能是缓存顺序或API返回顺序），
+        // 导致当前节目位置之后的节目不是实际的后续节目，而是缓存顺序中的下一个节目。
+        // 例如：savedList中节目顺序为[3,4,5,...,11,0,1,2]，当前节目0在索引10，
+        // 后续只有节目1和2（同天的），需要跨天API补充获取，但跨天获取的节目被大量dislike/no-preprocess过滤，
+        // 最终不足5个节目。
+        // 修复：按startTime排序后，同天节目按07:00→09:00→09:30→...→17:30顺序排列，
+        // 当前节目位置之后的同天节目就是实际的后续节目，无需跨天补充。
+        combinedList = combinedList.sortedBy { it.startTime }
+
         // 详细日志：记录combinedList中的所有节目，便于排查遗漏
         val combinedSummary = combinedList.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }
         writeServiceLog("schedule", "buildPlaybackSchedule: preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}, combinedList.size=${combinedList.size}")
@@ -6258,7 +6268,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
                     if (!freshEpisodes.isNullOrEmpty()) {
                         saveEpisodeList(freshEpisodes)
-                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }
+                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.sortedBy { it.startTime }
                         currentIdx = combinedList.indexOfFirst {
                             it.id == curId || it.id == curId.removeSuffix("-cross") || it.audioUrl == currentPlayingUrl
                         }
