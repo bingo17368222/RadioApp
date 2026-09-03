@@ -1,6 +1,7 @@
 package com.radio.app.utils
 
 import android.content.Context
+import android.os.Process
 import android.util.Log
 import java.io.File
 
@@ -46,7 +47,8 @@ object NativeLibLoader {
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
 
-        Log.i(TAG, "ensureLoaded: starting (v2.4.112)")
+        val pid = android.os.Process.myPid()
+        Log.i(TAG, "ensureLoaded: starting (v2.4.112) PID=$pid")
 
         // Step 1: Try loading ALL libraries from APK via System.loadLibrary
         val apkLibNames = listOf(
@@ -59,16 +61,17 @@ object NativeLibLoader {
         val apkLoadedLibs = mutableListOf<String>()
         for (libName in apkLibNames) {
             try {
+                Log.i(TAG, "ensureLoaded: 尝试加载 lib$libName.so (PID=$pid)")
                 System.loadLibrary(libName)
                 apkLoadedLibs.add(libName)
-                Log.i(TAG, "ensureLoaded: APK loaded lib$libName.so")
+                Log.i(TAG, "ensureLoaded: APK loaded lib$libName.so (PID=$pid)")
             } catch (e: UnsatisfiedLinkError) {
                 if (e.message?.contains("already loaded") == true ||
                     e.message?.contains("Library already loaded") == true) {
                     apkLoadedLibs.add(libName)
-                    Log.i(TAG, "ensureLoaded: lib$libName.so already loaded (APK)")
+                    Log.i(TAG, "ensureLoaded: lib$libName.so already loaded (APK) (PID=$pid)")
                 } else {
-                    Log.e(TAG, "ensureLoaded: APK FAILED lib$libName.so: ${e.message}")
+                    Log.e(TAG, "ensureLoaded: APK FAILED lib$libName.so: ${e.message} (PID=$pid)")
                     apkAllLoaded = false
                 }
             }
@@ -76,12 +79,12 @@ object NativeLibLoader {
 
         if (apkAllLoaded) {
             loaded = true
-            Log.i(TAG, "ensureLoaded: ALL native libraries loaded from APK successfully")
+            Log.i(TAG, "ensureLoaded: ALL native libraries loaded from APK successfully (PID=$pid)")
             return true
         }
 
         // Step 2: Fallback - load missing libraries from external storage (audio-models dir)
-        Log.w(TAG, "ensureLoaded: APK loading incomplete ($apkLoadedLibs loaded), trying external storage")
+        Log.w(TAG, "ensureLoaded: APK loading incomplete ($apkLoadedLibs loaded), trying external storage (PID=$pid)")
         val externalDir = AudioSegmentAnalyzer.getModelDir(context)
         val internalDir = File(context.codeCacheDir, "audio-libs")
         if (!internalDir.exists()) internalDir.mkdirs()
@@ -97,42 +100,45 @@ object NativeLibLoader {
         for ((soFileName, shortName) in externalLibFiles) {
             // Skip if already loaded from APK
             if (shortName in apkLoadedLibs) {
-                Log.i(TAG, "ensureLoaded: $soFileName already loaded from APK, skipping external")
+                Log.i(TAG, "ensureLoaded: $soFileName already loaded from APK, skipping external (PID=$pid)")
                 continue
             }
 
             val externalSo = File(externalDir, soFileName)
             if (!externalSo.exists()) {
-                Log.e(TAG, "ensureLoaded: $soFileName not found in external storage")
+                Log.e(TAG, "ensureLoaded: $soFileName not found in external storage (PID=$pid)")
                 return false
             }
+            Log.i(TAG, "ensureLoaded: 外部存储找到 $soFileName: ${externalSo.length() / 1024}KB (PID=$pid)")
 
             // Copy to internal dir (codeCacheDir) for reliable System.load()
             val internalSo = File(internalDir, soFileName)
             if (!internalSo.exists() || internalSo.length() != externalSo.length()) {
                 try {
                     externalSo.copyTo(internalSo, overwrite = true)
+                    Log.i(TAG, "ensureLoaded: 已复制 $soFileName 到内部目录 (PID=$pid)")
                 } catch (e: Exception) {
-                    Log.e(TAG, "ensureLoaded: failed to copy $soFileName: ${e.message}")
+                    Log.e(TAG, "ensureLoaded: failed to copy $soFileName: ${e.message} (PID=$pid)")
                     return false
                 }
             }
 
             try {
+                Log.i(TAG, "ensureLoaded: 加载 $soFileName 从 ${internalSo.absolutePath} (PID=$pid)")
                 System.load(internalSo.absolutePath)
-                Log.i(TAG, "ensureLoaded: loaded $soFileName from internal storage (fallback)")
+                Log.i(TAG, "ensureLoaded: loaded $soFileName from internal storage (fallback) (PID=$pid)")
             } catch (e: UnsatisfiedLinkError) {
                 if (e.message?.contains("already loaded") == true) {
-                    Log.i(TAG, "ensureLoaded: $soFileName already loaded (fallback)")
+                    Log.i(TAG, "ensureLoaded: $soFileName already loaded (fallback) (PID=$pid)")
                 } else {
-                    Log.e(TAG, "ensureLoaded: FAILED to load $soFileName from internal: ${e.message}")
+                    Log.e(TAG, "ensureLoaded: FAILED to load $soFileName from internal: ${e.message} (PID=$pid)")
                     return false
                 }
             }
         }
 
         loaded = true
-        Log.i(TAG, "ensureLoaded: ALL native libraries loaded (APK + external fallback)")
+        Log.i(TAG, "ensureLoaded: ALL native libraries loaded (APK + external fallback) (PID=$pid)")
         return true
     }
 

@@ -1,0 +1,461 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. See https://docs.gradle.org/7.5/userguide/gradle_daemon.html#sec:disabling_the_daemon.
+Daemon will be stopped at the end of the build 
+
+> Configure project :
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by build file 'build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by build file 'build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by build file 'build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by build file 'build.gradle'
+
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:compileDebugAidl NO-SOURCE
+> Task :app:compileDebugRenderscript NO-SOURCE
+> Task :app:dataBindingMergeDependencyArtifactsDebug UP-TO-DATE
+> Task :app:generateDebugResValues UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:dataBindingGenBaseClassesDebug UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:processDebugMainManifest UP-TO-DATE
+> Task :app:processDebugManifest UP-TO-DATE
+> Task :app:processDebugManifestForPackage UP-TO-DATE
+> Task :app:processDebugResources UP-TO-DATE
+> Task :app:javaPreCompileDebug UP-TO-DATE
+> Task :app:mergeDebugShaders UP-TO-DATE
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:mergeDebugAssets UP-TO-DATE
+> Task :app:compressDebugAssets UP-TO-DATE
+> Task :app:processDebugJavaRes NO-SOURCE
+> Task :app:checkDebugDuplicateClasses UP-TO-DATE
+> Task :app:desugarDebugFileDependencies UP-TO-DATE
+> Task :app:mergeExtDexDebug UP-TO-DATE
+> Task :app:mergeLibDexDebug UP-TO-DATE
+> Task :app:configureCMakeDebug[arm64-v8a]
+> Task :app:buildCMakeDebug[arm64-v8a]
+> Task :app:externalNativeBuildDebug
+> Task :app:mergeDebugJniLibFolders UP-TO-DATE
+> Task :app:mergeDebugNativeLibs UP-TO-DATE
+> Task :app:stripDebugDebugSymbols UP-TO-DATE
+> Task :app:validateSigningDebug UP-TO-DATE
+> Task :app:writeDebugAppMetadata UP-TO-DATE
+> Task :app:writeDebugSigningConfigVersions UP-TO-DATE
+> Task :app:compileDebugKotlin
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/RadioApplication.kt:126:46 'getPackageInfo(String, Int): PackageInfo!' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/RadioApplication.kt:174:55 'getPackageInfo(String, Int): PackageInfo!' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/RadioApplication.kt:210:49 'getPackageInfo(String, Int): PackageInfo!' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/FingerprintGroupActivity.kt:121:14 'setView(View!, Int, Int, Int, Int): AlertDialog.Builder!' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/FingerprintGroupActivity.kt:211:14 'setView(View!, Int, Int, Int, Int): AlertDialog.Builder!' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/FingerprintGroupActivity.kt:242:46 'constructor ProgressDialog(Context!)' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/FingerprintGroupActivity.kt:242:46 'ProgressDialog' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/FingerprintGroupActivity.kt:243:17 'setMessage(CharSequence!): Unit' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/FingerprintListFragment.kt:217:55 Parameter 'durationMs' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:24:47 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:112:52 'ProgressDialog' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:142:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:176:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:693:54 Unnecessary non-null assertion (!!) on a non-null receiver of type File
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:741:51 Parameter 'msg' is never used, could be renamed to _
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:822:49 'constructor ProgressDialog(Context!)' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:822:49 'ProgressDialog' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:823:17 'setMessage(CharSequence!): Unit' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:1037:49 'constructor ProgressDialog(Context!)' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:1037:49 'ProgressDialog' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:1038:17 'setMessage(CharSequence!): Unit' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/KeywordSettingsActivity.kt:1185:29 Variable 'fpLabel' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/MainActivity.kt:89:39 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:465:64 Parameter 'engine' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:465:84 Parameter 'btn' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:465:97 Parameter 'progressBar' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:712:38 Variable 'usedMirrorName' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:843:46 Unnecessary safe call on a non-null receiver of type RandomAccessFile?
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:903:83 Name shadowed: input
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:1513:33 Name shadowed: expectedSize
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/OfflineEngineActivity.kt:1586:40 Unnecessary safe call on a non-null receiver of type FileTreeWalk
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:25:47 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:411:98 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:454:96 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:632:98 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:679:50 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:679:87 Unchecked cast: Serializable? to kotlin.collections.ArrayList<Episode> /* = java.util.ArrayList<Episode> */
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:692:21 Name shadowed: svcPos
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:706:100 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:738:25 Name shadowed: svcPos
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:745:101 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:793:97 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:898:46 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:898:83 Unchecked cast: Serializable? to kotlin.collections.ArrayList<Episode> /* = java.util.ArrayList<Episode> */
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:919:37 Name shadowed: savedPos
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:968:33 Name shadowed: msg
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1089:167 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1187:39 Variable 'displayPosition' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1418:84 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1510:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1532:33 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1550:17 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1554:17 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1588:33 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1598:31 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1638:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1642:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1663:9 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1667:9 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1701:50 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1761:55 Parameter 'position' is never used, could be renamed to _
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1809:36 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:1825:36 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:2694:29 Name shadowed: dbHelper
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:2744:33 Name shadowed: dbHelper
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:2884:37 Variable 'waterCount2' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3136:65 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3225:80 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3352:130 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3378:29 Variable 'count' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3532:29 Variable 'count' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3631:37 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3643:47 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3676:17 Variable 'bgColor' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:3858:44 Condition 'episode.title != null' is always 'true'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4258:56 Parameter 'elapsedText' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4258:82 Parameter 'etaText' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4331:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4344:40 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4394:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4406:40 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4453:47 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4500:63 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4541:55 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:4996:15 'onBackPressed(): Unit' is deprecated. Overrides deprecated member in 'androidx.core.app.ComponentActivity'. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5125:13 Variable 'cachedDur' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5301:33 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5383:37 'getSerializableExtra(String!): Serializable?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5383:74 Unchecked cast: Serializable? to kotlin.collections.ArrayList<Episode> /* = java.util.ArrayList<Episode> */
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5414:94 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5458:90 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5537:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5540:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/activities/PlayerActivity.kt:5554:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/AudioFingerprintAdapter.kt:193:53 Unchecked cast: Any! to (AudioFingerprint, String) -> Unit
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/AutomaticFingerprintAdapter.kt:172:53 Unchecked cast: Any! to (AudioFingerprint, String) -> Unit
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/CandidateFingerprintAdapter.kt:177:53 Unchecked cast: Any! to (RadioDatabaseHelper.ObservationPoolCandidate, String) -> Unit
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/EpisodeAdapter.kt:62:63 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/EpisodeAdapter.kt:77:71 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/EpisodeAdapter.kt:86:67 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/EpisodeAdapter.kt:92:45 Unnecessary safe call on a non-null receiver of type List<VoiceSegment>
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/EpisodeAdapter.kt:92:52 Elvis operator (?:) always returns the left operand of non-nullable type Int
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/adapters/FingerprintGroupAdapter.kt:122:74 Parameter 'groupPosition' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/database/RadioDatabaseHelper.kt:1366:51 Parameter 'episodeId' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:25:47 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:160:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:171:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:426:95 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:473:33 The corresponding parameter in the supertype 'OnEpisodeClickListener' is named 'e'. This may cause problems when calling this function with named arguments.
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:489:26 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:511:37 The corresponding parameter in the supertype 'OnEpisodeClickListener' is named 'e'. This may cause problems when calling this function with named arguments.
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:750:46 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:758:33 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:758:44 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/EpisodesFragment.kt:763:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SearchFragment.kt:77:54 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SearchFragment.kt:203:25 Variable 'audioUrl' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1087:41 The value 'true' assigned to 'var found: Boolean defined in com.radio.app.fragments.SettingsFragment.showClearCacheDialogWithButtons.`<anonymous>`.`<anonymous>`' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1209:55 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1210:63 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1211:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1221:59 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1222:67 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1223:55 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1508:34 Unnecessary safe call on a non-null receiver of type File
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1519:116 Parameter 'pcmCacheDir' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/fragments/SettingsFragment.kt:1652:13 Condition 'colors == null' is always 'false'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:124:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:125:59 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:126:53 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:127:41 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:128:41 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:129:49 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:130:45 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:143:70 'MODE_MULTI_PROCESS: Int' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:153:70 'MODE_MULTI_PROCESS: Int' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:319:70 'MODE_MULTI_PROCESS: Int' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:482:43 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/models/AppSettings.kt:483:35 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/network/AliApiService.kt:74:22 Variable 'end' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/network/EpisodeApiService.kt:200:30 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/network/EpisodeApiService.kt:229:17 Variable 'streamUrl' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/network/EpisodeApiService.kt:315:21 Name shadowed: url
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:19:47 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:97:21 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:148:21 'constructor AudioTrack(Int, Int, Int, Int, Int, Int)' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:201:26 Parameter 'context' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:353:39 Variable 'watermarkPcmFile' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:459:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:473:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:498:44 Condition 'baseTitle != null' is always 'true'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/AudioFingerprintService.kt:501:23 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:27:47 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:48:38 'ExoPlayer' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:49:38 'MediaItem' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:50:38 'PlaybackException' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:51:38 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:52:45 'DefaultMediaSourceFactory' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:53:47 'DefaultDataSource' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:54:47 'DefaultHttpDataSource' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:224:25 'ExoPlayer' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:655:50 'getParcelableExtra(String!): T?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:720:13 Variable 'dateStr' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:743:41 'DefaultHttpDataSource' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:754:61 'DefaultLoadControl' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:765:37 'DefaultDataSource' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:766:22 'ExoPlayer' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:767:40 'DefaultMediaSourceFactory' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:771:42 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:772:75 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:772:109 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:797:33 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:855:33 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:889:43 'PlaybackException' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:933:69 'MediaItem' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1146:9 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1363:44 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1363:55 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1379:64 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1446:51 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1446:62 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1644:45 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1644:56 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1649:26 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1776:13 Variable 'cachedNames' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1804:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1826:47 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1844:60 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1872:33 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1873:39 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1874:46 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1875:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1876:48 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1878:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1946:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1968:44 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1976:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1990:33 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1991:39 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1992:46 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1993:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1994:48 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:1996:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2032:13 Condition 'url == null' is always 'false'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2144:44 Unnecessary safe call on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2144:95 Elvis operator (?:) always returns the left operand of non-nullable type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2151:59 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2355:63 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2386:63 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2471:46 Unnecessary safe call on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2471:95 Elvis operator (?:) always returns the left operand of non-nullable type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2506:36 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2508:41 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2515:47 Elvis operator (?:) always returns the left operand of non-nullable type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2599:58 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2636:58 Unnecessary safe call on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2636:99 Elvis operator (?:) always returns the left operand of non-nullable type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2659:66 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2720:25 Name shadowed: episodesDir
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2722:25 Name shadowed: audioFileName
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2783:44 Parameter 'episodeId' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2870:56 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2870:67 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:2946:34 Name shadowed: i
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3009:37 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3066:70 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3099:61 Unnecessary safe call on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3099:110 Elvis operator (?:) always returns the left operand of non-nullable type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3147:65 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3161:59 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3161:70 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3163:94 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3461:17 Variable 'wavHeader' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3529:17 Variable 'didSeek' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3562:54 The value 'true' assigned to 'var outputDone: Boolean defined in com.radio.app.services.RadioPlaybackService.decodeToPcmForPreCache' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3563:64 The value 'true' assigned to 'var outputDone: Boolean defined in com.radio.app.services.RadioPlaybackService.decodeToPcmForPreCache' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3761:36 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3857:32 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3871:32 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3909:32 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:3937:32 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5139:64 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5159:33 'MediaItem' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5226:42 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5247:49 Unnecessary non-null assertion (!!) on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5256:13 Name shadowed: startPositionMs
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5263:39 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5285:43 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5286:49 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5307:31 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5327:13 Name shadowed: episode
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5417:45 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5454:20 Condition 'episode.broadcastAt != null' is always 'true'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5473:40 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5480:40 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5515:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5532:37 'MediaItem' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5549:37 'MediaItem' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5616:52 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5617:28 'Player' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:5845:40 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6101:37 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6164:39 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6204:44 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6217:102 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6271:47 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6285:64 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6314:89 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6344:31 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6344:42 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6433:28 Unnecessary safe call on a non-null receiver of type Episode?
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6642:41 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6642:52 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6644:62 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6673:44 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6673:55 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6745:161 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6747:160 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6764:67 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6769:167 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6771:166 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6784:17 Name shadowed: curUrl
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6784:44 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6796:157 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6836:52 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6836:63 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6837:49 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6844:49 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6850:25 Variable 'dateDisplay' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6853:25 Variable 'timeDisplay' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6863:34 Unnecessary non-null assertion (!!) on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6873:36 Unnecessary non-null assertion (!!) on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6961:45 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6973:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6988:48 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:6998:17 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7032:48 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7062:55 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7064:132 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7071:45 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7083:13 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7098:48 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7108:17 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7133:93 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7133:104 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7145:48 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7159:51 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7180:56 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7222:59 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7224:131 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7243:59 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7245:126 Unnecessary safe call on a non-null receiver of type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7274:25 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7286:44 Elvis operator (?:) always returns the left operand of non-nullable type String
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7302:17 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/RadioPlaybackService.kt:7565:9 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:235:86 'MODE_MULTI_PROCESS: Int' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:314:51 Elvis operator (?:) always returns the left operand of non-nullable type String?
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:358:96 'MODE_MULTI_PROCESS: Int' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:691:90 'MODE_MULTI_PROCESS: Int' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:894:21 Variable 'savedVoskDir' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1242:13 Variable 'lastFinalEmitTime' is assigned but never accessed
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1414:53 This class shouldn't be used in Kotlin. Use kotlin.Float instead.
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1492:21 Check for instance is always 'false'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1523:17 Variable 'firstBytesRead' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1581:49 Variable 'startTime' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1582:47 Variable 'endTime' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1601:33 The value 'currentTimeMs' assigned to 'var lastFinalEmitTime: Long defined in com.radio.app.services.SubtitleGeneratorService.processVoskInChunks' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1725:41 Variable 'startTime' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:1726:39 Variable 'endTime' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2042:17 Variable 'hasGfst' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2044:17 Variable 'wordsFile' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2531:45 Name shadowed: soFiles
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2639:39 Variable 'pcmDecodeTimeMs' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2799:30 Check for instance is always 'false'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2803:17 Check for instance is always 'false'
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:2899:17 Variable 'maxHeapMB' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3039:17 Variable 'maxConsecutiveCrashes' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3091:49 Unnecessary non-null assertion (!!) on a non-null receiver of type ByteArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3094:44 Unnecessary non-null assertion (!!) on a non-null receiver of type ByteArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3098:57 Unnecessary non-null assertion (!!) on a non-null receiver of type FloatArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3102:43 Unnecessary non-null assertion (!!) on a non-null receiver of type ByteArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3102:83 Unnecessary non-null assertion (!!) on a non-null receiver of type ByteArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3104:33 Unnecessary non-null assertion (!!) on a non-null receiver of type FloatArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3152:21 Variable 'chunkSuccess' is assigned but never accessed
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3164:66 Unnecessary non-null assertion (!!) on a non-null receiver of type FloatArray
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3215:25 The value 'true' assigned to 'var chunkSuccess: Boolean defined in com.radio.app.services.SubtitleGeneratorService.processWhisperInChunks' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3277:25 Name shadowed: now
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3508:21 The value 'true' assigned to 'var outputDone: Boolean defined in com.radio.app.services.SubtitleGeneratorService.decodeFullAudioToPcm' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3720:21 The value 'true' assigned to 'var outputDone: Boolean defined in com.radio.app.services.SubtitleGeneratorService.decodeToPcm' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3729:21 The value 'true' assigned to 'var outputDone: Boolean defined in com.radio.app.services.SubtitleGeneratorService.decodeToPcm' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:3738:21 The value 'true' assigned to 'var outputDone: Boolean defined in com.radio.app.services.SubtitleGeneratorService.decodeToPcm' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:4059:43 Variable 'lastReportedPct' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:4064:61 Unnecessary safe call on a non-null receiver of type File?
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/SubtitleGeneratorService.kt:4090:17 Variable 'action' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/YamnetService.kt:96:39 'getParcelableExtra(String!): T?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/YamnetService.kt:203:79 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.SampleProvider
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/YamnetService.kt:268:70 Variable 'intervalResult' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/YamnetService.kt:285:51 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.SampleProvider
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/YamnetService.kt:366:29 Unnecessary safe call on a non-null receiver of type Intent?
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/services/YamnetService.kt:366:31 'getParcelableExtra(String!): T?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:2261:13 The value 'System.currentTimeMillis()' assigned to 'var stepMs: Long defined in com.radio.app.utils.AudioSegmentAnalyzer.classifyWithYamnet' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:2866:57 Unchecked cast: Any! to Set<String>
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:2874:58 Unchecked cast: Any! to Set<String>
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3105:48 Unnecessary non-null assertion (!!) on a non-null receiver of type Any
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3129:40 Unnecessary non-null assertion (!!) on a non-null receiver of type Any
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3133:40 Unnecessary non-null assertion (!!) on a non-null receiver of type Any
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3154:51 Unsafe use of a nullable receiver of type Any?
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3204:48 Type mismatch: inferred type is Any? but Any was expected
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3209:50 Type mismatch: inferred type is Any? but Any was expected
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3223:48 Type mismatch: inferred type is Any? but Any was expected
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3228:48 Type mismatch: inferred type is Any? but Any was expected
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:3741:9 Parameter 'context' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:4216:32 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.YamnetResult
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:4217:35 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.YamnetResult
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:4218:33 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.YamnetResult
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:4219:31 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.YamnetResult
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:4220:33 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.YamnetResult
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/AudioSegmentAnalyzer.kt:4221:39 Unnecessary non-null assertion (!!) on a non-null receiver of type AudioSegmentAnalyzer.YamnetResult
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/ChromaprintExtractor.kt:386:9 Parameter 'threshold' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/ChromaprintExtractor.kt:404:46 Unnecessary non-null assertion (!!) on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/LogcatCapture.kt:114:38 Name shadowed: line
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/PlayHistoryUtils.kt:55:65 Type mismatch: inferred type is Nothing? but String was expected
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentCancelReceiver.kt:32:48 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:9:47 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:919:21 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1080:17 'LocalBroadcastManager' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1252:31 Variable 'audioEngineName' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1304:33 Variable 'layer2DrySegments' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1305:35 Variable 'layer2WaterSegments' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1311:28 Variable 'layer1TimeMs' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1312:28 Variable 'layer2TimeMs' initializer is redundant
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1325:13 The value '"滑动窗口指纹"' assigned to 'var audioEngineName: String defined in com.radio.app.utils.SegmentGenerator.generateJiuAiTingSegments' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1347:17 The value 'fullVadResult.engineName' assigned to 'var audioEngineName: String defined in com.radio.app.utils.SegmentGenerator.generateJiuAiTingSegments' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1398:13 Variable 'totalPendingSegments' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:1670:25 Name shadowed: pcmCacheDir
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:2243:60 'getParcelableArrayList(String?): ArrayList<T!>?' is deprecated. Deprecated in Java
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:2578:59 Unnecessary non-null assertion (!!) on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:2580:78 Unnecessary non-null assertion (!!) on a non-null receiver of type Long
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/utils/SegmentGenerator.kt:2882:9 Parameter 'layer2Segments' is never used
+w: file:///workspace/radioapp/app/src/main/java/com/radio/app/whisper/MnnLlmBridge.kt:320:26 Variable 'end' is never used
+
+> Task :app:compileDebugJavaWithJavac
+> Task :app:mergeDebugJavaResource
+> Task :app:dexBuilderDebug
+> Task :app:mergeProjectDexDebug
+> Task :app:packageDebug
+> Task :app:createDebugApkListingFileRedirect
+> Task :app:assembleDebug
+
+BUILD SUCCESSFUL in 1m 52s
+37 actionable tasks: 10 executed, 27 up-to-date

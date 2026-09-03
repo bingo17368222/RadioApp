@@ -69,17 +69,30 @@ class EpisodeAdapter(
         // v3.1.40: Always prefer DB segment count over episode's in-memory segments.
         // API returns episodes with 8 dummy segments (generateSimpleSegments), which would
         // overwrite the actual segmentation count from patrol/pre-segmentation.
+        // v3.1.168-fix: 优先查segment_analysis_info.segment_count，再查voiceSegments真实分段数，最后回退内存
         var segments = 0
         try {
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(ctx)
-            val dbSegments = dbHelper.getVoiceSegments(episode.id)
-            segments = dbSegments.filter { !it.isSimulated }.size
+            // 1. 从segment_analysis_info表读取（分段完成后这里一定有值）
+            val analysis = dbHelper.getSegmentAnalysisInfo(episode.id ?: "")
+            if (analysis != null && analysis.segmentCount > 0) {
+                segments = analysis.segmentCount
+            } else {
+                // 2. 从voiceSegments表读取真实分段（非模拟）
+                val dbSegments = dbHelper.getVoiceSegments(episode.id)
+                segments = dbSegments.filter { !it.isSimulated }.size
+                // 3. 如果真实分段数>0，更新到episode_info表供后续读取
+                if (segments > 0) {
+                    dbHelper.updateEpisodeSegmentCount(episode.id ?: "", segments)
+                }
+            }
         } catch (_: Exception) {}
         if (segments == 0) {
             // Fallback to episode's in-memory segments if DB is empty
             segments = episode.voiceSegments?.size ?: 0
         }
-        holder.tvDescription.text = "${durationMin}分钟 · ${segments}片段"
+        val desc = if (segments > 0) "${durationMin}分钟 · ${segments}片段" else "${durationMin}分钟"
+        holder.tvDescription.text = desc
 
         // 不喜欢状态 - 按节目ID或名称判断（每天该节目都不喜欢）
         val isDisliked = settings.isDisliked(episode.id) || settings.isDislikedByTitle(episode.stationId, episode.title)
