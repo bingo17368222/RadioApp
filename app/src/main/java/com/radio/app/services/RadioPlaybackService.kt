@@ -5200,22 +5200,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodeInfo(episode.id) ?: return episode
             val merged = episode.copy()
-            if (!cached.title.isNullOrBlank() && episode.title.isNullOrBlank()) {
+            // v3.1.xxx-fix: 只要原始episode标题为空，就用数据库中的值覆盖，不管数据库中值是否为空
+            // 根因：如果数据库中title已经是空字符串（而非null），!cached.title.isNullOrBlank()为false，
+            // 导致即使原始episode标题为空也不会覆盖，最终结果仍然是空。
+            if (episode.title.isNullOrBlank()) {
                 merged.title = cached.title
             }
-            if (!cached.broadcastAt.isNullOrBlank() && episode.broadcastAt.isNullOrBlank()) {
+            if (episode.broadcastAt.isNullOrBlank()) {
                 merged.broadcastAt = cached.broadcastAt
             }
-            if (cached.duration > 0 && episode.duration <= 0) {
+            if (episode.duration <= 0) {
                 merged.duration = cached.duration
             }
-            if (cached.startTime > 0 && episode.startTime <= 0) {
+            if (episode.startTime <= 0) {
                 merged.startTime = cached.startTime
             }
-            if (cached.endTime > 0 && episode.endTime <= 0) {
+            if (episode.endTime <= 0) {
                 merged.endTime = cached.endTime
             }
-            if (!cached.audioUrl.isNullOrBlank() && episode.audioUrl.isNullOrBlank()) {
+            if (episode.audioUrl.isNullOrBlank()) {
                 merged.audioUrl = cached.audioUrl
             }
             writeServiceLog("notification", " enrichEpisodeFromDb: episode=${episode.id}, filledTitle=${!hasTitle && !merged.title.isNullOrBlank()}, filledBroadcast=${!hasBroadcastAt && !merged.broadcastAt.isNullOrBlank()}, filledTimeRange=${!hasTimeRange && merged.startTime > 0 && merged.endTime > 0}")

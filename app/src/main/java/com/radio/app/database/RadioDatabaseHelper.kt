@@ -812,15 +812,15 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     private fun cursorToEpisode(c: Cursor): Episode = Episode().apply {
         id = c.getString(c.getColumnIndexOrThrow("episode_id"))
-        title = c.getString(c.getColumnIndexOrThrow("title"))
-        broadcastAt = c.getString(c.getColumnIndexOrThrow("broadcast_at"))
+        title = c.getString(c.getColumnIndexOrThrow("title")).takeIf { !it.isNullOrBlank() } ?: ""
+        broadcastAt = c.getString(c.getColumnIndexOrThrow("broadcast_at")).takeIf { !it.isNullOrBlank() } ?: ""
         duration = c.getLong(c.getColumnIndexOrThrow("duration"))
         // v2.4.148: Restore start/end timestamps from DB cache.
         startTime = c.getLong(c.getColumnIndexOrThrow("start_time"))
         endTime = c.getLong(c.getColumnIndexOrThrow("end_time"))
-        audioUrl = c.getString(c.getColumnIndexOrThrow("audio_url"))
-        stationId = c.getString(c.getColumnIndexOrThrow("station_id"))
-        stationName = c.getString(c.getColumnIndexOrThrow("station_name"))
+        audioUrl = c.getString(c.getColumnIndexOrThrow("audio_url")).takeIf { !it.isNullOrBlank() } ?: ""
+        stationId = c.getString(c.getColumnIndexOrThrow("station_id")).takeIf { !it.isNullOrBlank() } ?: ""
+        stationName = c.getString(c.getColumnIndexOrThrow("station_name")).takeIf { !it.isNullOrBlank() } ?: ""
     }
 
     // ===== Audio Fingerprints (v3.0.2) =====
