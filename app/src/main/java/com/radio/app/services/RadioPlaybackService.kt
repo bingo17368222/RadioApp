@@ -6517,17 +6517,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return segments.sortedBy { it.start }
         }
 
-        // 第4步：全空 → 生成15分钟固定分段作为最后手段
+        // 第4步：全空 → 生成8等分模拟分段作为最后手段
+        // v3.1.196-fix: 改为8等分（与generateSimpleSegments一致），替代原来的15分钟固定分段。
+        // 根因：15分钟固定分段对长节目（如2小时）产生8个分段还算合理，但对短节目（如30分钟）
+        // 只有2个分段，导航跳转幅度过大。8等分在任何时长下都提供均匀的分段粒度。
+        // 同时保存到内存，避免后续调用再次进入第4步。
         val dur = player?.duration ?: 0L
         if (dur <= 0) return emptyList()
-        val segmentSize = 15 * 60 * 1000L  // 15 minutes
-        val result = mutableListOf<VoiceSegment>()
-        var start = 0L
-        while (start < dur) {
-            val end = minOf(start + segmentSize, dur)
-            result.add(VoiceSegment(start = start, end = end, hasVoice = true, isSimulated = true))
-            start = end
+        val simSegCount = 8
+        val segDuration = (dur / simSegCount).coerceAtLeast(1L)
+        val result = (0 until simSegCount).map { j ->
+            VoiceSegment(
+                start = j * segDuration,
+                end = (j + 1) * segDuration,
+                hasVoice = true,
+                isSimulated = true
+            )
         }
+        // 保存到内存，避免后续调用再次回退到第4步
+        currentEpisode?.voiceSegments = result
         return result
     }
 
@@ -6966,6 +6974,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         7200_000L  // Default 2 hours
                     }
 
+                    // v3.1.196-fix: 为跨天节目创建8个模拟分段，防止getSegmentList()回退到15分钟固定分段。
+                    // 根因：普通API节目通过generateSimpleSegments()创建8个模拟分段，但跨天节目通过
+                    // fetchCrossDayEpisode()创建时voiceSegments默认为emptyList()，如果preSegmentFixed()
+                    // 尚未完成（异步预生成），getSegmentList()的Step 1（内存检查）和Step 2（DB查询）都失败，
+                    // 最终回退到Step 4生成15分钟固定分段，导致分段导航跳15分钟。
+                    val simSegCount = 8
+                    val simSegDuration = (calculatedDuration / simSegCount).coerceAtLeast(1L)
+                    val simulatedSegments = (0 until simSegCount).map { j ->
+                        VoiceSegment(
+                            start = j * simSegDuration,
+                            end = (j + 1) * simSegDuration,
+                            hasVoice = true,
+                            label = "节目内容",
+                            isSimulated = true
+                        )
+                    }
                     val newEpisode = Episode(
                         id = "${stationId}-$targetDate-cross",  // [v2.1.6] Use stationId not stationPart
                         title = constructedTitle,
@@ -6982,7 +7006,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         } else {
                             "${newDateStr.substring(0, 4)}-${newDateStr.substring(4, 6)}-${newDateStr.substring(6, 8)}"
                         },
-                        duration = calculatedDuration
+                        duration = calculatedDuration,
+                        voiceSegments = simulatedSegments
                     )
                     // Check if the constructed episode's title is disliked
                     if (settings.isDislikedByTitle(newEpisode.stationId, newEpisode.title)) {
