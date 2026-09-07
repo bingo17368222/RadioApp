@@ -6402,6 +6402,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             futurePlannedEpisodes.addAll(enrichedPlanned)
         }
 
+        // v3.1.197-fix: 为播放计划中的每个节目预加载真实分段，确保切换节目时分段已就绪。
+        // 根因：之前仅在playEpisode()时同步加载当前节目的分段，但当用户连续跳转（如segment导航
+        // 跨越多个节目）时，目标节目的分段可能还未加载到内存。如果该节目DB中有真实分段（来自
+        // preSegmentFixed或模型预分段），但getSegmentList()因内存为空而回退到固定分段，导致
+        // 15分钟跳转问题。预加载后，playEpisode()的voiceSegments已有分段，getSegmentList()的
+        // 第1步（内存检查）直接返回，不会回退到第4步。
+        for (ep in enrichedPlanned) {
+            val epId = ep.id
+            if (!epId.isNullOrBlank()) {
+                loadEpisodeSegmentsFromDb(ep)
+            }
+        }
+
         // 构建日志
         val sb = StringBuilder("播放计划: 后续${nextPlanned.size}个节目")
         nextPlanned.forEachIndexed { i, ep ->
@@ -6472,10 +6485,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.121移除了模拟分段检查，导致即使DB有真实分段也永远不会被查询到。
         // 本版本重新引入检查，但保留了DB为空时的模拟分段回退机制，避免竞态条件下生成新分段。
 
-        // 第1步：内存中有分段（模拟或真实均可）→ 直接使用
+        // 第1步：内存中有真实分段 → 直接使用
         // v3.1.178-fix: 移除 isSimulated 检查。loadEpisodeSegmentsFromDb 现在会加载任意分段，
         // 包括 preSegmentFixed 生成的模拟分段，避免 getSegmentList 回退到第4步生成15分钟固定分段。
-        if (segments != null && segments.isNotEmpty()) {
+        // v3.1.197-fix: 如果全是模拟分段，继续查DB获取真实分段，不要原地返回。
+        // 根因：v3.1.196为跨天节目创建了8个模拟分段，Step 1直接返回模拟分段导致Step 2的DB查询
+        // 永远不会执行，DB中已有的真实分段（来自preSegmentFixed或模型预分段）被忽略。
+        // 解决：Step 1只返回包含真实分段的列表；Step 2查DB后Step 3回退到模拟分段。
+        if (segments != null && segments.isNotEmpty() && segments.any { !it.isSimulated }) {
             return segments.sortedBy { it.start }
         }
 
