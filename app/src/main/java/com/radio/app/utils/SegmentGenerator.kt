@@ -1299,7 +1299,7 @@ object SegmentGenerator {
             null
         }
 
-        val mergedAfterLayer1: List<VoiceSegment>
+        var mergedAfterLayer1: List<VoiceSegment>
         var layer1MatchCount = 0
         var layer2DrySegments = 0
         var layer2WaterSegments = 0
