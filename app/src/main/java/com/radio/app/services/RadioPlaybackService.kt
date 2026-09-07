@@ -2642,7 +2642,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         .setSmallIcon(android.R.drawable.ic_media_ff)
                         .setContentTitle(title)
                         .setContentText(initialContent)
-                        .setOngoing(true)
+                        .setOngoing(false)
                         .setOnlyAlertOnce(true)
                         .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancelPendingIntent)
                         .build()
