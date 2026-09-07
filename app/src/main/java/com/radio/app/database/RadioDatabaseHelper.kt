@@ -555,6 +555,30 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return segments
     }
 
+    /**
+     * v3.1.195-fix: 使用LIKE前缀匹配查询分段。
+     * 用于跨天节目（如henan-private-car-2025-02-13-cross）找不到精确匹配的分段时，
+     * 尝试查找各个独立部分的分段（如henan-private-car-2025-02-13-1, henan-private-car-2025-02-13-2）。
+     * 分段按segment_start ASC排序合并返回。
+     */
+    fun getVoiceSegmentsByPrefix(episodeIdPrefix: String): List<VoiceSegment> {
+        val segments = mutableListOf<VoiceSegment>()
+        val db = readableDatabase
+        val cursor = db.query(TABLE_VOICE_SEGMENTS_AI, null, "episode_id LIKE ?", arrayOf("$episodeIdPrefix-%"), null, null, "segment_start ASC")
+        while (cursor.moveToNext()) {
+            val seg = VoiceSegment(
+                start = cursor.getLong(cursor.getColumnIndexOrThrow("segment_start")),
+                end = cursor.getLong(cursor.getColumnIndexOrThrow("segment_end")),
+                hasVoice = cursor.getInt(cursor.getColumnIndexOrThrow("has_voice")) == 1,
+                label = cursor.getString(cursor.getColumnIndexOrThrow("label")),
+                isSimulated = cursor.getInt(cursor.getColumnIndexOrThrow("is_simulated")) == 1
+            )
+            segments.add(seg)
+        }
+        cursor.close()
+        return segments
+    }
+
     fun clearVoiceSegments(episodeId: String) {
         val db = writableDatabase
         db.delete(TABLE_VOICE_SEGMENTS_AI, "episode_id = ?", arrayOf(episodeId))

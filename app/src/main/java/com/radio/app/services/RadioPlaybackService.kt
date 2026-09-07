@@ -6155,9 +6155,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val realCount = dbSegments.count { !it.isSimulated }
                 writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${dbSegments.size} segments (${realCount} real, ${dbSegments.size - realCount} simulated) for $episodeId")
                 return true
-            } else {
-                writeServiceLog("segment", "loadEpisodeSegmentsFromDb: no segments found for $episodeId")
             }
+            // v3.1.195-fix: 跨天节目精确匹配无结果时，尝试按前缀匹配各个独立部分。
+            // 根因：预生成分段已保存到各独立部分（如henan-private-car-2025-02-13-1），
+            // 但跨天组合节目（henan-private-car-2025-02-13-cross）查询时使用base ID，
+            // 无法匹配到这些分段。使用LIKE查询找到所有匹配前缀的分段并合并。
+            if (episodeId.endsWith("-cross")) {
+                val prefixSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                if (prefixSegments.isNotEmpty()) {
+                    episode.voiceSegments = prefixSegments
+                    val realCount = prefixSegments.count { !it.isSimulated }
+                    writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${prefixSegments.size} segments via prefix match (${realCount} real, ${prefixSegments.size - realCount} simulated) for cross-day $episodeId")
+                    return true
+                }
+            }
+            writeServiceLog("segment", "loadEpisodeSegmentsFromDb: no segments found for $episodeId")
         } catch (e: Exception) {
             writeServiceLog("segment", "loadEpisodeSegmentsFromDb: failed for $episodeId: ${e.message}")
         }
@@ -6484,6 +6496,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     try { Thread.sleep(100) } catch (_: InterruptedException) { break }
                     dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(queryId)
                     retryCount++
+                }
+                // v3.1.195-fix: 跨天节目精确匹配无结果时，按前缀匹配各独立部分的分段
+                if (dbSegments.isEmpty() && episodeId.endsWith("-cross")) {
+                    dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                    writeServiceLog("segment", "getSegmentList: prefix query for cross-day $episodeId returned ${dbSegments.size} segments")
                 }
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
