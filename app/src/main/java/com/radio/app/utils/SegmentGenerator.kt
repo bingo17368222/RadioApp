@@ -1372,16 +1372,15 @@ object SegmentGenerator {
 
         // v3.1.129: 第一层取消后，重置取消标志让VAD正常运行
         // 第一层取消是因为超时，但VAD和YAMNet应该继续运行产生有效分段
-        val wasLayer1Cancelled = AudioSegmentAnalyzer.isAnalysisCancelled()
+        // v3.1.194-fix: 滑动窗口被thread.interrupt中断时analysisCancelled可能未设置，
+        // 因为滑动窗口内用Thread.interrupted()清除了中断标志但未设置analysisCancelled。
+        // 检查第1层结果是否为1个待处理段（帧位置0中断的特征），也触发重试。
+        val onlyOnePending = mergedAfterLayer1.size == 1 && mergedAfterLayer1[0].label == "待处理"
+        val wasLayer1Cancelled = AudioSegmentAnalyzer.isAnalysisCancelled() || onlyOnePending
         if (wasLayer1Cancelled) {
             AudioSegmentAnalyzer.resetCancellation()
             Thread.interrupted() // 清除中断标志
 
-            // v3.1.193-fix: 如果第1层被取消且只有一个待处理段（帧位置0取消），
-            // 说明滑动窗口完全未执行（被外部cancelCurrentAnalysis中断）。
-            // 根因：第1层被取消 → pending段为空 → VAD回退到全音频范围 → YAMNet失败 → 1个片段。
-            // 重新运行一次第1层滑动窗口，恢复有效分段流程。
-            val onlyOnePending = mergedAfterLayer1.size == 1 && mergedAfterLayer1[0].label == "待处理"
             if (onlyOnePending && pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
                 Log.i(TAG, "三层架构: 第1层被取消且仅1个待处理段，重新运行第1层滑动窗口 for episode=$episodeId")
                 writeFingerprintLog(context, "三层架构: 第1层被取消且仅1个待处理段，重新运行第1层滑动窗口")
@@ -1722,11 +1721,23 @@ object SegmentGenerator {
                         try {
                             // ===== 第二层-A：VAD-only =====
                             val vadStartTime2 = System.currentTimeMillis()
-                            val speechRanges = AudioSegmentAnalyzer.runVadOnly(
+                            var speechRanges = AudioSegmentAnalyzer.runVadOnly(
                                 context, newFullPcm, effectiveDurationMs
                             ) { permille ->
                                 val mapped = 150 + (permille * 100 / 1000).coerceIn(0, 100)
                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
+                            }
+                            // v3.1.194-fix: PCM再生路径VAD返回0活动段时重试一次
+                            if (speechRanges.isEmpty()) {
+                                Log.w(TAG, "三层架构: PCM再生后VAD首次返回0活动段，重置取消标志后重试VAD for episode=$episodeId")
+                                AudioSegmentAnalyzer.resetCancellation()
+                                Thread.interrupted()
+                                speechRanges = AudioSegmentAnalyzer.runVadOnly(
+                                    context, newFullPcm, effectiveDurationMs
+                                ) { permille ->
+                                    val mapped = 150 + (permille * 100 / 1000).coerceIn(0, 100)
+                                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD重试")
+                                }
                             }
                             val vadDurationMs2 = System.currentTimeMillis() - vadStartTime2
                             val vadTotalActivityMs2 = speechRanges.sumOf { it.durationMs }
