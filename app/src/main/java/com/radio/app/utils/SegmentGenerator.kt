@@ -870,6 +870,16 @@ object SegmentGenerator {
                     val fpMsgDone = "就AI听三层架构方案完成: ${segments.size}个片段（原干货${jiuAiTingResult.totalDrySegments}段，第一层快筛${jiuAiTingResult.layer1MatchCount}段，第三层召回${jiuAiTingResult.layer3RecallCount}段）"
                     Log.i(TAG, fpMsgDone)
                     writeFingerprintLog(context, fpMsgDone)
+
+                    // v3.2.3-fix: 验证结果异常时不保存，让巡逻下次重试
+                    // 如果结果异常（全部干货/全部水分/分段数过少），清空segments让巡逻重试
+                    val validationResult = validateThreeLayerResult(segments, durationMs)
+                    if (validationResult != null) {
+                        val fpMsgAbnormal = "postSegmentKeyword: 三层架构结果验证失败($validationResult)，不保存结果，让巡逻下次重试"
+                        Log.w(TAG, fpMsgAbnormal)
+                        writeFingerprintLog(context, fpMsgAbnormal)
+                        segments = emptyList()
+                    }
                 } else {
                     segments = emptyList()
                     engineName = "就AI听"

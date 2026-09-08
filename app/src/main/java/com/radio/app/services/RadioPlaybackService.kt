@@ -3001,7 +3001,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         val fullPcmFile = java.io.File(pcmCacheDir, "${ep.id}_full.pcm")
                         if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
                             val existingSegs = dbHelper.getVoiceSegments(ep.id)
-                            val hasRealSegs = existingSegs.any { !it.isSimulated }
+                            var hasRealSegs = existingSegs.any { !it.isSimulated }
+                            // v3.2.3-fix: 检查分段结果是否异常（只有1个分段），异常则删除旧分段重新分段
+                            val epDurationMin = ep.duration // 节目时长(分钟)
+                            val hasBadSegments = hasRealSegs && epDurationMin >= 60 &&
+                                    existingSegs.count { !it.isSimulated } <= 2 &&
+                                    existingSegs.all { it.hasVoice } // 全部干货说明YAMNet可能失败
+                            if (hasBadSegments) {
+                                 writePreCacheLog("patrolSubtitle:  ${ep.id} 分段结果异常（仅${existingSegs.count { !it.isSimulated }}个干货段），删除旧分段重新分段")
+                                 dbHelper.clearVoiceSegments(ep.id)
+                                 dbHelper.deleteSegmentAnalysisInfo(ep.id)
+                                 hasRealSegs = false
+                             }
                             if (!hasRealSegs) {
                                 val epDuration = ep.duration.let { if (it in 60..100000) it * 1000L else 0L }
                                 val durMs = if (epDuration > 60000L) epDuration else 7200_000L
