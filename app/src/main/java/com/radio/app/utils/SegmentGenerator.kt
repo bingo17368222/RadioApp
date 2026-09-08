@@ -2488,11 +2488,15 @@ object SegmentGenerator {
             ParsedFpEntry(fp.id, parsedArray, fp.fingerprint)
         }
         // 指纹去重：取指纹的前5个整数作为快速去重标识
+        // v3.2.3-fix: 建立去重key→所有指纹ID的映射，匹配时更新所有同key指纹的last_matched_at
         val dedupedLibrary = mutableListOf<ParsedFpEntry>()
         val seenFpKeys = mutableSetOf<String>()
+        val dedupKeyToIds = mutableMapOf<String, MutableList<Long>>() // v3.2.3-fix: 去重key→所有指纹ID列表
         for (entry in parsedLibrary) {
             if (entry.parsed.isEmpty()) continue
             val dedupKey = entry.parsed.take(5).joinToString(",")
+            // v3.2.3-fix: 记录所有指纹ID（无论是否被去重淘汰）
+            dedupKeyToIds.getOrPut(dedupKey) { mutableListOf() }.add(entry.id)
             if (dedupKey in seenFpKeys) continue
             seenFpKeys.add(dedupKey)
             dedupedLibrary.add(entry)
@@ -2609,6 +2613,7 @@ object SegmentGenerator {
                 var matched = false
                 var bestSim = 0f
                 var matchedFpId: Long? = null
+                var matchedDedupKey: String? = null // v3.2.3-fix: 记录匹配到的去重key，用于批量更新last_matched_at
                 for (entry in candidates) {
                     if (entry.parsed.isEmpty()) continue
                     // v3.1.129: 如果该指纹有分组且不是代表指纹，跳过对比
@@ -2620,6 +2625,7 @@ object SegmentGenerator {
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
                         matchedFpId = entry.id
+                        matchedDedupKey = entry.parsed.take(5).joinToString(",") // v3.2.3-fix
                         break
                     }
                 }
@@ -2632,10 +2638,23 @@ object SegmentGenerator {
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
                         hitDetails.add("${startMs/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
                     }
-                    // v3.1.129: 更新匹配指纹的last_matched_at
-                    if (matchedFpId != null && matchedFpId!! > 0 && dbHelper != null) {
+                    // v3.2.3-fix: 批量更新所有同去重key指纹的last_matched_at（包括被去重淘汰的自动指纹）
+                    if (dbHelper != null) {
                         try {
-                            dbHelper.updateFingerprintLastMatched(matchedFpId!!)
+                            val allMatchedIds = if (matchedDedupKey != null) {
+                                dedupKeyToIds[matchedDedupKey] // 所有同key指纹ID
+                            } else if (matchedFpId != null && matchedFpId!! > 0) {
+                                listOf(matchedFpId!!) // 兜底：只更新单个指纹
+                            } else {
+                                null
+                            }
+                            if (allMatchedIds != null && allMatchedIds.isNotEmpty()) {
+                                if (allMatchedIds.size == 1) {
+                                    dbHelper.updateFingerprintLastMatched(allMatchedIds[0])
+                                } else {
+                                    dbHelper.batchUpdateFingerprintLastMatched(allMatchedIds)
+                                }
+                            }
                         } catch (_: Exception) {}
                     }
                 }

@@ -346,7 +346,11 @@ object ChromaprintExtractor {
 
         val rawSimilarity = 1f - (minErrors.toFloat() / (minLen * 32).toFloat())
         val lengthRatio = minLen.toFloat() / maxLen.toFloat()
-        val lengthPenalty = if (lengthRatio >= 0.8f) 1f else 1f - (1f - lengthRatio) * 0.3f
+        // v3.2.3-fix: 降低长度惩罚系数(0.3→0.15)，避免自动晋升指纹因时长差异被阈值过滤
+        // 原公式：0.3系数下，15秒窗口 vs 30秒自动指纹(lengthRatio=0.5) → penalty=0.85
+        // 导致rawSimilarity=0.82降至0.697(低于阈值0.70)，匹配失败
+        // 新公式：0.15系数下，same case → penalty=0.925，rawSimilarity=0.82→0.759(通过阈值)
+        val lengthPenalty = if (lengthRatio >= 0.8f) 1f else 1f - (1f - lengthRatio) * 0.15f
         return (rawSimilarity * lengthPenalty).coerceIn(0f, 1f)
     }
 
