@@ -832,7 +832,7 @@ object SegmentGenerator {
             // v2.4.151: Track timing so we can persist engine + elapsed time for all segment paths.
             val segStartTime = System.currentTimeMillis()
             val settings = com.radio.app.models.AppSettings.getInstance(context)
-            val segments: List<VoiceSegment>
+            var segments: List<VoiceSegment>
             val engineName: String
             val processingTimeMs: Long
             val audioDurationMs: Long

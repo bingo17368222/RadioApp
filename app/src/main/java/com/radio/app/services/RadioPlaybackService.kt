@@ -7341,8 +7341,32 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 用户问题2：2025-01-21下班路上全程娱乐播放完后，跳转到同一天的旅行大玩家（反向跳转）。
             // 根因：foundCurrent变量在步骤1和步骤3之间共享，步骤1设为true后，步骤3不从列表开头重找当前节目，
             // 导致排在当前节目之前的旅行大玩家被选中。修复：无条件扫描前重置foundCurrent。
+            // v3.2.4: 当preCacheList和savedList都无法找到下一节目时，先尝试futurePlannedEpisodes。
+            // 根因：preCacheList可能不包含当前节目ID（时序问题），savedList可能被跨天获取(saveEpisodeList)
+            // 覆盖，导致Stage 1-4都找不到正确的下一节目，fallback到Stage 5的跨天获取（跳过当天后续节目）。
+            // futurePlannedEpisodes由buildPlaybackSchedule()正确构建，包含当天后续节目的正确顺序。
             if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: savedList found no match, trying preCacheList unconditional scan (size=${preCacheList.size})")
+                writeNotifDetailLog("autoPlayNextEpisode: savedList found no match, trying futurePlannedEpisodes (size=${futurePlannedEpisodes.size})")
+                if (futurePlannedEpisodes.isNotEmpty()) {
+                    for (ep in futurePlannedEpisodes) {
+                        if (curDate != null) {
+                            val epDate = ep.broadcastAt?.take(10)
+                            if (epDate != null && epDate != curDate) {
+                                continue
+                            }
+                        }
+                        if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                            && !settings.isNoPreprocess(ep.id ?: "")) {
+                            nextEpisode = ep
+                            writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
+                            writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes found ${ep.title} (${ep.id})")
+                            break
+                        }
+                    }
+                }
+            }
+            if (nextEpisode == null) {
+                writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes also no match, trying preCacheList unconditional scan (size=${preCacheList.size})")
                 foundCurrent = false  // 重置，确保从当前节目之后开始搜索，避免反向跳转
                 for (ep in preCacheList) {
                     if (!foundCurrent) {
@@ -7355,6 +7379,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         writeNotifDetailLog("autoPlayNextEpisode: unconditional scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
                         writeServiceLog("notification", "autoPlayNext: unconditional scan found ${ep.title} (${ep.id}) from preCacheList, bypassing date filter")
                         break
+                    }
+                }
+                // v3.2.4: 当curId不在preCacheList中时（时序问题），直接取第一个有效节目。
+                // 根因：preCacheList可能被triggerPreCache异步重建，当前节目ID不在列表中，
+                // 导致foundCurrent始终为false，所有节目被跳过。
+                // 由于preCacheList是从当前节目之后构建的，第一个有效节目应是正确的下一节目。
+                if (nextEpisode == null && preCacheList.isNotEmpty() && !preCacheList.any { it.id == curId }) {
+                    writeNotifDetailLog("autoPlayNextEpisode: curId not in preCacheList, taking first valid episode directly")
+                    for (ep in preCacheList) {
+                        if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                            && !settings.isNoPreprocess(ep.id ?: "")) {
+                            nextEpisode = ep
+                            writeNotifDetailLog("autoPlayNextEpisode: direct preCacheList first-valid found ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
+                            writeServiceLog("notification", "autoPlayNext: first-valid from preCacheList: ${ep.title} (${ep.id})")
+                            break
+                        }
                     }
                 }
             }
