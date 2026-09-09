@@ -5596,8 +5596,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.133: 节目切换后异步更新播放计划，预载下下个节目的分段和构建播放计划列表
         // v3.1.179-fix: 当前节目的分段已在 playEpisode 中同步加载（loadEpisodeSegmentsFromDb），
         // 不再依赖此异步调用。此异步调用仅用于预载下下个节目的分段和更新播放计划列表。
+        // v3.2.4-fix: 同步构建播放计划列表（futurePlannedEpisodes），确保UI立即读到最新计划。
+        // 根因：异步调用可能导致用户打开播放计划对话框时futurePlannedEpisodes还未更新，
+        // 显示的是旧节目（前一次切换）的计划列表。同步构建后，用户每次切歌都能看到正确计划。
+        buildPlaybackSchedule()
         serviceScope.launch(Dispatchers.IO) {
-            updatePlaybackSchedule()
+            // 异步部分：仅预载下下个节目的分段
+            preloadNextEpisodeSegments()
         }
     }
 
