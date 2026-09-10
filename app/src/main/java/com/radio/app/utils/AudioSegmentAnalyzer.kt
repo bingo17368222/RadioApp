@@ -355,6 +355,10 @@ object AudioSegmentAnalyzer {
     // v3.1.167: 从500ms恢复到5000ms，因为3层架构的YAMNet子段内部已做精细合并，
     // 且VAD区间之间本身就有边界，500ms导致相邻干货无法合并，303段→85段后仍过多
     private const val MAX_DRY_GAP_MS = 5000L
+    // v3.2.4-fix: 干货段最大长度限制，防止YAMNet失败后VAD回退段连续合并为1个巨段
+    // 根因同SegmentGenerator.MAX_DRY_SEGMENT_LENGTH_MS
+    // 30分钟是合理上限——正常干货段（主持人讲话/访谈）不会超过30分钟
+    private const val MAX_DRY_SEGMENT_LENGTH_MS = 1_800_000L // 30分钟
     // v2.4.173: Merge consecutive/nearby water segments separated by short silence.
     // Ad breaks and song blocks often have 5-10s pauses between them.
     // v3.1.98: 水分合并间隔从10s放宽到15s
@@ -867,17 +871,33 @@ object AudioSegmentAnalyzer {
         // cause of repeated full-PCM regeneration and 100MB+ file accumulation.
         // v3.1.68: 不再要求5分钟PCM必须存在——v3.1.40已不再自动生成5分钟版PCM，
         // 只要全量PCM存在且足够大即可保留，避免PCM被反复删除重建。
+        // v3.1.200-fix: 此路径中info文件可能在上次validatePcmWithInfo失败时被删除（第900行），
+        // 但PCM本身有效。如果不重建info，后续SegmentGenerator.validatePcmDuration因info不存在
+        // 而触发PCM重生成（即使PCM完全可用），造成每次分析都重复解码。
+        // 根因场景：mp4DurationMs=0（MediaExtractor失败+无expected+URL不匹配HHMM格式）→
+        // validatePcmWithInfo跳过→此guard命中→return true但不写info→info永久丢失。
         if (mp4DurationMs <= 0 && fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+            if (!fullInfoFile.exists()) {
+                val estimatedMs = fullPcmFile.length() * 1000L / (16000L * 2L)
+                writePcmInfo(fullInfoFile, 0L, estimatedMs, 16000, 1)
+                precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 重建缺失的info文件 for $episodeId: pcmDurationMs=$estimatedMs (从文件大小${fullPcmFile.length()}bytes推算)\n")
+            }
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] keeping existing PCM for $episodeId because MediaExtractor duration is 0 but full PCM exists (${fullPcmFile.length()} bytes).\n")
             return true
         }
 
         // v3.1.41-fix: 在删除旧PCM前，确认存在可用的解码源（音频文件或URL），
         // 避免PCM被删除后无法重新生成导致全部丢失。
+        // v3.1.200-fix: 同上，info缺失时也需要重建
         val decodeSourceAvailable = (audioFile != null && audioFile.exists()) || (audioUrl != null && audioUrl.startsWith("http"))
         if (!decodeSourceAvailable) {
             precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] WARNING: 无可用解码源（音频文件或URL），保留现有PCM文件。episode=$episodeId\n")
             if (fullPcmFile.exists() && fullPcmFile.length() > 1024 * 100) {
+                if (!fullInfoFile.exists()) {
+                    val estimatedMs = fullPcmFile.length() * 1000L / (16000L * 2L)
+                    writePcmInfo(fullInfoFile, 0L, estimatedMs, 16000, 1)
+                    precacheLog.appendText("[$ts] preGeneratePcmFiles: [${com.radio.app.RadioApplication.appVersionTag()}] 重建缺失的info文件 for $episodeId: pcmDurationMs=$estimatedMs (无解码源路径)\n")
+                }
                 return true
             }
             // 无PCM文件且无解码源，继续尝试流式解码
@@ -3530,6 +3550,8 @@ object AudioSegmentAnalyzer {
                 val curr = sorted[i]
                 val next = sorted[i + 1]
                 if (curr.label == "干货" && next.label == "干货" && next.start - curr.end < MAX_DRY_GAP_MS) {
+                    // v3.2.4-fix: 限制干货段合并长度，防止VAD回退连续干段合并为1个巨段
+                    if (next.end - curr.start >= MAX_DRY_SEGMENT_LENGTH_MS) continue
                     curr.end = next.end
                     sorted.removeAt(i + 1)
                     changed = true
@@ -3558,6 +3580,8 @@ object AudioSegmentAnalyzer {
                     if (gapMs > MAX_DRY_GAP_MS || !gapSegments.all { it.label == "静音" }) break
                     if (j + 1 < sorted.size && sorted[j + 1].label == "干货") {
                         val nextDry = sorted[j + 1]
+                        // v3.2.4-fix: 限制干货段合并长度，防止VAD回退连续干段合并为1个巨段
+                        if (nextDry.end - curr.start >= MAX_DRY_SEGMENT_LENGTH_MS) break
                         curr.end = nextDry.end
                         repeat(j - i + 1) { sorted.removeAt(i + 1) }
                         changed = true
