@@ -578,10 +578,12 @@ class FingerprintListFragment : Fragment() {
     /**
      * 在 IO 线程同步加载数据。
      */
+    // v3.2.6-fix: 列表查询使用getAudioFingerprintsForList()排除庞大的fingerprint列，
+    // 避免加载全部指纹字符串（每条数KB）导致OOM和UI卡顿
     private fun loadDataSync(): Any {
         return when (fingerprintType) {
             "manual" -> {
-                val all = dbHelper.getAllAudioFingerprints()
+                val all = dbHelper.getAudioFingerprintsForList()
                 val gold = all.filter { it.isGoldStandard }
                 ManualResult(gold)
             }
@@ -590,7 +592,7 @@ class FingerprintListFragment : Fragment() {
                 CandidateResult(candidates)
             }
             "automatic" -> {
-                val all = dbHelper.getAllAudioFingerprints()
+                val all = dbHelper.getAudioFingerprintsForList()
                 val auto = all.filter { !it.isGoldStandard }
                 AutomaticResult(auto)
             }

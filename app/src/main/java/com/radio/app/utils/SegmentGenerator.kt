@@ -67,6 +67,12 @@ object SegmentGenerator {
     private const val FINGERPRINT_MATCH_THRESHOLD = 0.75f
     private const val MIN_SEGMENT_MS_FOR_FINGERPRINT = 3000L
 
+    // v3.2.4-fix: 干货段最大长度限制，防止YAMNet失败后VAD回退段连续合并为1个巨段
+    // 根因：YAMNet频繁SIGSEGV崩溃导致大批区间无推理结果，VAD回退将失败区间全标记为干货，
+    // mergeAdjacentSegments/postProcessSegments合并干货段无上限 → 全部连成1个段
+    // 30分钟是合理上限——正常干货段（主持人讲话/访谈）不会超过30分钟
+    private const val MAX_DRY_SEGMENT_LENGTH_MS = 1_800_000L // 30分钟
+
     // v3.2.2: 三层架构参数
     // 第一层指纹快筛阈值（正式库匹配）
     private const val LAYER1_FAST_SCREEN_THRESHOLD = 0.70f
@@ -314,10 +320,23 @@ object SegmentGenerator {
      * 读取 .info 文件，检查 pcmDurationMs 是否与 expectedDurationMs 相差不超过5%。
      * @return true 如果时长匹配，false 如果缺少5%以上需要重新生成
      */
+    // v3.2.6-fix: 增大PCM时长容差，大文件（>30MB）容差提高到15%
+    // 根因："旅行大玩家"等长节目（164MB）的info文件中记录的pcmDurationMs与expectedDurationMs
+    // 可能因生成过程中采样率波动、帧对齐误差等出现>5%偏差，导致每次都被判定为"时长不足"而重新PCM生成，
+    // 重新生成后又重新执行三层分段，结果仍然是1个分段。
+    // 大文件使用更宽松的容差，小文件用10%容差（原5%对边缘情况过于严格）。
+    // v3.2.6-fix2: info文件不存在时根据文件大小估算时长，大于expectedDurationMs的85%即视为有效。
     private fun validatePcmDuration(pcmFile: File, infoFile: File, expectedDurationMs: Long): Boolean {
         if (!pcmFile.exists() || pcmFile.length() <= 16000) return false
+        // v3.2.6-fix2: info文件不存在时，根据文件大小估算时长（16kHz单声道16bitPCM）
         if (!infoFile.exists()) {
-            Log.w(TAG, "validatePcmDuration: ${infoFile.name} 不存在，无法验证时长")
+            val estimatedMs = pcmFile.length() * 1000L / (16000L * 2L)
+            val ratio = estimatedMs.toDouble() / expectedDurationMs.toDouble()
+            if (ratio >= 0.85) {
+                Log.i(TAG, "validatePcmDuration: ${infoFile.name} 不存在，根据文件大小估算PCM时长=$estimatedMs, 期望=$expectedDurationMs (ratio=${"%.3f".format(ratio)})，在85%容差内，视为有效")
+                return true
+            }
+            Log.w(TAG, "validatePcmDuration: ${infoFile.name} 不存在，估算时长=$estimatedMs, 期望=$expectedDurationMs (ratio=${"%.3f".format(ratio)}) < 85%，需要重新生成")
             return false
         }
         try {
@@ -332,13 +351,16 @@ object SegmentGenerator {
                 return false
             }
 
+            // 大文件（>30MB）使用15%容差，小文件使用10%容差
+            val isLargeFile = pcmFile.length() > 30L * 1024 * 1024
+            val tolerance = if (isLargeFile) 0.15 else 0.10
             val missingRatio = 1.0 - pcmDurationMs.toDouble() / expectedDurationMs
-            if (missingRatio > 0.05) {
-                Log.w(TAG, "validatePcmDuration: PCM时长不足 - pcm=${pcmDurationMs}ms, expected=${expectedDurationMs}ms, 缺少${String.format(java.util.Locale.US, "%.1f", missingRatio * 100)}% > 5%，需要重新生成")
+            if (missingRatio > tolerance) {
+                Log.w(TAG, "validatePcmDuration: PCM时长不足 - pcm=${pcmDurationMs}ms, expected=${expectedDurationMs}ms, 缺少${String.format(java.util.Locale.US, "%.1f", missingRatio * 100)}% > ${"%.0f".format(tolerance * 100)}%（${if (isLargeFile) "大文件" else "小文件"}容差），需要重新生成")
                 return false
             }
             if (missingRatio > 0) {
-                Log.i(TAG, "validatePcmDuration: PCM时长略短 - pcm=${pcmDurationMs}ms, expected=${expectedDurationMs}ms, 缺少${String.format(java.util.Locale.US, "%.1f", missingRatio * 100)}%（在5%容差内）")
+                Log.i(TAG, "validatePcmDuration: PCM时长略短 - pcm=${pcmDurationMs}ms, expected=${expectedDurationMs}ms, 缺少${String.format(java.util.Locale.US, "%.1f", missingRatio * 100)}%（在${"%.0f".format(tolerance * 100)}%容差内）${if (isLargeFile) "[大文件]" else "[小文件]"}")
             }
             return true
         } catch (e: Exception) {
@@ -518,6 +540,11 @@ object SegmentGenerator {
                     i++
                     continue
                 }
+                // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
+                if (segments[i-1].hasVoice && seg.end - segments[i-1].start >= MAX_DRY_SEGMENT_LENGTH_MS) {
+                    i++
+                    continue
+                }
                 // 合并到前一个非静音段（无论水/干）
                 segments[i-1].end = seg.end
                 segments.removeAt(i)
@@ -526,6 +553,11 @@ object SegmentGenerator {
             } else if (nextIsNonSilence) {
                 // v3.1.135: 如果合并后水段长度超过最大长度，不合并
                 if (isWaterLabel(segments[i+1].label) && segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                    i++
+                    continue
+                }
+                // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
+                if (segments[i+1].hasVoice && segments[i+1].end - seg.start >= MAX_DRY_SEGMENT_LENGTH_MS) {
                     i++
                     continue
                 }
@@ -569,6 +601,8 @@ object SegmentGenerator {
                         && next.start <= curr.end + 10) {
                     // v3.1.135: 水段合并检查长度限制
                     if (isWaterLabel(curr.label) && (next.end - curr.start) >= MAX_WATER_SEGMENT_LENGTH_MS) continue
+                    // v3.2.4-fix: 干货段合并检查长度限制，防止VAD回退连续干段合并为1个巨段
+                    if (curr.hasVoice && (next.end - curr.start) >= MAX_DRY_SEGMENT_LENGTH_MS) continue
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
                     changed = true
@@ -1607,14 +1641,33 @@ object SegmentGenerator {
                             if (!hasYamnetCoverage) {
                                 val intervalDuration = interval.second - interval.first
                                 if (intervalDuration >= 1500) {
-                                    vadFallbackSegments.add(VoiceSegment().apply {
-                                        start = interval.first
-                                        end = interval.second
-                                        hasVoice = true
-                                        label = "干货"
-                                        isSimulated = false
-                                    })
-                                    Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为干货 for episode=$episodeId")
+                                    // v3.2.4-fix: YAMNet完全失败的场景，VAD回退段可能连续且超长，
+                                    // 将其拆分为10分钟一个的小段，避免合并时全部连成1个巨段
+                                    val CHUNK_MS = 600_000L // 10分钟
+                                    if (intervalDuration > CHUNK_MS) {
+                                        var chunkStart = interval.first
+                                        while (chunkStart < interval.second) {
+                                            val chunkEnd = minOf(chunkStart + CHUNK_MS, interval.second)
+                                            vadFallbackSegments.add(VoiceSegment().apply {
+                                                start = chunkStart
+                                                end = chunkEnd
+                                                hasVoice = true
+                                                label = "干货"
+                                                isSimulated = false
+                                            })
+                                            chunkStart = chunkEnd
+                                        }
+                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，拆分为${(intervalDuration + CHUNK_MS - 1) / CHUNK_MS}个10分钟小段保留为干货 for episode=$episodeId")
+                                    } else {
+                                        vadFallbackSegments.add(VoiceSegment().apply {
+                                            start = interval.first
+                                            end = interval.second
+                                            hasVoice = true
+                                            label = "干货"
+                                            isSimulated = false
+                                        })
+                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为干货 for episode=$episodeId")
+                                    }
                                 }
                             }
                         }
@@ -1728,6 +1781,38 @@ object SegmentGenerator {
                     if (newFullPcm.exists() && newFullPcm.length() > 0) {
                         Log.i(TAG, "三层架构: PCM重新生成成功，运行优化VAD+YAMNet for episode=$episodeId")
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 100, "PCM生成完成，开始VAD分析")
+
+                        // v3.2.5-fix: PCM再生后重新执行第一层滑动窗口指纹匹配
+                        // 根因：PCM再生路径完全跳过了第一层，导致219条金标准指纹从未参与匹配。
+                        // 场景：PCM时长不匹配/不存在→固定分段→PCM再生→VAD+YAMNet(无指纹匹配)
+                        // 结果：固定分段只有"待处理"段而无"指纹水货"段，全部依赖VAD+YAMNet→1个分段
+                        var regenWaterSegments = waterSegmentsAfterLayer1
+                        var regenPendingSegments = pendingSegments
+                        var regenMergedAfterLayer1 = mergedAfterLayer1
+                        if (formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
+                            try {
+                                val regenSlidingStart = System.currentTimeMillis()
+                                val regenSlidingResult = applyLayer1SlidingWindow(
+                                    context, episodeId, newFullPcm, effectiveDurationMs,
+                                    formalLibrary, null, fingerprintGroups, groupMembers, dbHelper
+                                )
+                                val regenWaterSegs = regenSlidingResult.filter { it.label == "指纹水货" }
+                                val regenSlidingTime = System.currentTimeMillis() - regenSlidingStart
+                                if (regenWaterSegs.isNotEmpty()) {
+                                    Log.i(TAG, "三层架构: PCM再生后第一层滑动窗口匹配成功，${regenWaterSegs.size}个水货段，耗时${formatDuration(regenSlidingTime)} for episode=$episodeId")
+                                    writeFingerprintLog(context, "三层架构: PCM再生后第一层滑动窗口匹配成功，${regenWaterSegs.size}个水货段，耗时${formatDuration(regenSlidingTime)}")
+                                    regenMergedAfterLayer1 = regenSlidingResult
+                                    regenWaterSegments = regenWaterSegs
+                                    regenPendingSegments = regenSlidingResult.filter { it.label == "待处理" }
+                                } else {
+                                    Log.w(TAG, "三层架构: PCM再生后第一层滑动窗口无匹配，保持固定分段 for episode=$episodeId")
+                                    writeFingerprintLog(context, "三层架构: PCM再生后第一层滑动窗口无匹配（0个水货段），保持固定分段")
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "三层架构: PCM再生后第一层滑动窗口异常: ${e.message} for episode=$episodeId")
+                                writeFingerprintLog(context, "三层架构: PCM再生后第一层滑动窗口异常: ${e.javaClass.name}: ${e.message}")
+                            }
+                        }
                         try {
                             // ===== 第二层-A：VAD-only =====
                             val vadStartTime2 = System.currentTimeMillis()
@@ -1759,11 +1844,11 @@ object SegmentGenerator {
                             val rawIntervals = mutableListOf<Pair<Long, Long>>()
                             if (speechRanges.isEmpty()) {
                                 Log.w(TAG, "三层架构: VAD无活动段，直接使用pending段作为YAMNet区间 for episode=$episodeId")
-                                for (pending in pendingSegments) {
+                                for (pending in regenPendingSegments) {
                                     rawIntervals.add(pending.start to pending.end)
                                 }
                             } else {
-                                for (pending in pendingSegments) {
+                                for (pending in regenPendingSegments) {
                                     for (speech in speechRanges) {
                                         val interStart = maxOf(pending.start, speech.startMs)
                                         val interEnd = minOf(pending.end, speech.endMs)
@@ -1804,7 +1889,7 @@ object SegmentGenerator {
 
                             if (yamnetIntervals.isEmpty()) {
                                 Log.w(TAG, "三层架构: 无YAMNet待处理区间(pending为空)，使用第1层结果 for episode=$episodeId")
-                                mergedAfterLayer2 = mergedAfterLayer1
+                                mergedAfterLayer2 = regenMergedAfterLayer1
                                 audioEngineName = "VAD+YAMNet+三层(优化-无pending段)"
                             } else {
                                 // v3.1.155: PCM再生后也使用YamnetService进行YAMNet推理
@@ -1850,7 +1935,7 @@ object SegmentGenerator {
                                     // 1. YAMNet子段（全部保留，干段优先）
                                     jigsawSegments.addAll(yamnetAllSegments.map { it.copy() })
                                     // 2. 指纹水货段，做保护性边界裁剪（避开所有YAMNet段）
-                                    for (waterSeg in waterSegmentsAfterLayer1) {
+                                    for (waterSeg in regenWaterSegments) {
                                         var clipStart = waterSeg.start; var clipEnd = waterSeg.end
                                         val extraSplits = mutableListOf<Pair<Long, Long>>()
                                         for (yamnetSeg in yamnetAllSegments) {
@@ -1896,7 +1981,7 @@ object SegmentGenerator {
                                     Log.w(TAG, "三层架构: PCM再生后YamnetService失败($yamnetRegenError)，使用第1层结果 for episode=$episodeId")
                                     writeFingerprintLog(context, "三层架构: PCM再生后$yamnetRegenError，使用第1层结果（已将pending段标记为分类失败，失败原因已记录到fingerprint日志）")
                                     // v3.1.157: 同样不再默认转为干货，标记为"分类失败"
-                                    mergedAfterLayer2 = markYamnetFailedSegments(mergedAfterLayer1)
+                                    mergedAfterLayer2 = markYamnetFailedSegments(regenMergedAfterLayer1)
                                     audioEngineName = "VAD+YAMNet+三层(YamnetService失败-不默认分类)"
                                 }
                             }
@@ -2195,7 +2280,10 @@ object SegmentGenerator {
         pcmPath: String,
         intervalStarts: LongArray,
         intervalEnds: LongArray,
-        batchSize: Int = 10,
+        // v3.2.4-fix: batchSize从10降到5，减少每批推理量降低SIGSEGV崩溃概率
+        // 根因：TFLite XNNPACK在连续推理大量区间时更容易触发SIGSEGV，
+        // 每批5个区间崩溃时只损失5个区间的结果，提高YAMNet整体成功率
+        batchSize: Int = 5,
         batchTimeoutMs: Long = 60_000L,
         batchProgressCallback: ((batchIndex: Int, totalBatches: Int) -> Unit)? = null
     ): List<VoiceSegment>? {

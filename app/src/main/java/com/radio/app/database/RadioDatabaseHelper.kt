@@ -1003,6 +1003,44 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return list
     }
 
+    // v3.2.6-fix: 轻量级列表查询，排除庞大的fingerprint列（base64字符串，每条数KB）
+    // 用于指纹管理列表页面显示，避免加载全部指纹字符串导致OOM和UI卡顿
+    fun getAudioFingerprintsForList(): List<AudioFingerprint> {
+        val list = mutableListOf<AudioFingerprint>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_AUDIO_FINGERPRINTS,
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at"),
+                null, null, null, null,
+                "created_at DESC"
+            )
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                val episodeId = cursor.getString(1) ?: ""
+                val startMs = cursor.getLong(2)
+                val endMs = cursor.getLong(3)
+                val durationMs = cursor.getLong(4)
+                val createdAt = cursor.getLong(5)
+                val updatedAt = cursor.getLong(6)
+                val note = cursor.getString(7) ?: ""
+                val isGoldStandard = cursor.getInt(8) == 1
+                val lastMatchedAt = cursor.getLong(9)
+                list.add(AudioFingerprint(
+                    id = id, episodeId = episodeId,
+                    startMs = startMs, endMs = endMs,
+                    fingerprint = "",  // 列表页不需要指纹字符串
+                    durationMs = durationMs,
+                    createdAt = createdAt, updatedAt = updatedAt,
+                    note = note, isGoldStandard = isGoldStandard,
+                    lastMatchedAt = lastMatchedAt
+                ))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
+    }
+
     fun getAudioFingerprintCount(): Int {
         var count = 0
         try {
@@ -1463,6 +1501,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 put("duration_ms", durationMs)
                 put("created_at", now)
                 put("updated_at", now)
+                put("last_matched_at", now)  // v3.2.6-fix: 晋升时即记录为已匹配，避免列表中显示"从未匹配"
                 put("note", "自动晋升（观察池）")
                 put("is_gold_standard", 0)
             }
