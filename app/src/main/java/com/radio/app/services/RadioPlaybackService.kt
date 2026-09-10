@@ -6242,7 +6242,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (curId.isBlank()) return
 
         val preCacheList = loadPreCacheList()
-        val savedList = loadEpisodeList()
+        var savedList = loadEpisodeList()
+
+        // v3.1.xxx-fix: 当savedList为空时，主动从API获取当前日期的节目列表。
+        // 根因：savedList可能被fetchCrossDayEpisode（saveEpisodeList覆盖）或其他路径清空，
+        // 此时combinedList=preCacheList（可能只有少量跨天缓存节目），后续不足FUTURE_PLAN_COUNT个。
+        // 即使有fallback4，它在currentIdx<0时才触发，而currentIdx可能刚好找到（preCacheList中有当前节目），
+        // 但后续节目被dislike/no-preprocess全部跳过，API补充获取的跨天节目也被过滤，导致nextPlanned=0。
+        if (savedList.isEmpty()) {
+            val curStation = currentEpisode?.stationId
+            val curDate = currentEpisode?.broadcastAt?.take(10)
+            if (curStation != null && !curDate.isNullOrBlank()) {
+                try {
+                    val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                    val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
+                    if (!freshEpisodes.isNullOrEmpty()) {
+                        saveEpisodeList(freshEpisodes)
+                        savedList = freshEpisodes
+                        writeServiceLog("schedule", "buildPlaybackSchedule: savedList为空，从API获取了${freshEpisodes.size}个节目 for $curStation $curDate")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
 
         // 先找preCacheList，再找savedList
         val nextEpisode = findNextInList(preCacheList, curId, settings)
