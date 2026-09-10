@@ -1830,6 +1830,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     } catch (e: Exception) {
                         writePreCacheLog("fetchMoreDaysForPreCache: DB save error: ${e.message}")
                     }
+                    // v3.1.200-fix: 验证该日期节目单完整性——手动刷新（forceRefresh=true）始终从API获取
+                    // 全部节目，但ensureScheduleComplete只在triggerPreCache开头对当前日期执行一次。
+                    // 当preCache获取新日期（targetDate）后，该日期的节目单可能不完整（API返回部分数据
+                    // 或未来日期返回空列表后靠URL构造的节目列表），需要用ensureScheduleComplete再验证一次。
+                    try {
+                        val scheduleComplete = ensureScheduleComplete(stationId, targetDate)
+                        writePreCacheLog("fetchMoreDaysForPreCache: ensureScheduleComplete for $targetDate = $scheduleComplete")
+                    } catch (e: Exception) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: ensureScheduleComplete error for $targetDate: ${e.message}")
+                    }
                 }
                 resultList.addAll(validNewEpisodes)
             } else {
