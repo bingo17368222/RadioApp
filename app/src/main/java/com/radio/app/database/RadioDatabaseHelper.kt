@@ -1501,7 +1501,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 put("duration_ms", durationMs)
                 put("created_at", now)
                 put("updated_at", now)
-                put("last_matched_at", now)  // v3.2.6-fix: 晋升时即记录为已匹配，避免列表中显示"从未匹配"
+                // 不设置last_matched_at，晋升后第一次在滑动窗口中命中时自然更新
                 put("note", "自动晋升（观察池）")
                 put("is_gold_standard", 0)
             }

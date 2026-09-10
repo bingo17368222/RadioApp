@@ -2737,6 +2737,7 @@ object SegmentGenerator {
                         hitDetails.add("${startMs/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
                     }
                     // v3.2.3-fix: 批量更新所有同去重key指纹的last_matched_at（包括被去重淘汰的自动指纹）
+                    // v3.2.7: 添加日志跟踪自动指纹的last_matched_at更新情况
                     if (dbHelper != null) {
                         try {
                             val allMatchedIds = if (matchedDedupKey != null) {
@@ -2751,6 +2752,10 @@ object SegmentGenerator {
                                     dbHelper.updateFingerprintLastMatched(allMatchedIds[0])
                                 } else {
                                     dbHelper.batchUpdateFingerprintLastMatched(allMatchedIds)
+                                    // v3.2.7: 日志跟踪同去重key的多条指纹（含自动指纹）匹配更新
+                                    if (allMatchedIds.size > 1) {
+                                        Log.d(TAG, "第一层滑动窗口: 1次命中更新${allMatchedIds.size}条指纹的last_matched_at（含被去重淘汰的自动指纹）, 窗口区间=${startMs/1000}s-${endMs/1000}s")
+                                    }
                                 }
                             }
                         } catch (_: Exception) {}
