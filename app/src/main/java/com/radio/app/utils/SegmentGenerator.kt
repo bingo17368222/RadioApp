@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.ResultReceiver
 import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.radio.app.BuildConfig
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.FingerprintGroupInfo
 import com.radio.app.database.FingerprintGroupMember
@@ -939,10 +940,12 @@ object SegmentGenerator {
                 // v2.4.151: Persist engine and timing for permanent display.
                 try {
                     val dryCount = segments.count { it.hasVoice }
+                    // v3.1.xxx-fix: 记录分段时的版本号，确保UI显示准确的版本号而非最新版本
                     dbHelper.saveSegmentAnalysisInfo(
                         com.radio.app.database.SegmentAnalysisInfo(
                             episodeId = episodeId,
                             engineName = engineName,
+                            versionName = BuildConfig.VERSION_NAME,
                             generatedAt = System.currentTimeMillis(),
                             processingTimeMs = processingTimeMs,
                             audioDurationMs = audioDurationMs,
@@ -1096,11 +1099,13 @@ object SegmentGenerator {
             dbHelper.updateEpisodeSegmentCount(episodeId, segments.size)
 
             val dryCount = segments.count { it.hasVoice }
+            // v3.1.xxx-fix: 记录分段时的版本号，确保UI显示准确的版本号而非最新版本
             try {
                 dbHelper.saveSegmentAnalysisInfo(
                     com.radio.app.database.SegmentAnalysisInfo(
                         episodeId = episodeId,
                         engineName = engineName,
+                        versionName = BuildConfig.VERSION_NAME,
                         generatedAt = System.currentTimeMillis(),
                         processingTimeMs = processingTimeMs,
                         audioDurationMs = audioDurationMs,

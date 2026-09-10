@@ -1889,7 +1889,8 @@ class PlayerActivity : AppCompatActivity() {
                 val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
                 ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
             } else ""
-            val savedVersion = dbAnalysisInfo?.versionName?.takeIf { it.isNotBlank() } ?: BuildConfig.VERSION_NAME
+            // v3.1.xxx-fix: 如果分段时未保存版本号，显示"未保存"而非最新版本号
+            val savedVersion = dbAnalysisInfo?.versionName?.takeIf { it.isNotBlank() } ?: "未保存"
             val savedEngineWithVersion = "$savedEngine v$savedVersion"
             val restoredText = "片段列表  分段引擎：$savedEngineWithVersion (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(savedTime)}, 干货 $dryPercentText%)$fingerprintSuffix"
             binding.tvAiStatus.text = restoredText
@@ -2812,7 +2813,8 @@ class PlayerActivity : AppCompatActivity() {
                                 val fpPct = "%.1f%%".format(fpMatchCount.toFloat() / fpDryTotal * 100)
                                 ", 指纹匹配 $fpMatchCount/原干货 $fpDryTotal ($fpPct)"
                             } else ""
-                            val displayVersion = dbAnalysisInfo?.versionName?.takeIf { it.isNotBlank() } ?: BuildConfig.VERSION_NAME
+                            // v3.1.xxx-fix: 如果分段时未保存版本号，显示"未保存"而非最新版本号
+                            val displayVersion = dbAnalysisInfo?.versionName?.takeIf { it.isNotBlank() } ?: "未保存"
                             val displayEngineWithVersion = "$displayEngine v$displayVersion"
                             binding.tvAiStatus.text = "片段列表  分段引擎：$displayEngineWithVersion (耗时: $displayTimeText, 干货 $dryPercentText%)$fingerprintSuffix"
                             segmentListDisplayText = binding.tvAiStatus.text.toString()  // v2.4.50: Store for persistence
@@ -2943,7 +2945,14 @@ class PlayerActivity : AppCompatActivity() {
                                     AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
                                     else -> "关键词"
                                 }
-                                val flow2Text = "片段列表  分段引擎：$flow2Engine v${BuildConfig.VERSION_NAME}"
+                                // v3.1.xxx-fix: 从DB获取分段时保存的版本号，避免使用最新版本号
+                                val flow2Version = currentEpisode?.let { ep2 ->
+                                    try {
+                                        com.radio.app.database.RadioDatabaseHelper.getInstance(this@PlayerActivity)
+                                            .getSegmentAnalysisInfo(ep2.id)?.versionName?.takeIf { it.isNotBlank() }
+                                    } catch (_: Exception) { null }
+                                } ?: "未保存"
+                                val flow2Text = "片段列表  分段引擎：$flow2Engine v$flow2Version"
                                 binding.tvAiStatus.text = flow2Text
                                 segmentListDisplayText = flow2Text
                                 // v2.4.57: Persist to SharedPreferences
@@ -3081,7 +3090,14 @@ class PlayerActivity : AppCompatActivity() {
                                     AppSettings.AI_MODEL_JIU_AI_TING -> "就AI听"
                                     else -> "关键词"
                                 }
-                                val flow2Text2 = "片段列表  分段引擎：$flow2Engine2 v${BuildConfig.VERSION_NAME}"
+                                // v3.1.xxx-fix: 从DB获取分段时保存的版本号，避免使用最新版本号
+                                val flow2Version2 = currentEpisode?.let { ep2 ->
+                                    try {
+                                        com.radio.app.database.RadioDatabaseHelper.getInstance(this@PlayerActivity)
+                                            .getSegmentAnalysisInfo(ep2.id)?.versionName?.takeIf { it.isNotBlank() }
+                                    } catch (_: Exception) { null }
+                                } ?: "未保存"
+                                val flow2Text2 = "片段列表  分段引擎：$flow2Engine2 v$flow2Version2"
                                 binding.tvAiStatus.text = flow2Text2
                                 segmentListDisplayText = flow2Text2
                                 // v2.4.57: Persist to SharedPreferences
