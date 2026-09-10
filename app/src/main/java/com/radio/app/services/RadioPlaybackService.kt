@@ -1485,8 +1485,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
         }
         if (currentIdx < 0) {
-            Log.d(TAG, "Pre-cache: current episode not in list, adding to list")
-            preCacheList = listOf(currentEp) + preCacheList
+            // v3.1.xxx-fix: 当前节目不在preCacheList时，不仅追加当前节目，还要从savedList获取同天后续节目
+            // 根因：preCacheList之前可能只包含跨天节目，仅追加currentEp导致同天后续节目（如旅行大玩家）
+            // 从未进入preCacheList，autoPlayNextEpisode阶段1找不到同天节目→fallback阶段2若savedList为空
+            // 也找不到→最终取了preCacheList中的跨天节目（跳过同天节目）。
+            val savedEpisodes = loadEpisodeList()
+            val sameDayAfterEpisodes = if (savedEpisodes.isNotEmpty()) {
+                val savedIdx = savedEpisodes.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl }
+                if (savedIdx >= 0 && savedIdx + 1 < savedEpisodes.size) {
+                    val curDate = currentEp.broadcastAt?.take(10)
+                    savedEpisodes.subList(savedIdx + 1, savedEpisodes.size).filter { ep ->
+                        !preCacheList.any { it.id == ep.id || it.audioUrl == ep.audioUrl } &&
+                        (curDate == null || ep.broadcastAt?.take(10) == null || ep.broadcastAt?.take(10) == curDate)
+                    }
+                } else emptyList()
+            } else emptyList()
+            if (sameDayAfterEpisodes.isNotEmpty()) {
+                Log.d(TAG, "Pre-cache: ${sameDayAfterEpisodes.size} same-day episodes after current found in savedList, prepending to preCacheList")
+                writePreCacheLog("triggerPreCache: prepending ${sameDayAfterEpisodes.size} same-day episodes from savedList: ${sameDayAfterEpisodes.map { "${it.id}:${it.title}" }}")
+            }
+            preCacheList = listOf(currentEp) + sameDayAfterEpisodes + preCacheList
             currentIdx = 0
             savePreCacheList(preCacheList)
         }
@@ -1865,18 +1883,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         if (constructedUrl !in existingUrls) {
                             // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
                             // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
+                            // v3.1.xxx-fix: 改善构造节目的标题匹配。先尝试按时间槽匹配（原逻辑），
+                            // 失败后再按slotIdx在savedList中取对应位置的标题（确保顺序一致时取到正确标题）。
+                            // 同时将构造的节目信息持久化到DB，使enrichEpisodeFromDbIfNeeded后续能通过ID找到标题。
+                            var constructedTitle = savedList.firstOrNull {
+                                val parts = it.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
+                                parts.size >= 4 && "${parts[2]}_${parts[3]}" == slot
+                            }?.title
+                            if (constructedTitle.isNullOrBlank() && slotIdx < savedList.size) {
+                                constructedTitle = savedList[slotIdx].title
+                            }
                             val constructedEp = Episode(
                                 id = "$stationId-$targetDate-$slotIdx",
-                                title = savedList.firstOrNull {
-                                    val parts = it.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
-                                    parts.size >= 4 && "${parts[2]}_${parts[3]}" == slot
-                                }?.title ?: "节目",
+                                title = constructedTitle ?: "节目",
                                 audioUrl = constructedUrl,
                                 stationId = stationId,
                                 broadcastAt = targetDate
                             )
                             resultList.add(constructedEp)
-                            writePreCacheLog("fetchMoreDaysForPreCache: constructed episode: ${constructedEp.id}, url=$constructedUrl")
+                            // v3.1.xxx-fix: 持久化构造节目到DB，便于enrichEpisodeFromDbIfNeeded后续查找
+                            try {
+                                RadioDatabaseHelper.getInstance(this@RadioPlaybackService).saveEpisodeInfos(listOf(constructedEp))
+                            } catch (_: Exception) {}
+                            writePreCacheLog("fetchMoreDaysForPreCache: constructed episode: ${constructedEp.id}, title=${constructedTitle ?: "节目"}, url=$constructedUrl")
                         }
                     }
                 }
@@ -7315,13 +7344,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v3.1.124: 当savedList中找不到当前节目时，说明savedList可能被fetchCrossDayEpisode覆盖了
                 // （跨天获取成功时调用了saveEpisodeList覆盖了当天的节目列表）。
                 // 尝试根据当前节目的broadcastAt和stationId重建正确的节目列表。
-                val listToSearch = if (savedList.isNotEmpty() && savedList.none { it.id == curId || it.audioUrl == currentPlayingUrl }) {
+                // v3.1.xxx-fix: 当savedList为空时也要尝试从API刷新节目列表。
+                // 根因：savedList可能被fetchCrossDayEpisode调用saveEpisodeList覆盖为空或为跨天节目，
+                // 原代码只在savedList非空且不包含curId时刷新，savedList为空直接走else→空列表→
+                // findNextInList返回null→fallthrough到无条件扫描→取preCacheList第一个有效节目（跨天）。
+                val listToSearch = if (savedList.isEmpty() || (savedList.isNotEmpty() && savedList.none { it.id == curId || it.audioUrl == currentPlayingUrl })) {
                     val curEp = currentEpisode
                     if (curEp != null) {
                         val stationId = curEp.stationId
                         val dateStr = curEp.broadcastAt?.take(10)
                         if (stationId.isNotBlank() && !dateStr.isNullOrBlank() && !curId.endsWith("-cross")) {
-                            writeNotifDetailLog("autoPlayNextEpisode: curId not found in savedList, fetching fresh list for station=$stationId date=$dateStr")
+                            writeNotifDetailLog("autoPlayNextEpisode: curId not found or savedList empty, fetching fresh list for station=$stationId date=$dateStr")
                             try {
                                 val apiService = com.radio.app.network.EpisodeApiService.getInstance()
                                 val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
