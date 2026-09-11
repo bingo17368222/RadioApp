@@ -1500,6 +1500,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 currentIdx = preCacheList.indexOfFirst { it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == epFilename }
             }
         }
+        // v3.1.xxx-fix: 跨天节目不在preCacheList时的额外匹配。
+        // 根因：跨天节目ID格式为"{stationId}-{date}-cross"，而preCacheList中节目ID为"{stationId}-{date}-{index}"。
+        // 跨天节目找不到时触发prepend+save（行1542），可能因savedList为空导致仅追加currentEp+少量同天节目，
+        // 若后续savePreCacheList被极小列表触发（oldSize大但newSize小→guard阻止保存），
+        // 但currentIdx仍为-1，其余triggerPreCache逻辑无法正常工作。
+        // 修复：当当前节目为跨天（-cross）时，用baseId在preCacheList中找到同天任意节目作为当前位置。
+        if (currentIdx < 0) {
+            val baseId = currentEp.id?.removeSuffix("-cross")
+            if (!baseId.isNullOrBlank() && baseId != currentEp.id) {
+                // 找同天第一个节目（按索引最小的）
+                currentIdx = preCacheList.indexOfFirst { it.id?.startsWith(baseId) == true }
+                if (currentIdx >= 0) {
+                    writePreCacheLog("triggerPreCache: cross-day fallback - found baseId=$baseId at preCacheList index=$currentIdx (${preCacheList[currentIdx].title})")
+                }
+            }
+        }
         if (currentIdx < 0) {
             // v3.1.xxx-fix: 当前节目不在preCacheList时，不仅追加当前节目，还要从savedList获取同天后续节目
             // 根因：preCacheList之前可能只包含跨天节目，仅追加currentEp导致同天后续节目（如旅行大玩家）
@@ -1957,6 +1973,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun savePreCacheList(episodes: List<Episode>) {
+        // v3.1.xxx-fix: 防止preCacheList被意外截断（如363→10）。
+        // 根因：当列表从大（>100）突然变为很小（<40）时，说明可能写入了损坏/截断的数据，
+        // 跳过保存以保留旧的完整列表。
+        val oldSize = loadPreCacheList().size
+        if (episodes.size < 40 && oldSize > 100) {
+            writePreCacheLog("savePreCacheList: BLOCKED - size ${episodes.size} is far smaller than existing $oldSize episodes, preserving old list")
+            Log.w(TAG, "Pre-cache: BLOCKED saving small list ($episodes.size) when old list has $oldSize episodes")
+            return
+        }
         val arr = org.json.JSONArray()
         for (ep in episodes) {
             val obj = org.json.JSONObject()
@@ -2633,8 +2658,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {
-            val epDuration = episode.duration ?: 0
-            val durationMs = if (epDuration in 60000..100000000) epDuration.toLong() else 7200_000L
+            // v3.1.xxx-fix: episode.duration来自API的(结束时间-开始时间)/1000，是秒单位。
+            // 需转换为毫秒再与范围常量比较。不转换时，5400(90分钟节目) in 60000..100000000 = false，
+            // 落入默认7200_000L(120分钟)，导致三层分段按2小时处理90分钟节目。
+            val epDuration = (episode.duration ?: 0) * 1000L
+            val durationMs = if (epDuration in 60_000L..100_000_000L) epDuration else 7200_000L
             writePreCacheLog("startPreCachePcmGeneration:  calling preSegmentFixed for $episodeId, durationMs=$durationMs (fixed 15-min segments)")
             com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
             writePreCacheLog("startPreCachePcmGeneration:  preSegmentFixed completed for $episodeId")
@@ -6343,12 +6371,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 根因：预生成分段已保存到各独立部分（如henan-private-car-2025-02-13-1），
             // 但跨天组合节目（henan-private-car-2025-02-13-cross）查询时使用base ID，
             // 无法匹配到这些分段。使用LIKE查询找到所有匹配前缀的分段并合并。
+            // v3.1.xxx-fix: 改为遍历各索引精确匹配，避免broad prefix合并所有节目段数（60→335）。
             if (episodeId.endsWith("-cross")) {
-                val prefixSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                var prefixSegments = emptyList<VoiceSegment>()
+                for (trialIdx in 0..20) {
+                    val trialId = "$queryId-$trialIdx"
+                    val trialSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegments(trialId)
+                    if (trialSegments.isNotEmpty()) {
+                        prefixSegments = trialSegments
+                        writeServiceLog("segment", "loadEpisodeSegmentsFromDb: cross-day $episodeId matched source $trialId, loaded ${trialSegments.size} segments")
+                        break
+                    }
+                }
+                if (prefixSegments.isEmpty()) {
+                    prefixSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                }
                 if (prefixSegments.isNotEmpty()) {
                     episode.voiceSegments = prefixSegments
                     val realCount = prefixSegments.count { !it.isSimulated }
-                    writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${prefixSegments.size} segments via prefix match (${realCount} real, ${prefixSegments.size - realCount} simulated) for cross-day $episodeId")
+                    writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${prefixSegments.size} segments (${realCount} real, ${prefixSegments.size - realCount} simulated) for cross-day $episodeId")
                     return true
                 }
             }
@@ -6419,7 +6460,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (curId.isBlank()) return emptyList()
 
         val preCacheList = loadPreCacheList()
-        val savedList = loadEpisodeList()
+        var savedList = loadEpisodeList()
+        // v3.1.xxx-fix: savedList为空时主动从API获取当前日期节目，确保播放计划有完整当天节目。
+        // 根因：preCacheList可能因SharedPreferences写入截断/损坏而只有少量缓存（如363→10条）。
+        // 此时combinedList=preCacheList(10条)+emptyList，当前节目（跨天）不在列表→fallback3匹配为index 0
+        // →扫描从idx=1开始，后续节目被dislike过滤后仅剩2条→老杨说车等节目被"跳过"（实际从未进入列表）。
+        if (savedList.isEmpty()) {
+            val curStation = currentEpisode?.stationId
+            val curDate = currentEpisode?.broadcastAt?.take(10)
+            if (curStation != null && !curDate.isNullOrBlank()) {
+                try {
+                    val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                    // 尝试获取当前日期的完整节目列表
+                    val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
+                    if (!freshEpisodes.isNullOrEmpty()) {
+                        saveEpisodeList(freshEpisodes)
+                        savedList = freshEpisodes
+                        writeServiceLog("schedule", "buildPlaybackSchedule: savedList为空，已从API获取${freshEpisodes.size}个节目 for $curStation $curDate，合并到播放计划")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
 
         // 合并列表，preCacheList优先，去重
         // v3.1.139: 改为var，fallback4需要重新赋值
@@ -6729,8 +6790,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 // v3.1.195-fix: 跨天节目精确匹配无结果时，按前缀匹配各独立部分的分段
                 if (dbSegments.isEmpty() && episodeId.endsWith("-cross")) {
-                    dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
-                    writeServiceLog("segment", "getSegmentList: prefix query for cross-day $episodeId returned ${dbSegments.size} segments")
+                    // v3.1.xxx-fix: 改用精确匹配各索引节目，避免broad prefix匹配到同天所有节目，段数错误放大（60段→335段）。
+                    // 根因：getVoiceSegmentsByPrefix("henan-private-car-2025-02-25")执行LIKE 'prefix-%'，
+                    // 匹配henan-private-car-2025-02-25-0~11共12个节目，合并后段数=全部节目的分段之和。
+                    // 跨天节目仅来源于索引0（唱行早高峰），应只取它的分段。
+                    // 遍历0~11查找第一个有分段的节目，找到后保存到跨天ID供下次精确查询。
+                    for (trialIdx in 0..20) {
+                        val trialId = "$queryId-$trialIdx"
+                        val trialSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(trialId)
+                        if (trialSegments.isNotEmpty()) {
+                            dbSegments = trialSegments
+                            // 保存到跨天节目ID下，下次查询走精确匹配不走前缀
+                            try {
+                                com.radio.app.database.RadioDatabaseHelper.getInstance(this).saveVoiceSegments(episodeId, trialSegments)
+                            } catch (_: Exception) {}
+                            writeServiceLog("segment", "getSegmentList: cross-day $episodeId matched source $trialId, loaded ${trialSegments.size} segments")
+                            break
+                        }
+                    }
+                    // 兜底：如果都没找到，回退到broad prefix（至少有分段用，虽然段数偏大）
+                    if (dbSegments.isEmpty()) {
+                        dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                        writeServiceLog("segment", "getSegmentList: prefix fallback for cross-day $episodeId returned ${dbSegments.size} segments")
+                    }
                 }
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
@@ -7194,17 +7276,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // [v2.0.43] Issue 1 Fix: Calculate duration from time slot to avoid duration=0
                     // duration=0 causes savedPos validation to fail in PlayerActivity, leading to progress regression
+                    // [v3.1.205-duration-fix] duration字段需要秒单位，但之前用了毫秒（*60*1000），
+                    // 导致通知栏计算结束时间时 duration/60 得出120,000分钟→07:00+120000分=15:00。
+                    // 修复：去掉*1000，duration以秒为单位存储。
                     val calculatedDuration = try {
                         val timeParts = targetTimeSlot.split("_")
                         if (timeParts.size >= 2) {
                             val startMin = timeParts[0].substring(0, 2).toInt() * 60 + timeParts[0].substring(2, 4).toInt()
                             val endMin = timeParts[1].substring(0, 2).toInt() * 60 + timeParts[1].substring(2, 4).toInt()
-                            ((endMin - startMin).coerceAtLeast(0) * 60 * 1000).toLong()  // milliseconds
+                            ((endMin - startMin).coerceAtLeast(0) * 60).toLong()  // seconds
                         } else {
-                            7200_000L  // Default 2 hours
+                            7200L  // Default 2 hours in seconds
                         }
                     } catch (_: Exception) {
-                        7200_000L  // Default 2 hours
+                        7200L  // Default 2 hours in seconds
                     }
 
                     // v3.1.196-fix: 为跨天节目创建8个模拟分段，防止getSegmentList()回退到15分钟固定分段。
@@ -7212,8 +7297,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // fetchCrossDayEpisode()创建时voiceSegments默认为emptyList()，如果preSegmentFixed()
                     // 尚未完成（异步预生成），getSegmentList()的Step 1（内存检查）和Step 2（DB查询）都失败，
                     // 最终回退到Step 4生成15分钟固定分段，导致分段导航跳15分钟。
+                    // [v3.1.205-duration-fix] VoiceSegment.start/end需要毫秒单位，所以*1000L转换。
                     val simSegCount = 8
-                    val simSegDuration = (calculatedDuration / simSegCount).coerceAtLeast(1L)
+                    val simSegDuration = (calculatedDuration * 1000L / simSegCount).coerceAtLeast(1L)
                     val simulatedSegments = (0 until simSegCount).map { j ->
                         VoiceSegment(
                             start = j * simSegDuration,
