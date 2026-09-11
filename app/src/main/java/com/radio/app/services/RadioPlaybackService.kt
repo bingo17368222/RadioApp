@@ -4171,8 +4171,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun getCurrentSegmentDisplay(): String {
         val segments = getSegmentList()
         if (segments.isEmpty()) return ""
-        // 如果全是模拟分段，不显示分段信息
-        if (segments.all { it.isSimulated }) return ""
 
         val totalSegments = segments.size
         val currentPos = getCurrentPosition()
