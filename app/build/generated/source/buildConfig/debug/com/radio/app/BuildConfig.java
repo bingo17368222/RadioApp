@@ -7,6 +7,6 @@ public final class BuildConfig {
   public static final boolean DEBUG = Boolean.parseBoolean("true");
   public static final String APPLICATION_ID = "com.radio.app";
   public static final String BUILD_TYPE = "debug";
-  public static final int VERSION_CODE = 593;
-  public static final String VERSION_NAME = "3.1.202";
+  public static final int VERSION_CODE = 594;
+  public static final String VERSION_NAME = "3.1.203";
 }

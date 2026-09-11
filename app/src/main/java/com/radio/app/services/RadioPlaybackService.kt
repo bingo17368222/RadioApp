@@ -1489,7 +1489,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 根因：preCacheList之前可能只包含跨天节目，仅追加currentEp导致同天后续节目（如旅行大玩家）
             // 从未进入preCacheList，autoPlayNextEpisode阶段1找不到同天节目→fallback阶段2若savedList为空
             // 也找不到→最终取了preCacheList中的跨天节目（跳过同天节目）。
-            val savedEpisodes = loadEpisodeList()
+            var savedEpisodes = loadEpisodeList()
+            // v3.1.xxx-fix: 当savedList也为空时，尝试从API获取当前日期节目列表
+            // 根因：savedList可能被fetchCrossDayEpisode（saveEpisodeList覆盖）清空，
+            // 此时savedEpisodes.isEmpty()==true→sameDayAfterEpisodes为空→preCacheList仍缺少同天后续节目，
+            // autoPlayNextEpisode阶段1找不到同天节目→跨天回退。
+            if (savedEpisodes.isEmpty()) {
+                val curStation = currentEp.stationId
+                val curDate = currentEp.broadcastAt?.take(10)
+                if (curStation.isNotBlank() && !curDate.isNullOrBlank()) {
+                    try {
+                        val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                        val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
+                        if (!freshEpisodes.isNullOrEmpty()) {
+                            saveEpisodeList(freshEpisodes)
+                            savedEpisodes = freshEpisodes
+                            writePreCacheLog("triggerPreCache: savedList为空，从API获取了${freshEpisodes.size}个节目 for $curStation $curDate")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
             val sameDayAfterEpisodes = if (savedEpisodes.isNotEmpty()) {
                 val savedIdx = savedEpisodes.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl }
                 if (savedIdx >= 0 && savedIdx + 1 < savedEpisodes.size) {
