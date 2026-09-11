@@ -2464,7 +2464,11 @@ class PlayerActivity : AppCompatActivity() {
                         dur
                     } else {
                         val transcriptMax = dbHelper.getMaxTranscriptEndMs(episode.id).toInt()
-                        if (transcriptMax > 0) transcriptMax else episode.duration.toInt()
+                        // v3.1.xxx-fix: episode.duration来自API的(结束时间-开始时间)/1000，是秒单位。
+                        // 但maxEnd被当做毫秒传给segment函数（generateJiuAiTingSegments/analyzeEpisode）。
+                        // 修复：秒→毫秒转换。不修复时，即使API返回正确值（如30分钟=1800秒），
+                        // 1800 > 60000 = false，落入默认7200_000L(2小时)，导致PCM处理2小时音频产出90+分段。
+                        if (transcriptMax > 0) transcriptMax else (episode.duration * 1000L).toInt()
                     }
                     writeJitterLog(" btnAiSegment: dur=$dur, maxEnd=$maxEnd")
 
