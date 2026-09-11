@@ -6368,12 +6368,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 根因：预生成分段已保存到各独立部分（如henan-private-car-2025-02-13-1），
             // 但跨天组合节目（henan-private-car-2025-02-13-cross）查询时使用base ID，
             // 无法匹配到这些分段。使用LIKE查询找到所有匹配前缀的分段并合并。
+            // v3.1.xxx-fix: 改为遍历各索引精确匹配，避免broad prefix合并所有节目段数（60→335）。
             if (episodeId.endsWith("-cross")) {
-                val prefixSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                var prefixSegments = emptyList<VoiceSegment>()
+                for (trialIdx in 0..20) {
+                    val trialId = "$queryId-$trialIdx"
+                    val trialSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegments(trialId)
+                    if (trialSegments.isNotEmpty()) {
+                        prefixSegments = trialSegments
+                        writeServiceLog("segment", "loadEpisodeSegmentsFromDb: cross-day $episodeId matched source $trialId, loaded ${trialSegments.size} segments")
+                        break
+                    }
+                }
+                if (prefixSegments.isEmpty()) {
+                    prefixSegments = RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                }
                 if (prefixSegments.isNotEmpty()) {
                     episode.voiceSegments = prefixSegments
                     val realCount = prefixSegments.count { !it.isSimulated }
-                    writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${prefixSegments.size} segments via prefix match (${realCount} real, ${prefixSegments.size - realCount} simulated) for cross-day $episodeId")
+                    writeServiceLog("segment", "loadEpisodeSegmentsFromDb: loaded ${prefixSegments.size} segments (${realCount} real, ${prefixSegments.size - realCount} simulated) for cross-day $episodeId")
                     return true
                 }
             }
@@ -6774,8 +6787,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 // v3.1.195-fix: 跨天节目精确匹配无结果时，按前缀匹配各独立部分的分段
                 if (dbSegments.isEmpty() && episodeId.endsWith("-cross")) {
-                    dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
-                    writeServiceLog("segment", "getSegmentList: prefix query for cross-day $episodeId returned ${dbSegments.size} segments")
+                    // v3.1.xxx-fix: 改用精确匹配各索引节目，避免broad prefix匹配到同天所有节目，段数错误放大（60段→335段）。
+                    // 根因：getVoiceSegmentsByPrefix("henan-private-car-2025-02-25")执行LIKE 'prefix-%'，
+                    // 匹配henan-private-car-2025-02-25-0~11共12个节目，合并后段数=全部节目的分段之和。
+                    // 跨天节目仅来源于索引0（唱行早高峰），应只取它的分段。
+                    // 遍历0~11查找第一个有分段的节目，找到后保存到跨天ID供下次精确查询。
+                    for (trialIdx in 0..20) {
+                        val trialId = "$queryId-$trialIdx"
+                        val trialSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(trialId)
+                        if (trialSegments.isNotEmpty()) {
+                            dbSegments = trialSegments
+                            // 保存到跨天节目ID下，下次查询走精确匹配不走前缀
+                            try {
+                                com.radio.app.database.RadioDatabaseHelper.getInstance(this).saveVoiceSegments(episodeId, trialSegments)
+                            } catch (_: Exception) {}
+                            writeServiceLog("segment", "getSegmentList: cross-day $episodeId matched source $trialId, loaded ${trialSegments.size} segments")
+                            break
+                        }
+                    }
+                    // 兜底：如果都没找到，回退到broad prefix（至少有分段用，虽然段数偏大）
+                    if (dbSegments.isEmpty()) {
+                        dbSegments = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegmentsByPrefix(queryId)
+                        writeServiceLog("segment", "getSegmentList: prefix fallback for cross-day $episodeId returned ${dbSegments.size} segments")
+                    }
                 }
                 if (dbSegments.isNotEmpty()) {
                     // v3.1.120: 只要DB有分段就使用，不要生成新的固定分段。
