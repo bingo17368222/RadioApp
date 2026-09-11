@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 26
         targetSdk 33
-        versionCode 595
-        versionName "3.1.204"
+        versionCode 596
+        versionName "3.1.205"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)

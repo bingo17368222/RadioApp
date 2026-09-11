@@ -4165,6 +4165,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
+     * v3.1.204: 获取当前播放位置所在的分段信息，返回"第X分段/总共Y分段"格式字符串。
+     * 如果分段数据不可用或全是模拟分段，返回空字符串。
+     */
+    private fun getCurrentSegmentDisplay(): String {
+        val segments = getSegmentList()
+        if (segments.isEmpty()) return ""
+        // 如果全是模拟分段，不显示分段信息
+        if (segments.all { it.isSimulated }) return ""
+
+        val totalSegments = segments.size
+        val currentPos = getCurrentPosition()
+
+        var segmentIndex = segments.indexOfFirst { currentPos >= it.start && currentPos < it.end }
+        if (segmentIndex < 0) {
+            // 边界情况：当前位置在第一个分段之前或最后一个分段之后
+            if (currentPos < segments.first().start) segmentIndex = 0
+            else if (currentPos >= segments.last().end) segmentIndex = totalSegments - 1
+        }
+
+        return if (segmentIndex >= 0) {
+            "第${segmentIndex + 1}分段/总共${totalSegments}分段"
+        } else {
+            ""
+        }
+    }
+
+    /**
      * 构建通知栏副文本：将 notificationSubText 与日期/时间段信息拼接。
      * 日期格式化为 "2024-06-04T07:00:00" -> "06-04"，统一供 updateNotification()、
      * updateNotificationProgressOnly()、buildMediaStyleNotification() 使用，避免重复代码。
@@ -4179,6 +4206,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // v3.1.17: 日期后添加周几
                     val weekDay = getDayOfWeekText(notificationDate)
                     if (weekDay.isNotBlank()) append(" $weekDay")
+                    // v3.1.204: 周几后边增加"第xx分段/总共xx分段"
+                    val segmentDisplay = getCurrentSegmentDisplay()
+                    if (segmentDisplay.isNotBlank()) append(" $segmentDisplay")
                 }
             }
             if (notificationTimeRange.isNotBlank()) {
