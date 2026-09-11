@@ -4170,7 +4170,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      */
     private fun getCurrentSegmentDisplay(): String {
         val segments = getSegmentList()
-        if (segments.isEmpty()) return ""
+        if (segments.isEmpty()) {
+            writeServiceLog("notification", "getCurrentSegmentDisplay: segments empty, returning ''")
+            return ""
+        }
 
         val totalSegments = segments.size
         val currentPos = getCurrentPosition()
@@ -4183,8 +4186,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         return if (segmentIndex >= 0) {
-            "第${segmentIndex + 1}分段/总共${totalSegments}分段"
+            val result = "第${segmentIndex + 1}分段/总共${totalSegments}分段"
+            writeServiceLog("notification", "getCurrentSegmentDisplay: pos=$currentPos, segCount=$totalSegments, idx=$segmentIndex -> '$result'")
+            result
         } else {
+            writeServiceLog("notification", "getCurrentSegmentDisplay: segmentIndex<0 after all fallbacks, pos=$currentPos, segCount=$totalSegments")
             ""
         }
     }
@@ -4319,13 +4325,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v3.1.17: 日期后添加周几
                 val weekDay = getDayOfWeekText(notificationDate)
                 if (weekDay.isNotBlank()) append(" $weekDay")
+                // v3.1.205: 通知栏显示"第xx分段/总共xx分段"
+                val segmentDisplay = getCurrentSegmentDisplay()
+                if (segmentDisplay.isNotBlank()) append(" $segmentDisplay")
                 if (timeStr.isNotBlank()) append(" $timeStr")
             } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")
             }
         }
         // Issue 4: Set date/time on RemoteViews (contentText is hidden when custom layout is used)
-        writeNotifDetailLog("updateNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
+        writeNotifDetailLog("updateNotification: BEFORE setTextViewText - notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', segmentDisplay='${getCurrentSegmentDisplay()}', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
         remoteViews.setTextViewText(R.id.notification_subtitle, contentText)
         writeNotifDetailLog("updateNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
         val builder = NotificationCompat.Builder(this, RadioApplication.CHANNEL_ID)
@@ -4767,6 +4776,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v3.1.17: 日期后添加周几
                 val weekDay = getDayOfWeekText(notificationDate)
                 if (weekDay.isNotBlank()) append(" $weekDay")
+                // v3.1.205: 通知栏显示"第xx分段/总共xx分段"
+                val segmentDisplay = getCurrentSegmentDisplay()
+                if (segmentDisplay.isNotBlank()) append(" $segmentDisplay")
                 if (timeStr.isNotBlank()) append(" $timeStr")
             } else if (timeStr.isNotBlank()) {
                 append(" · $timeStr")
@@ -4776,7 +4788,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 创建展开视图（含进度条和50点seek）
         val expandedView = RemoteViews(packageName, R.layout.notification_media_expanded)
         expandedView.setTextViewText(R.id.notification_title, displayTitle)
-        writeNotifDetailLog("buildMediaStyleNotification: BEFORE setTextViewText - displayTitle='$displayTitle', notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
+        writeNotifDetailLog("buildMediaStyleNotification: BEFORE setTextViewText - displayTitle='$displayTitle', notificationTitle='$notificationTitle', notificationDate='$notificationDate', notificationTimeRange='$notificationTimeRange', contentText='$contentText', segmentDisplay='${getCurrentSegmentDisplay()}', notificationStyle='$notificationStyle', lastNotificationContentHash=$lastNotificationContentHash")
         expandedView.setTextViewText(R.id.notification_subtitle, contentText)
         writeNotifDetailLog("buildMediaStyleNotification: AFTER setTextViewText - remoteViews.setTextViewText(notification_subtitle, '$contentText') called=true, lastNotificationContentHash=$lastNotificationContentHash")
 
