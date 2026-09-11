@@ -1500,6 +1500,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 currentIdx = preCacheList.indexOfFirst { it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == epFilename }
             }
         }
+        // v3.1.xxx-fix: 跨天节目不在preCacheList时的额外匹配。
+        // 根因：跨天节目ID格式为"{stationId}-{date}-cross"，而preCacheList中节目ID为"{stationId}-{date}-{index}"。
+        // 跨天节目找不到时触发prepend+save（行1542），可能因savedList为空导致仅追加currentEp+少量同天节目，
+        // 若后续savePreCacheList被极小列表触发（oldSize大但newSize小→guard阻止保存），
+        // 但currentIdx仍为-1，其余triggerPreCache逻辑无法正常工作。
+        // 修复：当当前节目为跨天（-cross）时，用baseId在preCacheList中找到同天任意节目作为当前位置。
+        if (currentIdx < 0) {
+            val baseId = currentEp.id?.removeSuffix("-cross")
+            if (!baseId.isNullOrBlank() && baseId != currentEp.id) {
+                // 找同天第一个节目（按索引最小的）
+                currentIdx = preCacheList.indexOfFirst { it.id?.startsWith(baseId) == true }
+                if (currentIdx >= 0) {
+                    writePreCacheLog("triggerPreCache: cross-day fallback - found baseId=$baseId at preCacheList index=$currentIdx (${preCacheList[currentIdx].title})")
+                }
+            }
+        }
         if (currentIdx < 0) {
             // v3.1.xxx-fix: 当前节目不在preCacheList时，不仅追加当前节目，还要从savedList获取同天后续节目
             // 根因：preCacheList之前可能只包含跨天节目，仅追加currentEp导致同天后续节目（如旅行大玩家）
@@ -1957,6 +1973,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun savePreCacheList(episodes: List<Episode>) {
+        // v3.1.xxx-fix: 防止preCacheList被意外截断（如363→10）。
+        // 根因：当列表从大（>100）突然变为很小（<40）时，说明可能写入了损坏/截断的数据，
+        // 跳过保存以保留旧的完整列表。
+        val oldSize = loadPreCacheList().size
+        if (episodes.size < 40 && oldSize > 100) {
+            writePreCacheLog("savePreCacheList: BLOCKED - size ${episodes.size} is far smaller than existing $oldSize episodes, preserving old list")
+            Log.w(TAG, "Pre-cache: BLOCKED saving small list ($episodes.size) when old list has $oldSize episodes")
+            return
+        }
         val arr = org.json.JSONArray()
         for (ep in episodes) {
             val obj = org.json.JSONObject()
@@ -6419,7 +6444,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (curId.isBlank()) return emptyList()
 
         val preCacheList = loadPreCacheList()
-        val savedList = loadEpisodeList()
+        var savedList = loadEpisodeList()
+        // v3.1.xxx-fix: savedList为空时主动从API获取当前日期节目，确保播放计划有完整当天节目。
+        // 根因：preCacheList可能因SharedPreferences写入截断/损坏而只有少量缓存（如363→10条）。
+        // 此时combinedList=preCacheList(10条)+emptyList，当前节目（跨天）不在列表→fallback3匹配为index 0
+        // →扫描从idx=1开始，后续节目被dislike过滤后仅剩2条→老杨说车等节目被"跳过"（实际从未进入列表）。
+        if (savedList.isEmpty()) {
+            val curStation = currentEpisode?.stationId
+            val curDate = currentEpisode?.broadcastAt?.take(10)
+            if (curStation != null && !curDate.isNullOrBlank()) {
+                try {
+                    val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                    // 尝试获取当前日期的完整节目列表
+                    val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
+                    if (!freshEpisodes.isNullOrEmpty()) {
+                        saveEpisodeList(freshEpisodes)
+                        savedList = freshEpisodes
+                        writeServiceLog("schedule", "buildPlaybackSchedule: savedList为空，已从API获取${freshEpisodes.size}个节目 for $curStation $curDate，合并到播放计划")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
 
         // 合并列表，preCacheList优先，去重
         // v3.1.139: 改为var，fallback4需要重新赋值
