@@ -1479,10 +1479,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
 
         // Find current episode index in the list
+        // v3.1.204: 增加文件名匹配
         var currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id }
         if (currentIdx < 0) {
-            // Current episode not in list, try to find by URL
             currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
+        }
+        if (currentIdx < 0) {
+            // v3.1.204: 文件名匹配回退
+            val epFilename = currentEp.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+            if (epFilename.isNotBlank()) {
+                currentIdx = preCacheList.indexOfFirst { it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == epFilename }
+            }
         }
         if (currentIdx < 0) {
             // v3.1.xxx-fix: 当前节目不在preCacheList时，不仅追加当前节目，还要从savedList获取同天后续节目
@@ -2006,13 +2013,36 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         prefs.edit().putString("list", gson.toJson(episodes)).apply()
     }
 
+    // v3.1.204: 独立的跨天节目列表存储，不再覆盖当天的savedList。
+    // 根因：fetchCrossDayEpisode调用saveEpisodeList(episodes)用跨天数据覆盖savedList，
+    // 导致autoPlayNextEpisode/buildPlaybackSchedule找不到当前节目ID → 跳转错误节目/显示"暂无播放计划"。
+    private fun loadCrossDayEpisodeList(): List<Episode> {
+        val prefs = getSharedPreferences("cross_day_episode_list", MODE_PRIVATE)
+        val json = prefs.getString("list", null) ?: return emptyList()
+        return try {
+            val gson = Gson()
+            val type = object : TypeToken<List<Episode>>() {}.type
+            gson.fromJson(json, type)
+        } catch (e: Exception) { emptyList() }
+    }
+
+    private fun saveCrossDayEpisodeList(episodes: List<Episode>) {
+        val prefs = getSharedPreferences("cross_day_episode_list", MODE_PRIVATE)
+        val gson = Gson()
+        prefs.edit().putString("list", gson.toJson(episodes)).apply()
+    }
+
     private fun findPrevInList(list: List<Episode>, curId: String, settings: AppSettings): Episode? {
         // [v2.0.43] Issue 2 Fix: 按 ID 或 audioUrl 找当前位置，找不到时返回 null 触发跨天获取
         // 之前的bug: curId不在列表时返回首/尾节目导致循环（跨天节目ID不在列表→回到第一天→再跨天→再回到第一天）
         var foundCurrent = false
+        // v3.1.204: findPrevInList也增加文件名匹配
+        val prevCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
         for (i in list.indices.reversed()) {
             val ep = list[i]
-            if (ep.id == curId || ep.audioUrl == currentPlayingUrl) { foundCurrent = true; continue }
+            val prevEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+            if (ep.id == curId || ep.audioUrl == currentPlayingUrl ||
+                (prevCurFilename.isNotBlank() && prevCurFilename == prevEpFilename)) { foundCurrent = true; continue }
             // v2.4.134: 与 findNextInList 行为一致——跳过无需预处理的节目。
             // 用户反馈"无需预处理的节目连续播放或手动切换节目时自动跳过"。
             // findPrevInList 同时被 notifyPrevEpisode（通知栏上一集）和 PlayerActivity
@@ -2033,9 +2063,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         var foundCurrent = false
         // v3.1.135: 获取当前节目的broadcastAt日期，用于限制同一天搜索
         val curDate = currentEpisode?.broadcastAt?.take(10)
+        // v3.1.204: 提取当前播放URL的文件名，用于ID格式不匹配时的回退匹配
+        val currentFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
         for (ep in list) {
             if (!foundCurrent) {
-                if (ep.id == curId || ep.audioUrl == currentPlayingUrl) foundCurrent = true
+                // v3.1.204: 增加文件名匹配——ep.id可能有日期后缀（跨天构造）或没有（API原始），
+                // 但audioUrl指向同一个MP4文件时，文件名是相同的
+                val epFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+                if (ep.id == curId || ep.audioUrl == currentPlayingUrl ||
+                    (currentFilename.isNotBlank() && currentFilename == epFilename)) foundCurrent = true
                 continue
             }
             // v3.1.135: 如果当前节目有日期且下一个节目日期不同，跳过（防止跨月跨年跳转）
@@ -6333,14 +6369,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("schedule", "buildPlaybackSchedule: curId=$curId, curTitle=${currentEpisode?.title}, curDate=${currentEpisode?.broadcastAt?.take(10) ?: "?"}")
 
         // 找到当前节目的位置
-        var currentIdx = combinedList.indexOfFirst { it.id == curId || it.audioUrl == currentPlayingUrl }
+        // v3.1.204: 增加文件名匹配，解决ID格式不匹配问题
+        val currentFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+        var currentIdx = combinedList.indexOfFirst {
+            it.id == curId || it.audioUrl == currentPlayingUrl ||
+            (currentFilename.isNotBlank() && it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == currentFilename)
+        }
         // v3.1.138: 增强fallback匹配逻辑，防止"暂无节目"。
         // 根因：跨天节目ID可能带"-cross"后缀，或preCacheList/savedList中的ID格式与当前节目不同，
         // 导致indexOfFirst找不到匹配，返回空列表显示"暂无节目"。
         if (currentIdx < 0) {
             // Fallback 1: 尝试去掉"-cross"后缀
             val baseId = if (curId.endsWith("-cross")) curId.substring(0, curId.length - 6) else curId
-            currentIdx = combinedList.indexOfFirst { it.id == baseId || it.audioUrl == currentPlayingUrl }
+            currentIdx = combinedList.indexOfFirst {
+                it.id == baseId || it.audioUrl == currentPlayingUrl ||
+                (currentFilename.isNotBlank() && it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == currentFilename)
+            }
             writeServiceLog("schedule", "buildPlaybackSchedule: fallback1 (strip -cross) curId=$baseId -> idx=$currentIdx")
         }
         if (currentIdx < 0) {
@@ -6377,7 +6421,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         saveEpisodeList(freshEpisodes)
                         combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.sortedBy { it.startTime }
                         currentIdx = combinedList.indexOfFirst {
-                            it.id == curId || it.id == curId.removeSuffix("-cross") || it.audioUrl == currentPlayingUrl
+                            it.id == curId || it.id == curId.removeSuffix("-cross") || it.audioUrl == currentPlayingUrl ||
+                            (currentFilename.isNotBlank() && it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == currentFilename)
                         }
                         if (currentIdx >= 0) {
                             writeServiceLog("schedule", "buildPlaybackSchedule: fallback4 succeeded, fresh list has ${freshEpisodes.size} episodes, idx=$currentIdx")
@@ -6943,18 +6988,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (result != null) {
                     writeServiceLog("notification", "fetchCrossDayEpisode: RETURN result from network - title=${result.title}, id=${result.id}, broadcastAt=${result.broadcastAt}")
                     Log.d(TAG, "fetchCrossDayEpisode: found ${result.title} from network")
-                    // Save to episode list for future use
-                    saveEpisodeList(episodes)
+                    // v3.1.204: 保存到独立的跨天key，不再覆盖当天的savedList
+                    // 根因：用saveEpisodeList覆盖后，autoPlayNextEpisode/buildPlaybackSchedule找不到当天节目ID
+                    saveCrossDayEpisodeList(episodes)
                     return result
                 } else {
                     writeServiceLog("notification", "fetchCrossDayEpisode: network episodes found but all disliked/filtered (count=${episodes.size})")
                 }
             }
 
-            // Fallback: try saved episode list
+            // Fallback: try saved episode list (cross-day specific key first, fall back to main key)
             writeServiceLog("notification", "fetchCrossDayEpisode: network fetch failed or no result, trying saved list")
             Log.d(TAG, "fetchCrossDayEpisode: network fetch failed, trying saved list")
-            val savedList = loadEpisodeList()
+            // v3.1.204: 读取跨天独立存储，避免覆盖当天savedList后找不到跨天数据
+            val savedList = loadCrossDayEpisodeList().ifEmpty { loadEpisodeList() }
             val targetEpisodes = savedList.filter { it.broadcastAt?.startsWith(targetDate) == true && it.stationId == stationId }
             writeServiceLog("notification", "fetchCrossDayEpisode: saved list filtered - savedListSize=${savedList.size}, targetEpisodesSize=${targetEpisodes.size} for $stationId on $targetDate")
             if (targetEpisodes.isNotEmpty()) {
@@ -6982,7 +7029,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (dateMatch != null) {
                     val newDateStr = targetDate.replace("-", "") // "20240605"
 
-                    val episodeList = loadEpisodeList()
+                    // v3.1.204: URL构造时优先读取跨天存储（含之前获取的跨天节目详情），回退到当天列表
+                    val episodeList = loadCrossDayEpisodeList().ifEmpty { loadEpisodeList() }
                     writeServiceLog("notification", "fetchCrossDayEpisode: URL construction - episodeList.size=${episodeList.size}, stationId=$stationId, targetDate=$targetDate")
                     if (episodeList.isEmpty()) {
                         writeServiceLog("notification", "fetchCrossDayEpisode: WARNING - episodeList is EMPTY, cannot find matching title")
@@ -7346,9 +7394,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writeServiceLog("notification", "autoPlayNextEpisode: savedList content (${savedList.size}): ${savedList.map { "${it.title}(${it.id})" }.joinToString(", ")}")
             // v2.4.62: Search preCacheList first (contains future episodes + cross-day episodes)
             // v3.1.135: 增加日期验证，防止preCacheList中包含跨月节目时跳转到错误日期
+            // v3.1.204: 增加文件名匹配，解决ID格式不匹配导致foundCurrent永远为false的问题
+            val preCacheCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
             for (ep in preCacheList) {
                 if (!foundCurrent) {
-                    if (ep.id == curId) foundCurrent = true
+                    val preCacheEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+                    if (ep.id == curId || (preCacheCurFilename.isNotBlank() && preCacheCurFilename == preCacheEpFilename)) foundCurrent = true
                     continue
                 }
                 // v3.1.135: 日期验证——跳过不同日期的节目
@@ -7456,9 +7507,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (nextEpisode == null) {
                 writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes also no match, trying preCacheList unconditional scan (size=${preCacheList.size})")
                 foundCurrent = false  // 重置，确保从当前节目之后开始搜索，避免反向跳转
+                // v3.1.204: unconditional scan也增加文件名匹配
+                val uncondCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
                 for (ep in preCacheList) {
                     if (!foundCurrent) {
-                        if (ep.id == curId) foundCurrent = true
+                        val uncondEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+                        if (ep.id == curId || (uncondCurFilename.isNotBlank() && uncondCurFilename == uncondEpFilename)) foundCurrent = true
                         continue
                     }
                     if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
@@ -7499,9 +7553,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v3.1.184: 添加foundCurrent检查，防止排在当前节目之前的节目被选中（反向跳转）。
             if (nextEpisode == null && preCacheList.isNotEmpty()) {
                 var fallbackFound = false
+                // v3.1.204: fallback scan也增加文件名匹配
+                val fallbackCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
                 for (ep in preCacheList) {
                     if (!fallbackFound) {
-                        if (ep.id == curId) fallbackFound = true
+                        val fallbackEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
+                        if (ep.id == curId || (fallbackCurFilename.isNotBlank() && fallbackCurFilename == fallbackEpFilename)) fallbackFound = true
                         continue
                     }
                     if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
