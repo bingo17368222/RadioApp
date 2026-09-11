@@ -250,6 +250,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // v2.4.139: Track last notified playing state so that play/pause state changes
     // (e.g. pauseConfirmedUntil expiring) are reflected even when position is unchanged.
     private var lastNotifiedPlayingState = false
+    // v3.1.205: Track last notified segment index so segment changes trigger notification rebuild.
+    // MediaStyle notification does NOT visually update its subtitle when MediaSession metadata
+    // changes — the system only re-reads metadata when the notification is rebuilt. Without this,
+    // the segment display in the notification stays frozen on the first segment forever.
+    private var lastNotifiedSegmentIndex = -1
     // v2.4.112: Track last RESET-triggered full rebuild to prevent notification burst.
     // When episode switch sets lastNotifiedPosition=-1, the progress poll detects RESET
     // and forces a full rebuild. Without this guard, multiple polls within a few seconds
@@ -871,6 +876,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     authoritativePosition = 0L
                                     maxKnownPosition = 0L
                                     lastNotifiedPosition = -1L
+                                    lastNotifiedSegmentIndex = -1
                                     writeServiceLog("notification", " STATE_ENDED: prepared=false, reset authoritativePosition=0 (userPaused NOT set)")
                                     // [v2.0.92] Fix: For continuous play, skip updateNotification() here.
                                     // Calling updateNotification() before autoPlayNextEpisode() causes
@@ -4575,6 +4581,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 authoritativePosition = 0L
                 maxKnownPosition = 0L
                 lastNotifiedPosition = -1L
+                lastNotifiedSegmentIndex = -1
                 if (continuousPlay && !isLive) {
                     autoPlayNextEpisode()
                 } else {
@@ -4607,6 +4614,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         authoritativePosition = 0L
                         maxKnownPosition = 0L
                         lastNotifiedPosition = -1L
+                        lastNotifiedSegmentIndex = -1
                         if (continuousPlay && !isLive) {
                             autoPlayNextEpisode()
                         } else {
@@ -4699,6 +4707,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // This updates the system's progress bar (lock screen, media controls) without
                 // restarting the notification's progress bar animation.
                 updateMediaSessionState()
+                // v3.1.205: Segment变化时强制重建通知，因为系统MediaStyle通知栏不会在
+                // MediaSession metadata更新后自动刷新副标题UI。
+                val segments = getSegmentList()
+                if (segments.isNotEmpty()) {
+                    val currentPos = getCurrentPosition()
+                    var segIdx = segments.indexOfFirst { currentPos >= it.start && currentPos < it.end }
+                    if (segIdx < 0) {
+                        if (currentPos < segments.first().start) segIdx = 0
+                        else if (currentPos >= segments.last().end) segIdx = segments.size - 1
+                    }
+                    if (segIdx >= 0 && segIdx != lastNotifiedSegmentIndex) {
+                        writeServiceLog("notification", "[v3.1.205-SEGMENT-CHANGE] segment $lastNotifiedSegmentIndex -> $segIdx, forcing notification rebuild")
+                        lastNotifiedSegmentIndex = segIdx
+                        forceNotificationUpdate = true
+                        notifyNotification()
+                    }
+                }
             } else {
                 writeServiceLog("notification", "[v2.4.108-PROGRESS-POLL] pos unchanged ($pos), SKIPPING notifyNotification() to prevent progress bar loop")
             }
