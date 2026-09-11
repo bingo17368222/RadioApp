@@ -5661,21 +5661,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         // [v2.0.72] Issue 5 Fix: Fallback: parse date/time from URL (e.g., sijiache_20240604_0700_0900.mp4)
-        // ONLY use URL fallback if date was NOT parsed from broadcastAt (fixed logic: was `|| length>=10`
-        // which ALWAYS overwrote the properly parsed date).
-        if (notificationDate.isBlank()) {
-            val url = episode.audioUrl ?: ""
-            val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(url)
-            if (dateMatch != null) {
-                notificationDate = "${dateMatch.groupValues[1]}-${dateMatch.groupValues[2]}-${dateMatch.groupValues[3]}"
-            }
+        // v3.1.205: URL中解析的时间应优先于节目标称时间，因为URL对应实际音频文件起止范围
+        // 而startTime/endTime/duration可能返回节目全长（含广告/片花），与实际音频时长不符。
+        val url = episode.audioUrl ?: ""
+        // 先检查URL是否能解析出date和timeRange
+        var urlDate = ""
+        var urlTimeRange = ""
+        val dateMatch = Regex("(\\d{4})(\\d{2})(\\d{2})").find(url)
+        if (dateMatch != null) {
+            urlDate = "${dateMatch.groupValues[1]}-${dateMatch.groupValues[2]}-${dateMatch.groupValues[3]}"
         }
-        if (notificationTimeRange.isBlank()) {
-            val url = episode.audioUrl ?: ""
-            val timeMatch = Regex("_(\\d{2})(\\d{2})_(\\d{2})(\\d{2})").find(url)
-            if (timeMatch != null) {
-                notificationTimeRange = "${timeMatch.groupValues[1]}:${timeMatch.groupValues[2]}-${timeMatch.groupValues[3]}:${timeMatch.groupValues[4]}"
-            }
+        val timeMatch = Regex("_(\\d{2})(\\d{2})_(\\d{2})(\\d{2})").find(url)
+        if (timeMatch != null) {
+            urlTimeRange = "${timeMatch.groupValues[1]}:${timeMatch.groupValues[2]}-${timeMatch.groupValues[3]}:${timeMatch.groupValues[4]}"
+        }
+        // 如果URL解析出更精确的时间范围，优先使用URL的
+        if (urlTimeRange.isNotBlank()) {
+            notificationTimeRange = urlTimeRange
+        }
+        if (urlDate.isNotBlank() && notificationDate.isBlank()) {
+            notificationDate = urlDate
         }
         writeServiceLog("notification", "playEpisode: URL fallback date/time - date='$notificationDate', timeRange='$notificationTimeRange', url='${episode.audioUrl}'")
         writeServiceLog("notification", "playEpisode: final date/time - date='$notificationDate', timeRange='$notificationTimeRange'")
