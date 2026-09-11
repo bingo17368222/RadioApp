@@ -7194,17 +7194,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // [v2.0.43] Issue 1 Fix: Calculate duration from time slot to avoid duration=0
                     // duration=0 causes savedPos validation to fail in PlayerActivity, leading to progress regression
+                    // [v3.1.205-duration-fix] duration字段需要秒单位，但之前用了毫秒（*60*1000），
+                    // 导致通知栏计算结束时间时 duration/60 得出120,000分钟→07:00+120000分=15:00。
+                    // 修复：去掉*1000，duration以秒为单位存储。
                     val calculatedDuration = try {
                         val timeParts = targetTimeSlot.split("_")
                         if (timeParts.size >= 2) {
                             val startMin = timeParts[0].substring(0, 2).toInt() * 60 + timeParts[0].substring(2, 4).toInt()
                             val endMin = timeParts[1].substring(0, 2).toInt() * 60 + timeParts[1].substring(2, 4).toInt()
-                            ((endMin - startMin).coerceAtLeast(0) * 60 * 1000).toLong()  // milliseconds
+                            ((endMin - startMin).coerceAtLeast(0) * 60).toLong()  // seconds
                         } else {
-                            7200_000L  // Default 2 hours
+                            7200L  // Default 2 hours in seconds
                         }
                     } catch (_: Exception) {
-                        7200_000L  // Default 2 hours
+                        7200L  // Default 2 hours in seconds
                     }
 
                     // v3.1.196-fix: 为跨天节目创建8个模拟分段，防止getSegmentList()回退到15分钟固定分段。
@@ -7212,8 +7215,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // fetchCrossDayEpisode()创建时voiceSegments默认为emptyList()，如果preSegmentFixed()
                     // 尚未完成（异步预生成），getSegmentList()的Step 1（内存检查）和Step 2（DB查询）都失败，
                     // 最终回退到Step 4生成15分钟固定分段，导致分段导航跳15分钟。
+                    // [v3.1.205-duration-fix] VoiceSegment.start/end需要毫秒单位，所以*1000L转换。
                     val simSegCount = 8
-                    val simSegDuration = (calculatedDuration / simSegCount).coerceAtLeast(1L)
+                    val simSegDuration = (calculatedDuration * 1000L / simSegCount).coerceAtLeast(1L)
                     val simulatedSegments = (0 until simSegCount).map { j ->
                         VoiceSegment(
                             start = j * simSegDuration,

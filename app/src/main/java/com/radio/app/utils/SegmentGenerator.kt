@@ -837,6 +837,24 @@ object SegmentGenerator {
                 logFile.parentFile?.mkdirs()
                 val segInfo = segments.mapIndexed { i, s -> "seg[$i]: ${s.start}-${s.end}ms (${(s.end - s.start) / 1000}s) ${s.label}" }.joinToString(", ")
                 logFile.appendText("[${java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())}] preSegmentFixed: SAVED ${segments.size} fixed 15-min segments for episode=$episodeId (durationMs=$durationMs): $segInfo\n")
+                // v3.1.xxx-fix: 记录预分段所用的引擎和版本号，确保播放主界面显示准确的版本号而非"未保存"
+                try {
+                    dbHelper.saveSegmentAnalysisInfo(
+                        com.radio.app.database.SegmentAnalysisInfo(
+                            episodeId = episodeId,
+                            engineName = "预分段",
+                            versionName = BuildConfig.VERSION_NAME,
+                            generatedAt = System.currentTimeMillis(),
+                            processingTimeMs = 0L,
+                            audioDurationMs = durationMs,
+                            segmentCount = segments.size,
+                            dryCount = 0,
+                            waterCount = segments.size
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "preSegmentFixed: failed to save segment analysis info: ${e.message}")
+                }
             }
             SegmentNotificationHelper.update(context, episodeId, episodeTitle, 1000, "预分段完成")
         } catch (e: Exception) {
