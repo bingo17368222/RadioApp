@@ -2658,8 +2658,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         // Step 1: Run pre-segmentation (creates fixed 15-min placeholder segments)
         try {
-            val epDuration = episode.duration ?: 0
-            val durationMs = if (epDuration in 60000..100000000) epDuration.toLong() else 7200_000L
+            // v3.1.xxx-fix: episode.duration来自API的(结束时间-开始时间)/1000，是秒单位。
+            // 需转换为毫秒再与范围常量比较。不转换时，5400(90分钟节目) in 60000..100000000 = false，
+            // 落入默认7200_000L(120分钟)，导致三层分段按2小时处理90分钟节目。
+            val epDuration = (episode.duration ?: 0) * 1000L
+            val durationMs = if (epDuration in 60_000L..100_000_000L) epDuration else 7200_000L
             writePreCacheLog("startPreCachePcmGeneration:  calling preSegmentFixed for $episodeId, durationMs=$durationMs (fixed 15-min segments)")
             com.radio.app.utils.SegmentGenerator.preSegmentFixed(this, episodeId, durationMs)
             writePreCacheLog("startPreCachePcmGeneration:  preSegmentFixed completed for $episodeId")
