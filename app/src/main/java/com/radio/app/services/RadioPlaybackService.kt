@@ -726,7 +726,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.17: 通知栏日期后添加周几
         val artistDate = if (notificationDate.length >= 10) {
             val weekDay = getDayOfWeekText(notificationDate)
-            if (weekDay.isNotBlank()) "${notificationDate.substring(0, 10)} $weekDay" else notificationDate.substring(0, 10)
+            val datePart = if (weekDay.isNotBlank()) "${notificationDate.substring(0, 10)} $weekDay" else notificationDate.substring(0, 10)
+            // v3.1.205: MediaSession元数据的ARTIST字段也显示分段数（系统MediaStyle通知栏的副标题来源）
+            val segmentDisplay = getCurrentSegmentDisplay()
+            if (segmentDisplay.isNotBlank()) "$datePart $segmentDisplay" else datePart
         } else notificationDate
         val metadata = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, displayTitle)
