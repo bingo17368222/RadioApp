@@ -1987,9 +1987,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     private fun savePreCacheList(episodes: List<Episode>) {
-<<<<<<< Updated upstream
-=======
-        // v3.1.xxx-fix: 强化防护——防止preCacheList被渐进式截断。
+        // v3.1.207-fix: 强化防护——防止preCacheList被渐进式截断。
         // 旧防护（size<40 && oldSize>100）在oldSize从363被渐进式消耗到10~12后失效。
         // 新防护1：当新列表不足旧列表的一半时直接拦截，保护大列表不被意外截断。
         val oldSize = loadPreCacheList().size
@@ -2004,7 +2002,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             Log.w(TAG, "Pre-cache: BLOCKED (abs) saving small list ($episodes.size) when old list has $oldSize episodes")
             return
         }
->>>>>>> Stashed changes
         val arr = org.json.JSONArray()
         for (ep in episodes) {
             val obj = org.json.JSONObject()
@@ -6506,6 +6503,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
                 .thenBy { extractEpisodeIndex(it) }
         )
+
+        // v3.1.207-fix: 遍历combinedList，为startTime=0的节目从broadcastAt推导时间戳。
+        // 存量pre-cache数据中构造节目的broadcastAt可能只包含日期（如"2025-02-28"），
+        // 此时无法推导，显示时会回退到显示日期字符串。
+        // 对于API获取的节目，broadcastAt格式为"2025-02-28T07:00:00"（16+字符），可正常解析。
+        combinedList = combinedList.map { ep ->
+            if (ep.startTime <= 0 && !ep.broadcastAt.isNullOrBlank() && ep.broadcastAt!!.length >= 16) {
+                try {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+                    sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                    val parsedTime = sdf.parse(ep.broadcastAt!!)?.time ?: 0L
+                    if (parsedTime > 0) {
+                        ep.copy(startTime = parsedTime)
+                    } else ep
+                } catch (_: Exception) { ep }
+            } else ep
+        }
 
         // 详细日志：记录combinedList中的所有节目，便于排查遗漏
         val combinedSummary = combinedList.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }
