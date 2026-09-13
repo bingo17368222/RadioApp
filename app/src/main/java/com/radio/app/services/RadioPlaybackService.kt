@@ -1659,7 +1659,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // v3.1.119: 节目都应该有开始时间但可能为0（零点零分），不再过滤duration>0
                 val validEpisodes = freshEpisodes
                     .filter { !it.broadcastAt.isNullOrBlank() }
-                    .sortedBy { it.startTime }
+                    .sortedWith(
+                        compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                            .thenBy { it.startTime }
+                    )
                 if (validEpisodes.isNotEmpty()) {
                     dbHelper.saveEpisodeInfos(validEpisodes)
                     writePreCacheLog("ensureScheduleComplete: refreshed ${validEpisodes.size}/${freshEpisodes.size} episodes for $stationId $dateStr, " +
@@ -1928,15 +1931,39 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             if (constructedTitle.isNullOrBlank() && slotIdx < savedList.size) {
                                 constructedTitle = savedList[slotIdx].title
                             }
+                            // v3.1.207-fix: 从timeSlot解析startTime，确保构造节目有正确的开始时间戳。
+                            // slot格式如 "0700_0900"，解析出小时和分钟。
+                            var derivedStartTime = 0L
+                            var derivedEndTime = 0L
+                            var derivedDuration = 0L
+                            if (slot.length >= 5 && slot.contains("_")) {
+                                val parts = slot.split("_")
+                                if (parts.size == 2 && parts[0].length >= 4 && parts[1].length >= 4) {
+                                    try {
+                                        val dateFormatForTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                                        dateFormatForTime.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                                        val startHour = parts[0].substring(0, 2).toIntOrNull() ?: 0
+                                        val startMin = parts[0].substring(2, 4).toIntOrNull() ?: 0
+                                        val endHour = parts[1].substring(0, 2).toIntOrNull() ?: 0
+                                        val endMin = parts[1].substring(2, 4).toIntOrNull() ?: 0
+                                        derivedStartTime = dateFormatForTime.parse("$targetDate $startHour:$startMin")?.time ?: 0L
+                                        derivedEndTime = dateFormatForTime.parse("$targetDate $endHour:$endMin")?.time ?: 0L
+                                        derivedDuration = if (derivedEndTime > derivedStartTime) (derivedEndTime - derivedStartTime) / 1000 else 7200L
+                                    } catch (_: Exception) {}
+                                }
+                            }
                             val constructedEp = Episode(
                                 id = "$stationId-$targetDate-$slotIdx",
                                 title = constructedTitle ?: "节目",
                                 audioUrl = constructedUrl,
                                 stationId = stationId,
-                                broadcastAt = targetDate
+                                broadcastAt = targetDate,
+                                startTime = derivedStartTime,
+                                endTime = derivedEndTime,
+                                duration = derivedDuration
                             )
                             resultList.add(constructedEp)
-                            // v3.1.xxx-fix: 持久化构造节目到DB，便于enrichEpisodeFromDbIfNeeded后续查找
+                            // v3.1.207-fix: 持久化构造节目到DB，便于enrichEpisodeFromDbIfNeeded后续查找
                             try {
                                 RadioDatabaseHelper.getInstance(this@RadioPlaybackService).saveEpisodeInfos(listOf(constructedEp))
                             } catch (_: Exception) {}
@@ -1950,13 +1977,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
-        // v3.1.119: 刷新节目单后按开始时间排序，确保节目单列表按时间顺序展示
-        resultList.sortBy { it.startTime }
-        writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size}), sorted by startTime")
+        // v3.1.207-fix: 与buildPlaybackSchedule保持一致，使用节目ID序号排序
+        resultList.sortWith(
+            compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                .thenBy { extractEpisodeIndex(it) }
+        )
+        writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size}), sorted by episode index")
         return resultList
     }
 
     private fun savePreCacheList(episodes: List<Episode>) {
+        // v3.1.207-fix: 强化防护——防止preCacheList被渐进式截断。
+        // 旧防护（size<40 && oldSize>100）在oldSize从363被渐进式消耗到10~12后失效。
+        // 新防护1：当新列表不足旧列表的一半时直接拦截，保护大列表不被意外截断。
+        val oldSize = loadPreCacheList().size
+        if (oldSize > 20 && episodes.size < oldSize * 0.5f) {
+            writePreCacheLog("savePreCacheList: BLOCKED - size ${episodes.size} < half of existing $oldSize episodes, preserving old list")
+            Log.w(TAG, "Pre-cache: BLOCKED saving small list ($episodes.size) when old list has $oldSize episodes")
+            return
+        }
+        // 新防护2：绝对值兜底——当旧列表很大（>100）时，新列表必须至少20个节目
+        if (oldSize > 100 && episodes.size < 20) {
+            writePreCacheLog("savePreCacheList: BLOCKED (abs) - size ${episodes.size} is far smaller than existing $oldSize episodes, preserving old list")
+            Log.w(TAG, "Pre-cache: BLOCKED (abs) saving small list ($episodes.size) when old list has $oldSize episodes")
+            return
+        }
         val arr = org.json.JSONArray()
         for (ep in episodes) {
             val obj = org.json.JSONObject()
@@ -5388,6 +5433,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (episode.startTime <= 0) {
                 merged.startTime = cached.startTime
             }
+            // v3.1.207-fix: 如果DB中的startTime也为0，尝试从broadcastAt解析
+            if (merged.startTime <= 0 && !merged.broadcastAt.isNullOrBlank()) {
+                try {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+                    sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                    val parsedTime = sdf.parse(merged.broadcastAt)?.time ?: 0L
+                    if (parsedTime > 0) merged.startTime = parsedTime
+                } catch (_: Exception) {}
+            }
             if (episode.endTime <= 0) {
                 merged.endTime = cached.endTime
             }
@@ -6413,6 +6467,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 检查异常跳过（时间间隔过大等）。
      * 更新futurePlannedEpisodes列表，每次切换节目时调用。
      */
+    /**
+     * 从节目ID中提取节目在同天内的序号，用于排序。
+     * ID格式如 "henan-private-car-2025-02-26-9"，最后一位数字是节目序号（0~11）。
+     * 使用序号排序比用 startTime 更可靠，因为URL构造的节目 startTime 可能为0。
+     * 也兼容可能存在的 "-cross" 后缀。
+     */
+    private fun extractEpisodeIndex(ep: Episode): Int {
+        val idStr = ep.id ?: return Int.MAX_VALUE
+        val lastDash = idStr.lastIndexOf('-')
+        if (lastDash < 0 || lastDash >= idStr.length - 1) return Int.MAX_VALUE
+        val suffix = idStr.substring(lastDash + 1)
+        // 处理可能的后缀如 "-cross"
+        val cleanSuffix = suffix.takeWhile { it.isDigit() }
+        return cleanSuffix.toIntOrNull() ?: Int.MAX_VALUE
+    }
+
     private fun buildPlaybackSchedule(): List<Episode> {
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id ?: return emptyList()
@@ -6425,15 +6495,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.139: 改为var，fallback4需要重新赋值
         var combinedList = (preCacheList + savedList).distinctBy { it.id }
 
-        // v3.1.xxx-fix: 按startTime排序，确保同天节目按时间顺序排列
-        // 根因：preCacheList和savedList的合并顺序不一定按时间排列（可能是缓存顺序或API返回顺序），
-        // 导致当前节目位置之后的节目不是实际的后续节目，而是缓存顺序中的下一个节目。
-        // 例如：savedList中节目顺序为[3,4,5,...,11,0,1,2]，当前节目0在索引10，
-        // 后续只有节目1和2（同天的），需要跨天API补充获取，但跨天获取的节目被大量dislike/no-preprocess过滤，
-        // 最终不足5个节目。
-        // 修复：按startTime排序后，同天节目按07:00→09:00→09:30→...→17:30顺序排列，
-        // 当前节目位置之后的同天节目就是实际的后续节目，无需跨天补充。
-        combinedList = combinedList.sortedBy { it.startTime }
+        // v3.1.207-fix: 先按broadcastAt日期分组，再按节目ID中的序号排序。
+        // 根因：startTime可能为0（URL构造的节目等），导致同天节目排序混乱——
+        // 早间节目（ID 0~2）被排到了晚间节目（ID 9~11）之后，使播放计划列表错乱。
+        // 使用 extractEpisodeIndex 从ID中提取序号作为同天排序依据，不受startTime影响。
+        combinedList = combinedList.sortedWith(
+            compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                .thenBy { extractEpisodeIndex(it) }
+        )
+
+        // v3.1.207-fix: 遍历combinedList，为startTime=0的节目从broadcastAt推导时间戳。
+        // 存量pre-cache数据中构造节目的broadcastAt可能只包含日期（如"2025-02-28"），
+        // 此时无法推导，显示时会回退到显示日期字符串。
+        // 对于API获取的节目，broadcastAt格式为"2025-02-28T07:00:00"（16+字符），可正常解析。
+        combinedList = combinedList.map { ep ->
+            if (ep.startTime <= 0 && !ep.broadcastAt.isNullOrBlank() && ep.broadcastAt!!.length >= 16) {
+                try {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+                    sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                    val parsedTime = sdf.parse(ep.broadcastAt!!)?.time ?: 0L
+                    if (parsedTime > 0) {
+                        ep.copy(startTime = parsedTime)
+                    } else ep
+                } catch (_: Exception) { ep }
+            } else ep
+        }
 
         // 详细日志：记录combinedList中的所有节目，便于排查遗漏
         val combinedSummary = combinedList.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }
@@ -6492,7 +6578,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
                     if (!freshEpisodes.isNullOrEmpty()) {
                         saveEpisodeList(freshEpisodes)
-                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.sortedBy { it.startTime }
+                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.sortedWith(
+                            compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                                .thenBy { extractEpisodeIndex(it) }
+                        )
                         currentIdx = combinedList.indexOfFirst {
                             it.id == curId || it.id == curId.removeSuffix("-cross") || it.audioUrl == currentPlayingUrl ||
                             (currentFilename.isNotBlank() && it.audioUrl?.substringAfterLast("/")?.substringBefore(".") == currentFilename)
@@ -6518,6 +6607,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
         val curDateParsed = curDateStr?.let { try { dateFormat.parse(it) } catch (_: Exception) { null } }
+
+        // v3.1.xxx-fix: 获取今天日期字符串，用于时间检查（仅当天节目才做past-time过滤）
+        val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date(System.currentTimeMillis()))
 
         // 取后续FUTURE_PLAN_COUNT个节目（跳过不喜欢和无需预处理的）
         // v3.1.139-fix: 放宽日期边界检查——如果当前天不足5个，允许跨天继续寻找。
@@ -6547,13 +6639,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val isDislikedByTitle = settings.isDislikedByTitle(ep.stationId, ep.title)
             val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
             val isDisliked = isDislikedById || isDislikedByTitle
-            if (!isDisliked && !isNoPreprocess) {
+            // v3.1.xxx-fix: 仅对当天节目做时间检查，跳过已超过当前播出时间的节目。
+            // 历史节目（非当天）不做时间过滤，否则 startTime（2025年绝对时间戳）必然小于当前时间（2026年），导致全部被跳过。
+            val epDate = ep.broadcastAt?.take(10)
+            val isTimePassed = ep.startTime > 0 && epDate == todayStr && ep.startTime < System.currentTimeMillis()
+            if (!isDisliked && !isNoPreprocess && !isTimePassed) {
                 nextPlanned.add(ep)
             } else {
                 val reason = when {
                     isDislikedById -> "disliked-by-id"
                     isDislikedByTitle -> "disliked-by-title"
                     isNoPreprocess -> "no-preprocess"
+                    isTimePassed -> "time-passed（已超过当前时间）"
                     else -> "unknown"
                 }
                 writeServiceLog("schedule", "buildPlaybackSchedule: SKIP ep=${ep.id}, title=${ep.title}, date=${ep.broadcastAt?.take(10) ?: "?"}, reason=$reason")
@@ -6586,13 +6683,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     val isDislikedByTitle2 = settings.isDislikedByTitle(ep.stationId, ep.title)
                                     val isNoPreprocess2 = settings.isNoPreprocess(ep.id ?: "")
                                     val isDisliked2 = isDislikedById2 || isDislikedByTitle2
-                                    if (!isDisliked2 && !isNoPreprocess2) {
+                                    // v3.1.xxx-fix: 仅对当天节目做时间检查
+                                    val epDate2 = ep.broadcastAt?.take(10)
+                                    val isTimePassed2 = ep.startTime > 0 && epDate2 == todayStr && ep.startTime < System.currentTimeMillis()
+                                    if (!isDisliked2 && !isNoPreprocess2 && !isTimePassed2) {
                                         nextPlanned.add(ep)
                                     } else {
                                         val reason2 = when {
                                             isDislikedById2 -> "disliked-by-id"
                                             isDislikedByTitle2 -> "disliked-by-title"
                                             isNoPreprocess2 -> "no-preprocess"
+                                            isTimePassed2 -> "time-passed（已超过当前时间）"
                                             else -> "unknown"
                                         }
                                         writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 SKIP ${ep.id} (${ep.title}) - $reason2")
@@ -7450,217 +7551,59 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 然后通过回调通知 Activity 更新 UI
      */
     private fun autoPlayNextEpisode() {
-        writeNotifDetailLog("autoPlayNextEpisode: START, currentEpisode=${currentEpisode?.title}, episodeList.size=${loadEpisodeList().size}")
+        writeNotifDetailLog("autoPlayNextEpisode: START, currentEpisode=${currentEpisode?.title}")
         if (currentEpisode == null) return
         try {
-            val preCacheList = loadPreCacheList()
-            val savedList = loadEpisodeList()
             val settings = AppSettings.getInstance(this)
             val curId = currentEpisode!!.id
             var nextEpisode: Episode? = null
-            var foundCurrent = false
-            // v3.1.135: 获取当前节目的broadcastAt日期，用于限制同一天搜索
-            val curDate = currentEpisode?.broadcastAt?.take(10)
-            // 详细日志：记录preCacheList中所有节目信息，便于调试跳过原因
-            val preCacheSummary = preCacheList.map { "${it.title}(${it.id})[${it.broadcastAt?.take(10) ?: "no_date"}]" }
-            writeServiceLog("notification", "autoPlayNextEpisode: preCacheList content (${preCacheList.size}): ${preCacheSummary.joinToString(", ")}")
-            writeServiceLog("notification", "autoPlayNextEpisode: savedList content (${savedList.size}): ${savedList.map { "${it.title}(${it.id})" }.joinToString(", ")}")
-            // v2.4.62: Search preCacheList first (contains future episodes + cross-day episodes)
-            // v3.1.135: 增加日期验证，防止preCacheList中包含跨月节目时跳转到错误日期
-            // v3.1.204: 增加文件名匹配，解决ID格式不匹配导致foundCurrent永远为false的问题
-            val preCacheCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
-            for (ep in preCacheList) {
-                if (!foundCurrent) {
-                    val preCacheEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
-                    if (ep.id == curId || (preCacheCurFilename.isNotBlank() && preCacheCurFilename == preCacheEpFilename)) foundCurrent = true
-                    continue
-                }
-                // v3.1.135: 日期验证——跳过不同日期的节目
-                if (curDate != null) {
-                    val epDate = ep.broadcastAt?.take(10)
-                    if (epDate != null && epDate != curDate) {
-                        writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - date mismatch (current: $curDate, episode: $epDate)")
-                        continue
-                    }
-                }
-                if (settings.isDisliked(ep.id)) {
-                    writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - marked as disliked by id")
-                    continue
-                }
-                if (settings.isDislikedByTitle(ep.stationId, ep.title)) {
-                    writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - marked as disliked by title")
-                    continue
-                }
-                if (settings.isNoPreprocess(ep.id ?: "")) {
-                    writeServiceLog("notification", "autoPlayNextEpisode: preCacheList skipping ${ep.title} (${ep.id}) - marked as no-preprocess")
-                    continue
-                }
-                nextEpisode = ep
-                break
-            }
-            // v2.4.62: Fallback to saved episode list (contains ALL episodes for current day, including current).
-            // The preCacheList is built starting from currentEpisodeIndex+1, so the current episode's ID
-            // is NOT in it. When the current episode is not found in preCacheList, we fall back to the
-            // full saved list which DOES contain the current episode, allowing findNextInList to correctly
-            // find the next episode on the same day instead of jumping to cross-day.
-            if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: preCacheList date scan found no match (size=${preCacheList.size}), falling back to savedList (size=${savedList.size})")
-                // v3.1.124: 当savedList中找不到当前节目时，说明savedList可能被fetchCrossDayEpisode覆盖了
-                // （跨天获取成功时调用了saveEpisodeList覆盖了当天的节目列表）。
-                // 尝试根据当前节目的broadcastAt和stationId重建正确的节目列表。
-                // v3.1.xxx-fix: 当savedList为空时也要尝试从API刷新节目列表。
-                // 根因：savedList可能被fetchCrossDayEpisode调用saveEpisodeList覆盖为空或为跨天节目，
-                // 原代码只在savedList非空且不包含curId时刷新，savedList为空直接走else→空列表→
-                // findNextInList返回null→fallthrough到无条件扫描→取preCacheList第一个有效节目（跨天）。
-                val listToSearch = if (savedList.isEmpty() || (savedList.isNotEmpty() && savedList.none { it.id == curId || it.audioUrl == currentPlayingUrl })) {
-                    val curEp = currentEpisode
-                    if (curEp != null) {
-                        val stationId = curEp.stationId
-                        val dateStr = curEp.broadcastAt?.take(10)
-                        if (stationId.isNotBlank() && !dateStr.isNullOrBlank() && !curId.endsWith("-cross")) {
-                            writeNotifDetailLog("autoPlayNextEpisode: curId not found or savedList empty, fetching fresh list for station=$stationId date=$dateStr")
-                            try {
-                                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-                                val freshEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
-                                if (!freshEpisodes.isNullOrEmpty()) {
-                                    saveEpisodeList(freshEpisodes)
-                                    writeNotifDetailLog("autoPlayNextEpisode: refreshed savedList, got ${freshEpisodes.size} episodes")
-                                    freshEpisodes
-                                } else {
-                                    savedList
-                                }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "autoPlayNextEpisode: failed to refresh episode list", e)
-                                savedList
-                            }
-                        } else {
-                            savedList
+
+            // v3.1.xxx-fix: 直接使用播放计划列表 futurePlannedEpisodes（由 buildPlaybackSchedule 构建），
+            // 顺序与播放计划任务列表完全一致。取走即删除，避免重复播放。
+            synchronized(futurePlannedEpisodes) {
+                if (futurePlannedEpisodes.isNotEmpty()) {
+                    writeNotifDetailLog("autoPlayNextEpisode: reading futurePlannedEpisodes (size=${futurePlannedEpisodes.size})")
+                    writeServiceLog("notification", "autoPlayNext: reading from futurePlannedEpisodes (${futurePlannedEpisodes.size})")
+                    val iterator = futurePlannedEpisodes.iterator()
+                    while (iterator.hasNext()) {
+                        val ep = iterator.next()
+                        iterator.remove()  // 取出即删除，避免重复播放
+                        if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                            && !settings.isNoPreprocess(ep.id ?: "")) {
+                            nextEpisode = ep
+                            writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes->${ep.id} (${ep.title})")
+                            writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes -> ${ep.title} (${ep.id})")
+                            break
                         }
-                    } else {
-                        savedList
                     }
                 } else {
-                    savedList
-                }
-                nextEpisode = findNextInList(listToSearch, curId, settings)
-            }
-            // v3.1.xxx: 当日期验证导致preCacheList中找不到下一节目，且savedList也找不到时，尝试无条件扫描（不限制日期）。
-            // 根因：preCacheList可能包含次日节目，但日期验证严格限制同一天，导致全部跳过，
-            // 且savedList也为空，此时fallback到无条件扫描找到跨天节目，避免fallback到构造的跨天节目（无标题/起止时间）。
-            // 修复顺序：先检查同一天savedList，再允许使用preCacheList中下一个可用的节目（跨天）。
-            // 用户问题：20240121老杨说车播放完后，旅行大玩家和下班路上全程娱乐在savedList（同一天），
-            // 但原代码在无条件扫描时先找到了preCacheList中的次日节目，导致savedList从未被检查。
-            // 用户问题2：2025-01-21下班路上全程娱乐播放完后，跳转到同一天的旅行大玩家（反向跳转）。
-            // 根因：foundCurrent变量在步骤1和步骤3之间共享，步骤1设为true后，步骤3不从列表开头重找当前节目，
-            // 导致排在当前节目之前的旅行大玩家被选中。修复：无条件扫描前重置foundCurrent。
-            // v3.2.4: 当preCacheList和savedList都无法找到下一节目时，先尝试futurePlannedEpisodes。
-            // 根因：preCacheList可能不包含当前节目ID（时序问题），savedList可能被跨天获取(saveEpisodeList)
-            // 覆盖，导致Stage 1-4都找不到正确的下一节目，fallback到Stage 5的跨天获取（跳过当天后续节目）。
-            // futurePlannedEpisodes由buildPlaybackSchedule()正确构建，包含当天后续节目的正确顺序。
-            if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: savedList found no match, trying futurePlannedEpisodes (size=${futurePlannedEpisodes.size})")
-                if (futurePlannedEpisodes.isNotEmpty()) {
-                    for (ep in futurePlannedEpisodes) {
-                        if (curDate != null) {
-                            val epDate = ep.broadcastAt?.take(10)
-                            if (epDate != null && epDate != curDate) {
-                                continue
-                            }
-                        }
-                        if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                            && !settings.isNoPreprocess(ep.id ?: "")) {
-                            nextEpisode = ep
-                            writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
-                            writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes found ${ep.title} (${ep.id})")
-                            break
-                        }
-                    }
+                    writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes empty")
+                    writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes empty")
                 }
             }
-            if (nextEpisode == null) {
-                writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes also no match, trying preCacheList unconditional scan (size=${preCacheList.size})")
-                foundCurrent = false  // 重置，确保从当前节目之后开始搜索，避免反向跳转
-                // v3.1.204: unconditional scan也增加文件名匹配
-                val uncondCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
-                for (ep in preCacheList) {
-                    if (!foundCurrent) {
-                        val uncondEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
-                        if (ep.id == curId || (uncondCurFilename.isNotBlank() && uncondCurFilename == uncondEpFilename)) foundCurrent = true
-                        continue
-                    }
-                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                        && !settings.isNoPreprocess(ep.id ?: "")) {
-                        nextEpisode = ep
-                        writeNotifDetailLog("autoPlayNextEpisode: unconditional scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
-                        writeServiceLog("notification", "autoPlayNext: unconditional scan found ${ep.title} (${ep.id}) from preCacheList, bypassing date filter")
-                        break
-                    }
-                }
-                // v3.2.4: 当curId不在preCacheList中时（时序问题），直接取第一个有效节目。
-                // 根因：preCacheList可能被triggerPreCache异步重建，当前节目ID不在列表中，
-                // 导致foundCurrent始终为false，所有节目被跳过。
-                // 由于preCacheList是从当前节目之后构建的，第一个有效节目应是正确的下一节目。
-                if (nextEpisode == null && preCacheList.isNotEmpty() && !preCacheList.any { it.id == curId }) {
-                    writeNotifDetailLog("autoPlayNextEpisode: curId not in preCacheList, taking first valid episode directly")
-                    for (ep in preCacheList) {
-                        if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                            && !settings.isNoPreprocess(ep.id ?: "")) {
-                            nextEpisode = ep
-                            writeNotifDetailLog("autoPlayNextEpisode: direct preCacheList first-valid found ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
-                            writeServiceLog("notification", "autoPlayNext: first-valid from preCacheList: ${ep.title} (${ep.id})")
-                            break
-                        }
-                    }
-                }
-            }
-            // v2.4.62: Anti-loop check
-            if (nextEpisode != null && nextEpisode.id == curId) {
-                writeNotifDetailLog("autoPlayNextEpisode: [ANTI-LOOP] nextEpisode.id == curId ($curId), skipping to cross-day")
+
+            // Anti-loop check
+            val antiLoopEp = nextEpisode  // local copy to avoid smart cast capture issue
+            if (antiLoopEp != null && antiLoopEp.id == curId) {
+                writeNotifDetailLog("autoPlayNextEpisode: [ANTI-LOOP] nextId == curId ($curId), forcing cross-day")
+                writeServiceLog("notification", "autoPlayNext: anti-loop for $curId, trying cross-day")
                 nextEpisode = null
             }
-            // v3.1.xxx: 当所有搜索（preCacheList带日期、preCacheList无条件、savedList）都失败时，
-            // 从preCacheList直接取第一个有效节目，不依赖foundCurrent。
-            // 根因：当前节目可能是当天最后一个节目，preCacheList只有后续日期的节目（不含当前节目），
-            // savedList也为空，导致findNextInList找不到下一节目，触发跨天获取构造的节目（无标题/起止时间）。
-            // 此兜底直接从preCacheList取第一个有效节目，优先使用真实节目而非构造的跨天节目。
-            // v3.1.184: 添加foundCurrent检查，防止排在当前节目之前的节目被选中（反向跳转）。
-            if (nextEpisode == null && preCacheList.isNotEmpty()) {
-                var fallbackFound = false
-                // v3.1.204: fallback scan也增加文件名匹配
-                val fallbackCurFilename = currentPlayingUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
-                for (ep in preCacheList) {
-                    if (!fallbackFound) {
-                        val fallbackEpFilename = ep.audioUrl?.substringAfterLast("/")?.substringBefore(".") ?: ""
-                        if (ep.id == curId || (fallbackCurFilename.isNotBlank() && fallbackCurFilename == fallbackEpFilename)) fallbackFound = true
-                        continue
-                    }
-                    if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
-                        && !settings.isNoPreprocess(ep.id ?: "")) {
-                        nextEpisode = ep
-                        writeNotifDetailLog("autoPlayNextEpisode: fallback scan found next ep ${ep.id} (date=${ep.broadcastAt?.take(10)}, title=${ep.title})")
-                        writeServiceLog("notification", "autoPlayNext: fallback scan found ${ep.title} (${ep.id}) from preCacheList, bypassing foundCurrent check")
-                        break
-                    }
-                }
-            }
+
             if (nextEpisode == null) {
-                Log.d(TAG, "autoPlayNextEpisode: no more episodes in pre-cache list or saved list, trying cross-day")
-                writeNotifDetailLog("autoPlayNextEpisode: nextEpisode is null after all list scans, trying cross-day (curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size})")
-                writeServiceLog("notification", "autoPlayNext: reached end of episode list, trying cross-day")
+                // 播放计划列表已用尽 → 尝试跨天
+                writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes exhausted, trying cross-day")
+                writeNotifDetailLog("autoPlayNextEpisode: trying cross-day")
                 val crossDayEp = fetchCrossDayEpisodeSkippingNoPreprocess(nextDate = true)
                 if (crossDayEp != null) {
-                    writeNotifDetailLog("autoPlayNextEpisode: cross-day episode found, switching - title=${crossDayEp.title}, id=${crossDayEp.id}")
-                    writeServiceLog("notification", "autoPlayNext: cross-day episode found: ${crossDayEp.title}")
-                    // v3.1.xxx: 富化跨天节目，确保通知显示标题/起止时间
+                    writeNotifDetailLog("autoPlayNextEpisode: cross-day found: ${crossDayEp.title} (${crossDayEp.id})")
+                    writeServiceLog("notification", "autoPlayNext: cross-day -> ${crossDayEp.title}")
                     val enrichedEp = enrichEpisodeFromDbIfNeeded(crossDayEp)
                     playEpisode(enrichedEp, false)
-                    updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
+                    updateMediaSessionMetadata()
                     forceNotificationUpdate = true
-                    // v2.4.117: removed — forceNotificationUpdate=true is sufficient
-                    updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
+                    updateNotification()
                     callback?.onEpisodeChanged(enrichedEp)
-                    // [v2.0.93] Fix: Send broadcast for cross-day episode change so main UI updates
-                    // even when callback is null (App in background, Activity not bound)
                     try {
                         val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
                         broadcastIntent.putExtra("episode_title", enrichedEp.title)
@@ -7668,27 +7611,26 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         broadcastIntent.setPackage(packageName)
                         LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
                     } catch (e: Exception) { Log.w(TAG, "Failed to broadcast cross-day episode change", e) }
+                    writeServiceLog("notification", "autoPlayNext: cross-day done: ${enrichedEp.title}")
+                    writeNotifDetailLog("autoPlayNextEpisode: cross-day done")
                     return
                 }
-                writeNotifDetailLog("autoPlayNextEpisode: no cross-day episode found, stopping playback")
-                writeServiceLog("notification", "autoPlayNext: no cross-day episode found, stopping")
+                writeNotifDetailLog("autoPlayNextEpisode: no cross-day episodes available, stopping")
+                writeServiceLog("notification", "autoPlayNext: no cross-day available, stopping")
                 return
             }
-            writeNotifDetailLog("autoPlayNextEpisode: found next episode in pre-cache list, switching - title=${nextEpisode.title}, id=${nextEpisode.id}")
-            Log.d(TAG, "autoPlayNextEpisode: switching to ${nextEpisode.title} (id=${nextEpisode.id})")
-            // v3.1.xxx: 富化下一节目，确保通知显示标题/起止时间
-            val enrichedEp = enrichEpisodeFromDbIfNeeded(nextEpisode)
+
+            val nextEp = nextEpisode!!
+            writeNotifDetailLog("autoPlayNextEpisode: playing next: ${nextEp.title} (${nextEp.id})")
+            val enrichedEp = enrichEpisodeFromDbIfNeeded(nextEp)
             val episodeKey = enrichedEp.id ?: ""
             val savedPos = if (episodeKey.isNotBlank()) getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(episodeKey, -1L) else -1L
             val startPos = if (savedPos > 0) savedPos else -1L
             playEpisode(enrichedEp, false, startPos)
-            updateMediaSessionMetadata()  // [Issue 5 Fix] 先更新元数据再刷新通知栏
+            updateMediaSessionMetadata()
             forceNotificationUpdate = true
-            // v2.4.117: removed — forceNotificationUpdate=true is sufficient
-            updateNotification()  // [v2.0.55] Issue 7 Fix: 切换节目后立即更新通知栏，避免延迟
-            // 通过回调通知 Activity 更新界面
+            updateNotification()
             callback?.onEpisodeChanged(enrichedEp)
-            // [v2.0.93] Fix: Send broadcast so main UI updates even when callback is null
             try {
                 val broadcastIntent = Intent(BROADCAST_EPISODE_CHANGED)
                 broadcastIntent.putExtra("episode_title", enrichedEp.title)
@@ -7696,6 +7638,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 broadcastIntent.setPackage(packageName)
                 LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
             } catch (e: Exception) { Log.w(TAG, "Failed to broadcast episode change", e) }
+            writeServiceLog("notification", "autoPlayNext: episode changed to: ${enrichedEp.title} (${enrichedEp.id})")
         } catch (e: Exception) {
             Log.e(TAG, "autoPlayNextEpisode failed", e)
             notifyNextEpisode()
