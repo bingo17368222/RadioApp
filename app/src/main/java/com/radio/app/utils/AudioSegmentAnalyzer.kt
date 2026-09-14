@@ -2562,6 +2562,25 @@ object AudioSegmentAnalyzer {
      *
      * @param enableSpectrumCheck 是否启用频谱比值检查（用于classifyIntervalRange的3帧约束）
      */
+    // v3.1.220-fix: 强语音保护。若YAMNet已给出明确的人声概率（speech/narration>=0.40），
+    // 则要求音乐必须显著主导才判水，防止"无背景音乐的短主持人讲话"被 backgroundMusic/music
+    // 的微弱概率（YAMNet对广播语音/台呼常见误报）吞并成水分段末尾。
+    private fun isStrongSpeech(speechScore: Float): Boolean = speechScore >= 0.40f
+
+    // 歌曲类判据（song/pop/backgroundMusic）。强语音时收紧，弱语音时维持宽松以保底歌曲后半段。
+    private fun songWaterRule(songScore: Float, speechScore: Float): Boolean {
+        val strong = isStrongSpeech(speechScore)
+        return songScore > (if (strong) 0.55f else 0.30f) &&
+            (songScore - speechScore) > (if (strong) 0.20f else 0.15f)
+    }
+
+    // 聚合音乐判据（music/instrumental/song/pop/theme/jingle）。同上，强语音时收紧。
+    private fun musicAggWaterRule(musicAgg: Float, speechScore: Float): Boolean {
+        val strong = isStrongSpeech(speechScore)
+        return musicAgg > (if (strong) 0.55f else 0.35f) &&
+            (musicAgg - speechScore) > (if (strong) 0.18f else 0.10f)
+    }
+
     private fun classifyYamnetScores(yamnet: YamnetResult, enableSpectrumCheck: Boolean = true): FrameType {
         // 直接使用YAMNet原始sigmoid概率值
         val speechScore = maxOf(yamnet.speech, yamnet.narration)
@@ -2577,8 +2596,9 @@ object AudioSegmentAnalyzer {
         // 故聚合所有音乐类(music/song/pop/instrumental/theme/jingle/backgroundMusic)取max：
         // 歌曲无论带不带人声，聚合音乐分都显著高于语音；主持人讲话时这些类别≈0.05~0.15不会误判。
         // 采用双条件：聚合音乐分>0.35 且高于原始speech 0.10（宽松的歌曲保底）。
+        // v3.1.220-fix: 改用带"强语音保护"的统一判据，防止无BGM的短讲话被背景音乐残留概率吞进水段
         val songScore = maxOf(yamnet.song, yamnet.popMusic, yamnet.backgroundMusic)
-        if (songScore > 0.30f && (songScore - speechScore) > 0.15f) {
+        if (songWaterRule(songScore, speechScore)) {
             return FrameType.WATER
         }
 
@@ -2587,7 +2607,7 @@ object AudioSegmentAnalyzer {
             yamnet.music, yamnet.instrumental, yamnet.song,
             yamnet.popMusic, yamnet.backgroundMusic, yamnet.themeMusic, yamnet.jingle
         )
-        if (musicAgg > 0.35f && (musicAgg - speechScore) > 0.10f) {
+        if (musicAggWaterRule(musicAgg, speechScore)) {
             return FrameType.WATER
         }
 
@@ -4354,10 +4374,11 @@ object AudioSegmentAnalyzer {
 
             // v3.1.216-fix: 标记歌曲高分帧，上下文保护不再降级这些歌曲帧为DRY
             // v3.1.217-fix: 采用聚合音乐判据，与classifyYamnetScores保持一致
+            // v3.1.220-fix: 与classifyYamnetScores共用带"强语音保护"的统一判据，避免无BGM讲话被误标isSong
             val smoothSongScore = maxOf(smoothSong, smoothPopMusic, smoothBgMusic)
             val smoothMusicAgg = maxOf(smoothMusic, smoothSong, smoothPopMusic, smoothBgMusic)
-            val isSong = (smoothSongScore > 0.30f && (smoothSongScore - smoothSpeech) > 0.15f) ||
-                ((smoothMusicAgg) > 0.35f && (smoothMusicAgg - smoothSpeech) > 0.10f)
+            val isSong = songWaterRule(smoothSongScore, smoothSpeech) ||
+                musicAggWaterRule(smoothMusicAgg, smoothSpeech)
 
             frames.add(FrameInfo(rawScores[i].timestampMs, type, typeNoSpectrum, isSpeechContaining, smoothSpectrumRatio, isSong))
         }
