@@ -4935,42 +4935,97 @@ class PlayerActivity : AppCompatActivity() {
             if (!seg.hasVoice) continue
             if (seg.end - seg.start < 3000L) continue
 
-            var tempPcmFile: java.io.File? = null
-            try {
-                tempPcmFile = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, seg.start, seg.end)
-                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+            val segDuration = seg.end - seg.start
+            var isWaterMatch = false
+            var matchLogExtra = ""
 
-                val fingerprint = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
-                if (fingerprint.isNullOrBlank()) continue
+            if (segDuration < 30_000L) {
+                // 短段(<30s)：单段指纹比对（原有逻辑）
+                var tempPcmFile: java.io.File? = null
+                try {
+                    tempPcmFile = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, seg.start, seg.end)
+                    if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
+                        val fingerprint = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                        if (!fingerprint.isNullOrBlank()) {
+                            for (waterFp in waterFingerprints) {
+                                val durationRatio = minOf(segDuration, waterFp.durationMs).toFloat() /
+                                        maxOf(segDuration, waterFp.durationMs).toFloat()
+                                if (durationRatio < 0.4f) continue
 
-                for (waterFp in waterFingerprints) {
-                    val durationRatio = minOf(seg.end - seg.start, waterFp.durationMs).toFloat() /
-                            maxOf(seg.end - seg.start, waterFp.durationMs).toFloat()
-                    if (durationRatio < 0.4f) continue
+                                val directMatch = com.radio.app.utils.ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, 0.75f)
+                                if (directMatch) {
+                                    isWaterMatch = true
+                                    matchLogExtra = "（来源: ${waterFp.episodeId}）"
+                                    break
+                                }
 
-                    val isMatch = com.radio.app.utils.ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, 0.75f)
-                    if (isMatch) {
-                        seg.hasVoice = false
-                        seg.label = "指纹水货"
-                        matchedDryCount++
-                        writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒匹配水印指纹（来源: ${waterFp.episodeId}）")
-                        break
+                                val stretchDetail = com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, waterFp.fingerprint)
+                                if (stretchDetail.similarity >= 0.75f) {
+                                    isWaterMatch = true
+                                    matchLogExtra = "（伸缩相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）"
+                                    break
+                                }
+                            }
+                        }
                     }
+                } catch (e: Throwable) {
+                    writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒异常: ${e.message}")
+                } finally {
+                    try { tempPcmFile?.delete() } catch (_: Exception) {}
+                }
+            } else {
+                // v3.1.209-fix: 长段(>=30s)拆分为30秒窗口(15秒步进)逐个指纹比对。
+                // 避免整段指纹被局部音乐主导导致末尾纯人声段也被误判为水货。
+                // 仅当匹配子段比例>=50%时才标记为指纹水货，否则保持干货。
+                val CHUNK_MS = 30_000L
+                val STEP_MS = 15_000L
+                var matchCount = 0
+                var totalChunks = 0
 
-                    val stretchDetail = com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, waterFp.fingerprint)
-                    if (stretchDetail.similarity >= 0.75f) {
-                        seg.hasVoice = false
-                        seg.label = "指纹水货"
-                        matchedDryCount++
-                        writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒伸缩匹配水印指纹（相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）")
-                        break
+                var chunkStart = seg.start
+                while (chunkStart + CHUNK_MS <= seg.end) {
+                    val chunkEnd = chunkStart + CHUNK_MS
+                    totalChunks++
+                    var chunkPcm: java.io.File? = null
+                    try {
+                        chunkPcm = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, chunkStart, chunkEnd)
+                        if (chunkPcm != null && chunkPcm.exists() && chunkPcm.length() > 0) {
+                            val chunkFp = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(chunkPcm)
+                            if (!chunkFp.isNullOrBlank()) {
+                                for (waterFp in waterFingerprints) {
+                                    val durRatio = minOf(CHUNK_MS, waterFp.durationMs).toFloat() /
+                                            maxOf(CHUNK_MS, waterFp.durationMs).toFloat()
+                                    if (durRatio < 0.4f) continue
+                                    if (com.radio.app.utils.ChromaprintExtractor.isMatch(chunkFp, waterFp.fingerprint, 0.75f)) {
+                                        matchCount++
+                                        break
+                                    }
+                                    if (com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(chunkFp, waterFp.fingerprint).similarity >= 0.75f) {
+                                        matchCount++
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                    finally { try { chunkPcm?.delete() } catch (_: Exception) {} }
+                    chunkStart += STEP_MS
+                }
+
+                if (totalChunks > 0) {
+                    val matchRatio = matchCount.toFloat() / totalChunks
+                    matchLogExtra = "（${matchCount}/${totalChunks}子段匹配，比例${"%.0f".format(matchRatio * 100)}%）"
+                    if (matchRatio >= 0.5f) {
+                        isWaterMatch = true
                     }
                 }
-            } catch (e: Throwable) {
-                // v3.1.58: 捕获Throwable(含UnsatisfiedLinkError)，避免崩溃后闪退循环
-                writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒异常: ${e.message}")
-            } finally {
-                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+
+            if (isWaterMatch) {
+                seg.hasVoice = false
+                seg.label = "指纹水货"
+                matchedDryCount++
+                writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒匹配水印指纹$matchLogExtra")
             }
         }
 
