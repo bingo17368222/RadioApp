@@ -1985,12 +1985,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
         // v3.1.207-fix: 与buildPlaybackSchedule保持一致，使用节目ID序号排序
-        // v3.1.212-fix: 同步改用startTime为主排序，与buildPlaybackSchedule一致
-        resultList.sortWith(
+        // v3.1.212-fix: 同步改用startTime为主排序，与buildPlaybackSchedule一致。
+        // 先推导startTime（构造节目的startTime已在构造时设置，API节目需要从broadcastAt推导）
+        // 注意：resultList是MutableList，不能直接reassign，用sortWith原地排序。
+        val resultListCopy = resultList.map { ep ->
+            if (ep.startTime <= 0 && !ep.broadcastAt.isNullOrBlank() && ep.broadcastAt!!.length >= 16) {
+                try {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+                    sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                    val parsedTime = sdf.parse(ep.broadcastAt!!)?.time ?: 0L
+                    if (parsedTime > 0) ep.copy(startTime = parsedTime) else ep
+                } catch (_: Exception) { ep }
+            } else ep
+        }.sortedWith(
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
                 .thenBy { it.startTime }
                 .thenBy { extractEpisodeIndex(it) }
         )
+        resultList.clear()
+        resultList.addAll(resultListCopy)
         writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size}), sorted by episode index")
         return resultList
     }
@@ -6504,24 +6517,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.139: 改为var，fallback4需要重新赋值
         var combinedList = (preCacheList + savedList).distinctBy { it.id }
 
-        // v3.1.207-fix: 先按broadcastAt日期分组，再按节目ID中的序号排序。
-        // 根因：startTime可能为0（URL构造的节目等），导致同天节目排序混乱——
-        // 早间节目（ID 0~2）被排到了晚间节目（ID 9~11）之后，使播放计划列表错乱。
-        // 使用 extractEpisodeIndex 从ID中提取序号作为同天排序依据，不受startTime影响。
-        // v3.1.212-fix: 同天内改用startTime为主排序，extractEpisodeIndex为fallback。
-        // 根因：预缓存中URL构造的节目（fetchMoreDaysForPreCache）使用timeSlots遍历顺序
-        // 作为slotIdx，如果savedList中的节目不是按时间排序的，构造节目的ID序号与实际播出
-        // 时间不一致（如晚间节目获得index=0，早间节目获得index=3），导致晚间节目被错误地
-        // 排到早间节目前面→播放完晚间节目后跳转到同天早间节目。
-        // 改用startTime排序：所有节目（包括构造节目）都有正确的startTime（从broadcastAt或
-        // timeSlot解析），能保证同天内按实际播出时间排序。startTime=0的节目回退到ID序号。
-        combinedList = combinedList.sortedWith(
-            compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
-                .thenBy { it.startTime }
-                .thenBy { extractEpisodeIndex(it) }
-        )
-
-        // v3.1.207-fix: 遍历combinedList，为startTime=0的节目从broadcastAt推导时间戳。
+        // v3.1.212-fix: 先遍历combinedList，为所有startTime=0的节目从broadcastAt推导时间戳，
+        // 再按broadcastAt日期+startTime排序。顺序不可调换：推导必须在排序之前进行。
+        //
+        // 根因（日志验证）：preCacheList中URL构造的节目（如索引1）有正确的startTime，
+        // 但savedList中API返回的节目（如索引9、10、11）startTime=0（JSON反序列化未设置）。
+        // 如果在排序后才推导startTime，排序时早间节目（startTime>0，来自preCacheList）被排到
+        // 晚间节目（startTime=0，来自savedList）后面，导致播放完晚间节目后跳转到同天早间节目。
+        //
         // 存量pre-cache数据中构造节目的broadcastAt可能只包含日期（如"2025-02-28"），
         // 此时无法推导，显示时会回退到显示日期字符串。
         // 对于API获取的节目，broadcastAt格式为"2025-02-28T07:00:00"（16+字符），可正常解析。
@@ -6537,6 +6540,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } catch (_: Exception) { ep }
             } else ep
         }
+
+        // v3.1.207-fix: 先按broadcastAt日期分组，再按节目ID中的序号排序。
+        // 根因：startTime可能为0（URL构造的节目等），导致同天节目排序混乱——
+        // 早间节目（ID 0~2）被排到了晚间节目（ID 9~11）之后，使播放计划列表错乱。
+        // 使用 extractEpisodeIndex 从ID中提取序号作为同天排序依据，不受startTime影响。
+        // v3.1.212-fix: 同天内改用startTime为主排序，extractEpisodeIndex为fallback。
+        // 此时所有节目的startTime已推导完毕（除非broadcastAt不含时间部分），可保证正确排序。
+        combinedList = combinedList.sortedWith(
+            compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                .thenBy { it.startTime }
+                .thenBy { extractEpisodeIndex(it) }
+        )
 
         // 详细日志：记录combinedList中的所有节目，便于排查遗漏
         val combinedSummary = combinedList.map { "${it.id}:${it.title}[${it.broadcastAt?.take(10) ?: "?"}]" }
@@ -6595,7 +6610,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, curDate)
                     if (!freshEpisodes.isNullOrEmpty()) {
                         saveEpisodeList(freshEpisodes)
-                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.sortedWith(
+                        // v3.1.212-fix: fallback4也需先推导startTime再排序，与主路径一致
+                        combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.map { ep ->
+                            if (ep.startTime <= 0 && !ep.broadcastAt.isNullOrBlank() && ep.broadcastAt!!.length >= 16) {
+                                try {
+                                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+                                    sdf.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                                    val parsedTime = sdf.parse(ep.broadcastAt!!)?.time ?: 0L
+                                    if (parsedTime > 0) ep.copy(startTime = parsedTime) else ep
+                                } catch (_: Exception) { ep }
+                            } else ep
+                        }.sortedWith(
                             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
                                 .thenBy { it.startTime }
                                 .thenBy { extractEpisodeIndex(it) }
