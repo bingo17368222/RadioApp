@@ -60,6 +60,56 @@ class YamnetService : Service() {
         private const val OVERALL_TIMEOUT_MS = 600_000L
         // v3.1.165: 缩短单个区间超时从30s→15s，配合XNNPACK禁用更快检测挂死
         private const val INTERVAL_TIMEOUT_MS = 15_000L
+
+        // v3.1.214-fix: 崩溃检查点文件目录名（在cacheDir下）
+        private const val CRASH_CHECKPOINT_DIR = "yamnet_crash_checkpoints"
+        // v3.1.214-fix: 检查点文件前缀，后跟区间序号
+        private const val CRASH_CHECKPOINT_PREFIX = "checkpoint_"
+    }
+
+    // v3.1.214-fix: 崩溃检查点文件路径（进程级，每次onStartCommand初始化）
+    private var crashCheckpointDir: File? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        // v3.1.214-fix: 设置未捕获异常处理器，捕获:yamnet进程的Java异常并记录到指纹日志
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val errMsg = "YamnetService: 未捕获异常 thread=${thread.name}, ${throwable.javaClass.name}: ${throwable.message}"
+                Log.e(TAG, errMsg)
+                writeFingerprintLog(errMsg)
+                val sw = StringWriter()
+                val pw = PrintWriter(sw)
+                throwable.printStackTrace(pw)
+                writeFingerprintLog("YamnetService: 异常堆栈:\n${sw.toString().take(800)}")
+            } catch (_: Exception) {}
+            // 调用默认处理器（终止进程）
+            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+            try {
+                defaultHandler?.uncaughtException(thread, throwable)
+            } catch (_: Exception) {}
+        }
+    }
+
+    // v3.1.214-fix: 写入崩溃检查点文件
+    private fun writeCrashCheckpoint(intervalIndex: Int, total: Int, description: String) {
+        try {
+            val dir = crashCheckpointDir ?: return
+            if (!dir.exists()) dir.mkdirs()
+            // 清理旧检查点文件（只保留最新的）
+            dir.listFiles()?.forEach { it.delete() }
+            val checkpointFile = File(dir, "${CRASH_CHECKPOINT_PREFIX}${intervalIndex}_${total}_${description.replace("/", "_")}")
+            checkpointFile.createNewFile()
+            // 写入时间戳
+            checkpointFile.writeText("timestamp=${System.currentTimeMillis()}\ninterval=${intervalIndex + 1}/$total\ndescription=$description\n")
+        } catch (_: Exception) {}
+    }
+
+    // v3.1.214-fix: 清理崩溃检查点目录
+    private fun clearCrashCheckpoints() {
+        try {
+            crashCheckpointDir?.listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {}
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -72,10 +122,16 @@ class YamnetService : Service() {
         Log.i(TAG, "========================================")
         Log.i(TAG, "YamnetService: 启动，进程PID=$pid, 线程=${Thread.currentThread().name}")
         writeFingerprintLog("YamnetService: 启动 PID=$pid")
+
+        // v3.1.214-fix: 初始化崩溃检查点目录
+        crashCheckpointDir = File(cacheDir, CRASH_CHECKPOINT_DIR)
+        clearCrashCheckpoints()
+        writeCrashCheckpoint(0, 0, "service_started")
         
         // v3.1.174-fix: 重置NativeLibLoader加载标志，每个全新进程必须重新加载所有native库
         // 根因：NativeLibLoader是单例，静态loaded标志在进程复用过程中保持true
         // 但每次YamnetService启动都应该是全新进程，必须重置让ensureLoaded重新执行
+        writeCrashCheckpoint(0, 0, "native_lib_loader_reset")
         com.radio.app.utils.NativeLibLoader.reset()
         Log.i(TAG, "YamnetService: NativeLibLoader.reset() 已调用，保证本进程重新加载所有native库 (PID=$pid)")
         writeFingerprintLog("YamnetService: NativeLibLoader.reset() 已调用")
@@ -109,6 +165,7 @@ class YamnetService : Service() {
 
                 // ===== STEP 2: 检查PCM文件 =====
                 Log.i(TAG, "YamnetService: [STEP 2] 检查PCM文件: $pcmPath PID=$pid")
+                writeCrashCheckpoint(0, 0, "step2_check_pcm")
                 val pcmFile = File(pcmPath)
                 if (!pcmFile.exists()) {
                     throw RuntimeException("PCM文件不存在: $pcmPath")
@@ -153,6 +210,7 @@ class YamnetService : Service() {
 
                 // ===== STEP 5: 加载YAMNet模型（复用静态Interpreter，避免每批创建新Interpreter导致SIGSEGV）=====
                 Log.i(TAG, "YamnetService: [STEP 5] 加载YAMNet模型 PID=$pid")
+                writeCrashCheckpoint(0, 0, "step5_load_yamnet_model")
                 writeFingerprintLog("YamnetService: [STEP 5] 开始加载YAMNet模型")
                 AudioSegmentAnalyzer.resetYamnetTimeoutCounters()
 
@@ -191,6 +249,7 @@ class YamnetService : Service() {
 
                 // ===== STEP 6: 打开PCM文件（内存映射） =====
                 Log.i(TAG, "YamnetService: [STEP 6] 打开PCM文件(内存映射) PID=$pid")
+                writeCrashCheckpoint(0, 0, "step6_mmap_pcm")
                 writeFingerprintLog("YamnetService: [STEP 6] 开始内存映射PCM文件")
                 pcmSamples = try {
                     AudioSegmentAnalyzer.openPcmSamples(pcmFile)
@@ -280,6 +339,8 @@ class YamnetService : Service() {
                                         com.radio.app.utils.LogcatCapture.dumpLogcatForPid(this, pid, maxLines = 200, suffix = "pre_${i+1}")
                                     } catch (_: Exception) {}
                                 }
+                                // v3.1.214-fix: 在TFLite推理前写入崩溃检查点
+                                writeCrashCheckpoint(i, total, "pre_tflite_infer")
                                 val future = intervalExecutor.submit(Callable {
                                     AudioSegmentAnalyzer.classifyPcmIntervalInner(
                                         pcmSamples!!, startMs, endMs
@@ -347,6 +408,8 @@ class YamnetService : Service() {
 
                 Log.i(TAG, "YamnetService: 处理完成，共${allSegments.size}段(成功${processedCount}/${total}个区间)")
                 writeFingerprintLog("YamnetService: 处理完成 共${allSegments.size}段 成功${processedCount}/${total}")
+                // v3.1.214-fix: 处理成功，清除崩溃检查点
+                clearCrashCheckpoints()
                 val resultBundle = Bundle().apply {
                     putParcelableArrayList(RESULT_SEGMENTS, allSegments)
                 }
