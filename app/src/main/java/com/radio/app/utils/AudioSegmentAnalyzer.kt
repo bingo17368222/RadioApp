@@ -2571,6 +2571,20 @@ object AudioSegmentAnalyzer {
             return FrameType.SILENCE
         }
 
+        // v3.1.216-fix: song/popMusic/backgroundMusic歌曲检测，提前到频谱检查之前。
+        // 根因：歌曲后半段常含歌手人声，spectrumRatio>0.20会被下方"频谱比值>0.20→DRY"优先判为干货，
+        // 导致带人声的歌曲后半段与主持人讲话合并。歌曲的本征特征是song/popMusic高分(0.4~0.6)，
+        // 与单纯人声(4演唱类)不同，应优先于频谱人声检查判定为WATER。
+        // 同时改用原始speechScore而非effectiveSpeechScore：
+        // 全局vadSpeechRatio>0.20会把speech锁定到≥0.30，使原条件effectiveSpeechScore<0.30必失败，
+        // 歌曲(尤其赈歌类)因此被误杀为DRY。songScore>0.40且相对speech差额>0.25即可判定，不再受VAD锁定干扰。
+        // 主持人讲话+背景音乐场景：song≈0.05→songScore≤0.40→跳过检查→不影响现有DRY判定。
+        // 纯器乐场景：song≈0.05→songScore≤0.40→跳过检查→由下方优先级4(music)或5处理。
+        val songScore = maxOf(yamnet.song, yamnet.popMusic, yamnet.backgroundMusic)
+        if (songScore > 0.40f && (songScore - speechScore) > 0.25f) {
+            return FrameType.WATER
+        }
+
         // v3.1.99: 频谱比值 > 0.20 → DRY（人声频谱前置检测，豁免水分）
         // v3.1.182: 从0.16恢复到0.20，防止片头音乐含部分人声频谱能量被误判为DRY
         if (enableSpectrumCheck && yamnet.spectrumRatio > 0.20f) {
@@ -2589,18 +2603,6 @@ object AudioSegmentAnalyzer {
         // v3.1.182: 从0.30/0.35恢复到0.35/0.30，移除music>0.65条件，防止片头音乐被误判为WATER
         // 同时确保片头音乐保持为WATER段，不会与主持人讲话DRY段合并
         if ((yamnet.music - effectiveSpeechScore) > 0.35f && effectiveSpeechScore < 0.30f) {
-            return FrameType.WATER
-        }
-
-        // v3.1.209-fix: song/popMusic/backgroundMusic歌曲检测。
-        // 根因：歌曲的yamnet.music(132纯器乐)可能仅≈0.30，但song(261带人声歌曲)可达0.40~0.60，
-        // popMusic(211流行乐)/backgroundMusic(262背景乐)也约0.20~0.40，原有逻辑完全忽略这些字段，
-        // 导致带人声的歌曲(2~4分钟)与前后段合并成一个超长DRY段。
-        // 条件：song类score > 0.30 且 (songScore - speech) > 0.25 且 speech不占主导。
-        // host+背景音乐的常见场景：song≈0.05→songScore<0.30→跳过检查→不影响现有DRY判定。
-        // 纯器乐场景：song≈0.05→跳过检查→由优先级4a处理。
-        val songScore = maxOf(yamnet.song, yamnet.popMusic, yamnet.backgroundMusic)
-        if (songScore > 0.30f && (songScore - effectiveSpeechScore) > 0.20f && effectiveSpeechScore < 0.30f) {
             return FrameType.WATER
         }
 
@@ -4299,7 +4301,8 @@ object AudioSegmentAnalyzer {
             val type: FrameType,          // 完整判定（含频谱检查）
             val typeNoSpectrum: FrameType, // 无频谱判定的YAMNet-only判定
             val isSpeechContaining: Boolean,
-            val spectrumRatio: Float       // 平滑后的频谱比值，用于3帧约束
+            val spectrumRatio: Float,      // 平滑后的频谱比值，用于3帧约束
+            val isSong: Boolean            // v3.1.216-fix: 是否由song检测判定为歌曲，豁免上下文保护降级
         )
         val frames = mutableListOf<FrameInfo>()
 
@@ -4337,11 +4340,15 @@ object AudioSegmentAnalyzer {
             val type = classifyYamnetScores(smoothedYamnet)                           // 含频谱检查
             val typeNoSpectrum = classifyYamnetScores(smoothedYamnet, false)          // 无频谱检查
 
-            // v3.1.99: 判断是否含人声（仅频谱比值>0.20，不依赖YAMNet的DRY标记）
+            // v3.1.104: 判断是否含人声（仅频谱比值>0.20，不依赖YAMNet的DRY标记）
             // v3.1.182: 从0.16恢复到0.20，防止片头音乐含部分人声频谱能量触发上下文保护
             val isSpeechContaining = (smoothSpectrumRatio > 0.20f)
 
-            frames.add(FrameInfo(rawScores[i].timestampMs, type, typeNoSpectrum, isSpeechContaining, smoothSpectrumRatio))
+            // v3.1.216-fix: 标记song高分帧，上下文保护不再降级这些歌曲帧为DRY
+            val smoothSongScore = maxOf(smoothSong, smoothPopMusic, smoothBgMusic)
+            val isSong = (smoothSongScore > 0.40f && (smoothSongScore - smoothSpeech) > 0.25f)
+
+            frames.add(FrameInfo(rawScores[i].timestampMs, type, typeNoSpectrum, isSpeechContaining, smoothSpectrumRatio, isSong))
         }
 
         // v3.1.103: 频谱比值连续3帧生效约束
@@ -4375,7 +4382,7 @@ object AudioSegmentAnalyzer {
         val contextWindowMs = 1500L
         for (i in frames.indices) {
             val frame = frames[i]
-            if (frame.type == FrameType.WATER) {
+            if (frame.type == FrameType.WATER && !frame.isSong) {
                 val hasSpeechNearby = frames.any { other ->
                     other != frame &&
                         kotlin.math.abs(other.timestampMs - frame.timestampMs) <= contextWindowMs &&
@@ -4397,7 +4404,7 @@ object AudioSegmentAnalyzer {
         var segType = frames[0].type
 
         for (i in 1 until frames.size) {
-            val (currentTs, currentType, _, _, _) = frames[i]
+            val (currentTs, currentType, _, _, _, _) = frames[i]
             if (currentType != segType) {
                 val segEndMs = currentTs - halfWindowMs
                 if (segEndMs > segStartMs) {
