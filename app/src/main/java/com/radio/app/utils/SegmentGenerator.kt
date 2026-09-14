@@ -45,9 +45,39 @@ object SegmentGenerator {
     // v3.1.50: 全局三层分段标志。generateJiuAiTingSegments 开始前设为 true，结束后设为 false。
     // SegmentNotificationHelper.startSession 检查此标志，防止并发分段导致通知栏循环。
     // 外部调用方（如 patrolSubtitleGeneration）也应先检查此标志。
+    // v3.1.219-fix: 改为 AtomicBoolean 以原子化"检查-置位"，消除 check-then-set 竞态窗口。
+    // 根因：v3.1.218 中 isThreeLayerSegmenting 是普通 volatile，两个并发请求在检查当初都读到 false，
+    // 双双通过守卫，随后并发向同一个 :yamnet 进程发送 TFLite 推理批次，导致 SIGSEGV 风暴、
+    // 45~60秒超时、逐区间重试堆积，以及旧任务 endSession() 误取消新任务的进度通知。
     @Volatile
     var isThreeLayerSegmenting: Boolean = false
         private set
+
+    // v3.1.219-fix: 三层分段的原子互斥锁。compareAndSet(false→true) 一次性完成"检查+占用"，
+    // 从根上杜绝两个 generateJiuAiTingSegments 并发进入。afterRun 必须成对释放。
+    private val threeLayerSegmentLock = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * v3.1.219-fix: 原子获取全局三层分段锁。成功返回 true 且本任务持有锁，
+     * 必须调用 [releaseThreeLayerSegmentLock] 释放；失败返回 false，调用方应直接返回。
+     * 替代非原子的 if(isThreeLayerSegmenting){...} isThreeLayerSegmenting=true 检查。
+     */
+    private fun acquireThreeLayerSegmentLock(): Boolean {
+        if (threeLayerSegmentLock.compareAndSet(false, true)) {
+            isThreeLayerSegmenting = true
+            return true
+        }
+        Log.w(TAG, "generateJiuAiTingSegments: 全局三层分段锁被占用，拒绝并发请求")
+        return false
+    }
+
+    /**
+     * v3.1.219-fix: 原子释放全局三层分段锁。仅由持有锁的任务调用（finally 中）。
+     */
+    private fun releaseThreeLayerSegmentLock() {
+        threeLayerSegmentLock.set(false)
+        isThreeLayerSegmenting = false
+    }
 
     // v3.1.214-fix: 节目分段处理尝试时间戳缓存，防止巡逻在节目间切换时重复触发分段。
     // 键 = episodeId，值 = 最近一次 generateJiuAiTingSegments 开始的时间戳。
@@ -1242,11 +1272,10 @@ object SegmentGenerator {
             recordProcessingAttempt(episodeId)
 
             // v3.1.50: 检查全局三层分段标志，防止并发分段导致通知栏循环
-            if (isThreeLayerSegmenting) {
-                Log.w(TAG, "generateJiuAiTingSegments: 全局三层分段中，拒绝并发请求 for episode=$episodeId")
+            // v3.1.219-fix: 使用 AtomicBoolean 原子获取锁，消除 check-then-set 竞态
+            if (!acquireThreeLayerSegmentLock()) {
                 return null
             }
-            isThreeLayerSegmenting = true
             // v3.1.52: 修复关键bug——isSegmenting 必须在 startSession 成功之后设置。
             // 根因：v3.1.51 在 startSession 之前设置 isSegmenting=true，导致自身的
             // startSession 被 isSegmenting 检查拒绝（永远返回 false），通知栏永远不会启动。
@@ -2259,7 +2288,8 @@ object SegmentGenerator {
             // v3.1.214-fix: 清除本次处理尝试标记（无论成功/崩溃都清除），
             // 允许巡逻在同一会话中重试（但受冷却期保护，30分钟内不重复触发）
             removeProcessingAttempt(episodeId)
-            isThreeLayerSegmenting = false
+            // v3.1.219-fix: 原子释放三层分段锁
+            releaseThreeLayerSegmentLock()
             // v3.1.51: 同时清除全局标志，允许后续分段请求
             SegmentNotificationHelper.isSegmenting = false
             // v3.1.59: 崩溃后清除segmentingEpisodes条目，防止后续请求被永久拒绝
