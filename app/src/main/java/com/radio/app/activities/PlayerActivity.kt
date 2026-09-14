@@ -3537,34 +3537,48 @@ class PlayerActivity : AppCompatActivity() {
         adapter.onItemClicked = { position ->
             val item = historyList.getOrNull(position)
             if (item != null) {
-                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}")
-                val episode = item.toEpisode()
-                // 在当前节目列表中查找匹配的节目
-                val listIdx = episodeList.indexOfFirst { it.id == item.episodeId }
-                if (listIdx >= 0) {
-                    // 如果在当前节目列表中，使用 playEpisodeAtIndex 切换
-                    playEpisodeAtIndex(listIdx)
-                } else if (playbackService == null) {
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}, lastPosition=${item.lastPosition}")
+                // v3.1.215-fix: 从历史列表点击节目时，始终传递 item.lastPosition，
+                // 不使用 playEpisodeAtIndex（不走不喜欢跳过，不使用 SharedPreferences 回退）。
+                val foundInList = episodeList.any { it.id == item.episodeId }
+                val actualEpisode = if (foundInList) {
+                    episodeList.first { it.id == item.episodeId }
+                } else {
+                    item.toEpisode()
+                }
+                // 保存旧节目播放位置到历史记录
+                val oldId = currentEpisode?.id
+                if (oldId != null && oldId != item.episodeId) {
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                    writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: saved old episode position, id=$oldId, pos=$oldPos")
+                }
+                if (playbackService == null) {
                     Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 } else {
-                    // 不在当前列表，直接通过 service 播放
-                    // v3.1.117: 保存旧节目播放位置到历史记录
-                    val oldId = currentEpisode?.id
-                    if (oldId != null) {
-                        val oldPos = playbackService?.getCurrentPosition() ?: 0L
-                        PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
-                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: saved old episode position, id=$oldId, pos=$oldPos")
+                    Toast.makeText(this, "切换到: ${actualEpisode.title}", Toast.LENGTH_SHORT).show()
+                    // 设置 currentEpisode / currentEpisodeIndex
+                    if (!foundInList) {
+                        currentEpisode = actualEpisode
+                        currentEpisodeIndex = -1
+                    } else {
+                        val idx = episodeList.indexOfFirst { it.id == item.episodeId }
+                        currentEpisode = actualEpisode
+                        currentEpisodeIndex = idx
+                        clearSubtitles()
                     }
-                    Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
-                    currentEpisode = episode
-                    currentEpisodeIndex = -1
                     saveLastEpisode()
-                    playbackService?.playEpisode(episode, false, item.lastPosition)
+                    // v3.1.146-fix: 提前载入真实分段
+                    val preloadedEp = try {
+                        val segs = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(actualEpisode.id)
+                        if (segs.isNotEmpty()) actualEpisode.copy(voiceSegments = segs) else actualEpisode
+                    } catch (_: Exception) { actualEpisode }
+                    playbackService?.playEpisode(preloadedEp, false, item.lastPosition)
                     ensureSegmentsForCurrentEpisode()
                     updateUI()
                     setupPreCacheList()
                     // 记录历史（更新位置）
-                    PlayHistoryUtils.recordHistory(this, episode, item.lastPosition)
+                    PlayHistoryUtils.recordHistory(this, actualEpisode, if (item.lastPosition > 0) item.lastPosition else 0L)
                 }
             }
         }
@@ -4935,42 +4949,97 @@ class PlayerActivity : AppCompatActivity() {
             if (!seg.hasVoice) continue
             if (seg.end - seg.start < 3000L) continue
 
-            var tempPcmFile: java.io.File? = null
-            try {
-                tempPcmFile = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, seg.start, seg.end)
-                if (tempPcmFile == null || !tempPcmFile.exists() || tempPcmFile.length() <= 0) continue
+            val segDuration = seg.end - seg.start
+            var isWaterMatch = false
+            var matchLogExtra = ""
 
-                val fingerprint = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
-                if (fingerprint.isNullOrBlank()) continue
+            if (segDuration < 30_000L) {
+                // 短段(<30s)：单段指纹比对（原有逻辑）
+                var tempPcmFile: java.io.File? = null
+                try {
+                    tempPcmFile = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, seg.start, seg.end)
+                    if (tempPcmFile != null && tempPcmFile.exists() && tempPcmFile.length() > 0) {
+                        val fingerprint = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(tempPcmFile)
+                        if (!fingerprint.isNullOrBlank()) {
+                            for (waterFp in waterFingerprints) {
+                                val durationRatio = minOf(segDuration, waterFp.durationMs).toFloat() /
+                                        maxOf(segDuration, waterFp.durationMs).toFloat()
+                                if (durationRatio < 0.4f) continue
 
-                for (waterFp in waterFingerprints) {
-                    val durationRatio = minOf(seg.end - seg.start, waterFp.durationMs).toFloat() /
-                            maxOf(seg.end - seg.start, waterFp.durationMs).toFloat()
-                    if (durationRatio < 0.4f) continue
+                                val directMatch = com.radio.app.utils.ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, 0.75f)
+                                if (directMatch) {
+                                    isWaterMatch = true
+                                    matchLogExtra = "（来源: ${waterFp.episodeId}）"
+                                    break
+                                }
 
-                    val isMatch = com.radio.app.utils.ChromaprintExtractor.isMatch(fingerprint, waterFp.fingerprint, 0.75f)
-                    if (isMatch) {
-                        seg.hasVoice = false
-                        seg.label = "指纹水货"
-                        matchedDryCount++
-                        writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒匹配水印指纹（来源: ${waterFp.episodeId}）")
-                        break
+                                val stretchDetail = com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, waterFp.fingerprint)
+                                if (stretchDetail.similarity >= 0.75f) {
+                                    isWaterMatch = true
+                                    matchLogExtra = "（伸缩相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）"
+                                    break
+                                }
+                            }
+                        }
                     }
+                } catch (e: Throwable) {
+                    writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒异常: ${e.message}")
+                } finally {
+                    try { tempPcmFile?.delete() } catch (_: Exception) {}
+                }
+            } else {
+                // v3.1.209-fix: 长段(>=30s)拆分为30秒窗口(15秒步进)逐个指纹比对。
+                // 避免整段指纹被局部音乐主导导致末尾纯人声段也被误判为水货。
+                // 仅当匹配子段比例>=50%时才标记为指纹水货，否则保持干货。
+                val CHUNK_MS = 30_000L
+                val STEP_MS = 15_000L
+                var matchCount = 0
+                var totalChunks = 0
 
-                    val stretchDetail = com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(fingerprint, waterFp.fingerprint)
-                    if (stretchDetail.similarity >= 0.75f) {
-                        seg.hasVoice = false
-                        seg.label = "指纹水货"
-                        matchedDryCount++
-                        writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒伸缩匹配水印指纹（相似度: ${"%.0f".format(stretchDetail.similarity * 100)}%）")
-                        break
+                var chunkStart = seg.start
+                while (chunkStart + CHUNK_MS <= seg.end) {
+                    val chunkEnd = chunkStart + CHUNK_MS
+                    totalChunks++
+                    var chunkPcm: java.io.File? = null
+                    try {
+                        chunkPcm = com.radio.app.utils.PcmSegmentExtractor.extractSegmentPcm(this, episodeId, chunkStart, chunkEnd)
+                        if (chunkPcm != null && chunkPcm.exists() && chunkPcm.length() > 0) {
+                            val chunkFp = com.radio.app.utils.ChromaprintExtractor.extractFingerprintFromFile(chunkPcm)
+                            if (!chunkFp.isNullOrBlank()) {
+                                for (waterFp in waterFingerprints) {
+                                    val durRatio = minOf(CHUNK_MS, waterFp.durationMs).toFloat() /
+                                            maxOf(CHUNK_MS, waterFp.durationMs).toFloat()
+                                    if (durRatio < 0.4f) continue
+                                    if (com.radio.app.utils.ChromaprintExtractor.isMatch(chunkFp, waterFp.fingerprint, 0.75f)) {
+                                        matchCount++
+                                        break
+                                    }
+                                    if (com.radio.app.utils.ChromaprintExtractor.compareFingerprintsWithStretch(chunkFp, waterFp.fingerprint).similarity >= 0.75f) {
+                                        matchCount++
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                    finally { try { chunkPcm?.delete() } catch (_: Exception) {} }
+                    chunkStart += STEP_MS
+                }
+
+                if (totalChunks > 0) {
+                    val matchRatio = matchCount.toFloat() / totalChunks
+                    matchLogExtra = "（${matchCount}/${totalChunks}子段匹配，比例${"%.0f".format(matchRatio * 100)}%）"
+                    if (matchRatio >= 0.5f) {
+                        isWaterMatch = true
                     }
                 }
-            } catch (e: Throwable) {
-                // v3.1.58: 捕获Throwable(含UnsatisfiedLinkError)，避免崩溃后闪退循环
-                writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒异常: ${e.message}")
-            } finally {
-                try { tempPcmFile?.delete() } catch (_: Exception) {}
+            }
+
+            if (isWaterMatch) {
+                seg.hasVoice = false
+                seg.label = "指纹水货"
+                matchedDryCount++
+                writeJitterLog(" applyFingerprintWithMerge: 片段${seg.start/1000}秒-${seg.end/1000}秒匹配水印指纹$matchLogExtra")
             }
         }
 

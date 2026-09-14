@@ -277,6 +277,16 @@ class EpisodeApiService private constructor() {
                     // v2.4.147: Persist start/end timestamps for offline display.
                     this.startTime = beginTime
                     this.endTime = endTime
+                    // v3.1.207-fix: 统一startTime格式。当API返回的beginTime=0时，
+                    // 从broadcastAt解析时间戳，确保所有节目都有有效的startTime。
+                    // 避免后续排序时startTime=0的节目被排到最前面。
+                    if (this.startTime <= 0 && this.broadcastAt.isNotBlank()) {
+                        try {
+                            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+                            sdf.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+                            this.startTime = sdf.parse(this.broadcastAt)?.time ?: 0L
+                        } catch (_: Exception) {}
+                    }
                     description = "${timeStr} - ${getStationName(stationId)}"
                     this.stationId = stationId
                     this.stationName = stationName
@@ -365,6 +375,14 @@ class EpisodeApiService private constructor() {
                     this.duration = duration
                     this.startTime = beginTime
                     this.endTime = endTime
+                    // v3.1.207-fix: 统一startTime格式，同fetchTodayWithVod处理
+                    if (this.startTime <= 0 && this.broadcastAt.isNotBlank()) {
+                        try {
+                            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+                            sdf.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+                            this.startTime = sdf.parse(this.broadcastAt)?.time ?: 0L
+                        } catch (_: Exception) {}
+                    }
                     description = "${timeStr} - ${getStationName(stationId)}"
                     this.stationId = stationId
                     this.stationName = stationName

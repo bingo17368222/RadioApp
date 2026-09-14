@@ -49,6 +49,17 @@ object SegmentGenerator {
     var isThreeLayerSegmenting: Boolean = false
         private set
 
+    // v3.1.214-fix: 节目分段处理尝试时间戳缓存，防止巡逻在节目间切换时重复触发分段。
+    // 键 = episodeId，值 = 最近一次 generateJiuAiTingSegments 开始的时间戳。
+    // 分段完成后通过 removeProcessingAttempt() 立即清除，允许巡逻在同一会话中重试。
+    // 进程重启后此缓存清空，不受影响。
+    private val processingAttemptTimestamps = ConcurrentHashMap<String, Long>()
+
+    // v3.1.214-fix: 分段尝试冷却时间（毫秒）。在此时间内对于同一节目的重复请求将被跳过。
+    // 仅在分段未正常完成（崩溃/超时）且 processingAttemptTimestamps 未被清理时生效。
+    // 正常情况下分段完成后会立即清除尝试标记，冷却机制不会触发。
+    private const val PROCESSING_ATTEMPT_COOLDOWN_MS = 30 * 60 * 1000L // 30分钟
+
     // Default keywords for content-based classification (就AI听 scheme)
     private val DEFAULT_DRY_KEYWORDS = listOf(
         "新闻", "资讯", "报道", "访谈", "评论", "分析", "数据", "调查",
@@ -1222,6 +1233,14 @@ object SegmentGenerator {
         // v3.1.108: 必须在try块外声明，确保finally块能访问
         var savedAnalysisThread: Thread? = null
         try {
+            // v3.1.214-fix: 检查冷却期。如果最近30分钟内已触发过分段且未正常完成，跳过
+            if (isProcessingAttemptWithinCooldown(episodeId)) {
+                Log.w(TAG, "generateJiuAiTingSegments: 节目=$episodeId 在冷却期内，跳过重复分段请求")
+                return null
+            }
+            // v3.1.214-fix: 记录处理尝试开始时间戳（finally块中清理）
+            recordProcessingAttempt(episodeId)
+
             // v3.1.50: 检查全局三层分段标志，防止并发分段导致通知栏循环
             if (isThreeLayerSegmenting) {
                 Log.w(TAG, "generateJiuAiTingSegments: 全局三层分段中，拒绝并发请求 for episode=$episodeId")
@@ -1480,6 +1499,7 @@ object SegmentGenerator {
 
         if (shouldRunLayer2) {
         val layer2StartTime = System.currentTimeMillis()
+        var mergedAfterLayer2: List<VoiceSegment>
         // ========== 第二层：优化三层架构（VAD-only + 区间YAMNet） ==========
         // v3.1.83: 优化流程：
         // 1. 第一层指纹匹配 → 指纹水货段 + 待处理段（指纹未覆盖区间）
@@ -1494,7 +1514,6 @@ object SegmentGenerator {
         val vadModelDir = AudioSegmentAnalyzer.getModelDir(context)
         val vadModelsReady = AudioSegmentAnalyzer.isModelInstalled(vadModelDir)
 
-        var mergedAfterLayer2: List<VoiceSegment>
         if (vadModelsReady && pcmSourceFile != null) {
             val pcmFileSize = if (pcmSourceFile.exists()) pcmSourceFile.length() else 0L
             val pcmDurationMs = (pcmFileSize * 1000L / (AudioSegmentAnalyzer.YAMNET_SAMPLE_RATE * 2)).toLong() // 16bit mono
@@ -2030,7 +2049,7 @@ object SegmentGenerator {
             writeFingerprintLog(context, fpMsgVadUnavailable)
             mergedAfterLayer2 = mergedAfterLayer1
             audioEngineName = "VAD+YAMNet+三层(优化跳过)"
-        }
+        } // 关闭if (vadModelsReady && pcmSourceFile != null)
 
         // 统计第2层VAD产出
         layer2DrySegments = mergedAfterLayer2.count { it.hasVoice }
@@ -2237,6 +2256,9 @@ object SegmentGenerator {
         } finally {
             // v3.1.108: 恢复之前的分析线程引用
             AudioSegmentAnalyzer.setCurrentAnalysisThread(savedAnalysisThread)
+            // v3.1.214-fix: 清除本次处理尝试标记（无论成功/崩溃都清除），
+            // 允许巡逻在同一会话中重试（但受冷却期保护，30分钟内不重复触发）
+            removeProcessingAttempt(episodeId)
             isThreeLayerSegmenting = false
             // v3.1.51: 同时清除全局标志，允许后续分段请求
             SegmentNotificationHelper.isSegmenting = false
@@ -2421,15 +2443,16 @@ object SegmentGenerator {
             }
             context.startService(intent)
 
-            // v3.1.160: 使用轮询等待，每5秒检查服务进程是否存活
+            // v3.1.160: 使用轮询等待，每10秒检查服务进程是否存活
             // 根因：YamnetService进程在TFLite调用时SIGSEGV崩溃，latch.await()永远等不到回调
             // v3.1.175-fix: 从30秒缩短到5秒，减少崩溃后等待时间
+            // v3.1.214-fix: 从5秒延长到10秒，减少ActivityManager轮询对系统资源的消耗
             val startTime = System.currentTimeMillis()
             var waited = false
             while (System.currentTimeMillis() - startTime < timeoutMs) {
-                waited = latch.await(5, TimeUnit.SECONDS)
+                waited = latch.await(10, TimeUnit.SECONDS)
                 if (waited) break
-                // 每5秒检查一次服务进程是否还活着
+                // 每10秒检查一次服务进程是否还活着
                 try {
                     val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                     val processes = am.runningAppProcesses
@@ -2446,6 +2469,22 @@ object SegmentGenerator {
                         val crashMsg = "YamnetService进程崩溃(TFLite SIGSEGV)，已等待${(System.currentTimeMillis()-startTime)/1000}秒"
                         Log.w(TAG, "runYamnetService: $crashMsg")
                         writeFingerprintLog(context, "runYamnetService: $crashMsg")
+                        // v3.1.214-fix: 读取崩溃检查点文件以确定崩溃位置
+                        try {
+                            val checkpointDir = File(context.cacheDir, "yamnet_crash_checkpoints")
+                            if (checkpointDir.exists()) {
+                                val checkpoints = checkpointDir.listFiles()
+                                if (checkpoints != null && checkpoints.isNotEmpty()) {
+                                    // 读取最新的检查点文件（按修改时间排序）
+                                    val latestCheckpoint = checkpoints.maxByOrNull { it.lastModified() }
+                                    if (latestCheckpoint != null && latestCheckpoint.exists()) {
+                                        val checkpointContent = latestCheckpoint.readText().take(500)
+                                        Log.w(TAG, "runYamnetService: 崩溃检查点: ${latestCheckpoint.name}\n$checkpointContent")
+                                        writeFingerprintLog(context, "runYamnetService崩溃检查点: ${latestCheckpoint.name} | $checkpointContent")
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
                         // 进程已死，无需继续等待，提前返回
                         serviceError = "YamnetService进程崩溃"
                         return null
@@ -2501,6 +2540,35 @@ object SegmentGenerator {
             }
         } catch (_: Exception) {}
         return false
+    }
+
+    // v3.1.214-fix: 检查指定节目是否在冷却期内（最近30分钟内已触发过分段但未完成）
+    private fun isProcessingAttemptWithinCooldown(episodeId: String): Boolean {
+        val lastAttempt = processingAttemptTimestamps[episodeId]
+        if (lastAttempt != null) {
+            val elapsed = System.currentTimeMillis() - lastAttempt
+            if (elapsed < PROCESSING_ATTEMPT_COOLDOWN_MS) {
+                Log.w(TAG, "isProcessingAttemptWithinCooldown: episode=$episodeId 在冷却期内(已过${elapsed/1000}秒/<${PROCESSING_ATTEMPT_COOLDOWN_MS/1000}秒)，跳过重复请求 for episode=$episodeId")
+                return true
+            } else {
+                // 冷却期已过，清除旧标记，允许重新处理
+                processingAttemptTimestamps.remove(episodeId)
+                Log.i(TAG, "isProcessingAttemptWithinCooldown: episode=$episodeId 冷却期已过(已过${elapsed/1000}秒)，清除旧标记")
+            }
+        }
+        return false
+    }
+
+    // v3.1.214-fix: 记录处理尝试开始时间戳
+    private fun recordProcessingAttempt(episodeId: String) {
+        processingAttemptTimestamps[episodeId] = System.currentTimeMillis()
+        Log.i(TAG, "recordProcessingAttempt: episode=$episodeId 记录处理尝试开始 for episode=$episodeId")
+    }
+
+    // v3.1.214-fix: 清除处理尝试标记（分段正常完成时调用）
+    private fun removeProcessingAttempt(episodeId: String) {
+        processingAttemptTimestamps.remove(episodeId)
+        Log.i(TAG, "removeProcessingAttempt: episode=$episodeId 清除处理尝试标记 for episode=$episodeId")
     }
 
     // v3.1.169: 等待YamnetService进程重新启动（SIGSEGV崩溃后等待系统重启进程）
