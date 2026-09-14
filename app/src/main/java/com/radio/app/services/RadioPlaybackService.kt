@@ -1501,12 +1501,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         if (currentIdx < 0) {
-            // v3.1.xxx-fix: 当前节目不在preCacheList时，不仅追加当前节目，还要从savedList获取同天后续节目
+            // v3.1.212-fix: 当前节目不在preCacheList时，不仅追加当前节目，还要从savedList获取同天后续节目
             // 根因：preCacheList之前可能只包含跨天节目，仅追加currentEp导致同天后续节目（如旅行大玩家）
             // 从未进入preCacheList，autoPlayNextEpisode阶段1找不到同天节目→fallback阶段2若savedList为空
             // 也找不到→最终取了preCacheList中的跨天节目（跳过同天节目）。
             var savedEpisodes = loadEpisodeList()
-            // v3.1.xxx-fix: 当savedList也为空时，尝试从API获取当前日期节目列表
+            // v3.1.212-fix: 当savedList也为空时，尝试从API获取当前日期节目列表
             // 根因：savedList可能被fetchCrossDayEpisode（saveEpisodeList覆盖）清空，
             // 此时savedEpisodes.isEmpty()==true→sameDayAfterEpisodes为空→preCacheList仍缺少同天后续节目，
             // autoPlayNextEpisode阶段1找不到同天节目→跨天回退。
@@ -1905,11 +1905,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 val savedList = loadEpisodeList()
                 if (savedList.isNotEmpty()) {
                     // 从已保存节目中提取时间段（如 0700_0900）
+                    // v3.1.212-fix: 按时间段起始时间排序，确保slotIdx映射到正确的节目播出顺序。
+                    // 根因：savedList中节目的顺序可能不是按时间排序的（如先晚间后早间），
+                    // 导致timeSlots遍历时slotIdx=0对应晚间节目、slotIdx=3对应早间节目，
+                    // URL构造的节目ID使用slotIdx作为序号，extractEpisodeIndex提取后排序错乱。
                     val timeSlots = savedList.mapNotNull { ep ->
                         val url = ep.audioUrl ?: ""
                         val parts = url.substringAfterLast("/").substringBefore(".").split("_")
                         if (parts.size >= 4) "${parts[2]}_${parts[3]}" else null
-                    }.distinct()
+                    }.distinct().sortedBy { slot ->
+                        // 按时段起始时间排序（如 0700_0900 按 0700 排序）
+                        slot.substringBefore("_").toIntOrNull() ?: 0
+                    }
                     val newDateStr = targetDate.replace("-", "")
                     // 与 fetchCrossDayEpisode 保持一致：从已保存节目的 URL 推导 pathPrefix，
                     // 避免硬编码 base 路径在不同电台/路径下出错。
@@ -1921,7 +1928,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         if (constructedUrl !in existingUrls) {
                             // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
                             // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
-                            // v3.1.xxx-fix: 改善构造节目的标题匹配。先尝试按时间槽匹配（原逻辑），
+                            // v3.1.212-fix: 改善构造节目的标题匹配。先尝试按时间槽匹配（原逻辑），
                             // 失败后再按slotIdx在savedList中取对应位置的标题（确保顺序一致时取到正确标题）。
                             // 同时将构造的节目信息持久化到DB，使enrichEpisodeFromDbIfNeeded后续能通过ID找到标题。
                             var constructedTitle = savedList.firstOrNull {
@@ -1978,8 +1985,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
         prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
         // v3.1.207-fix: 与buildPlaybackSchedule保持一致，使用节目ID序号排序
+        // v3.1.212-fix: 同步改用startTime为主排序，与buildPlaybackSchedule一致
         resultList.sortWith(
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                .thenBy { it.startTime }
                 .thenBy { extractEpisodeIndex(it) }
         )
         writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size}), sorted by episode index")
@@ -5418,7 +5427,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val dbHelper = com.radio.app.database.RadioDatabaseHelper.getInstance(this)
             val cached = dbHelper.getEpisodeInfo(episode.id) ?: return episode
             val merged = episode.copy()
-            // v3.1.xxx-fix: 只要原始episode标题为空，就用数据库中的值覆盖，不管数据库中值是否为空
+            // v3.1.212-fix: 只要原始episode标题为空，就用数据库中的值覆盖，不管数据库中值是否为空
             // 根因：如果数据库中title已经是空字符串（而非null），!cached.title.isNullOrBlank()为false，
             // 导致即使原始episode标题为空也不会覆盖，最终结果仍然是空。
             if (episode.title.isNullOrBlank()) {
@@ -6426,7 +6435,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val preCacheList = loadPreCacheList()
         var savedList = loadEpisodeList()
 
-        // v3.1.xxx-fix: 当savedList为空时，主动从API获取当前日期的节目列表。
+        // v3.1.212-fix: 当savedList为空时，主动从API获取当前日期的节目列表。
         // 根因：savedList可能被fetchCrossDayEpisode（saveEpisodeList覆盖）或其他路径清空，
         // 此时combinedList=preCacheList（可能只有少量跨天缓存节目），后续不足FUTURE_PLAN_COUNT个。
         // 即使有fallback4，它在currentIdx<0时才触发，而currentIdx可能刚好找到（preCacheList中有当前节目），
@@ -6499,8 +6508,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 根因：startTime可能为0（URL构造的节目等），导致同天节目排序混乱——
         // 早间节目（ID 0~2）被排到了晚间节目（ID 9~11）之后，使播放计划列表错乱。
         // 使用 extractEpisodeIndex 从ID中提取序号作为同天排序依据，不受startTime影响。
+        // v3.1.212-fix: 同天内改用startTime为主排序，extractEpisodeIndex为fallback。
+        // 根因：预缓存中URL构造的节目（fetchMoreDaysForPreCache）使用timeSlots遍历顺序
+        // 作为slotIdx，如果savedList中的节目不是按时间排序的，构造节目的ID序号与实际播出
+        // 时间不一致（如晚间节目获得index=0，早间节目获得index=3），导致晚间节目被错误地
+        // 排到早间节目前面→播放完晚间节目后跳转到同天早间节目。
+        // 改用startTime排序：所有节目（包括构造节目）都有正确的startTime（从broadcastAt或
+        // timeSlot解析），能保证同天内按实际播出时间排序。startTime=0的节目回退到ID序号。
         combinedList = combinedList.sortedWith(
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                .thenBy { it.startTime }
                 .thenBy { extractEpisodeIndex(it) }
         )
 
@@ -6580,6 +6597,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         saveEpisodeList(freshEpisodes)
                         combinedList = (preCacheList + freshEpisodes).distinctBy { it.id }.sortedWith(
                             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
+                                .thenBy { it.startTime }
                                 .thenBy { extractEpisodeIndex(it) }
                         )
                         currentIdx = combinedList.indexOfFirst {
@@ -6608,7 +6626,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
         val curDateParsed = curDateStr?.let { try { dateFormat.parse(it) } catch (_: Exception) { null } }
 
-        // v3.1.xxx-fix: 获取今天日期字符串，用于时间检查（仅当天节目才做past-time过滤）
+        // v3.1.212-fix: 获取今天日期字符串，用于时间检查（仅当天节目才做past-time过滤）
         val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date(System.currentTimeMillis()))
 
         // 取后续FUTURE_PLAN_COUNT个节目（跳过不喜欢和无需预处理的）
@@ -6639,7 +6657,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val isDislikedByTitle = settings.isDislikedByTitle(ep.stationId, ep.title)
             val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
             val isDisliked = isDislikedById || isDislikedByTitle
-            // v3.1.xxx-fix: 仅对当天节目做时间检查，跳过已超过当前播出时间的节目。
+            // v3.1.212-fix: 仅对当天节目做时间检查，跳过已超过当前播出时间的节目。
             // 历史节目（非当天）不做时间过滤，否则 startTime（2025年绝对时间戳）必然小于当前时间（2026年），导致全部被跳过。
             val epDate = ep.broadcastAt?.take(10)
             val isTimePassed = ep.startTime > 0 && epDate == todayStr && ep.startTime < System.currentTimeMillis()
@@ -6683,7 +6701,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     val isDislikedByTitle2 = settings.isDislikedByTitle(ep.stationId, ep.title)
                                     val isNoPreprocess2 = settings.isNoPreprocess(ep.id ?: "")
                                     val isDisliked2 = isDislikedById2 || isDislikedByTitle2
-                                    // v3.1.xxx-fix: 仅对当天节目做时间检查
+                                    // v3.1.212-fix: 仅对当天节目做时间检查
                                     val epDate2 = ep.broadcastAt?.take(10)
                                     val isTimePassed2 = ep.startTime > 0 && epDate2 == todayStr && ep.startTime < System.currentTimeMillis()
                                     if (!isDisliked2 && !isNoPreprocess2 && !isTimePassed2) {
@@ -7558,7 +7576,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val curId = currentEpisode!!.id
             var nextEpisode: Episode? = null
 
-            // v3.1.xxx-fix: 直接使用播放计划列表 futurePlannedEpisodes（由 buildPlaybackSchedule 构建），
+            // v3.1.212-fix: 直接使用播放计划列表 futurePlannedEpisodes（由 buildPlaybackSchedule 构建），
             // 顺序与播放计划任务列表完全一致。取走即删除，避免重复播放。
             synchronized(futurePlannedEpisodes) {
                 if (futurePlannedEpisodes.isNotEmpty()) {
@@ -7588,6 +7606,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 writeNotifDetailLog("autoPlayNextEpisode: [ANTI-LOOP] nextId == curId ($curId), forcing cross-day")
                 writeServiceLog("notification", "autoPlayNext: anti-loop for $curId, trying cross-day")
                 nextEpisode = null
+            }
+
+            // v3.1.212-fix: 防御性检查——如果下一个节目与当前节目同天但播出时间更早，跳过。
+            // 根因：buildPlaybackSchedule的排序如仍有漏洞（如startTime=0且ID序号错乱），
+            // 会导致晚间节目后跳转同天早间节目。此处作为最后防线捕获此类异常跳转。
+            if (nextEpisode != null) {
+                val curDate = currentEpisode?.broadcastAt?.take(10)
+                val nextDate = nextEpisode?.broadcastAt?.take(10)
+                if (curDate != null && curDate == nextDate && currentEpisode != null) {
+                    val curStart = currentEpisode!!.startTime
+                    val nextStart = nextEpisode!!.startTime
+                    if (curStart > 0 && nextStart > 0 && nextStart < curStart) {
+                        writeNotifDetailLog("autoPlayNextEpisode: [BACKWARD-JUMP] next=${nextEpisode!!.title} (startTime=$nextStart) < cur=${currentEpisode!!.title} (startTime=$curStart) on same date, skipping")
+                        writeServiceLog("notification", "autoPlayNext: backward-jump blocked: ${nextEpisode!!.title} (start=$nextStart) < ${currentEpisode!!.title} (start=$curStart) on $curDate, trying cross-day")
+                        nextEpisode = null
+                    }
+                }
             }
 
             if (nextEpisode == null) {

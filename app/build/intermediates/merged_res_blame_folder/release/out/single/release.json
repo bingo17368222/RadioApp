@@ -1,0 +1,294 @@
+[
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_notification_media_expanded.xml.flat",
+        "source": "com.radio.app-main-42:/layout/notification_media_expanded.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_pause.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_pause.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_card.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_card.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_fragment_home.xml.flat",
+        "source": "com.radio.app-main-42:/layout/fragment_home.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_search.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_search.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_next.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_next.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_seekbar_progress.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/seekbar_progress.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_play.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_play.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_fingerprint_item.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_fingerprint_item.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_voice_segment.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_voice_segment.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_fingerprint_item_normal.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_fingerprint_item_normal.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_candidate_fingerprint.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_candidate_fingerprint.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_fingerprint_group.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_fingerprint_group.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/color_bottom_nav_color.xml.flat",
+        "source": "com.radio.app-main-42:/color/bottom_nav_color.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_fragment_fingerprint_list.xml.flat",
+        "source": "com.radio.app-main-42:/layout/fragment_fingerprint_list.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_fingerprint_group.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_fingerprint_group.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_notification_compact.xml.flat",
+        "source": "com.radio.app-main-42:/layout/notification_compact.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_radio.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_radio.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_live_indicator.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_live_indicator.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_main.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_keyword_settings.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_keyword_settings.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_notification.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_notification.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_settings.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_settings.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_episode.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_episode.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_fingerprint_item_selected.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_fingerprint_item_selected.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_manual_dry.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_manual_dry.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_station.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_station.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_fragment_settings.xml.flat",
+        "source": "com.radio.app-main-42:/layout/fragment_settings.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_schedule.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_schedule.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_skip.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_skip.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_search.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_search.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "com.radio.app-main-42:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_engine_card.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_engine_card.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_prev.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_prev.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_rewind.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_rewind.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_fingerprint_group_member.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_fingerprint_group_member.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_player.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_player.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_seekbar_cache_progress.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/seekbar_cache_progress.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_view_title_bar.xml.flat",
+        "source": "com.radio.app-main-42:/layout/view_title_bar.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_notification_minimal.xml.flat",
+        "source": "com.radio.app-main-42:/layout/notification_minimal.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_calendar.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_calendar.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_play_button.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_play_button.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_search_result.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_search_result.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_prev.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_prev.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_fragment_search.xml.flat",
+        "source": "com.radio.app-main-42:/layout/fragment_search.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/menu_bottom_nav_menu.xml.flat",
+        "source": "com.radio.app-main-42:/menu/bottom_nav_menu.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "com.radio.app-main-42:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_home.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_home.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_notification_custom.xml.flat",
+        "source": "com.radio.app-main-42:/layout/notification_custom.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_disliked_episodes.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_disliked_episodes.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_keyword_chip.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_keyword_chip.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_close.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_close.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_forward.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_forward.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_skip_backward.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_skip_backward.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_manual_water.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_manual_water.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_disliked_episode.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_disliked_episode.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_back.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_back.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_bg_circle.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/bg_circle.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_audio_fingerprint.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_audio_fingerprint.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_play.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_play.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_seekbar_thumb.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/seekbar_thumb.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_item_history.xml.flat",
+        "source": "com.radio.app-main-42:/layout/item_history.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_skip_forward.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_skip_forward.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_history.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_history.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_view_subtitle.xml.flat",
+        "source": "com.radio.app-main-42:/layout/view_subtitle.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_fragment_episodes.xml.flat",
+        "source": "com.radio.app-main-42:/layout/fragment_episodes.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notification_progress_drawable.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notification_progress_drawable.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_notif_forward.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/notif_forward.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_fingerprint_management.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_fingerprint_management.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/layout_activity_offline_engine.xml.flat",
+        "source": "com.radio.app-main-42:/layout/activity_offline_engine.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_rewind.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_rewind.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_pause.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_pause.xml"
+    },
+    {
+        "merged": "com.radio.app-merged_res-41:/drawable_ic_next.xml.flat",
+        "source": "com.radio.app-main-42:/drawable/ic_next.xml"
+    }
+]
