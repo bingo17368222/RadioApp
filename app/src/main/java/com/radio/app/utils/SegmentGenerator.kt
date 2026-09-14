@@ -623,6 +623,17 @@ object SegmentGenerator {
     // 必须独立成干货，绝不能并入歌曲/指纹水段末尾。
     private val MAX_SPEECH_RESCUE_MS = 8000L // 8秒
 
+    // v3.1.224-fix: VAD抢救锚点最小持续（秒级以下视为杂音/音乐碎片，不抢救）
+    private val VAD_RESCUE_MIN_MS = 1000L
+    // v3.1.224-fix: 每个水段最多抢救的短语音窗口数，防止把一段歌曲内的多个口播碎片过度切开
+    private const val VAD_RESCUE_PER_WATER_MAX = 8
+    // v3.1.224-fix: PCM谐波比判定音乐/歌唱的门槛。经验值：无BGM纯讲话谐波比<0.35，
+    // 强谐波的歌曲/乐音>0.60。以0.50为界，>=0.50视为"音乐/歌唱"，不抢救，护住完整歌曲。
+    private const val MUSIC_HARM_RATIO_THRESHOLD = 0.50f
+    // v3.1.224-fix: PCM谐波比判定帧长/步进（16kHz采样）
+    private const val MUSIC_PROBE_FFT_N = 2048
+    private const val MUSIC_PROBE_HOP = 1024
+
     /**
      * v3.1.221-fix: 水段内嵌短人声抢救。
      * 根因：指纹层(层1/层3)可把整段(如97~101分钟)标记为"指纹水货"，期间若穿插主持人
@@ -685,8 +696,192 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.1.44: 增强合并逻辑，处理连续水分片段被短间隔分隔未合并的问题
+     * v3.1.224-fix: 水段内嵌短人声抢救（第二层-A VAD + PCM频谱确认回退）。
+     * 根因：第二层-B YAMNet只对VAD区间做分类，可能把"无BGM主持人讲话"判作MUS(音乐)，
+     * 导致 [layer2SpeechRuns] 干段锚点缺失，101:38~101:41 这类短讲话仍被指纹水段合并吸收。
+     * 方法：以 Silero VAD 检测到的"短语音窗口"(纯语音活动，不依赖YAMNet类别裁决) 为补充锚点，
+     * 并对每个候选窗口做轻量 PCM 频谱谐波比分析，仅抢救"非音乐/非歌唱"的真讲话；
+     * 强谐波(歌曲/乐音)窗口一律不切，护住完整歌曲。在 [rescueShortSpeechInWater] 之后调用。
+     * @return 抢救出的短讲话段数量
      */
+    private fun rescueSpeechByVadAndPcmInWater(
+        segments: MutableList<VoiceSegment>,
+        vadRanges: List<Pair<Long, Long>>,
+        pcmFile: File?
+    ): Int {
+        if (segments.size <= 1 || vadRanges.isEmpty() || pcmFile == null || !pcmFile.exists()) return 0
+        segments.sortBy { it.start }
+        var rescueCount = 0
+        var i = segments.size - 1
+        while (i >= 0) {
+            val seg = segments[i]
+            if (seg.hasVoice || !isWaterLabel(seg.label)) { i--; continue }
+            // 以VAD短语音窗口为锚点：与水段重叠且在[MIN,MAX]秒窗口内
+            val embedded = vadRanges
+                .mapNotNull { vr ->
+                    val oStart = maxOf(vr.first, seg.start)
+                    val oEnd = minOf(vr.second, seg.end)
+                    val overlap = oEnd - oStart
+                    if (overlap in VAD_RESCUE_MIN_MS..MAX_SPEECH_RESCUE_MS) {
+                        VoiceSegment(start = oStart, end = oEnd, hasVoice = true, label = "干货", isSimulated = true)
+                    } else null
+                }
+                .distinctBy { it.start to it.end }
+                .sortedBy { it.start }
+            if (embedded.isEmpty()) { i--; continue }
+            // 频谱"非音乐"确认：过滤掉强谐波(音乐/歌唱)的VAD窗口，只抢救真正的无BGM短讲话
+            val confirmed = embedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
+            if (confirmed.isEmpty()) { i--; continue }
+            // 每个水段最多抢救N个，防止过度切开整段歌曲的口播
+            val rescuedDry = confirmed.take(VAD_RESCUE_PER_WATER_MAX)
+            val pieces = mutableListOf<VoiceSegment>()
+            var cur = seg.start
+            var rescued = 0
+            for (dry in rescuedDry) {
+                if (dry.start > cur) {
+                    pieces.add(seg.copy(start = cur, end = dry.start, hasVoice = false, label = seg.label))
+                }
+                pieces.add(dry)
+                rescued++
+                cur = dry.end
+            }
+            if (cur < seg.end) {
+                pieces.add(seg.copy(start = cur, end = seg.end, hasVoice = false, label = seg.label))
+            }
+            if (pieces.size > 1) {
+                segments.removeAt(i)
+                segments.addAll(i, pieces)
+                rescueCount += rescued
+                i += pieces.size - 1
+            }
+            i--
+        }
+        return rescueCount
+    }
+
+    /**
+     * v3.1.224-fix: 判定一段PCM是否"音乐/歌唱"（强谐波）。用于抢救前的非音乐确认。
+     * 逐帧做2048点FFT谐波比分析：无活动帧或读取出错时按"音乐"处理（保守不抢救）。
+     */
+    private fun isMusicLikePcm(pcmFile: File, startMs: Long, endMs: Long): Boolean {
+        val sr = 16000
+        try {
+            val startSample = (startMs * sr / 1000).coerceAtLeast(0)
+            val endSample = endMs * sr / 1000
+            if ((endSample - startSample) < MUSIC_PROBE_FFT_N) return true
+            val byteLen = ((endSample - startSample) * 2).toInt()
+            java.io.RandomAccessFile(pcmFile, "r").use { raf ->
+                raf.seek(startSample * 2)
+                val bytes = ByteArray(byteLen)
+                val nRead = raf.read(bytes)
+                if (nRead < MUSIC_PROBE_FFT_N * 2) return true
+                val sampleCount = nRead / 2
+                val samples = ShortArray(sampleCount)
+                for (k in 0 until sampleCount) {
+                    val low = bytes[k * 2].toInt() and 0xFF
+                    val high = bytes[k * 2 + 1].toInt() and 0xFF
+                    samples[k] = (low or (high shl 8)).toShort()
+                }
+                var frames = 0
+                var musicFrames = 0
+                var pos = 0
+                while (pos + MUSIC_PROBE_FFT_N <= sampleCount) {
+                    // 活动帧能量门限（跳过静音）
+                    var sumSq = 0.0
+                    for (j in 0 until MUSIC_PROBE_FFT_N) {
+                        val s = samples[pos + j].toInt()
+                        sumSq += (s * s).toDouble()
+                    }
+                    val rms = kotlin.math.sqrt(sumSq / MUSIC_PROBE_FFT_N)
+                    if (rms < 60.0) { pos += MUSIC_PROBE_HOP; continue }
+                    val hr = computeFrameHarmRatio(samples, pos, MUSIC_PROBE_FFT_N, sr)
+                    frames++
+                    if (hr >= MUSIC_HARM_RATIO_THRESHOLD) musicFrames++
+                    pos += MUSIC_PROBE_HOP
+                }
+                if (frames == 0) return true // 无活动帧→保守视作音乐，不抢救
+                return (musicFrames.toFloat() / frames) >= 0.5f
+            }
+        } catch (_: Exception) {
+            return true // 出错保守处理：不抢救
+        }
+    }
+
+    /** v3.1.224-fix: 计算一帧的谐波比（能量集中在基频整数倍的比例）。 */
+    private fun computeFrameHarmRatio(samples: ShortArray, off: Int, n: Int, sr: Int): Float {
+        val re = FloatArray(n)
+        val im = FloatArray(n)
+        for (k in 0 until n) {
+            val w = (0.5f - 0.5f * kotlin.math.cos(2.0 * kotlin.math.PI * k / (n - 1))).toFloat()
+            re[k] = samples[off + k] * w
+        }
+        fftRadix2(re, im)
+        val mag = FloatArray(n / 2 + 1)
+        var total = 0f
+        for (b in 1 until n / 2 + 1) {
+            val m = kotlin.math.sqrt(re[b] * re[b] + im[b] * im[b])
+            mag[b] = m
+            total += m
+        }
+        if (total <= 0f) return 0f
+        val binHz = sr.toFloat() / n
+        var best = 0f
+        var f0 = 80f
+        while (f0 <= 500f) {
+            var harmonicSum = 0f
+            for (k in 1..5) {
+                val bin = (k * f0 / binHz).toInt()
+                if (bin in 1 until mag.size) {
+                    var acc = mag[bin]
+                    if (bin - 1 >= 1) acc += mag[bin - 1]
+                    if (bin + 1 < mag.size) acc += mag[bin + 1]
+                    harmonicSum += acc
+                }
+            }
+            if (harmonicSum > best) best = harmonicSum
+            f0 += 5f
+        }
+        return best / total
+    }
+
+    /** v3.1.224-fix: 原地迭代基-2 FFT（n为2的幂，实部re, 虚部im）。 */
+    private fun fftRadix2(re: FloatArray, im: FloatArray) {
+        val n = re.size
+        var j = 0
+        for (i in 1 until n) {
+            var bit = n shr 1
+            while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
+            j = j or bit
+            if (i < j) {
+                val tr = re[i]; re[i] = re[j]; re[j] = tr
+                val ti = im[i]; im[i] = im[j]; im[j] = ti
+            }
+        }
+        var len = 2
+        while (len <= n) {
+            val ang = 2.0 * kotlin.math.PI / len
+            val wRe = kotlin.math.cos(ang).toFloat()
+            val wIm = kotlin.math.sin(ang).toFloat()
+            var i = 0
+            while (i < n) {
+                var curRe = 1f
+                var curIm = 0f
+                for (m in 0 until len / 2) {
+                    val tRe = curRe * re[i + m + len / 2] - curIm * im[i + m + len / 2]
+                    val tIm = curRe * im[i + m + len / 2] + curIm * re[i + m + len / 2]
+                    re[i + m + len / 2] = re[i + m] - tRe
+                    im[i + m + len / 2] = im[i + m] - tIm
+                    re[i + m] += tRe
+                    im[i + m] += tIm
+                    val nRe = curRe * wRe - curIm * wIm
+                    curIm = curRe * wIm + curIm * wRe
+                    curRe = nRe
+                }
+                i += len
+            }
+            len = len shl 1
+        }
+    }
     private fun mergeAdjacentSegments(segments: List<VoiceSegment>): MutableList<VoiceSegment> {
         if (segments.isEmpty()) return mutableListOf()
         val sorted = segments.sortedBy { it.start }.map { it.copy() }.toMutableList()
@@ -1472,6 +1667,11 @@ object SegmentGenerator {
         // 必须在 mergeAdjacentSegments 之前捕获，否则短讲话段会被合并吸收，
         // 导致最终阶段无法把它从指纹水段中切回干货。
         var layer2SpeechRuns: List<VoiceSegment> = emptyList()
+        // v3.1.224-fix: 第二层-A Silero VAD 活动段(语音)。YAMNet只对VAD区间做分类，可把无BGM
+        // 短讲话重判为MUS(音乐)，导致第二层YAMNet干段锚点缺失、短讲话被指纹水段合并吸收。
+        // VAD是纯语音活动检测，不依赖YAMNet的类别裁决；把VAD检测到的"短语音窗口"也作为抢救锚点，
+        // 并用频谱谐波比做"非音乐"确认，能把 101:38~101:41 这类无BGM主持人讲话从水段切回干货。
+        var layer2VadRanges: List<Pair<Long, Long>> = emptyList()
         var layer2WaterSegments = 0
         var layer3RecallCount = 0
         var observationPoolNewCount = 0
@@ -1655,6 +1855,8 @@ object SegmentGenerator {
                 val vadTotalActivityMs = speechRanges.sumOf { it.durationMs }
                 val vadActivityRatio = if (effectiveDurationMs > 0) "%.1f".format(vadTotalActivityMs * 100.0 / effectiveDurationMs) else "0"
                 writeFingerprintLog(context, "三层架构: 第2层-A VAD完成: ${speechRanges.size}个活动段（总${vadTotalActivityMs}ms, 占比${vadActivityRatio}%）, 耗时${formatDuration(vadDurationMs)}")
+                // v3.1.224-fix: 暴露VAD活动段供最终抢救使用（避免YAMNet把无BGM短讲话判作音乐后无锚点）
+                layer2VadRanges = speechRanges.map { it.startMs to it.endMs }
 
                 // ===== VAD结果（可能为空，但不允许降级） =====
                 // v3.1.85: 移除所有降级路径，VAD无活动时直接用pending段，YAMNet始终运行
@@ -2237,6 +2439,17 @@ object SegmentGenerator {
         val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns)
         if (speechRescueCount > 0) {
             writeFingerprintLog(context, "三层架构: 抢救${speechRescueCount}个内嵌短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+        }
+
+        // v3.1.224-fix: VAD+PCM频谱确认的短人声抢救（第二层-B YAMNet把无BGM短讲话判作MUS时，
+        // 该讲话不在YAMNet干段锚点中，上一行抢救不到；此处以Silero VAD活动段为补充锚点，
+        // 并用频谱谐波比确认"非音乐"后切出为干货，解决101:38~101:41仍并入97~101水段的问题）。
+        val vadRescueCount = rescueSpeechByVadAndPcmInWater(finalSegments, layer2VadRanges, pcmSourceFile)
+        if (vadRescueCount > 0) {
+            writeFingerprintLog(context, "三层架构: VAD回退抢救${vadRescueCount}个无BGM短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: VAD回退抢救${vadRescueCount}个无BGM短讲话为干货 for episode=$episodeId")
+        } else {
+            Log.i(TAG, "三层架构: VAD回退抢救0个（无命中或无PCM） for episode=$episodeId")
         }
 
         // v3.1.125: 合并静音段到相邻非静音段。
