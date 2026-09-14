@@ -3537,34 +3537,48 @@ class PlayerActivity : AppCompatActivity() {
         adapter.onItemClicked = { position ->
             val item = historyList.getOrNull(position)
             if (item != null) {
-                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}")
-                val episode = item.toEpisode()
-                // 在当前节目列表中查找匹配的节目
-                val listIdx = episodeList.indexOfFirst { it.id == item.episodeId }
-                if (listIdx >= 0) {
-                    // 如果在当前节目列表中，使用 playEpisodeAtIndex 切换
-                    playEpisodeAtIndex(listIdx)
-                } else if (playbackService == null) {
+                writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}, lastPosition=${item.lastPosition}")
+                // v3.1.215-fix: 从历史列表点击节目时，始终传递 item.lastPosition，
+                // 不使用 playEpisodeAtIndex（不走不喜欢跳过，不使用 SharedPreferences 回退）。
+                val foundInList = episodeList.any { it.id == item.episodeId }
+                val actualEpisode = if (foundInList) {
+                    episodeList.first { it.id == item.episodeId }
+                } else {
+                    item.toEpisode()
+                }
+                // 保存旧节目播放位置到历史记录
+                val oldId = currentEpisode?.id
+                if (oldId != null && oldId != item.episodeId) {
+                    val oldPos = playbackService?.getCurrentPosition() ?: 0L
+                    PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
+                    writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: saved old episode position, id=$oldId, pos=$oldPos")
+                }
+                if (playbackService == null) {
                     Toast.makeText(this, "播放服务未连接", Toast.LENGTH_SHORT).show()
                 } else {
-                    // 不在当前列表，直接通过 service 播放
-                    // v3.1.117: 保存旧节目播放位置到历史记录
-                    val oldId = currentEpisode?.id
-                    if (oldId != null) {
-                        val oldPos = playbackService?.getCurrentPosition() ?: 0L
-                        PlayHistoryUtils.updatePosition(this@PlayerActivity, oldId, oldPos)
-                        writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: saved old episode position, id=$oldId, pos=$oldPos")
+                    Toast.makeText(this, "切换到: ${actualEpisode.title}", Toast.LENGTH_SHORT).show()
+                    // 设置 currentEpisode / currentEpisodeIndex
+                    if (!foundInList) {
+                        currentEpisode = actualEpisode
+                        currentEpisodeIndex = -1
+                    } else {
+                        val idx = episodeList.indexOfFirst { it.id == item.episodeId }
+                        currentEpisode = actualEpisode
+                        currentEpisodeIndex = idx
+                        clearSubtitles()
                     }
-                    Toast.makeText(this, "切换到: ${episode.title}", Toast.LENGTH_SHORT).show()
-                    currentEpisode = episode
-                    currentEpisodeIndex = -1
                     saveLastEpisode()
-                    playbackService?.playEpisode(episode, false, item.lastPosition)
+                    // v3.1.146-fix: 提前载入真实分段
+                    val preloadedEp = try {
+                        val segs = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(actualEpisode.id)
+                        if (segs.isNotEmpty()) actualEpisode.copy(voiceSegments = segs) else actualEpisode
+                    } catch (_: Exception) { actualEpisode }
+                    playbackService?.playEpisode(preloadedEp, false, item.lastPosition)
                     ensureSegmentsForCurrentEpisode()
                     updateUI()
                     setupPreCacheList()
                     // 记录历史（更新位置）
-                    PlayHistoryUtils.recordHistory(this, episode, item.lastPosition)
+                    PlayHistoryUtils.recordHistory(this, actualEpisode, if (item.lastPosition > 0) item.lastPosition else 0L)
                 }
             }
         }

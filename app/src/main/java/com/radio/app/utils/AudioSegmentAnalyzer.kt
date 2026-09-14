@@ -4139,6 +4139,7 @@ object AudioSegmentAnalyzer {
             val timestampMs: Long,
             val speech: Float, val narration: Float, val singing: Float,
             val music: Float, val silence: Float,
+            val popMusic: Float, val song: Float, val backgroundMusic: Float,
             val spectrumRatio: Float
         )
         val rawScores = mutableListOf<RawFrameScores>()
@@ -4197,6 +4198,9 @@ object AudioSegmentAnalyzer {
                     singing = warmupScores.singing,
                     music = warmupScores.music,
                     silence = warmupScores.silence,
+                    popMusic = warmupScores.popMusic,
+                    song = warmupScores.song,
+                    backgroundMusic = warmupScores.backgroundMusic,
                     spectrumRatio = warmupScores.spectrumRatio
                 ))
                 intervalFrameCount++
@@ -4254,6 +4258,9 @@ object AudioSegmentAnalyzer {
                 singing = yamnet!!.singing,
                 music = yamnet!!.music,
                 silence = yamnet!!.silence,
+                popMusic = yamnet!!.popMusic,
+                song = yamnet!!.song,
+                backgroundMusic = yamnet!!.backgroundMusic,
                 spectrumRatio = yamnet!!.spectrumRatio
             ))
             pos += YAMNET_SPEECH_HOP_SAMPLES
@@ -4304,6 +4311,10 @@ object AudioSegmentAnalyzer {
             val smoothSilence = smoothed(i) { it.silence }
             val smoothSpectrumRatio = smoothed(i) { it.spectrumRatio }
 
+            val smoothPopMusic = smoothed(i) { it.popMusic }
+            val smoothSong = smoothed(i) { it.song }
+            val smoothBgMusic = smoothed(i) { it.backgroundMusic }
+
             // 构造平滑后的YamnetResult对象（仅填充classifyYamnetScores使用的字段）
             val smoothedYamnet = YamnetResult(
                 speech = smoothSpeech,
@@ -4311,10 +4322,10 @@ object AudioSegmentAnalyzer {
                 singing = smoothSinging,
                 music = smoothMusic,
                 instrumental = 0f,
-                popMusic = 0f,
+                popMusic = smoothPopMusic,
                 jingle = 0f,
-                song = 0f,
-                backgroundMusic = 0f,
+                song = smoothSong,
+                backgroundMusic = smoothBgMusic,
                 themeMusic = 0f,
                 silence = smoothSilence,
                 voiceSum = smoothSpeech + smoothNarration + smoothSinging,
