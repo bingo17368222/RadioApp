@@ -615,6 +615,127 @@ object SegmentGenerator {
         return mergeCount
     }
 
+    // v3.1.221-fix: 单个水段长度上限。用户规则：不存在跨越数分钟(如97~101分钟一整段)的指纹水段。
+    // 后处理对超过此上限的水段做细分，避免曲目/讲话被一个巨块吞没。
+    private val MAX_WATER_SUBDIVIDE_MS = 120000L // 2分钟
+
+    /**
+     * v3.1.221-fix: 细分超长水段，杜绝"单个指纹水段跨越数分钟"。
+     * 对超过 MAX_WATER_SUBDIVIDE_MS 的水段：
+     *  1) 优先在段内存在的较大静音间隙处切开（曲目/片花交界常见短暂静音）；
+     *  2) 无有效静音则按时间均分兜底，
+     * 保证最终没有任何单个水段超过上限。静音段在随后的 mergeSilenceToAdjacentWater 中被吸收。
+     */
+    private fun subdivideOversizedWaterSegments(segments: MutableList<VoiceSegment>): Int {
+        if (segments.size <= 1) return 0
+        // 候选切点：≥300ms 的静音段中点（作为曲目转场提示）
+        val silenceCuts = segments.filter { it.label == "静音" && (it.end - it.start) >= 300L }
+            .map { (it.start + it.end) / 2L }
+        var count = 0
+        var i = segments.size - 1
+        while (i >= 0) {
+            val seg = segments[i]
+            if (seg.hasVoice || !isWaterLabel(seg.label) || (seg.end - seg.start) <= MAX_WATER_SUBDIVIDE_MS) {
+                i--
+                continue
+            }
+            val pieces = mutableListOf<VoiceSegment>()
+            var cur = seg.start
+            var guard = 0
+            while (cur < seg.end) {
+                if (seg.end - cur <= MAX_WATER_SUBDIVIDE_MS || guard > 64) {
+                    pieces.add(seg.copy(start = cur, end = seg.end))
+                    break
+                }
+                val limit = cur + MAX_WATER_SUBDIVIDE_MS
+                // 段内 [cur+300, limit] 中最靠后的静音中点切点，取不到则均分
+                val inner = silenceCuts.filter { it > cur + 300 && it < limit }
+                val cut = (inner.maxOrNull()) ?: (cur + limit) / 2L
+                if (cut <= cur) {
+                    pieces.add(seg.copy(start = cur, end = seg.end))
+                    break
+                }
+                pieces.add(seg.copy(start = cur, end = cut))
+                cur = cut
+                guard++
+            }
+            if (pieces.size > 1) {
+                // 会话保护：保证后处理才调用，避免影响正在使用的段
+                segments.removeAt(i)
+                segments.addAll(i, pieces)
+                count += pieces.size - 1
+                i += pieces.size - 1
+            }
+            i--
+        }
+        return count
+    }
+
+    // v3.1.221-fix: 水段内嵌短人声抢救上限。用户规则：短主持人讲话(数秒、无背景音乐)
+    // 必须独立成干货，绝不能并入歌曲/指纹水段末尾。
+    private val MAX_SPEECH_RESCUE_MS = 8000L // 8秒
+
+    /**
+     * v3.1.221-fix: 水段内嵌短人声抢救。
+     * 根因：指纹层(层1/层3)可把整段(如97~101分钟)标记为"指纹水货"，期间若穿插主持人
+     * 数秒讲话(无背景音乐)，第二层YAMNet已将其识别为干货段，但会被指纹水段与后续合并吸收。
+     * 方法：以第二层识别出的短干段(≤MAX_SPEECH_RESCUE_MS、与水段重叠部分≤上限)为锚点，
+     * 把该段从水段内部重新切出为干货段，保证"短讲话不被合并到歌曲/水段末尾"。
+     * 适用于所有水段(含未超长的歌曲块)，因用户将其视为最基本要求。
+     * @param layer2SpeechRuns 第二层YAMNet产出的干段(含主持人讲话)
+     * @return 抢救出的短讲话段数量
+     */
+    private fun rescueShortSpeechInWater(segments: MutableList<VoiceSegment>, layer2SpeechRuns: List<VoiceSegment>): Int {
+        if (segments.size <= 1 || layer2SpeechRuns.isEmpty()) return 0
+        segments.sortBy { it.start }
+        var rescueCount = 0
+        var i = segments.size - 1
+        while (i >= 0) {
+            val seg = segments[i]
+            if (seg.hasVoice || !isWaterLabel(seg.label)) { i--; continue }
+            // 与当前水段重叠、且在水段内部分时长≤8秒的第二层干段（短主持人讲话）
+            val embedded = layer2SpeechRuns
+                .filter { dry ->
+                    dry.hasVoice &&
+                        dry.start < seg.end && dry.end > seg.start &&
+                        (minOf(dry.end, seg.end) - maxOf(dry.start, seg.start)) <= MAX_SPEECH_RESCUE_MS
+                }
+                .map { dry ->
+                    VoiceSegment(
+                        start = maxOf(dry.start, seg.start),
+                        end = minOf(dry.end, seg.end),
+                        hasVoice = true,
+                        label = dry.label ?: "干货",
+                        isSimulated = dry.isSimulated
+                    )
+                }
+                .sortedBy { it.start }
+            if (embedded.isEmpty()) { i--; continue }
+            // 用内嵌干段边界把水段切成 水/干/水/干/水...
+            val pieces = mutableListOf<VoiceSegment>()
+            var cur = seg.start
+            for (dry in embedded) {
+                if (dry.start > cur) {
+                    pieces.add(seg.copy(start = cur, end = dry.start, hasVoice = false, label = seg.label))
+                }
+                pieces.add(dry)
+                cur = dry.end
+            }
+            if (cur < seg.end) {
+                pieces.add(seg.copy(start = cur, end = seg.end, hasVoice = false, label = seg.label))
+            }
+            if (pieces.size > 1) {
+                // 会话保护：保证后处理才调用，避免影响正在使用的段
+                segments.removeAt(i)
+                segments.addAll(i, pieces)
+                rescueCount += embedded.size
+                i += pieces.size - 1
+            }
+            i--
+        }
+        return rescueCount
+    }
+
     /**
      * v3.1.44: 增强合并逻辑，处理连续水分片段被短间隔分隔未合并的问题
      */
@@ -2084,6 +2205,9 @@ object SegmentGenerator {
         layer2DrySegments = mergedAfterLayer2.count { it.hasVoice }
         layer2WaterSegments = mergedAfterLayer2.count { !it.hasVoice }
         layer2TimeMs = System.currentTimeMillis() - layer2StartTime
+        // v3.1.221-fix: 记录第二层识别出的干段(主持人讲话等)，供最终阶段"水段内嵌短人声抢救"使用。
+        // 这些干段可能被指纹水段与后续合并吸收，需保留原始边界作为切回干货的锚点。
+        val layer2SpeechRuns = mergedAfterLayer2.filter { it.hasVoice }.map { it.copy() }
 
         Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段），耗时${formatDuration(layer2TimeMs)}")
         // v3.1.90: 写指纹日志
@@ -2155,6 +2279,20 @@ object SegmentGenerator {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
 
+        // v3.1.221-fix: 水段内嵌短人声抢救（在静音合并之前），把第二层识别出的短主持人讲话
+        // (数秒、无背景音乐)从水段内部切出为干货，杜绝"短讲话被并入歌曲/指纹水段末尾"。
+        val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns)
+        if (speechRescueCount > 0) {
+            writeFingerprintLog(context, "三层架构: 抢救${speechRescueCount}个内嵌短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+        }
+
+        // v3.1.221-fix: 细分超长水段（在静音合并之前），杜绝"单个指纹水段跨越数分钟"。
+        // 先切分可用的静音间隙可作为边界提示，随后 mergeSilenceToAdjacentWater 会吸收小静音。
+        val waterSubdivCount = subdivideOversizedWaterSegments(finalSegments)
+        if (waterSubdivCount > 0) {
+            writeFingerprintLog(context, "三层架构: 细分${waterSubdivCount}个超长水段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+        }
+
         // v3.1.125: 合并静音段到相邻非静音段。
         // v3.1.126: 同时合并静音段到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"碎片化模式。
         val silenceMergedCount = mergeSilenceToAdjacentWater(finalSegments)
@@ -2175,6 +2313,21 @@ object SegmentGenerator {
         }
         writeFingerprintLog(context, "三层架构: 目标区域(720~960s=12~16分钟)最终分段详情: $finalTargetDetail for episode=$episodeId")
         Log.i(TAG, "三层架构: 目标区域(720~960s)最终分段详情: $finalTargetDetail for episode=$episodeId")
+
+        // v3.1.221-fix: 额外输出95~102分钟（5700~6120秒）区域的最终分段结果，便于验证
+        // 97~101分钟"超长指纹水段"是否被细分、以及101:38~101:41无BGM短讲话是否被切为干货。
+        val finalTailSegments = finalSegments.filter { it.start in 5700000..6120000 || it.end in 5700000..6120000 || (it.start < 5700000 && it.end > 6120000) }
+        val finalTailDetail = if (finalTailSegments.isNotEmpty()) {
+            val sb = StringBuilder()
+            finalTailSegments.forEach { seg ->
+                sb.append("${seg.start}~${seg.end}ms[${seg.label} hasVoice=${seg.hasVoice}]; ")
+            }
+            sb.toString()
+        } else {
+            "无段覆盖（异常）"
+        }
+        writeFingerprintLog(context, "三层架构: 尾部区域(5700~6120s=95~102分钟)最终分段详情: $finalTailDetail for episode=$episodeId")
+        Log.i(TAG, "三层架构: 尾部区域(5700~6120s)最终分段详情: $finalTailDetail for episode=$episodeId")
 
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime
