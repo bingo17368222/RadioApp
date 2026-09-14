@@ -2571,17 +2571,23 @@ object AudioSegmentAnalyzer {
             return FrameType.SILENCE
         }
 
-        // v3.1.216-fix: song/popMusic/backgroundMusic歌曲检测，提前到频谱检查之前。
+        // v3.1.217-fix: 聚合音乐判据，提前到频谱检查之前。
         // 根因：歌曲后半段常含歌手人声，spectrumRatio>0.20会被下方"频谱比值>0.20→DRY"优先判为干货，
-        // 导致带人声的歌曲后半段与主持人讲话合并。歌曲的本征特征是song/popMusic高分(0.4~0.6)，
-        // 与单纯人声(4演唱类)不同，应优先于频谱人声检查判定为WATER。
-        // 同时改用原始speechScore而非effectiveSpeechScore：
-        // 全局vadSpeechRatio>0.20会把speech锁定到≥0.30，使原条件effectiveSpeechScore<0.30必失败，
-        // 歌曲(尤其赈歌类)因此被误杀为DRY。songScore>0.40且相对speech差额>0.25即可判定，不再受VAD锁定干扰。
-        // 主持人讲话+背景音乐场景：song≈0.05→songScore≤0.40→跳过检查→不影响现有DRY判定。
-        // 纯器乐场景：song≈0.05→songScore≤0.40→跳过检查→由下方优先级4(music)或5处理。
+        // 导致带人声的歌曲后半段与主持人讲话合并。单一song类别易受VAD/混音影响而<0.30漏判，
+        // 故聚合所有音乐类(music/song/pop/instrumental/theme/jingle/backgroundMusic)取max：
+        // 歌曲无论带不带人声，聚合音乐分都显著高于语音；主持人讲话时这些类别≈0.05~0.15不会误判。
+        // 采用双条件：聚合音乐分>0.35 且高于原始speech 0.10（宽松的歌曲保底）。
         val songScore = maxOf(yamnet.song, yamnet.popMusic, yamnet.backgroundMusic)
-        if (songScore > 0.40f && (songScore - speechScore) > 0.25f) {
+        if (songScore > 0.30f && (songScore - speechScore) > 0.15f) {
+            return FrameType.WATER
+        }
+
+        // 聚合音乐判据（含music/instrumental/song/pop，用于带人声歌曲后半段）
+        val musicAgg = maxOf(
+            yamnet.music, yamnet.instrumental, yamnet.song,
+            yamnet.popMusic, yamnet.backgroundMusic, yamnet.themeMusic, yamnet.jingle
+        )
+        if (musicAgg > 0.35f && (musicAgg - speechScore) > 0.10f) {
             return FrameType.WATER
         }
 
@@ -2592,17 +2598,19 @@ object AudioSegmentAnalyzer {
         }
 
         // 优先级3：VAD语音帧占比 > 20% → speech_prob锁定0.30
+        // v3.1.217-fix: 该锁定仅用于music相对判据，不再用于硬性 speech<0.30 阈值
         val effectiveSpeechScore = if (vadSpeechRatio > 0.20f) {
             maxOf(speechScore, 0.30f)
         } else {
             speechScore
         }
 
-        // 优先级4：YAMNet判定
-        // v3.1.99: 使用相对差值判据。(music - speech) > 0.35 且 speech < 0.30 → WATER
-        // v3.1.182: 从0.30/0.35恢复到0.35/0.30，移除music>0.65条件，防止片头音乐被误判为WATER
-        // 同时确保片头音乐保持为WATER段，不会与主持人讲话DRY段合并
-        if ((yamnet.music - effectiveSpeechScore) > 0.35f && effectiveSpeechScore < 0.30f) {
+        // 优先级4：music判据，改用原始speechScore解除VAD锁定
+        // v3.1.99: 使用相对差值判据。(music - speech) > 0.35 → WATER
+        // v3.1.217-fix: 原判据要求 effectiveSpeechScore<0.30，当全局VAD锁定speech≥0.30时必失败，
+        // 导致歌曲后半段(含人声导致speech升高)即使music高分也无法判水。现改用原始speechScore，
+        // 只要music明显高于人声(music、speech原始分)即为歌曲/片花音乐。主持人讲话music≈0.05不误判。
+        if ((yamnet.music - speechScore) > 0.35f && speechScore < 0.50f) {
             return FrameType.WATER
         }
 
@@ -4344,9 +4352,12 @@ object AudioSegmentAnalyzer {
             // v3.1.182: 从0.16恢复到0.20，防止片头音乐含部分人声频谱能量触发上下文保护
             val isSpeechContaining = (smoothSpectrumRatio > 0.20f)
 
-            // v3.1.216-fix: 标记song高分帧，上下文保护不再降级这些歌曲帧为DRY
+            // v3.1.216-fix: 标记歌曲高分帧，上下文保护不再降级这些歌曲帧为DRY
+            // v3.1.217-fix: 采用聚合音乐判据，与classifyYamnetScores保持一致
             val smoothSongScore = maxOf(smoothSong, smoothPopMusic, smoothBgMusic)
-            val isSong = (smoothSongScore > 0.40f && (smoothSongScore - smoothSpeech) > 0.25f)
+            val smoothMusicAgg = maxOf(smoothMusic, smoothSong, smoothPopMusic, smoothBgMusic)
+            val isSong = (smoothSongScore > 0.30f && (smoothSongScore - smoothSpeech) > 0.15f) ||
+                ((smoothMusicAgg) > 0.35f && (smoothMusicAgg - smoothSpeech) > 0.10f)
 
             frames.add(FrameInfo(rawScores[i].timestampMs, type, typeNoSpectrum, isSpeechContaining, smoothSpectrumRatio, isSong))
         }
