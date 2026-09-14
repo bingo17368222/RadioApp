@@ -2354,16 +2354,43 @@ object SegmentGenerator {
                 Log.i(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批完成，产出${batchResult.size}段，累计${allResults.size}段")
                 writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批完成，产出${batchResult.size}段")
             } else {
-                Log.w(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败(服务崩溃或超时)，跳过本批")
-                writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败，跳过")
-                // v3.1.169: 如果服务进程已崩溃，等待其重启后再继续下一批
-                // 根因：SIGSEGV杀死:yamnet进程后，立即调用startService()可能因进程未完全重启而丢失Intent
-                // v3.1.175-fix: 减少等待时间从30秒到2秒，30秒内进程几乎不会自动重启
-                // 2秒后立即发送startService()，Android会自动创建新进程
+                // v3.1.216-fix: 整批失败时，逐区间单独重试，最大化YAMNet覆盖率
+                // 根因：整批5个区间中只要一个触发SIGSEGV/超时，runYamnetService就返回null，
+                // 该批所有区间都无YAMNet产出→VAD回退一刀切标为干货→歌曲后半段与主持人讲话合并。
+                // 改为逐区间重试：单区间推理比5区间更稳定，能救回大量本会回退为干货的歌曲区间。
+                Log.w(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败，改为逐区间重试(${batchCount}个)")
+                writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批失败，逐区间重试")
                 if (!isYamnetProcessAlive(context)) {
-                    Log.w(TAG, "runYamnetServiceWithBatches: YamnetService进程已死，等待2秒后重启...")
+                    Log.w(TAG, "runYamnetServiceWithBatches: YamnetService进程已死，等待进程重启后再逐区间重试")
                     writeFingerprintLog(context, "runYamnetServiceWithBatches: 等待YamnetService进程重启")
                     waitForYamnetProcessAlive(context, 2_000L)
+                }
+                var retryRecoverCount = 0
+                for (k in 0 until batchCount) {
+                    // 逐个区间单独推理（单区间，缩短超时避免长时间阻塞）
+                    val singleStarts = LongArray(1) { batchStarts[k] }
+                    val singleEnds = LongArray(1) { batchEnds[k] }
+                    val singleResult = try {
+                        runYamnetService(context, pcmPath, singleStarts, singleEnds, 45_000L)
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "runYamnetServiceWithBatches: 逐区间重试异常 interval=${startIdx+k}: ${e.javaClass.name}: ${e.message}")
+                        null
+                    }
+                    if (singleResult != null && singleResult.isNotEmpty()) {
+                        allResults.addAll(singleResult)
+                        anySuccess = true
+                        retryRecoverCount++
+                        Log.i(TAG, "runYamnetServiceWithBatches: 逐区间重试成功 interval=${startIdx+k}, 产出${singleResult.size}段，累计${allResults.size}段")
+                        writeFingerprintLog(context, "runYamnetServiceWithBatches: 逐区间重试成功 interval=${startIdx+k}")
+                    }
+                    // 每次重试后确保进程存活再处理下一个区间
+                    if (k + 1 < batchCount && !isYamnetProcessAlive(context)) {
+                        waitForYamnetProcessAlive(context, 1_500L)
+                    }
+                }
+                if (retryRecoverCount > 0) {
+                    Log.i(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批逐区间重试救回${retryRecoverCount}/${batchCount}个区间")
+                    writeFingerprintLog(context, "runYamnetServiceWithBatches: 逐区间重试救回${retryRecoverCount}/${batchCount}个区间")
                 }
             }
         }
