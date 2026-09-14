@@ -615,61 +615,9 @@ object SegmentGenerator {
         return mergeCount
     }
 
-    // v3.1.221-fix: 单个水段长度上限。用户规则：不存在跨越数分钟(如97~101分钟一整段)的指纹水段。
-    // 后处理对超过此上限的水段做细分，避免曲目/讲话被一个巨块吞没。
-    private val MAX_WATER_SUBDIVIDE_MS = 120000L // 2分钟
-
-    /**
-     * v3.1.221-fix: 细分超长水段，杜绝"单个指纹水段跨越数分钟"。
-     * 对超过 MAX_WATER_SUBDIVIDE_MS 的水段：
-     *  1) 优先在段内存在的较大静音间隙处切开（曲目/片花交界常见短暂静音）；
-     *  2) 无有效静音则按时间均分兜底，
-     * 保证最终没有任何单个水段超过上限。静音段在随后的 mergeSilenceToAdjacentWater 中被吸收。
-     */
-    private fun subdivideOversizedWaterSegments(segments: MutableList<VoiceSegment>): Int {
-        if (segments.size <= 1) return 0
-        // 候选切点：≥300ms 的静音段中点（作为曲目转场提示）
-        val silenceCuts = segments.filter { it.label == "静音" && (it.end - it.start) >= 300L }
-            .map { (it.start + it.end) / 2L }
-        var count = 0
-        var i = segments.size - 1
-        while (i >= 0) {
-            val seg = segments[i]
-            if (seg.hasVoice || !isWaterLabel(seg.label) || (seg.end - seg.start) <= MAX_WATER_SUBDIVIDE_MS) {
-                i--
-                continue
-            }
-            val pieces = mutableListOf<VoiceSegment>()
-            var cur = seg.start
-            var guard = 0
-            while (cur < seg.end) {
-                if (seg.end - cur <= MAX_WATER_SUBDIVIDE_MS || guard > 64) {
-                    pieces.add(seg.copy(start = cur, end = seg.end))
-                    break
-                }
-                val limit = cur + MAX_WATER_SUBDIVIDE_MS
-                // 段内 [cur+300, limit] 中最靠后的静音中点切点，取不到则均分
-                val inner = silenceCuts.filter { it > cur + 300 && it < limit }
-                val cut = (inner.maxOrNull()) ?: (cur + limit) / 2L
-                if (cut <= cur) {
-                    pieces.add(seg.copy(start = cur, end = seg.end))
-                    break
-                }
-                pieces.add(seg.copy(start = cur, end = cut))
-                cur = cut
-                guard++
-            }
-            if (pieces.size > 1) {
-                // 会话保护：保证后处理才调用，避免影响正在使用的段
-                segments.removeAt(i)
-                segments.addAll(i, pieces)
-                count += pieces.size - 1
-                i += pieces.size - 1
-            }
-            i--
-        }
-        return count
-    }
+    // v3.1.222: 取消"超长水段细分"。用户明确不允许按时间一刀切——把一段连续内容
+    // 硬拆成2分钟小块会切断歌曲/完整曲目，也会破坏后续短人声抢救的锚点对齐。
+    // 大水段不应被工整均分，而应由其内部真实的静音/转场/讲话边界自然切分。
 
     // v3.1.221-fix: 水段内嵌短人声抢救上限。用户规则：短主持人讲话(数秒、无背景音乐)
     // 必须独立成干货，绝不能并入歌曲/指纹水段末尾。
@@ -2284,13 +2232,6 @@ object SegmentGenerator {
         val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns)
         if (speechRescueCount > 0) {
             writeFingerprintLog(context, "三层架构: 抢救${speechRescueCount}个内嵌短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
-        }
-
-        // v3.1.221-fix: 细分超长水段（在静音合并之前），杜绝"单个指纹水段跨越数分钟"。
-        // 先切分可用的静音间隙可作为边界提示，随后 mergeSilenceToAdjacentWater 会吸收小静音。
-        val waterSubdivCount = subdivideOversizedWaterSegments(finalSegments)
-        if (waterSubdivCount > 0) {
-            writeFingerprintLog(context, "三层架构: 细分${waterSubdivCount}个超长水段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
         }
 
         // v3.1.125: 合并静音段到相邻非静音段。
