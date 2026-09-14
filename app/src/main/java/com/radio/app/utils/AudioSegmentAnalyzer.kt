@@ -2592,6 +2592,18 @@ object AudioSegmentAnalyzer {
             return FrameType.WATER
         }
 
+        // v3.1.209-fix: song/popMusic/backgroundMusic歌曲检测。
+        // 根因：歌曲的yamnet.music(132纯器乐)可能仅≈0.30，但song(261带人声歌曲)可达0.40~0.60，
+        // popMusic(211流行乐)/backgroundMusic(262背景乐)也约0.20~0.40，原有逻辑完全忽略这些字段，
+        // 导致带人声的歌曲(2~4分钟)与前后段合并成一个超长DRY段。
+        // 条件：song类score > 0.30 且 (songScore - speech) > 0.25 且 speech不占主导。
+        // host+背景音乐的常见场景：song≈0.05→songScore<0.30→跳过检查→不影响现有DRY判定。
+        // 纯器乐场景：song≈0.05→跳过检查→由优先级4a处理。
+        val songScore = maxOf(yamnet.song, yamnet.popMusic, yamnet.backgroundMusic)
+        if (songScore > 0.30f && (songScore - effectiveSpeechScore) > 0.20f && effectiveSpeechScore < 0.30f) {
+            return FrameType.WATER
+        }
+
         // 优先级5：其余 → DRY（模糊段，等指纹二次校验）
         return FrameType.DRY
     }
