@@ -1468,6 +1468,10 @@ object SegmentGenerator {
         var mergedAfterLayer1: List<VoiceSegment>
         var layer1MatchCount = 0
         var layer2DrySegments = 0
+        // v3.1.222-fix: 抢救锚点——记录第二层原始YAMNet干段(含主持人讲话)。
+        // 必须在 mergeAdjacentSegments 之前捕获，否则短讲话段会被合并吸收，
+        // 导致最终阶段无法把它从指纹水段中切回干货。
+        var layer2SpeechRuns: List<VoiceSegment> = emptyList()
         var layer2WaterSegments = 0
         var layer3RecallCount = 0
         var observationPoolNewCount = 0
@@ -1834,6 +1838,8 @@ object SegmentGenerator {
                                 }
                             }
                         }
+                        // v3.1.222-fix: 在合并前保留原始YAMNet干段作为抢救锚点（避免短讲话被merge吸收）
+                        layer2SpeechRuns = yamnetAllSegments.filter { it.hasVoice && it.label != "静音" }.map { it.copy() }
                         // 4. 排序合并同类型相邻段
                         jigsawSegments.sortBy { it.start }
                         mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
@@ -2084,6 +2090,8 @@ object SegmentGenerator {
                                             }
                                         }
                                     }
+                                    // v3.1.222-fix: 合并前保留原始YAMNet干段作为抢救锚点
+                                    layer2SpeechRuns = yamnetAllSegments.filter { it.hasVoice && it.label != "静音" }.map { it.copy() }
                                     jigsawSegments.sortBy { it.start }
                                     mergedAfterLayer2 = mergeAdjacentSegments(jigsawSegments)
                                     audioEngineName = "VAD+YAMNet+三层(优化-PCM重新生成)"
@@ -2153,9 +2161,6 @@ object SegmentGenerator {
         layer2DrySegments = mergedAfterLayer2.count { it.hasVoice }
         layer2WaterSegments = mergedAfterLayer2.count { !it.hasVoice }
         layer2TimeMs = System.currentTimeMillis() - layer2StartTime
-        // v3.1.221-fix: 记录第二层识别出的干段(主持人讲话等)，供最终阶段"水段内嵌短人声抢救"使用。
-        // 这些干段可能被指纹水段与后续合并吸收，需保留原始边界作为切回干货的锚点。
-        val layer2SpeechRuns = mergedAfterLayer2.filter { it.hasVoice }.map { it.copy() }
 
         Log.i(TAG, "三层架构: 第二层完成，共${mergedAfterLayer2.size}个片段（干货${layer2DrySegments}段，水货${layer2WaterSegments}段），耗时${formatDuration(layer2TimeMs)}")
         // v3.1.90: 写指纹日志
@@ -2269,6 +2274,15 @@ object SegmentGenerator {
         }
         writeFingerprintLog(context, "三层架构: 尾部区域(5700~6120s=95~102分钟)最终分段详情: $finalTailDetail for episode=$episodeId")
         Log.i(TAG, "三层架构: 尾部区域(5700~6120s)最终分段详情: $finalTailDetail for episode=$episodeId")
+
+        // v3.1.222-fix: 输出95~102分钟内"第二层抢救锚点(原始YAMNet干段)"，用于定位
+        // 101:38~101:41无BGM讲话是"锚点缺失(YAMNet判水)"还是"被合并吸收(已修复)"。
+        val rescueAnchorDetail = layer2SpeechRuns
+            .filter { it.start in 5700000..6120000 || it.end in 5700000..6120000 || (it.start < 5700000 && it.end > 6120000) }
+            .joinToString("; ") { "${it.start}~${it.end}ms[干]" }
+            .ifEmpty { "无（第二层在95~102分钟无任何干段锚点）" }
+        writeFingerprintLog(context, "三层架构: 抢救锚点(95~102分钟原始YAMNet干段): $rescueAnchorDetail for episode=$episodeId")
+        Log.i(TAG, "三层架构: 抢救锚点(95~102分钟原始YAMNet干段): $rescueAnchorDetail for episode=$episodeId")
 
         // 日志统计（含各层耗时和干货占比）
         val totalTimeMs = System.currentTimeMillis() - segStartTime
