@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.241 安装</title>
+<title>RadioApp v3.1.242 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,18 +95,18 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.241</div>
+  <div class="version">v3.1.242</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.241</h3>
+    <h3>更新内容 v3.1.242</h3>
     <ul>
-      <li>新增"响度跳变检测"：从长干货段内部按背景音量切出歌曲/音乐段</li>
-      <li>根因修复：歌曲音量显著高于前后说话，但此前从不把响度当边界，导致歌曲被并入前后长段</li>
-      <li>对长度≥60秒的干段扫描 PCM 响度，持续高响度（超中位 6dB、连续 15 秒）区标记为歌曲</li>
-      <li>歌曲从"广告+预录制节目+歌曲"合并长段中独立切出，不再混入前后内容</li>
-      <li>运行时硬校验仍在（R1~R4），保障切分后时间轴连续、无碎段、长度受控</li>
+      <li>歌曲检测改用"低过零率+谐波"判据（取代 v3.1.241 的响度跳变）</li>
+      <li>实测确认：电台成品已做响度归一化，整段响度仅 ±3dB 波动，响度无法作为歌曲边界</li>
+      <li>改用音乐波形结构特征：歌曲过零率明显低于清唱讲话（实测 0.08 vs 0.171，可分 114%）</li>
+      <li>阈值经真实 PCM 网格标定：zcr&lt;0.08+谐波&gt;0.3+排除静音+15s 间隔合并+单块≥15s</li>
+      <li>长干段内的歌曲/背景音乐可被独立切出，不再混入前后内容；响度仅用于排除静音</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.241.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.242.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
