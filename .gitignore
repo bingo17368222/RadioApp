@@ -8,4 +8,5 @@
 .externalNativeBuild
 .cxx
 local.properties
-releases/
+releases/# 编译产物不入库
+**/build/
