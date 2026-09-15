@@ -5478,7 +5478,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
-    fun playEpisode(episode: Episode?, live: Boolean, startPositionMs: Long = -1L) {
+    fun playEpisode(
+        episode: Episode?,
+        live: Boolean,
+        startPositionMs: Long = -1L,
+        trustExplicitStartPos: Boolean = false  // v3.1.229-fix: 用户显式指定位置(如历史点击)时信任传入值，跳过prefs覆盖
+    ) {
         // [v2.3.2] Null-safety: episode can be null in rare race conditions
         if (episode == null) {
             Log.e(TAG, "playEpisode: episode is NULL, ignoring")
@@ -5542,9 +5547,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } else {
                     writeServiceLog("playback", " playEpisode: no savedPos for $epIdForCheck, starting from 0")
                 }
-            } else if (startPositionMs > 30000 && newEpSavedPos > 0) {
+            } else if (!trustExplicitStartPos && startPositionMs > 30000 && newEpSavedPos > 0) {
                 // Caller specified a start position > 30s. Verify it matches saved position.
                 // If difference > 5min, it's likely an old episode position leaking through.
+                // v3.1.229-fix: 当调用方显式指定位置(trustExplicitStartPos=true，如播放历史点击)时，
+                // 不再用 playback_positions prefs 里的旧值覆盖传入位置——历史中的 lastPosition
+                // 就是用户期望恢复的进度，覆盖会导致"载入更早进度/不载入进度"。
                 val delta = startPositionMs - newEpSavedPos
                 if (delta > 300000) {
                     writeServiceLog("playback", " playEpisode: REJECTED startPos=$startPositionMs for $epIdForCheck (savedPos=$newEpSavedPos, delta=${delta}ms > 5min), using savedPos=$newEpSavedPos instead")

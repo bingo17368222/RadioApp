@@ -3540,6 +3540,18 @@ class PlayerActivity : AppCompatActivity() {
                 writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: clicked history item pos=$position, title=${item.title}, lastPosition=${item.lastPosition}")
                 // v3.1.215-fix: 从历史列表点击节目时，始终传递 item.lastPosition，
                 // 不使用 playEpisodeAtIndex（不走不喜欢跳过，不使用 SharedPreferences 回退）。
+                // v3.1.229-fix: 播放过程中历史 lastPosition 仅在 onPause/切换/recordHistory 时更新，
+                // 可能晚于服务端实时保存在的 playback_positions prefs。因此取"历史值"与"服务端实时值"
+                // 中较新者恢复，避免点击历史后载入更早的进度。同时 trustExplicitStartPos=true 防止
+                // 服务层误用其它旧值覆盖最终传入的进度。
+                var resumePos = item.lastPosition
+                val serviceLatest = try {
+                    getSharedPreferences("playback_positions", MODE_PRIVATE).getLong(item.episodeId, -1L)
+                } catch (_: Exception) { -1L }
+                if (serviceLatest > resumePos) {
+                    writeEpisodeLog("[${com.radio.app.RadioApplication.appVersionTag()}] showHistoryDialog: 用服务端实时进度 $serviceLatest (>历史 $resumePos) 作为恢复点")
+                    resumePos = serviceLatest
+                }
                 val foundInList = episodeList.any { it.id == item.episodeId }
                 val actualEpisode = if (foundInList) {
                     episodeList.first { it.id == item.episodeId }
@@ -3573,12 +3585,12 @@ class PlayerActivity : AppCompatActivity() {
                         val segs = com.radio.app.database.RadioDatabaseHelper.getInstance(this).getVoiceSegments(actualEpisode.id)
                         if (segs.isNotEmpty()) actualEpisode.copy(voiceSegments = segs) else actualEpisode
                     } catch (_: Exception) { actualEpisode }
-                    playbackService?.playEpisode(preloadedEp, false, item.lastPosition)
+                    playbackService?.playEpisode(preloadedEp, false, resumePos, trustExplicitStartPos = true)
                     ensureSegmentsForCurrentEpisode()
                     updateUI()
                     setupPreCacheList()
                     // 记录历史（更新位置）
-                    PlayHistoryUtils.recordHistory(this, actualEpisode, if (item.lastPosition > 0) item.lastPosition else 0L)
+                    PlayHistoryUtils.recordHistory(this, actualEpisode, if (resumePos > 0) resumePos else 0L)
                 }
             }
         }
