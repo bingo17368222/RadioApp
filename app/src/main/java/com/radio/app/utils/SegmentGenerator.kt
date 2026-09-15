@@ -654,6 +654,35 @@ object SegmentGenerator {
     private const val PCMS_PER_WATER_MAX = 200        // 每个水段最多抢救数（v3.1.226提高以不丢尾部讲话）
     private const val PCMS_MAX_SCAN_MS = 360000L      // 单段最多扫描6分钟，防内存/耗时
 
+    // v3.1.230-fix: 压制"抢救"过度切碎，同时护住歌曲、合并同句/相邻讲话。
+    // 根因：v3.1.226 把 PCMS_PER_WATER_MAX 提到 200 后，rescueSpeechByPcmScanInWater 把大量几秒
+    // "讲话"从水段内逐帧挖出，且每个短段独立成段，导致整集 400+ 段、歌曲被切成十几个、
+    // 一句讲话被句内停顿切成两半、并与后文大段讲话之间残留短水段（用户反馈"分段太碎+歌曲被切"）。
+    private const val PCMS_MERGE_GAP_MS_V3 = 4000L    // 同句停顿合并间隙(2.5->4s)：呼吸/换气多在此范围
+    private const val PCMS_RUN_MAX_MS_V3 = 45000L     // 单段讲话上限(20->45s)：长段主持人讲解不应被20s截断
+    private const val PCMS_FRAG_GAP_MS = 4000L        // 干-水-干归并时中间水段容许长度：<=4s 视为讲话停顿/呼吸
+    private const val PCMS_HARM_MAX = 0.42f           // 讲话谐波比上限：谐波比>0.42 多为带和声/乐音的歌曲片段，不判为讲话，护住歌曲
+    private const val PCMS_HOLE_MAX_WIN = 6           // 洞填充最大窗口数(0.25s/窗=1.5s)：句内呼吸/换气停顿填充为语音
+
+    /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
+    private fun fillSpeechHoles(isSpeech: MutableList<Boolean>, maxHole: Int) {
+        if (isSpeech.size <= 2) return
+        var i = 1
+        while (i < isSpeech.size - 1) {
+            // 找一段连续的 false（洞）
+            if (isSpeech[i]) { i++; continue }
+            val holeStart = i
+            var j = i
+            while (j < isSpeech.size && !isSpeech[j]) j++
+            val holeLen = j - holeStart
+            // 洞左右任一侧是 true 且足够短则填充；整段全是 false 的头部/尾部洞不填（那是真正的静音段）
+            if (holeLen <= maxHole && (isSpeech[holeStart - 1] || (j < isSpeech.size && isSpeech[j]))) {
+                for (k in holeStart until j) isSpeech[k] = true
+            }
+            i = j
+        }
+    }
+
     /** v3.1.225-fix: 单独计算一帧<flat, harm>（复用fftRadix2）。 */
     private fun computeFrameSpectral(samples: ShortArray, off: Int, n: Int, sr: Int): FloatArray {
         val re = FloatArray(n)
@@ -774,13 +803,19 @@ object SegmentGenerator {
                 if (nf >= 8) {
                     val mz = medianOf(zlist); val mf = medianOf(flist); val mh = medianOf(hlist)
                     // 该窗内须为"讲话"（不是纯静音：harm>0 说明有活动帧）
-                    if (mh > 0f && mz < PCMS_ZCR_MAX && mf < PCMS_FLAT_MAX && mh >= PCMS_HARM_MIN) {
+                    // v3.1.230-fix: 增加谐波比上界 PCMS_HARM_MAX：谐波比>0.42多为带和声/乐音的歌曲片段，
+                    // 不判为讲话，从源头护住歌曲不被切碎。
+                    if (mh > 0f && mz < PCMS_ZCR_MAX && mf < PCMS_FLAT_MAX && mh >= PCMS_HARM_MIN && mh <= PCMS_HARM_MAX) {
                         speech = true
                     }
                 }
                 isSpeech.add(speech)
                 winStart += PCMS_WIN_HOP_S
             }
+            // v3.1.230-fix: 洞填充——把 isSpeech 中长度<=PCMS_HOLE_MAX_WIN 的非语音窗口段填充为语音。
+            // 根因：一句连贯讲话内部的呼吸/换气(几百ms~1.5s)会被 1 秒窗判为"非语音"，从而把同一句
+            // 讲话切成两个 run（用户反馈"几秒短讲话被分成两个分段"）。填充后这些短停顿被吸收进讲话段。
+            fillSpeechHoles(isSpeech, PCMS_HOLE_MAX_WIN)
             // 将真值窗口连成区间（窗口i对应 [winStart0+i*hop, ...+WIN_S)）
             val runs = mutableListOf<Pair<Long, Long>>()
             var runStartWin = -1
@@ -833,12 +868,17 @@ object SegmentGenerator {
             val runs = findSpeechRunsInPcm(pcmFile, seg.start, scanEnd)
             val rescued = runs
                 .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
-                .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS }
+                .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
+                // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
+                // 做二次确认，凡整段偏"音乐/歌唱"(强谐波占比高)一律不抢救，护住完整歌曲不被切成十几段。
+                .filter { (a, b) -> !isMusicLikePcm(pcmFile, a, b) }
                 .sortedBy { it.first }
                 // v3.2.4-fix: 合并间隔<=PCMS_MERGE_GAP_MS的相邻讲话run，
                 // 把"同一句话因短暂停顿/呼吸被切成多段"重新连成一段，消除碎片；
                 // 仅在合并后仍未超过PCMS_RUN_MAX_MS时合并，避免误吞噬长歌曲。
-                .let { mergeNearbySpeechRuns(it) }
+                // v3.1.230-fix: 合并间隙提升到4s(PCMS_MERGE_GAP_MS_V3)、单段上限45s。
+                .let { mergeNearbySpeechRunsV3(it) }
+                // v3.1.230-fix: 抢救出的短段若超长仍不救（护歌）；最终按每个水段上限取值。
                 .take(PCMS_PER_WATER_MAX)
             if (rescued.isEmpty()) { i--; continue }
             val pieces = mutableListOf<VoiceSegment>()
@@ -881,6 +921,67 @@ object SegmentGenerator {
         }
         out.add(cs to ce)
         return out
+    }
+
+    /**
+     * v3.1.230-fix: 同句/相邻讲话合并（V3 加大间隙与上限）。
+     * 相对 mergeNearbySpeechRuns：
+     * - 合并间隙 2.5s->4s(PCMS_MERGE_GAP_MS_V3)：覆盖更长的呼吸/换气停顿，避免同一句话被切成多段；
+     * - 单段上限 20s->45s(PCMS_RUN_MAX_MS_V3)：长段主持人讲解/朗诵不被 20s 上限截断成多个碎片。
+     */
+    private fun mergeNearbySpeechRunsV3(runs: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
+        if (runs.size <= 1) return runs
+        val out = mutableListOf<Pair<Long, Long>>()
+        var (cs, ce) = runs[0]
+        for (k in 1 until runs.size) {
+            val (ns, ne) = runs[k]
+            if (ns - ce <= PCMS_MERGE_GAP_MS_V3 && (ne - cs) <= PCMS_RUN_MAX_MS_V3) {
+                ce = ne
+            } else {
+                out.add(cs to ce)
+                cs = ns
+                ce = ne
+            }
+        }
+        out.add(cs to ce)
+        return out
+    }
+
+    /**
+     * v3.1.230-fix: 把相邻的"干 + 短水 + 干"归并成一个完整讲话段。
+     * 用途：rescueSpeechByPcmScanInWater 抢救出的短讲话彼此独立成段，且与相邻大段讲话之间
+     * 残留短水段(呼吸/停顿，通常<=4s)，造成过多碎片(用户反馈"一句话被切开""不与后文合并")。
+     * 归并规则：
+     * - 扫描排序后的分段，若存在 干段-W段-干段，且中间 W 段为水(label 为 isWaterLabel 或"水"、
+     *   "静音")、时长<=PCMS_FRAG_GAP_MS，则把三段合并为一个 干 段(取左侧 label，hasVoice=true)；
+     * - 结果段以左侧干的 label 为主、覆盖到右侧干 end，中间水被吸收；
+     * - 真实长水段(歌曲)因超窗不被吸收，护住歌曲完整性。
+     * @return 归并次数
+     */
+    private fun mergeAdjacentSpeechFragments(segments: MutableList<VoiceSegment>): Int {
+        if (segments.size <= 2) return 0
+        segments.sortBy { it.start }
+        var merged = 0
+        var i = 1
+        while (i < segments.size - 1) {
+            val left = segments[i - 1]
+            val mid = segments[i]
+            val right = segments[i + 1]
+            val isDry = { s: VoiceSegment -> s.hasVoice }
+            val midDur = mid.end - mid.start
+            val midIsWater = !mid.hasVoice && midDur <= PCMS_FRAG_GAP_MS
+            if (isDry(left) && midIsWater && isDry(right)) {
+                // 合并 left+mid+right -> left(extend to right.end)
+                val mergedSeg = left.copy(end = right.end)
+                segments.removeAt(i)      // remove mid
+                segments.removeAt(i)      // remove right (was i+1)
+                segments[i - 1] = mergedSeg
+                merged++
+            } else {
+                i++
+            }
+        }
+        return merged
     }
 
     /**
@@ -2703,6 +2804,16 @@ object SegmentGenerator {
             Log.i(TAG, "三层架构: PCM短讲话扫描抢救${pcmRescueCount}个无BGM短讲话为干货 for episode=$episodeId")
         } else {
             Log.i(TAG, "三层架构: PCM短讲话扫描抢救0个（无命中或无PCM） for episode=$episodeId")
+        }
+
+        // v3.1.230-fix: 相邻讲话归并——解决"短讲话不与后文大段讲话合并"及"干-短水-干碎片"。
+        // 前置 rescueSpeechByPcmScanInWater 把每个短讲话独立成段，会与相邻大段讲话之间残留
+        // 短水段(呼吸/停顿)。此处把"干 + 短水(<=PCMS_FRAG_GAP_MS) + 干"归并成一个完整讲话段，
+        // 使连贯语音自然连成一段；真正的长水段(歌曲)因超过合并窗不会被吞噬。
+        val fragMergeCount = mergeAdjacentSpeechFragments(finalSegments)
+        if (fragMergeCount > 0) {
+            writeFingerprintLog(context, "三层架构: 相邻讲话归并${fragMergeCount}处(干-短水-干→干)，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
+            Log.i(TAG, "三层架构: 相邻讲话归并${fragMergeCount}处 for episode=$episodeId")
         }
 
         // v3.1.125: 合并静音段到相邻非静音段。
