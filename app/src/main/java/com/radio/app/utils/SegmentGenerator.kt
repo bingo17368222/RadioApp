@@ -991,8 +991,8 @@ object SegmentGenerator {
      * 场景：歌曲内带人声演唱/和声片段会被 findSpeechRunsInPcm 误判为短讲话抢救成干段，
      * 且这些小段（1.5~4s）被两侧歌曲水段包裹，mergeAdjacentSpeechFragments(干-短水-干)
      * 因中间是长水段无法归并，导致歌曲被切成多段、整集段数偏多（用户反馈"歌曲仍被截为六段"）。
-     * 规则（v3.1.232 收紧误判面，护歌优先）：
-     * - 段 must be 干 && isSimulated && 时长<=PCMS_TINY_DRY_MS
+     * 规则（v3.1.232 收紧误判面，护歌优先；v3.1.233 不再依赖 isSimulated）：
+     * - 段 must be 干 && 时长<=PCMS_TINY_DRY_MS
      * - 左、右相邻段都必须是"水"（hasVoice=false）——表明该干段深埋于歌曲中间。
      *   去除 v3.1.231 过严的"两侧均>8s"门槛：歌唱演唱微段往往一侧水段较短，但两侧都是水
      *   这一本质特征已足够判别"非连续讲话"，故仅要求相邻两侧均为水段即可还原。
@@ -1011,21 +1011,46 @@ object SegmentGenerator {
             val right = segments[i + 1]
             val curDur = cur.end - cur.start
             val isolated =
-                cur.hasVoice && cur.isSimulated &&
+                // v3.1.233-fix: 不再要求 isSimulated（YAMNet 原本判干或归并产生的歌内干段也纳入），
+                // 只要"时长<=PCMS_TINY_DRY_MS 且两侧都是水段"即视为深埋歌曲的人声，还原为水。
+                cur.hasVoice &&
                     curDur in 1..PCMS_TINY_DRY_MS &&
                     !left.hasVoice && !right.hasVoice
             if (isolated) {
-                // 并回左侧水段（还原为歌曲内部的人声，非独立讲话）
-                val mergedWater = left.copy(end = cur.end)
+                // v3.1.233-fix: 把左侧水段扩展到右侧水段的末尾，一次性把
+                // 水-干-水（以及嵌套的水-干-水-干-水…）全并回一个连续水段。
+                // 修复 v3.1.231/232 只扩到 dry.end 导致"两个连续水分段未合并"的问题。
+                val mergedWater = left.copy(end = maxOf(cur.end, right.end))
                 segments.removeAt(i)   // remove cur
+                segments.removeAt(i)   // now i points to right (was i+1)
                 segments[i - 1] = mergedWater
                 reabsorbed++
-                // 还原后 i 指向 next；不递增，让下一轮判断新的(左水+右干/水)组合
+                // 不递增：新的 mergedWater 可能与下一个干段再次构成 水-干-水 链式结构，
+                // 使整首被误切的歌一次全部还原为一个连续水段。
             } else {
                 i++
             }
         }
+        // 最后再合并一次相邻水段（把还残留的相邻水段连起来，消除"连续水分段"）
+        mergeAdjacentWaterSegments(segments)
         return reabsorbed
+    }
+
+    /** v3.1.233-fix: 合并相邻的连续水段为一段（消除"两个连续水分段未合并"）。 */
+    private fun mergeAdjacentWaterSegments(segments: MutableList<VoiceSegment>) {
+        if (segments.size <= 1) return
+        var i = 0
+        while (i < segments.size - 1) {
+            val a = segments[i]
+            val b = segments[i + 1]
+            if (!a.hasVoice && !b.hasVoice) {
+                segments.removeAt(i + 1)
+                segments[i] = a.copy(end = b.end)
+                // 不递增，继续与下一个水段合并
+            } else {
+                i++
+            }
+        }
     }
 
     /**
@@ -2850,6 +2875,16 @@ object SegmentGenerator {
             Log.i(TAG, "三层架构: PCM短讲话扫描抢救0个（无命中或无PCM） for episode=$episodeId")
         }
 
+        // v3.1.230-fix: 先还原孤立于长水段中的极短干段为水，护住歌曲完整性。
+        // 场景：歌曲内带人声片段被误判为短讲话抢救成 1.5~4s 干段，深埋两段长歌曲之间，
+        // 或被相邻归并(干-短水-干)吞成长干段。此处优先将其并回水段，避免被归并逻辑固化。
+        // v3.1.233: 先于 mergeAdjacentSpeechFragments 执行，防止歌内干段被归并吸收成难还原的长干段。
+        val reabsorbCount = reabsorbTinyIsolatedSpeech(finalSegments)
+        if (reabsorbCount > 0) {
+            writeFingerprintLog(context, "三层架构: 还原${reabsorbCount}个孤立微段为水(歌曲人声还原)，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
+            Log.i(TAG, "三层架构: 还原${reabsorbCount}个孤立微段为水 for episode=$episodeId")
+        }
+
         // v3.1.230-fix: 相邻讲话归并——解决"短讲话不与后文大段讲话合并"及"干-短水-干碎片"。
         // 前置 rescueSpeechByPcmScanInWater 把每个短讲话独立成段，会与相邻大段讲话之间残留
         // 短水段(呼吸/停顿)。此处把"干 + 短水(<=PCMS_FRAG_GAP_MS) + 干"归并成一个完整讲话段，
@@ -2858,15 +2893,6 @@ object SegmentGenerator {
         if (fragMergeCount > 0) {
             writeFingerprintLog(context, "三层架构: 相邻讲话归并${fragMergeCount}处(干-短水-干→干)，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
             Log.i(TAG, "三层架构: 相邻讲话归并${fragMergeCount}处 for episode=$episodeId")
-        }
-
-        // v3.1.230-fix: 还原孤立于长水段中的极短抢救干段为水，护住歌曲完整性。
-        // 场景：歌曲内带人声片段被误判为短讲话抢救成 1.5~4s 干段，深埋两段长歌曲之间，
-        // 归并(干-短水-干)无法处理(中间是长水)，导致歌曲被切成多段。此处将其并回水段。
-        val reabsorbCount = reabsorbTinyIsolatedSpeech(finalSegments)
-        if (reabsorbCount > 0) {
-            writeFingerprintLog(context, "三层架构: 还原${reabsorbCount}个孤立微段为水(歌曲人声还原)，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
-            Log.i(TAG, "三层架构: 还原${reabsorbCount}个孤立微段为水 for episode=$episodeId")
         }
 
         // v3.1.125: 合并静音段到相邻非静音段。
