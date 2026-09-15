@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.231 安装</title>
+<title>RadioApp v3.1.232 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.231</div>
+  <div class="version">v3.1.232</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.231</h3>
+    <h3>更新内容 v3.1.232</h3>
     <ul>
-      <li>还原歌曲内被误裁的极短干段(1.5~4s人声)为水段，歌曲不再被切成多段</li>
-      <li>进一步降低分段总数——孤立微段回归所属歌曲</li>
+      <li>大幅回收歌曲内被误切的人声微段(≤6s)：只要两侧都是水段即还原为歌曲，歌曲恢复完整</li>
+      <li>分段总数显著下降，减少过多碎片</li>
+      <li>保留真正的主持短讲话(无BGM，>6s 不受影响)</li>
       <li>Fix: 播放记录切换节目载入进度的两处修正</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.231.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.232.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
