@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.238 安装</title>
+<title>RadioApp v3.1.239 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.238</div>
+  <div class="version">v3.1.239</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.238</h3>
+    <h3>更新内容 v3.1.239</h3>
     <ul>
-      <li>修复"上一小节目末尾+歌曲+那几秒主持人讲话"又被合并为一段（v3.1.237 回归）</li>
-      <li>歌曲人声还原前新增"内容门控"：先复核该干段是不是干净清声讲话</li>
-      <li>干净主持讲话（低过零率+低平坦度）保留独立成段，不再被还原进水段</li>
-      <li>带音乐的歌曲人声块仍会还原进歌曲，同时保住歌曲完整性和低段数</li>
+      <li>修复"很多连续干货段"与"2秒碎段"：新增最终归并环节，将相邻同类型的连续段合并为一段</li>
+      <li>保留 v3.1.238 主持讲话保护：干净清声讲话独立成段，不被合并进歌曲/水段</li>
+      <li>合并受长度上限约束（干货≤30分钟、水段≤5分钟），不会合并成超长巨段</li>
+      <li>不会跨类型合并，不改变干/水分类判定</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.238.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.239.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

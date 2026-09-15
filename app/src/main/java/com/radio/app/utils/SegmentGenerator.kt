@@ -115,6 +115,10 @@ object SegmentGenerator {
     // 30分钟是合理上限——正常干货段（主持人讲话/访谈）不会超过30分钟
     private const val MAX_DRY_SEGMENT_LENGTH_MS = 1_800_000L // 30分钟
 
+    // v3.1.239-fix: 类级水段最大长度上限（供 mergeConsecutiveSameTypeSegments 最终归并使用）。
+    // 与 mergeSilenceToAdjacentWater / mergeAdjacentSegments 内的局部 5 分钟上限保持一致。
+    private const val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
+
     // v3.2.2: 三层架构参数
     // 第一层指纹快筛阈值（正式库匹配）
     private const val LAYER1_FAST_SCREEN_THRESHOLD = 0.70f
@@ -1125,6 +1129,54 @@ object SegmentGenerator {
                 i++
             }
         }
+    }
+
+    /**
+     * v3.1.239-fix: 最终合并"无缝相邻的同类型段"。
+     * 根因与作用见调用处注释。本函数作为整条后处理链路最后一环，把相邻且首尾相接
+     * （时间上无缝，gap<=10ms容差）的同类型段合并为一段：
+     *  - 同属"干"：both.hasVoice == true，合并为一个连续干货段（主持人或歌曲人声的连续讲话）。
+     *  - 同属"水"：both 均为水标签，合并为一个连续水段。
+     * 绝不在干/水之间合并（不推翻既有分类）。合并受最大长度上限约束：
+     *  - 干段：不超 MAX_DRY_SEGMENT_LENGTH_MS（30分钟）
+     *  - 水段：不超 MAX_WATER_SEGMENT_LENGTH_MS（5分钟）
+     * @return 合并次数
+     */
+    private fun mergeConsecutiveSameTypeSegments(segments: MutableList<VoiceSegment>): Int {
+        if (segments.size <= 1) return 0
+        segments.sortBy { it.start }
+        var merged = 0
+        var i = 0
+        while (i < segments.size - 1) {
+            val a = segments[i]
+            val b = segments[i + 1]
+            val contiguous = b.start <= a.end + 10
+            val sameDry = a.hasVoice && b.hasVoice
+            val sameWater = !a.hasVoice && !b.hasVoice &&
+                isWaterLabel(a.label) && isWaterLabel(b.label)
+            val sameType = sameDry || sameWater
+            if (contiguous && sameType) {
+                val newEnd = maxOf(a.end, b.end)
+                // 长度上限检查，避免合并成超长巨段
+                val newLen = newEnd - a.start
+                val tooLong = if (sameDry) {
+                    newLen >= MAX_DRY_SEGMENT_LENGTH_MS
+                } else {
+                    newLen >= MAX_WATER_SEGMENT_LENGTH_MS
+                }
+                if (tooLong) {
+                    i++
+                    continue
+                }
+                segments.removeAt(i + 1)
+                segments[i] = a.copy(end = newEnd)
+                merged++
+                // 不递增：新的合并段可能与下一个同类型段再次构成连续段
+            } else {
+                i++
+            }
+        }
+        return merged
     }
 
     /**
@@ -2974,6 +3026,19 @@ object SegmentGenerator {
         val silenceMergedCount = mergeSilenceToAdjacentWater(finalSegments)
         if (silenceMergedCount > 0) {
             writeFingerprintLog(context, "三层架构: 合并${silenceMergedCount}个静音段到相邻非静音段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
+        }
+
+        // v3.1.239-fix: 合并相邻同类型连续分段——消除"很多连续干货段"和"2秒碎段"。
+        // 根因：reabsorb / rescueShortSpeech / rescueSpeechByPcmScan / mergeAdjacentSpeechFragments
+        // 等各步会增删改段，可能把原本连续的同一内容切成多个首尾相接的同类型小段
+        // （尤其连续的干货讲话段、以及被细分的2秒水段/干段）。它们时间上无缝，本质是同一段，
+        // 只是被不同处理环节拆开。此处做最终归并：把相邻且同属"干"(hasVoice)或同属"水"(水标签)的
+        // 连续段合并为一段，并受各自最大长度上限约束，防止合并成超长巨段。
+        // 注意：仅合并"无缝相邻 + 同类型"，绝不跨类型（干-水边界被推翻）。
+        val consecutiveMergeCount = mergeConsecutiveSameTypeSegments(finalSegments)
+        if (consecutiveMergeCount > 0) {
+            writeFingerprintLog(context, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段 for episode=$episodeId")
         }
 
         // v3.1.135: 额外输出12~16分钟（720~960秒）区域的最终分段结果，便于调试主持人讲话被合并问题
