@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.232</div>
+  <div class="version">v3.1.233</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.232</h3>
+    <h3>更新内容 v3.1.233</h3>
     <ul>
-      <li>大幅回收歌曲内被误切的人声微段(≤6s)：只要两侧都是水段即还原为歌曲，歌曲恢复完整</li>
-      <li>分段总数显著下降，减少过多碎片</li>
-      <li>保留真正的主持短讲话(无BGM，>6s 不受影响)</li>
+      <li>修复歌曲被切后"两个连续水分段未合并"——还原时一次并入右水段并做链式还原</li>
+      <li>先还原后归并，防止歌内干段被相邻归并吞成长干段导致无法还原</li>
+      <li>歌内人声微段还原不再依赖来源标注，回收更彻底</li>
       <li>Fix: 播放记录切换节目载入进度的两处修正</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.232.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.233.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
