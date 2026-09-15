@@ -6641,8 +6641,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
         if (currentIdx < 0) {
-            writeServiceLog("schedule", "buildPlaybackSchedule: curId=$curId not found in combined list (all fallbacks failed)")
-            return emptyList()
+            writeServiceLog("schedule", "buildPlaybackSchedule: curId=$curId not found in combined list, 退化按时间就近选起点（不返回空计划）")
+            // v3.1.227-fix: 不再 return emptyList()。
+            // 根因：当当前节目不在（preCacheList+savedList）合并列表中时，原先直接返回空列表，
+            // 导致整个播放计划为空，后续所有"既非不喜欢、也非无需预处理"的节目被一并跳过（异常跳过）。
+            // 修复：退化为在combinedList（已按 日期+startTime+序号 升序排序）中定位起点：
+            //   1) 优先取"第一个广播时间严格晚于当前节目时间"的节目作为计划起始（保证不倒退到已播时间）；
+            //   2) 若当前节目时间<=0或不存在更晚的节目，则从列表开头开始；
+            //   3) 仅当合并列表本身为空时才可能仍为空（无任何可排数据，属正常空态）。
+            // 说明：起点设为 anchor-1，使下方 while(idx = currentIdx+1) 从 anchor 开始取满计划数。
+            val curStartTime = currentEpisode?.startTime ?: 0L
+            if (curStartTime > 0) {
+                val anchor = combinedList.indexOfFirst { it.startTime > curStartTime }
+                currentIdx = if (anchor >= 0) anchor - 1 else -1
+            } else {
+                currentIdx = -1
+            }
+            writeServiceLog("schedule", "buildPlaybackSchedule: 退化起点 idx=$currentIdx (combinedList.size=${combinedList.size})")
         }
 
         // v3.1.135: 获取当前节目日期，用于日期边界检查

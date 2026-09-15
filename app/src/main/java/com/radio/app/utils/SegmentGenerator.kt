@@ -634,6 +634,255 @@ object SegmentGenerator {
     private const val MUSIC_PROBE_FFT_N = 2048
     private const val MUSIC_PROBE_HOP = 1024
 
+    // v3.1.226-fix: 直接PCM短讲话扫描判据。
+    // 与v3.1.225差异：PCMS_PER_WATER_MAX由10提高到200，根治"靠后短讲话被丢弃"。
+    // 根因：v3.1.225的 take(10) 只保留每个水段"最早的10个"短讲话；当目标讲话
+    // （如101:38~41）被并入一个跨度大、含多个短讲话的水段时，前10个先被抢救，
+    // 位于段靠后位置的目标被 take 丢掉，残留水段(5992~6101)完整保留→仍被合并。
+    private const val PCMS_SR = 16000
+    private const val PCMS_FFT_N = 2048
+    private const val PCMS_HOP = 1024
+    private const val PCMS_ZCR_MAX = 0.09f            // 讲话过零率上限
+    private const val PCMS_FLAT_MAX = 0.45f           // 讲话频谱平直度上限（更"尖"）
+    private const val PCMS_HARM_MIN = 0.15f           // 讲话谐波比下限（更有声调）
+    private const val PCMS_RMS_MIN = 800.0            // 排除静音/极弱（int16尺度）
+    private const val PCMS_WIN_S = 1.0                // 中值窗口（秒）
+    private const val PCMS_WIN_HOP_S = 0.25           // 窗口步进（秒）
+    private const val PCMS_RUN_MIN_MS = 1500L         // 短讲话最少时长
+    private const val PCMS_RUN_MAX_MS = 20000L        // 短讲话最多时长（防止误切长段音乐）
+    private const val PCMS_MERGE_GAP_MS = 2500L       // v3.2.4-fix: 相邻讲话run间隔<=此值合并为一段（一句连贯讲话的停顿/换气间隙，避免同一句话被切碎）
+    private const val PCMS_PER_WATER_MAX = 200        // 每个水段最多抢救数（v3.1.226提高以不丢尾部讲话）
+    private const val PCMS_MAX_SCAN_MS = 360000L      // 单段最多扫描6分钟，防内存/耗时
+
+    /** v3.1.225-fix: 单独计算一帧<flat, harm>（复用fftRadix2）。 */
+    private fun computeFrameSpectral(samples: ShortArray, off: Int, n: Int, sr: Int): FloatArray {
+        val re = FloatArray(n)
+        val im = FloatArray(n)
+        for (k in 0 until n) {
+            val w = (0.5f - 0.5f * kotlin.math.cos(2.0 * kotlin.math.PI * k / (n - 1))).toFloat()
+            re[k] = samples[off + k] * w
+        }
+        fftRadix2(re, im)
+        val mag = FloatArray(n / 2 + 1)
+        var total = 0f
+        var logSum = 0.0
+        for (b in 1 until n / 2 + 1) {
+            val m = kotlin.math.sqrt(re[b] * re[b] + im[b] * im[b]) + 1e-6f
+            mag[b] = m
+            total += m
+            logSum += kotlin.math.ln(m.toDouble())
+        }
+        val flat = if (total > 0f) {
+            kotlin.math.exp(logSum / (n / 2)).toFloat() / (total / (n / 2))
+        } else 0f
+        var best = 0f
+        if (total > 0f) {
+            val binHz = sr.toFloat() / n
+            var f0 = 80f
+            while (f0 <= 500f) {
+                var hs = 0f
+                for (k in 1..5) {
+                    val b = (k * f0 / binHz).toInt()
+                    if (b in 1 until mag.size) {
+                        var acc = mag[b]
+                        if (b - 1 >= 1) acc += mag[b - 1]
+                        if (b + 1 < mag.size) acc += mag[b + 1]
+                        hs += acc
+                    }
+                }
+                if (hs > best) best = hs
+                f0 += 5f
+            }
+            best /= total
+        }
+        return floatArrayOf(flat, best)
+    }
+
+    /** v3.1.225-fix: 在PCM区间内逐帧提取特征并做1秒窗口分类，返回检测出的短讲话绝对毫秒区间。 */
+    private fun findSpeechRunsInPcm(pcmFile: File, startMs: Long, endMs: Long): List<Pair<Long, Long>> {
+        val sr = PCMS_SR
+        val startSample = (startMs * sr / 1000).coerceAtLeast(0)
+        val endSample = endMs * sr / 1000
+        if (endSample - startSample < PCMS_FFT_N) return emptyList()
+        val byteLen = ((endSample - startSample) * 2).toInt()
+        return try {
+            val bytes = ByteArray(byteLen)
+            var read = 0
+            java.io.RandomAccessFile(pcmFile, "r").use { raf ->
+                raf.seek(startSample * 2)
+                while (read < bytes.size) {
+                    val n = raf.read(bytes, read, bytes.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+            }
+            if (read < PCMS_FFT_N * 2) return emptyList()
+            val nSamples = read / 2
+            val samples = ShortArray(nSamples)
+            for (k in 0 until nSamples) {
+                val low = bytes[k * 2].toInt() and 0xFF
+                val high = bytes[k * 2 + 1].toInt() and 0xFF
+                samples[k] = (low or (high shl 8)).toShort()
+            }
+            val relSec = java.util.ArrayList<Double>()
+            val zcrs = java.util.ArrayList<Double>()
+            val flats = java.util.ArrayList<Double>()
+            val harms = java.util.ArrayList<Double>()
+            var pos = 0
+            while (pos + PCMS_FFT_N <= nSamples) {
+                val rel = pos.toDouble() / sr
+                var sumSq = 0.0
+                var zc = 0
+                for (j in 0 until PCMS_FFT_N) {
+                    val s = samples[pos + j].toInt()
+                    sumSq += (s * s).toDouble()
+                }
+                for (j in 1 until PCMS_FFT_N) {
+                    val a = samples[pos + j - 1].toInt()
+                    val b2 = samples[pos + j].toInt()
+                    if (kotlin.math.abs(a) > 100 && (a > 0) == (b2 < 0)) zc++
+                }
+                relSec.add(rel); zcrs.add(zc.toDouble() / PCMS_FFT_N)
+                // 静音帧无需计算频谱（用0代替，由1秒窗静音过滤）
+                var rr = kotlin.math.sqrt(sumSq / PCMS_FFT_N)
+                if (rr < PCMS_RMS_MIN) {
+                    flats.add(1.0); harms.add(0.0)
+                } else {
+                    val spec = computeFrameSpectral(samples, pos, PCMS_FFT_N, sr)
+                    flats.add(spec[0].toDouble()); harms.add(spec[1].toDouble())
+                }
+                pos += PCMS_HOP
+            }
+            // 1秒窗口（步进0.25s）中值分类
+            val winIdxs = IntArray(relSec.size)
+            var winStart = 0.0
+            val maxRel = if (relSec.isEmpty()) 0.0 else relSec[relSec.size - 1]
+            val isSpeech = java.util.ArrayList<Boolean>()
+            while (winStart < maxRel) {
+                // 收集[winStart, winStart+WIN_S)的帧
+                val zlist = java.util.ArrayList<Double>()
+                val flist = java.util.ArrayList<Double>()
+                val hlist = java.util.ArrayList<Double>()
+                for (idx in relSec.indices) {
+                    val r = relSec[idx]
+                    if (r >= winStart && r < winStart + PCMS_WIN_S) {
+                        zlist.add(zcrs[idx]); flist.add(flats[idx]); hlist.add(harms[idx])
+                    }
+                }
+                val nf = zlist.size
+                var speech = false
+                if (nf >= 8) {
+                    val mz = medianOf(zlist); val mf = medianOf(flist); val mh = medianOf(hlist)
+                    // 该窗内须为"讲话"（不是纯静音：harm>0 说明有活动帧）
+                    if (mh > 0f && mz < PCMS_ZCR_MAX && mf < PCMS_FLAT_MAX && mh >= PCMS_HARM_MIN) {
+                        speech = true
+                    }
+                }
+                isSpeech.add(speech)
+                winStart += PCMS_WIN_HOP_S
+            }
+            // 将真值窗口连成区间（窗口i对应 [winStart0+i*hop, ...+WIN_S)）
+            val runs = mutableListOf<Pair<Long, Long>>()
+            var runStartWin = -1
+            for (i in isSpeech.indices) {
+                if (isSpeech[i]) {
+                    if (runStartWin < 0) runStartWin = i
+                } else {
+                    if (runStartWin >= 0) {
+                        val aMs = startMs + ((runStartWin * PCMS_WIN_HOP_S) * 1000).toLong()
+                        val bMs = startMs + (((i - 1) * PCMS_WIN_HOP_S + PCMS_WIN_S) * 1000).toLong()
+                        runs.add(aMs to bMs)
+                        runStartWin = -1
+                    }
+                }
+            }
+            if (runStartWin >= 0) {
+                val aMs = startMs + ((runStartWin * PCMS_WIN_HOP_S) * 1000).toLong()
+                val bMs = startMs + (((isSpeech.size - 1) * PCMS_WIN_HOP_S + PCMS_WIN_S) * 1000).toLong()
+                runs.add(aMs to bMs)
+            }
+            runs
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** v3.1.225-fix: 中位数（避免分配大量排序）。 */
+    private fun medianOf(list: java.util.ArrayList<Double>): Double {
+        val c = java.util.ArrayList<Double>(list)
+        c.sort()
+        val n = c.size
+        return if (n % 2 == 1) c[n / 2] else (c[n / 2 - 1] + c[n / 2]) / 2.0
+    }
+
+    /**
+     * v3.1.225-fix: 对每个最终水段直接扫描PCM，将满足"无BGM短讲话"特征的短段切为干货。
+     * 不依赖YAMNet干段锚点，也不依赖VAD锚点，直接解决 101:38~41 仍并入97~101水段的问题。
+     */
+    private fun rescueSpeechByPcmScanInWater(segments: MutableList<VoiceSegment>, pcmFile: File?): Int {
+        if (segments.size <= 1 || pcmFile == null || !pcmFile.exists()) return 0
+        segments.sortBy { it.start }
+        var rescueCount = 0
+        var i = segments.size - 1
+        while (i >= 0) {
+            val seg = segments[i]
+            if (seg.hasVoice || !isWaterLabel(seg.label)) { i--; continue }
+            val dur = seg.end - seg.start
+            if (dur <= 2500L) { i--; continue }
+            val scanEnd = minOf(seg.end, seg.start + PCMS_MAX_SCAN_MS)
+            val runs = findSpeechRunsInPcm(pcmFile, seg.start, scanEnd)
+            val rescued = runs
+                .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
+                .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS }
+                .sortedBy { it.first }
+                // v3.2.4-fix: 合并间隔<=PCMS_MERGE_GAP_MS的相邻讲话run，
+                // 把"同一句话因短暂停顿/呼吸被切成多段"重新连成一段，消除碎片；
+                // 仅在合并后仍未超过PCMS_RUN_MAX_MS时合并，避免误吞噬长歌曲。
+                .let { mergeNearbySpeechRuns(it) }
+                .take(PCMS_PER_WATER_MAX)
+            if (rescued.isEmpty()) { i--; continue }
+            val pieces = mutableListOf<VoiceSegment>()
+            var cur = seg.start
+            var rescuedCount = 0
+            for ((a, b) in rescued) {
+                if (a > cur) pieces.add(seg.copy(start = cur, end = a, hasVoice = false, label = seg.label))
+                if (b > a) {
+                    pieces.add(VoiceSegment(start = a, end = b, hasVoice = true, label = "干货", isSimulated = true))
+                    rescuedCount++
+                }
+                cur = maxOf(cur, b)
+            }
+            if (cur < seg.end) pieces.add(seg.copy(start = cur, end = seg.end, hasVoice = false, label = seg.label))
+            if (pieces.size > 1 && rescuedCount > 0) {
+                segments.removeAt(i)
+                segments.addAll(i, pieces)
+                rescueCount += rescuedCount
+                i += pieces.size - 1
+            }
+            i--
+        }
+        return rescueCount
+    }
+
+    /** v3.2.4-fix: 合并间隔<=PCMS_MERGE_GAP_MS的相邻讲话run；合并结果超过PCMS_RUN_MAX_MS则不再扩张。 */
+    private fun mergeNearbySpeechRuns(runs: List<Pair<Long, Long>>): List<Pair<Long, Long>> {
+        if (runs.size <= 1) return runs
+        val out = mutableListOf<Pair<Long, Long>>()
+        var (cs, ce) = runs[0]
+        for (k in 1 until runs.size) {
+            val (ns, ne) = runs[k]
+            if (ns - ce <= PCMS_MERGE_GAP_MS && (ne - cs) <= PCMS_RUN_MAX_MS) {
+                ce = ne
+            } else {
+                out.add(cs to ce)
+                cs = ns
+                ce = ne
+            }
+        }
+        out.add(cs to ce)
+        return out
+    }
+
     /**
      * v3.1.221-fix: 水段内嵌短人声抢救。
      * 根因：指纹层(层1/层3)可把整段(如97~101分钟)标记为"指纹水货"，期间若穿插主持人
@@ -2444,12 +2693,16 @@ object SegmentGenerator {
         // v3.1.224-fix: VAD+PCM频谱确认的短人声抢救（第二层-B YAMNet把无BGM短讲话判作MUS时，
         // 该讲话不在YAMNet干段锚点中，上一行抢救不到；此处以Silero VAD活动段为补充锚点，
         // 并用频谱谐波比确认"非音乐"后切出为干货，解决101:38~101:41仍并入97~101水段的问题）。
-        val vadRescueCount = rescueSpeechByVadAndPcmInWater(finalSegments, layer2VadRanges, pcmSourceFile)
-        if (vadRescueCount > 0) {
-            writeFingerprintLog(context, "三层架构: VAD回退抢救${vadRescueCount}个无BGM短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
-            Log.i(TAG, "三层架构: VAD回退抢救${vadRescueCount}个无BGM短讲话为干货 for episode=$episodeId")
+        // v3.1.225-fix: 直接PCM扫描的短人声抢救（不再依赖VAD锚点）。
+        // v3.1.224 的VAD锚点法实测仍漏掉 101:38~41：无BGM主持人讲话通常安静(rms低)、
+        // 有声调(zcr低)、频谱尖(flat低)、谐波强(harm高)，与周围水印(rms高/zcr高/flat高/harm低)
+        // 明显可分。此处直接对每个最终水段做1秒窗中值分类，把满足发言人特征的短讲话段独立切为干货。
+        val pcmRescueCount = rescueSpeechByPcmScanInWater(finalSegments, pcmSourceFile)
+        if (pcmRescueCount > 0) {
+            writeFingerprintLog(context, "三层架构: PCM短讲话扫描抢救${pcmRescueCount}个无BGM短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: PCM短讲话扫描抢救${pcmRescueCount}个无BGM短讲话为干货 for episode=$episodeId")
         } else {
-            Log.i(TAG, "三层架构: VAD回退抢救0个（无命中或无PCM） for episode=$episodeId")
+            Log.i(TAG, "三层架构: PCM短讲话扫描抢救0个（无命中或无PCM） for episode=$episodeId")
         }
 
         // v3.1.125: 合并静音段到相邻非静音段。
