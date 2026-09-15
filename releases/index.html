@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.134 安装</title>
+<title>RadioApp v3.1.230 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -62,6 +62,7 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
   color: #667eea;
   font-weight: bold;
 }
+.download-link { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 16px; }
 .download-btn {
   display: inline-block;
   background: linear-gradient(135deg, #667eea, #764ba2);
@@ -73,7 +74,6 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
   font-weight: 600;
   transition: transform 0.2s, box-shadow 0.2s;
   box-shadow: 0 4px 15px rgba(102,126,234,0.4);
-  margin-bottom: 16px;
   cursor: pointer;
   border: none;
 }
@@ -95,17 +95,18 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.134</div>
+  <div class="version">v3.1.230</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.134</h3>
+    <h3>更新内容 v3.1.230</h3>
     <ul>
-      <li>Fix: 拼图裁剪完全包含场景——指纹水货段完全包含YAMNet段时，拆分水货段避免淹掉主持人讲话</li>
-      <li>Fix: 候选指纹hash不匹配时fallback到全量对比，确保跨节目命中计数</li>
-      <li>Fix: 指纹管理页面移除onResume重复loadData，减少UI卡顿</li>
+      <li>修复音频分段过度切碎（原整集400+段）——同句呼吸/换气停顿自动合并，一句成一段</li>
+      <li>短讲话与相邻大段讲话自然归并，不再独立成碎片段</li>
+      <li>护住完整歌曲：谐波比上界+PCM音乐二次确认，歌曲不再被切成十几个</li>
+      <li>Fix: 播放记录切换节目载入更早/未载入进度的两处修正</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.134.apk" class="download-btn" download>📥 下载安装</a>
-  <div class="file-info">35 MB · arm64-v8a · Android 7.0+</div>
+  <a href="RadioApp-v3.1.230.apk" class="download-btn" download>📥 下载安装</a>
+  <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
 </body>
