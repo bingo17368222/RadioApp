@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.230 安装</title>
+<title>RadioApp v3.1.231 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.230</div>
+  <div class="version">v3.1.231</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.230</h3>
+    <h3>更新内容 v3.1.231</h3>
     <ul>
-      <li>修复音频分段过度切碎（原整集400+段）——同句呼吸/换气停顿自动合并，一句成一段</li>
-      <li>短讲话与相邻大段讲话自然归并，不再独立成碎片段</li>
-      <li>护住完整歌曲：谐波比上界+PCM音乐二次确认，歌曲不再被切成十几个</li>
-      <li>Fix: 播放记录切换节目载入更早/未载入进度的两处修正</li>
+      <li>还原歌曲内被误裁的极短干段(1.5~4s人声)为水段，歌曲不再被切成多段</li>
+      <li>进一步降低分段总数——孤立微段回归所属歌曲</li>
+      <li>Fix: 播放记录切换节目载入进度的两处修正</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.230.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.231.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
