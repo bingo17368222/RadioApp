@@ -663,8 +663,8 @@ object SegmentGenerator {
     private const val PCMS_FRAG_GAP_MS = 4000L        // 干-水-干归并时中间水段容许长度：<=4s 视为讲话停顿/呼吸
     private const val PCMS_HARM_MAX = 0.42f           // 讲话谐波比上限：谐波比>0.42 多为带和声/乐音的歌曲片段，不判为讲话，护住歌曲
     private const val PCMS_HOLE_MAX_WIN = 6           // 洞填充最大窗口数(0.25s/窗=1.5s)：句内呼吸/换气停顿填充为语音
-    private const val PCMS_TINY_DRY_MS = 4000L         // 孤立抢救微段还原阈值：时长<=4s 且两侧都是水段的 isSimulated 干段，判定为歌曲内人声误判，还原为水
-    private const val PCMS_MAX_ISOLATED_RESCUE_GAP_MS = 8000L // 两侧水段均长于该值才算"孤立于歌曲中"（护住歌曲完整性）
+    private const val PCMS_TINY_DRY_MS = 6000L         // 孤立抢救微段还原阈值：时长<=6s 且两侧都是水段的 isSimulated 干段，判定为歌曲内人声误判，还原为水
+    private const val PCMS_MAX_ISOLATED_RESCUE_GAP_MS = 0L // (保留占位，不再使用8s门槛，见 reabsorbTinyIsolatedSpeech v3.1.232)
 
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
     private fun fillSpeechHoles(isSpeech: MutableList<Boolean>, maxHole: Int) {
@@ -989,12 +989,14 @@ object SegmentGenerator {
     /**
      * v3.1.230-fix: 把"孤立于长水段中的极短抢救干段"还原为水段，护住歌曲完整性。
      * 场景：歌曲内带人声演唱/和声片段会被 findSpeechRunsInPcm 误判为短讲话抢救成干段，
-     * 且这些小段（1.5~4s）被两侧长歌曲水段包裹，mergeAdjacentSpeechFragments(干-短水-干)
+     * 且这些小段（1.5~4s）被两侧歌曲水段包裹，mergeAdjacentSpeechFragments(干-短水-干)
      * 因中间是长水段无法归并，导致歌曲被切成多段、整集段数偏多（用户反馈"歌曲仍被截为六段"）。
-     * 规则：
+     * 规则（v3.1.232 收紧误判面，护歌优先）：
      * - 段 must be 干 && isSimulated && 时长<=PCMS_TINY_DRY_MS
-     * - 左、右相邻段都必须是"水"且各自时长>PCMS_MAX_ISOLATED_RESCUE_GAP_MS（表明该干段深埋于歌曲中间，
-     *   不是位于较长的连续讲话旁）
+     * - 左、右相邻段都必须是"水"（hasVoice=false）——表明该干段深埋于歌曲中间。
+     *   去除 v3.1.231 过严的"两侧均>8s"门槛：歌唱演唱微段往往一侧水段较短，但两侧都是水
+     *   这一本质特征已足够判别"非连续讲话"，故仅要求相邻两侧均为水段即可还原。
+     * - 真正要保留的无BGM主持讲话(如101:38~41，约7.8s)通常>PCMS_TINY_DRY_MS(4s)，不受影响。
      * - 满足则把该干段并回左侧水段（还原为歌曲的一部分）
      * @return 还原次数
      */
@@ -1011,14 +1013,14 @@ object SegmentGenerator {
             val isolated =
                 cur.hasVoice && cur.isSimulated &&
                     curDur in 1..PCMS_TINY_DRY_MS &&
-                    !left.hasVoice && (left.end - left.start) > PCMS_MAX_ISOLATED_RESCUE_GAP_MS &&
-                    !right.hasVoice && (right.end - right.start) > PCMS_MAX_ISOLATED_RESCUE_GAP_MS
+                    !left.hasVoice && !right.hasVoice
             if (isolated) {
                 // 并回左侧水段（还原为歌曲内部的人声，非独立讲话）
                 val mergedWater = left.copy(end = cur.end)
                 segments.removeAt(i)   // remove cur
                 segments[i - 1] = mergedWater
                 reabsorbed++
+                // 还原后 i 指向 next；不递增，让下一轮判断新的(左水+右干/水)组合
             } else {
                 i++
             }
