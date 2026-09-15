@@ -855,6 +855,67 @@ object SegmentGenerator {
     }
 
     /**
+     * v3.1.238-fix: 判断某段PCM是否为"干净清声讲话"（无背景音乐/噪声）。
+     * 用于还原环节的内容门控：真主持讲话满足 低过零率(zcr<PCMS_ZCR_MAX)+低频谱平坦度(flat<PCMS_FLAT_MAX)，
+     * 而歌曲/水印片段 zcr/flat 明显更高。若活动帧中"干净讲话帧"占比≥60%则判为讲话 → 不还原(护住主持讲话)。
+     * PCM缺失或异常统一返回 false（不判讲话，允许还原→护歌优先）。
+     */
+    private fun isCleanSpeechSegment(pcmFile: File?, startMs: Long, endMs: Long): Boolean {
+        if (pcmFile == null || !pcmFile.exists()) return false
+        val sr = PCMS_SR
+        val startSample = (startMs * sr / 1000).coerceAtLeast(0)
+        val endSample = endMs * sr / 1000
+        if (endSample - startSample < PCMS_FFT_N) return false
+        val byteLen = ((endSample - startSample) * 2).toInt()
+        return try {
+            val bytes = ByteArray(byteLen)
+            var read = 0
+            java.io.RandomAccessFile(pcmFile, "r").use { raf ->
+                raf.seek(startSample * 2)
+                while (read < bytes.size) {
+                    val n = raf.read(bytes, read, bytes.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+            }
+            if (read < PCMS_FFT_N * 2) return false
+            val nSamples = read / 2
+            val samples = ShortArray(nSamples)
+            for (k in 0 until nSamples) {
+                val low = bytes[k * 2].toInt() and 0xFF
+                val high = bytes[k * 2 + 1].toInt() and 0xFF
+                samples[k] = (low or (high shl 8)).toShort()
+            }
+            var activeFrames = 0
+            var speechFrames = 0
+            var pos = 0
+            while (pos + PCMS_FFT_N <= nSamples) {
+                var sumSq = 0.0
+                var zc = 0
+                for (j in 0 until PCMS_FFT_N) {
+                    val s = samples[pos + j].toInt()
+                    sumSq += (s * s).toDouble()
+                }
+                for (j in 1 until PCMS_FFT_N) {
+                    val a = samples[pos + j - 1].toInt()
+                    val b2 = samples[pos + j].toInt()
+                    if (kotlin.math.abs(a) > 100 && (a > 0) == (b2 < 0)) zc++
+                }
+                val rr = kotlin.math.sqrt(sumSq / PCMS_FFT_N)
+                if (rr < PCMS_RMS_MIN) { pos += PCMS_HOP; continue }
+                activeFrames++
+                val zcrF = zc.toDouble() / PCMS_FFT_N
+                val flatF = computeFrameSpectral(samples, pos, PCMS_FFT_N, sr)[0].toDouble()
+                if (zcrF < PCMS_ZCR_MAX && flatF < PCMS_FLAT_MAX) speechFrames++
+                pos += PCMS_HOP
+            }
+            activeFrames > 0 && (speechFrames.toFloat() / activeFrames) >= 0.6f
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * v3.1.225-fix: 对每个最终水段直接扫描PCM，将满足"无BGM短讲话"特征的短段切为干货。
      * 不依赖YAMNet干段锚点，也不依赖VAD锚点，直接解决 101:38~41 仍并入97~101水段的问题。
      */
@@ -1002,7 +1063,7 @@ object SegmentGenerator {
      * - 满足则把该干段并回左侧水段（还原为歌曲的一部分）
      * @return 还原次数
      */
-    private fun reabsorbTinyIsolatedSpeech(segments: MutableList<VoiceSegment>): Int {
+    private fun reabsorbTinyIsolatedSpeech(segments: MutableList<VoiceSegment>, pcmFile: File?): Int {
         if (segments.size <= 2) return 0
         segments.sortBy { it.start }
         var reabsorbed = 0
@@ -1013,21 +1074,21 @@ object SegmentGenerator {
             val right = segments[i + 1]
             val curDur = cur.end - cur.start
             val isolated =
-                // v3.1.237-fix: 还原判据回到"来源(是否主持人讲话锚点)"，并放宽时长上限以吸收较长的歌曲人声块。
+                // v3.1.238-fix: 在"来源门控"之上新增"内容门控"，避免误吞真实主持讲话。
                 // 根因回顾：
-                //  v3.1.236 曾改用 isMusicLikePcm 做声学判据——但本音频谐波比普遍只有~0.13，从未达到
-                //  MUSIC_HARM_RATIO_THRESHOLD(0.5)，导致凡是夹在水段间的干段一律判"非音乐"而 0 还原，
-                //  歌曲被切成"三干三水"、整集段数高达166(用户反馈"两分钟歌曲被划为6段三干三水+总段数偏多")。
-                //  v3.1.234 完全去掉来源判断并限20s，又误吞了真实 YAMNet 主持讲话锚点(5771744~5855754)
-                //  →"上一个小节目末尾+歌曲+那几秒主持人讲话"并成十几分钟大水分段。
-                //  用户当前明确反馈：#1 主持人讲话合并是正确的(要保留)；#2 歌曲被切碎(要修)。
-                //  结论：必须同时做到——真正的 YAMNet/VAD 主持讲话(isSimulated=false)绝不被还原，
-                //  PCM扫描抢救出的"疑似歌曲内人声"(isSimulated=true)只要夹在两侧水段间就还原进歌。
-                //  时长上限由20s放宽到 PCMS_TINY_DRY_MS(60s)，使较长(25s+)的歌曲人声块也能被吸收，
-                //  降低整集段数。isSimulated 门控同时保证 #1 的主持讲话独立成立不再被吞。
+                //  v3.1.236 曾改用 isMusicLikePcm(谐波比≥0.5) 做声学判据——本音频谐波比普遍只有~0.13，
+                //  从未达到0.5，导致夹在水段间的干段一律判"非音乐"而 0 还原 → 歌曲被切成"三干三水"。
+                //  v3.1.237 改回 isSimulated 来源门控并放宽到60s，还原太激进(实测还原103个)，
+                //  把 PCM 扫描抢救出的"干净主持讲话"(也是 isSimulated=true、也夹在水段间)
+                //  一并还原回水段 → 用户反馈"前一小节目末尾+歌曲+那几秒主持人讲话又并成一段"(回归)。
+                //  结论：靠 isSimulated 无法区分"歌曲里被误切的人声块"与"真实清声主持讲话"——
+                //  后者经 PCM 扫描抢救时本就满足 低过零率+低平坦度(干净讲话) 特征；
+                //  因此还原前用 PCM 内容复核：仅当该干段"不是干净清声讲话"(带音乐/噪声)时才还原进歌。
+                //  这样：真讲话(低zcr/flat)→保留独立成段；歌曲人声块(高zcr/flat)→还原，护住歌曲并降段数。
                 cur.hasVoice &&
                     cur.isSimulated &&
                     curDur in 1..PCMS_TINY_DRY_MS &&
+                    !isCleanSpeechSegment(pcmFile, cur.start, cur.end) &&
                     !left.hasVoice && !right.hasVoice
             if (isolated) {
                 // v3.1.233-fix: 把左侧水段扩展到右侧水段的末尾，一次性把
@@ -2892,7 +2953,7 @@ object SegmentGenerator {
         // 场景：歌曲内带人声片段被误判为短讲话抢救成 1.5~4s 干段，深埋两段长歌曲之间，
         // 或被相邻归并(干-短水-干)吞成长干段。此处优先将其并回水段，避免被归并逻辑固化。
         // v3.1.233: 先于 mergeAdjacentSpeechFragments 执行，防止歌内干段被归并吸收成难还原的长干段。
-        val reabsorbCount = reabsorbTinyIsolatedSpeech(finalSegments)
+        val reabsorbCount = reabsorbTinyIsolatedSpeech(finalSegments, pcmSourceFile)
         if (reabsorbCount > 0) {
             writeFingerprintLog(context, "三层架构: 还原${reabsorbCount}个孤立微段为水(歌曲人声还原)，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
             Log.i(TAG, "三层架构: 还原${reabsorbCount}个孤立微段为水 for episode=$episodeId")
