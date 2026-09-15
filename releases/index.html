@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.232 安装</title>
+<title>RadioApp v3.1.237 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.233</div>
+  <div class="version">v3.1.237</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.233</h3>
+    <h3>更新内容 v3.1.237</h3>
     <ul>
-      <li>修复歌曲被切后"两个连续水分段未合并"——还原时一次并入右水段并做链式还原</li>
-      <li>先还原后归并，防止歌内干段被相邻归并吞成长干段导致无法还原</li>
-      <li>歌内人声微段还原不再依赖来源标注，回收更彻底</li>
-      <li>Fix: 播放记录切换节目载入进度的两处修正</li>
+      <li>继续保留主持人讲话合并（隔离微段不再误吞真实讲话）</li>
+      <li>修复"两分钟歌曲被切成6段（三干三水）"——夹在水段间的歌曲人声块还原进歌</li>
+      <li>还原判据回到"来源锚点判定"，时长上限放宽到60s，较长歌曲人声块也能被吸收</li>
+      <li>整集总段数显著下降（护住歌曲完整性，减少碎片）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.233.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.237.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

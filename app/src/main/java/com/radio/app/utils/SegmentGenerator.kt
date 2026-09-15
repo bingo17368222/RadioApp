@@ -663,7 +663,9 @@ object SegmentGenerator {
     private const val PCMS_FRAG_GAP_MS = 4000L        // 干-水-干归并时中间水段容许长度：<=4s 视为讲话停顿/呼吸
     private const val PCMS_HARM_MAX = 0.42f           // 讲话谐波比上限：谐波比>0.42 多为带和声/乐音的歌曲片段，不判为讲话，护住歌曲
     private const val PCMS_HOLE_MAX_WIN = 6           // 洞填充最大窗口数(0.25s/窗=1.5s)：句内呼吸/换气停顿填充为语音
-    private const val PCMS_TINY_DRY_MS = 6000L         // 孤立抢救微段还原阈值：时长<=6s 且两侧都是水段的 isSimulated 干段，判定为歌曲内人声误判，还原为水
+    private const val PCMS_TINY_DRY_MS = 60000L        // 孤立抢救微段还原阈值 v3.1.237：时长<=60s 且两侧都是水段的干段(isSimulated=true歌曲人声)，还原为水，护住歌曲。
+    // 根因：20s 上限吞不下 25s+ 的较长歌曲人声块，导致"两分钟歌曲被切三干三水"、整集段数偏多（v3.1.236实测0还原、166段）；
+    // 放宽到60s后，PCM扫描抢救的in-歌人声块都能被吸收，而真正的YAMNet/VAD主持讲话锚点(isSimulated=false)仍因来源门控不被还原。
     private const val PCMS_MAX_ISOLATED_RESCUE_GAP_MS = 0L // (保留占位，不再使用8s门槛，见 reabsorbTinyIsolatedSpeech v3.1.232)
 
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
@@ -1011,9 +1013,20 @@ object SegmentGenerator {
             val right = segments[i + 1]
             val curDur = cur.end - cur.start
             val isolated =
-                // v3.1.233-fix: 不再要求 isSimulated（YAMNet 原本判干或归并产生的歌内干段也纳入），
-                // 只要"时长<=PCMS_TINY_DRY_MS 且两侧都是水段"即视为深埋歌曲的人声，还原为水。
+                // v3.1.237-fix: 还原判据回到"来源(是否主持人讲话锚点)"，并放宽时长上限以吸收较长的歌曲人声块。
+                // 根因回顾：
+                //  v3.1.236 曾改用 isMusicLikePcm 做声学判据——但本音频谐波比普遍只有~0.13，从未达到
+                //  MUSIC_HARM_RATIO_THRESHOLD(0.5)，导致凡是夹在水段间的干段一律判"非音乐"而 0 还原，
+                //  歌曲被切成"三干三水"、整集段数高达166(用户反馈"两分钟歌曲被划为6段三干三水+总段数偏多")。
+                //  v3.1.234 完全去掉来源判断并限20s，又误吞了真实 YAMNet 主持讲话锚点(5771744~5855754)
+                //  →"上一个小节目末尾+歌曲+那几秒主持人讲话"并成十几分钟大水分段。
+                //  用户当前明确反馈：#1 主持人讲话合并是正确的(要保留)；#2 歌曲被切碎(要修)。
+                //  结论：必须同时做到——真正的 YAMNet/VAD 主持讲话(isSimulated=false)绝不被还原，
+                //  PCM扫描抢救出的"疑似歌曲内人声"(isSimulated=true)只要夹在两侧水段间就还原进歌。
+                //  时长上限由20s放宽到 PCMS_TINY_DRY_MS(60s)，使较长(25s+)的歌曲人声块也能被吸收，
+                //  降低整集段数。isSimulated 门控同时保证 #1 的主持讲话独立成立不再被吞。
                 cur.hasVoice &&
+                    cur.isSimulated &&
                     curDur in 1..PCMS_TINY_DRY_MS &&
                     !left.hasVoice && !right.hasVoice
             if (isolated) {

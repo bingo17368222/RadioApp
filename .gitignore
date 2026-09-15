@@ -8,5 +8,6 @@
 .externalNativeBuild
 .cxx
 local.properties
-releases/# 编译产物不入库
+# 编译产物不入库
+releases/*.apk
 **/build/
