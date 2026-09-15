@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.240 安装</title>
+<title>RadioApp v3.1.241 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,19 +95,18 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.240</div>
+  <div class="version">v3.1.241</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.240</h3>
+    <h3>更新内容 v3.1.241</h3>
     <ul>
-      <li>新增"运行时硬校验"：分段结果返回前强制核对不可变规则，不再依赖每一次推理去"记得"</li>
-      <li>R1 时间轴连续：自动补足任意时间段无分段的时间洞</li>
-      <li>R2 无同类型碎段：相邻同类型连续段自动合并、过短碎段自动剔除（消除"连续干货段/2秒碎段"）</li>
-      <li>R3 长度上限：干货≤30分钟、水段≤5分钟，防止被合并成超长巨段</li>
-      <li>R4 标签合法：自动修正"分类失败"/空标签段</li>
-      <li>规则成为程序级强制不变量，每次分段运行必然执行</li>
+      <li>新增"响度跳变检测"：从长干货段内部按背景音量切出歌曲/音乐段</li>
+      <li>根因修复：歌曲音量显著高于前后说话，但此前从不把响度当边界，导致歌曲被并入前后长段</li>
+      <li>对长度≥60秒的干段扫描 PCM 响度，持续高响度（超中位 6dB、连续 15 秒）区标记为歌曲</li>
+      <li>歌曲从"广告+预录制节目+歌曲"合并长段中独立切出，不再混入前后内容</li>
+      <li>运行时硬校验仍在（R1~R4），保障切分后时间轴连续、无碎段、长度受控</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.240.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.241.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

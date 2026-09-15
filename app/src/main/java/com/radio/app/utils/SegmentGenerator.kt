@@ -672,6 +672,15 @@ object SegmentGenerator {
     // 放宽到60s后，PCM扫描抢救的in-歌人声块都能被吸收，而真正的YAMNet/VAD主持讲话锚点(isSimulated=false)仍因来源门控不被还原。
     private const val PCMS_MAX_ISOLATED_RESCUE_GAP_MS = 0L // (保留占位，不再使用8s门槛，见 reabsorbTinyIsolatedSpeech v3.1.232)
 
+    // v3.1.241-fix: 响度跳变检测->歌曲边界锚点。
+    // 根因：歌曲背景音量显著高于前后内容（广告/预录制节目/主持讲话），但管线只看"类型是否相同"，
+    // 从不用响度作为边界信号，导致歌曲被当作同类型内容与前后整体合并。
+    private const val LOUD_WIN_S = 1.0                // 响度检测窗（秒），复用 PCMS_WIN_S 语义
+    private const val LOUD_HOP_S = 0.25               // 响度检测步进（秒），复用 PCMS_WIN_HOP_S
+    private const val LOUD_DB_JUMP = 6.0              // 高响度判定：窗 dB >= 段内中位dB + 6dB（约2倍能量）视为"背景音乐"级
+    private const val LOUD_MIN_RUN_MS = 15000L        // 高响度连续时长下限：持续>=15s才算歌曲/音乐段，避免切碎
+    private const val LOUD_SCAN_MIN_SEG_MS = 60000L   // 仅对>=60s的长段做响度检测（用户场景是歌曲被并入长干段）
+
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
     private fun fillSpeechHoles(isSpeech: MutableList<Boolean>, maxHole: Int) {
         if (isSpeech.size <= 2) return
@@ -971,6 +980,143 @@ object SegmentGenerator {
             i--
         }
         return rescueCount
+    }
+
+    /**
+     * v3.1.241-fix: 响度跳变检测——从长干段内部切出"背景音乐(歌曲)"。
+     * 根因见常量注释：歌曲音量显著高于前后说话，但管线从不把响度当边界。本函数对每个>=60s的
+     * 长段扫描PCM窗RMS，找出"持续高响度(≥段内中位dB+6dB、持续≥15s)"的连续区间，判定为歌曲/音乐段，
+     * 把它从长段中独立切出并标记为水段(hasVoice=false,label="歌曲")。
+     * 仅对 hasVoice=true 的长干段操作——这样"广告+预录制节目+歌曲前半"被合并的长干段就能被响度边界拆开，
+     * 歌曲独立成段，不再并入前后内容。
+     * @return 切出的歌曲段数量
+     */
+    private fun cutSongByLoudnessJump(segments: MutableList<VoiceSegment>, pcmFile: File?): Int {
+        if (pcmFile == null || !pcmFile.exists() || segments.size <= 1) return 0
+        segments.sortBy { it.start }
+        var cutCount = 0
+        var i = segments.size - 1
+        while (i >= 0) {
+            val seg = segments[i]
+            // 只处理长干段：歌曲被并入的主讲干段
+            if (!seg.hasVoice || !isCleanLabel(seg.label)) { i--; continue }
+            val dur = seg.end - seg.start
+            if (dur < LOUD_SCAN_MIN_SEG_MS) { i--; continue }
+            // 扫出持续高响度区间
+            val songRuns = findLoudSongRunsInPcm(pcmFile, seg.start, seg.end)
+            if (songRuns.isEmpty()) { i--; continue }
+            // 逐个歌曲区间把 seg 拆开
+            var pieces = mutableListOf(seg)
+            var added = false
+            for ((a, b) in songRuns.sortedBy { it.first }) {
+                val newPieces = mutableListOf<VoiceSegment>()
+                for (p in pieces) {
+                    if (p.hasVoice && a >= p.start && b <= p.end && (b - a) >= LOUD_MIN_RUN_MS) {
+                        if (a > p.start) newPieces.add(p.copy(start = p.start, end = a, hasVoice = true, label = p.label))
+                        newPieces.add(VoiceSegment(start = a, end = b, hasVoice = false, label = "歌曲", isSimulated = true))
+                        if (b < p.end) newPieces.add(p.copy(start = b, end = p.end, hasVoice = true, label = p.label))
+                        added = true
+                    } else {
+                        newPieces.add(p)
+                    }
+                }
+                pieces = newPieces
+            }
+            if (added) {
+                segments.removeAt(i)
+                segments.addAll(i, pieces)
+                cutCount += pieces.count { !it.hasVoice }
+                i += pieces.size - 1
+            }
+            i--
+        }
+        return cutCount
+    }
+
+    /** 判定某标签是否为"干净可操作的干货/水标签"（非"分类失败"、非"歌曲"、非null）。 */
+    private fun isCleanLabel(label: String?): Boolean {
+        return label != null && label != "分类失败" && label != "歌曲"
+    }
+
+    /**
+     * v3.1.241-fix: 扫描PCM窗RMS，返回段内"持续高响度(>=中位dB+LOUD_DB_JUMP、连续>=LOUD_MIN_RUN_MS)"区间。
+     * @return 区间列表(start, end)毫秒，均已在[startMs,endMs]内裁剪
+     */
+    private fun findLoudSongRunsInPcm(pcmFile: File, startMs: Long, endMs: Long): List<Pair<Long, Long>> {
+        val sr = PCMS_SR
+        val startSample = (startMs * sr / 1000).coerceAtLeast(0)
+        val endSample = endMs * sr / 1000
+        if (endSample - startSample < PCMS_FFT_N) return emptyList()
+        val byteLen = ((endSample - startSample) * 2).toInt()
+        return try {
+            val bytes = ByteArray(byteLen)
+            var read = 0
+            java.io.RandomAccessFile(pcmFile, "r").use { raf ->
+                raf.seek(startSample * 2)
+                while (read < bytes.size) {
+                    val n = raf.read(bytes, read, bytes.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+            }
+            if (read < PCMS_FFT_N * 2) return emptyList()
+            val nSamples = read / 2
+            val samples = ShortArray(nSamples)
+            for (k in 0 until nSamples) {
+                val low = bytes[k * 2].toInt() and 0xFF
+                val high = bytes[k * 2 + 1].toInt() and 0xFF
+                samples[k] = (low or (high shl 8)).toShort()
+            }
+            val winN = (LOUD_WIN_S * sr).toInt()
+            val hopN = (LOUD_HOP_S * sr).toInt()
+            // 每窗 计算 dB
+            val relSec = java.util.ArrayList<Double>()
+            val dbs = java.util.ArrayList<Double>()
+            var pos = 0
+            while (pos + winN <= nSamples) {
+                val rel = pos.toDouble() / sr
+                var sumSq = 0.0
+                for (j in 0 until winN) {
+                    val s = samples[pos + j].toInt()
+                    sumSq += (s * s).toDouble()
+                }
+                val rr = kotlin.math.sqrt(sumSq / winN)
+                val db = if (rr > 0) (20.0 * kotlin.math.log10(rr)) else 0.0
+                relSec.add(rel); dbs.add(db)
+                pos += hopN
+            }
+            if (dbs.size < 4) return emptyList()
+            val medDb = medianOf(dbs)
+            val thr = medDb + LOUD_DB_JUMP
+            // 标记高响度窗
+            val loud = BooleanArray(dbs.size) { dbs[it] >= thr }
+            // 合并连续 high 窗口为 run
+            val runs = mutableListOf<Pair<Long, Long>>()
+            var rs = -1
+            var re = -1
+            for (k in loud.indices) {
+                if (loud[k]) {
+                    if (rs < 0) rs = k
+                    re = k
+                } else {
+                    if (rs >= 0) {
+                        runs.add(winToMs(startMs, rs) to winToMs(startMs, re, LOUD_WIN_S))
+                        rs = -1; re = -1
+                    }
+                }
+            }
+            if (rs >= 0) runs.add(winToMs(startMs, rs) to winToMs(startMs, re, LOUD_WIN_S))
+            // clip 到段界 + 过滤过短区间
+            runs.map { maxOf(it.first, startMs) to minOf(it.second, endMs) }
+                .filter { (it.second - it.first) >= LOUD_MIN_RUN_MS }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /** 把窗索引换算成毫秒。startMs为段起点；end窗额外加上一个窗长以覆盖整窗。 */
+    private fun winToMs(startMs: Long, winIdx: Int, winLenS: Double = 0.0): Long {
+        return startMs + ((winIdx * LOUD_HOP_S + winLenS) * 1000).toLong()
     }
 
     /** v3.2.4-fix: 合并间隔<=PCMS_MERGE_GAP_MS的相邻讲话run；合并结果超过PCMS_RUN_MAX_MS则不再扩张。 */
@@ -3039,6 +3185,16 @@ object SegmentGenerator {
         if (consecutiveMergeCount > 0) {
             writeFingerprintLog(context, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
             Log.i(TAG, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段 for episode=$episodeId")
+        }
+
+        // v3.1.241-fix: 响度跳变检测——从长干段内部切出"背景音乐(歌曲)"。
+        // 根因：歌曲音量显著高于前后说话，但管线从不把响度当边界，导致歌曲被并入长干段。
+        // 放在最终合并之后执行，保证长干段已成形；切出的歌曲段为水段(hasVoice=false)，
+        // 之后 enforceHardRules 的 R2"同类型合并"只并 干-干/水-水，不会把歌曲重新并回相邻讲话干段。
+        val songCutCount = cutSongByLoudnessJump(finalSegments, pcmSourceFile)
+        if (songCutCount > 0) {
+            writeFingerprintLog(context, "响度检测: 从长干段切出${songCutCount}个歌曲/背景音乐段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "响度检测: 切出${songCutCount}个歌曲段 for episode=$episodeId")
         }
 
         // v3.1.240-hard: 【运行时硬校验·铁律固化】在任何后续逻辑与返回前，对最终结果强制执行
