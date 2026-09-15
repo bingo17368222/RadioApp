@@ -3041,6 +3041,16 @@ object SegmentGenerator {
             Log.i(TAG, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段 for episode=$episodeId")
         }
 
+        // v3.1.240-hard: 【运行时硬校验·铁律固化】在任何后续逻辑与返回前，对最终结果强制执行
+        // 不可变规则（R1时间轴连续/R2无同类型碎段/R3长度上限/R4标签合法），并对可自动修正项就地修复。
+        // 这是"永久规则不依赖记忆"的兜底：只要本函数在 generateJiuAiTingSegments 中被调用，
+        // 每次运行到这里必然执行一遍，任何新处理步骤加入也不会绕过。无法自动修复的违规统一上报一次。
+        val hardIssue = enforceHardRules(finalSegments, effectiveDurationMs, context)
+        if (hardIssue != null) {
+            writeFingerprintLog(context, "硬校验: 存在无法自动修复的违规—— $hardIssue for episode=$episodeId")
+            Log.w(TAG, "硬校验: 无法自动修复—— $hardIssue for episode=$episodeId")
+        }
+
         // v3.1.135: 额外输出12~16分钟（720~960秒）区域的最终分段结果，便于调试主持人讲话被合并问题
         val finalTargetSegments = finalSegments.filter { it.start in 720000..960000 || it.end in 720000..960000 || (it.start < 720000 && it.end > 960000) }
         val finalTargetDetail = if (finalTargetSegments.isNotEmpty()) {
@@ -4259,5 +4269,149 @@ object SegmentGenerator {
         }
 
         return null
+    }
+
+    /**
+     * v3.1.240-hard: 【运行时硬校验·铁律固化】在每次分段流程返回结果前强制执行。
+     * 目的：让"用户反复强调的分段规则"成为编译进程序、每次运行必然执行的不变量，
+     * 而不是依赖任何推理环节"记得"去遵守。任何新处理步骤加入后，只要跑了
+     * generateJiuAiTingSegments，本校验都必然对最终结果逐条核对，除非不变量成立，
+     * 否则会对 segments 就地自动修正；无法自动修正的违规才返回描述供上层记录。
+     *
+     * 固化铁律（不变量）：
+     *  R1. 时间轴连续性：相邻段不得存在"未覆盖"的时间洞（首段start=0、末段end=duration、
+     *      中间任意两段 start<=前段end+容差）。—— 消除"某段时间无分段"。
+     *  R2. 无同类型碎段：不得存在"无缝相邻且同属干/同属水"的两个段（否则应合并成一段），
+     *      且任何段不得短于最小碎段阈值(PCMS_RUN_MIN_MS≈1.5s)。—— 消除"连续干货段/2秒碎段"。
+     *  R3. 长度上限：任一干段<=MAX_DRY_SEGMENT_LENGTH_MS、任一水段<=MAX_WATER_SEGMENT_LENGTH_MS，
+     *      避免被意外合并成超长巨段。—— 与 merge 各环节的上限保持一致。
+     *  R4. 标签合法：不得出现 label==null 或 label=="分类失败" 段（历史"分类失败"须被替换/归并）。
+     *
+     * 可自动修正项：R1 的洞用"静音"补段；R2 的相邻同类型段直接首尾合并、过碎段并入相邻同类型段。
+     * 不可自动修正项（如实记录返回）：覆盖不了的R1起始/终止边界、超长段 R3。
+     *
+     * @return 无法自动修复的违规描述；全部满足并对结果完成了就地修正时返回 null
+     */
+    private fun enforceHardRules(
+        segments: MutableList<VoiceSegment>,
+        durationMs: Long,
+        context: Context
+    ): String? {
+        if (segments.isEmpty()) {
+            return "硬校验: 分段结果为空"
+        }
+        segments.sortBy { it.start }
+        val blockingIssues = mutableListOf<String>()
+        var fixLog = StringBuilder()
+
+        // ---------- R2: 消除同类型碎段（相邻同类型且首尾相接 → 合并；过短碎段 → 并入相邻同类型） ----------
+        var mergeCount = mergeConsecutiveSameTypeSegments(segments)
+        if (mergeCount > 0) {
+            fixLog.append("R2合并${mergeCount}处相邻同类型连续段; ")
+        }
+        // 再消除"过短碎段"：时长 < PCMS_RUN_MIN_MS 的段，并入左右相邻的同类型段（优先）或任一相邻段
+        val tinyWeedCount = weedTinyFragments(segments)
+        if (tinyWeedCount > 0) {
+            fixLog.append("R2剔除${tinyWeedCount}个过短碎段; ")
+        }
+
+        // ---------- R4: label 合法 ----------
+        var relabelCount = 0
+        for (seg in segments) {
+            when {
+                seg.label == "分类失败" -> {
+                    maybeMergeFailedIntoNeighbor(segments, seg); relabelCount++
+                }
+                seg.label == null -> {
+                    seg.label = if (seg.hasVoice) "干货" else "指纹水货"; relabelCount++
+                }
+            }
+        }
+        if (relabelCount > 0) {
+            fixLog.append("R4修正${relabelCount}个非法标签; ")
+        }
+
+        // ---------- R1: 时间轴连续性（塞入静音补洞；仅记录无法覆盖首尾边界） ----------
+        val gapFillHard = fillSilenceGaps(segments, durationMs, context)
+        if (gapFillHard > 0) {
+            fixLog.append("R1补${gapFillHard}个时间洞; ")
+        }
+
+        // ---------- R3: 长度上限校验（此条无法自动修复，如实上报） ----------
+        for (seg in segments) {
+            val len = seg.end - seg.start
+            val dry = seg.hasVoice
+            val cap = if (dry) MAX_DRY_SEGMENT_LENGTH_MS else MAX_WATER_SEGMENT_LENGTH_MS
+            if (len > cap) {
+                blockingIssues.add("段[${seg.start}~${seg.end}](${if (dry) "干" else "水"}${len}ms) 超过上限${cap}ms")
+            }
+        }
+
+        // 首末边界未覆盖（首段start≠0 或 末段end≠duration）——填充算法无法自行扩展，上报
+        if (segments.first().start > 0L) {
+            blockingIssues.add("首段从${segments.first().start}ms开始，未从0ms覆盖")
+        }
+        if (segments.last().end < durationMs) {
+            blockingIssues.add("末段到${segments.last().end}ms结束，未覆盖到${durationMs}ms")
+        }
+
+        if (fixLog.isNotEmpty()) {
+            writeFingerprintLog(context, "硬校验: 自动修正——$fixLog")
+            Log.i(TAG, "硬校验: 自动修正——$fixLog")
+        }
+        return blockingIssues.takeIf { it.isNotEmpty() }?.joinToString("; ")
+    }
+
+    /** v3.1.240-hard: 剔除时长 < PCMS_RUN_MIN_MS 的过短碎段，并入相邻段（优先并入同类型相邻段）。 */
+    private fun weedTinyFragments(segments: MutableList<VoiceSegment>): Int {
+        if (segments.size < 2) return 0
+        var weeded = 0
+        var i = 0
+        while (i < segments.size) {
+            val cur = segments[i]
+            if (cur.end - cur.start >= PCMS_RUN_MIN_MS) { i++; continue }
+            // 找左右相邻段
+            val left = if (i > 0) segments[i - 1] else null
+            val right = if (i < segments.size - 1) segments[i + 1] else null
+            // 优先并入同类型相邻段：取两侧同类型中更近/更长的其一
+            val preferLeft = when {
+                left != null && right != null && left.hasVoice == cur.hasVoice && right.hasVoice == cur.hasVoice ->
+                    (cur.start - left.end) <= (right.start - cur.end)
+                left != null && left.hasVoice == cur.hasVoice -> true
+                else -> false
+            }
+            val mergeTarget = if (preferLeft) left else (right?.takeIf { it.hasVoice == cur.hasVoice } ?: right)
+            if (mergeTarget != null) {
+                // 并入：把 cur 的时间并入目标段，然后删掉 cur
+                if (mergeTarget === left) {
+                    segments[i - 1] = mergeTarget.copy(end = maxOf(left.end, cur.end))
+                    segments.removeAt(i)
+                } else {
+                    // right 目标：把 right 并入 cur（cur 保留类型，吞并 right 的时间），删掉 right
+                    segments[i] = cur.copy(end = mergeTarget.end)
+                    segments[i].hasVoice = cur.hasVoice
+                    segments[i].label = cur.label
+                    segments.removeAt(i + 1)
+                }
+                weeded++
+                // 不递增，i 指向合并后的段，继续检查
+            } else {
+                i++
+            }
+        }
+        return weeded
+    }
+
+    /** v3.1.240-hard: 把"分类失败"段合并进左右相邻段（优先相邻水段非失败段），消除非法标签。 */
+    private fun maybeMergeFailedIntoNeighbor(segments: MutableList<VoiceSegment>, failed: VoiceSegment) {
+        val idx = segments.indexOf(failed)
+        if (idx < 0) return
+        val left = if (idx > 0) segments[idx - 1] else null
+        val right = if (idx < segments.size - 1) segments[idx + 1] else null
+        val target = left ?: right ?: return
+        target.end = maxOf(target.end, failed.end)
+        target.start = minOf(target.start, failed.start)
+        // 目标段吸收失败段的时间范围，删除失败段
+        segments.remove(failed)
     }
 }

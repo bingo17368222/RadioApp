@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.239 安装</title>
+<title>RadioApp v3.1.240 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,19 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.239</div>
+  <div class="version">v3.1.240</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.239</h3>
+    <h3>更新内容 v3.1.240</h3>
     <ul>
-      <li>修复"很多连续干货段"与"2秒碎段"：新增最终归并环节，将相邻同类型的连续段合并为一段</li>
-      <li>保留 v3.1.238 主持讲话保护：干净清声讲话独立成段，不被合并进歌曲/水段</li>
-      <li>合并受长度上限约束（干货≤30分钟、水段≤5分钟），不会合并成超长巨段</li>
-      <li>不会跨类型合并，不改变干/水分类判定</li>
+      <li>新增"运行时硬校验"：分段结果返回前强制核对不可变规则，不再依赖每一次推理去"记得"</li>
+      <li>R1 时间轴连续：自动补足任意时间段无分段的时间洞</li>
+      <li>R2 无同类型碎段：相邻同类型连续段自动合并、过短碎段自动剔除（消除"连续干货段/2秒碎段"）</li>
+      <li>R3 长度上限：干货≤30分钟、水段≤5分钟，防止被合并成超长巨段</li>
+      <li>R4 标签合法：自动修正"分类失败"/空标签段</li>
+      <li>规则成为程序级强制不变量，每次分段运行必然执行</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.239.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.240.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
