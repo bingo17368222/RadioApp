@@ -672,21 +672,25 @@ object SegmentGenerator {
     // 放宽到60s后，PCM扫描抢救的in-歌人声块都能被吸收，而真正的YAMNet/VAD主持讲话锚点(isSimulated=false)仍因来源门控不被还原。
     private const val PCMS_MAX_ISOLATED_RESCUE_GAP_MS = 0L // (保留占位，不再使用8s门槛，见 reabsorbTinyIsolatedSpeech v3.1.232)
 
-    // v3.1.242-fix: 低过零率(zcr)+谐波 歌曲边界锚点（取代 v3.1.241 的响度跳变判据）。
-    // 根因回顾：用户想让"背景音乐音量高"的歌曲单独成段，但电台成品已做响度归一化/压限，
-    // 整段音频 RMS 仅 ±3dB 波动，用响度做边界在真实 PCM 上 0 命中（实测验证）。
-    // 改用与响度无关的波形结构特征：音乐/歌曲旋律+和声连续、波形规整 → 过零率 zcr 明显低于
-    // 清唱讲话（实测歌曲 0.08 vs 讲话 0.171，差异 114%）。响亮仅用于排除静音，不再当边界。
-    // 阈值经真实 PCM(henan-private-car-2025-03-07-3)网格标定：
-    //   zcr<0.08 + 谐波>0.3(排除纯噪) + rms排除静音 + 相邻歌曲窗gap<=15s合并 + 单块>=15s
-    //   产出 34 首候选、总音乐 58 分钟/全集(90min)、碎片仅 8 个，参数稳定可靠。
+    // v3.1.243-fix: 高RMS+低谐波 歌曲/片花判据（取代 v3.1.242 的错误反向zcr判据）。
+    // 根因回顾(用户反馈+实测真值 henan-03-07-3)：
+    //  v3.1.242 假设"音乐zcr低、讲话zcr高"在此档节目完全反向——主持人漫谈讲话 zcr=0.122(偏高)，
+    //  唱歌/片花 zcr=0.082(偏低)，导致大量干净讲话被误判为歌曲、真正唱歌/片花漏判(用户反馈2)。
+    //  且旧 isCleanSpeechSegment 用 zcr<0.09 判"讲话"，此档讲话 zcr=0.122>0.09 判不过，
+    //  歌末那几句讲话被误当"非干净讲话"吞进水段(用户反馈1:主持人讲话被歌曲末尾合并)。
+    //  结论：在此类轻BGM漫谈/唱歌节目中，过零率无判别力甚至反向；响度与谐波比才可分。
+    // 实测真值(用户标注)：
+    //   讲话(38:00-40:08,应干): rms=3614 harm=0.547 -> 判水仅2%
+    //   唱歌(40:08-41:33,应水): rms=4696 harm=0.445 -> 判水65%
+    //   轻BGM片花(41:33-42:30,应水): rms=4798 harm=0.422 -> 判水79%
+    //   整集扫描 R>4200&harm<0.48: 36段共33min，真值点全对上。
+    // 采用用户确认的方向："尽量保干净讲话"→ 高RMS+低harm(音乐/片花响度偏高、无人声周期的语音弱)
     private const val LOUD_WIN_S = 1.0                // 歌曲检测窗（秒）
     private const val LOUD_HOP_S = 0.25               // 检测步进（秒）
-    private const val SONG_ZCR_MAX = 0.08f            // 歌曲过零率上限（音乐波形规整、zcr低）
-    private const val SONG_HARM_MIN = 0.30f           // 歌曲谐波下限（排除纯噪声/静音，音乐有周期性结构）
-    private const val SONG_RMS_MIN = 900.0            // 排除静音/极弱（int16尺度，低于PCMS_RMS_MIN取保守值）
-    private const val SONG_MERGE_GAP_MS = 15000L      // 相邻歌曲窗间隔<=15s视为同一首（歌曲人声段zcr略高会切开，需合并）
-    private const val LOUD_MIN_RUN_MS = 15000L        // 单块至少15s才算歌曲（避免切碎）
+    private const val SONG_HARM_MAX = 0.48f           // 歌曲/片花谐波上限：music/片花 harm<0.48（讲话harm≈0.55更高）
+    private const val SONG_RMS_MIN = 4200.0           // 歌曲/片花响度下限(int16): 唱歌/片花rms≈4700, 讲话≈3600 → 高响度=音乐听感
+    private const val SONG_MERGE_GAP_MS = 15000L      // 相邻音乐窗间隔<=15s视为同一段(片花内有间断)
+    private const val LOUD_MIN_RUN_MS = 15000L        // 单块至少15s才算水段（避免切碎）
     private const val LOUD_SCAN_MIN_SEG_MS = 60000L   // 仅对>=60s的长段做检测
 
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
@@ -876,9 +880,16 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.1.238-fix: 判断某段PCM是否为"干净清声讲话"（无背景音乐/噪声）。
-     * 用于还原环节的内容门控：真主持讲话满足 低过零率(zcr<PCMS_ZCR_MAX)+低频谱平坦度(flat<PCMS_FLAT_MAX)，
-     * 而歌曲/水印片段 zcr/flat 明显更高。若活动帧中"干净讲话帧"占比≥60%则判为讲话 → 不还原(护住主持讲话)。
+     * v3.1.243-fix: 判断某段PCM是否为"干净清声讲话"（无背景音乐/噪声）。
+     * 用于还原环节的内容门控。v3.1.243 起改用"响度不高"判据，取代 v3.1.238 的 zcr+flat。
+     * 根因(实测真值 henan-03-07-3，Android FFT谐波同算法)：
+     *  主持人无BGM讲话 rms_med≈3614 → 应判"干净讲话"(保留独立)
+     *  主持人唱歌     rms_med≈4696 → 应判"非讲话"(并入歌曲，护歌)
+     *  轻BGM片花      rms_med≈4798 → 应判"非讲话"(并入歌曲，护歌)
+     *  过零率在此档完全反向(讲话zcr≈0.122 > 唱歌0.082)，旧 zcr<0.09 判"讲话"全误判，
+     *  导致真实主持讲话被吞进歌末(用户反馈)；flat 也几乎无区分(0.484 vs 0.458)，一并弃用。
+     *  真正可分的是响度：电台成品响度归一化后，音乐/唱歌/片花偏响(rms≈4700)而清声讲话偏轻(rms≈3600)。
+     * 判据：活动帧(>PCMS_RMS_MIN)中 rms<=SONG_RMS_MIN 的"讲话帧"占比≥60% → 判干净讲话 → 不还原(护住主持讲话)。
      * PCM缺失或异常统一返回 false（不判讲话，允许还原→护歌优先）。
      */
     private fun isCleanSpeechSegment(pcmFile: File?, startMs: Long, endMs: Long): Boolean {
@@ -912,22 +923,16 @@ object SegmentGenerator {
             var pos = 0
             while (pos + PCMS_FFT_N <= nSamples) {
                 var sumSq = 0.0
-                var zc = 0
                 for (j in 0 until PCMS_FFT_N) {
                     val s = samples[pos + j].toInt()
                     sumSq += (s * s).toDouble()
                 }
-                for (j in 1 until PCMS_FFT_N) {
-                    val a = samples[pos + j - 1].toInt()
-                    val b2 = samples[pos + j].toInt()
-                    if (kotlin.math.abs(a) > 100 && (a > 0) == (b2 < 0)) zc++
-                }
                 val rr = kotlin.math.sqrt(sumSq / PCMS_FFT_N)
                 if (rr < PCMS_RMS_MIN) { pos += PCMS_HOP; continue }
                 activeFrames++
-                val zcrF = zc.toDouble() / PCMS_FFT_N
-                val flatF = computeFrameSpectral(samples, pos, PCMS_FFT_N, sr)[0].toDouble()
-                if (zcrF < PCMS_ZCR_MAX && flatF < PCMS_FLAT_MAX) speechFrames++
+                // v3.1.243-fix: 以响度区分清声讲话(轻)与音乐/唱歌/片花(响)。音乐经响度归一化后
+                // 明显偏高(rms≈4700)，清声讲话偏低(rms≈3600)，SONG_RMS_MIN(4200)恰在其间。
+                if (rr <= SONG_RMS_MIN) speechFrames++
                 pos += PCMS_HOP
             }
             activeFrames > 0 && (speechFrames.toFloat() / activeFrames) >= 0.6f
@@ -1044,13 +1049,12 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.1.242-fix: 扫描PCM窗过零率+谐波+响度，返回段内"歌曲/音乐"区间。
-     * 取代 v3.1.241 的响度跳变判据：
-     * - 音乐/歌曲波形规整 → 过零率 zcr < SONG_ZCR_MAX（清唱讲话明显更高）；
-     * - 谐波 > SONG_HARM_MIN 排除纯噪声；响度 > SONG_RMS_MIN 排除静音；
-     * - 相邻歌曲窗间隔 <= SONG_MERGE_GAP_MS 合并为同一首（歌曲人声段zcr略高会被切开，需合并）；
-     * - 单块长度 >= LOUD_MIN_RUN_MS 才算歌曲，避免切碎。
-     * 全窗只读一次PCM，逐窗累计 zcr/harm/rms（复用 PCMS_HOP 粗粒度帧统计近似窗特征）。
+     * v3.1.243-fix: 扫描PCM窗响度+谐波比，返回段内"歌曲/片花"区间。
+     * 取代 v3.1.242 的反向zcr判据：
+     * - 音乐/片花响度偏高且无人声周期性语音 → rms>SONG_RMS_MIN 且 harm<SONG_HARM_MAX；
+     * - 相邻音乐窗间隔 <= SONG_MERGE_GAP_MS 合并为同一段（片花内有间断）；
+     * - 单块长度 >= LOUD_MIN_RUN_MS 才算水段，避免切碎。
+     * 全窗只读一次PCM，逐窗累计 rms/harm（复用短帧自相关近似谐波比）。
      * @return 区间列表(start, end)毫秒，均已在[startMs,endMs]内裁剪
      */
     private fun findSongRunsByZcr(pcmFile: File, startMs: Long, endMs: Long): List<Pair<Long, Long>> {
@@ -1080,24 +1084,18 @@ object SegmentGenerator {
             }
             val winN = (LOUD_WIN_S * sr).toInt()     // 16000
             val hopN = (LOUD_HOP_S * sr).toInt()     // 4000
-            // 每窗: 过零率、谐波比(自相关峰/DC)、RMS
+            // 每窗: 响度RMS、谐波比(短帧自相关峰/DC)
             val isSongWindow = java.util.ArrayList<Boolean>()
             var pos = 0
             while (pos + winN <= nSamples) {
                 var sumSq = 0.0
-                var nZero = 0
-                var sign = samples[pos]
                 for (j in 0 until winN) {
-                    val s = samples[pos + j]
+                    val s = samples[pos + j].toInt()
                     sumSq += (s * s).toDouble()
-                    if ((sign.toInt() in Int.MIN_VALUE..0) && (s.toInt() > 0)) nZero++
-                    sign = s
                 }
                 val rms = kotlin.math.sqrt(sumSq / winN)
-                val zcr = nZero.toDouble() / winN
                 // 谐波比：用若干子帧自相关峰值(基频可能在 60~400Hz → 滞后 40~266 样)近似
-                var harm = 0.0
-                if (rms > SONG_RMS_MIN) {
+                val harm = if (rms > 1.0) {
                     val frameN = 480     // 30ms子帧
                     var harmSum = 0.0; var nFrame = 0
                     var fPos = 0
@@ -1121,9 +1119,9 @@ object SegmentGenerator {
                         }
                         fPos += frameN
                     }
-                    harm = if (nFrame > 0) harmSum / nFrame else 0.0
-                }
-                val isSong = rms > SONG_RMS_MIN && zcr < SONG_ZCR_MAX && harm > SONG_HARM_MIN
+                    if (nFrame > 0) harmSum / nFrame else 0.0
+                } else 0.0
+                val isSong = rms > SONG_RMS_MIN && harm < SONG_HARM_MAX
                 isSongWindow.add(isSong)
                 pos += hopN
             }

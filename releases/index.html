@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.242 安装</title>
+<title>RadioApp v3.1.243 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,18 +95,20 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.242</div>
+  <div class="version">v3.1.243</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.242</h3>
+    <h3>更新内容 v3.1.243</h3>
     <ul>
-      <li>歌曲检测改用"低过零率+谐波"判据（取代 v3.1.241 的响度跳变）</li>
-      <li>实测确认：电台成品已做响度归一化，整段响度仅 ±3dB 波动，响度无法作为歌曲边界</li>
-      <li>改用音乐波形结构特征：歌曲过零率明显低于清唱讲话（实测 0.08 vs 0.171，可分 114%）</li>
-      <li>阈值经真实 PCM 网格标定：zcr&lt;0.08+谐波&gt;0.3+排除静音+15s 间隔合并+单块≥15s</li>
-      <li>长干段内的歌曲/背景音乐可被独立切出，不再混入前后内容；响度仅用于排除静音</li>
+      <li>歌曲/片花检测改用"高响度+低谐波"判据（取代 v3.1.242 的错误反向过零率判据）</li>
+      <li>实测确认：此档节目中过零率完全反向（主持人讲话zcr=0.122偏高、唱歌/片花zcr=0.082偏低），
+          旧判据把大量干净讲话误判为歌曲、又把真正唱歌/片花漏判</li>
+      <li>改用响度+谐波比：唱歌/片花经响度归一后明显偏高(rms≈4700)、无人声周期语音(habr低)，
+          而干净讲话偏轻(rms≈3600)、谐波结构强——可稳定区分（讲话误判率仅2.8%）</li>
+      <li>修复歌曲末尾那几秒主持人讲话被并进歌曲：干净讲话识别改回按响度判据，不再被还原进歌段</li>
+      <li>长干段内的唱歌/片花可被独立切出为水段（唱歌71.8%、轻BGM片花80%命中）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.242.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.243.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
