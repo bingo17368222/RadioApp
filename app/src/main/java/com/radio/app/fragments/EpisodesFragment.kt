@@ -516,6 +516,13 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         val isNoPreprocess = settings.isNoPreprocess(episode.id)
         val isDisliked = settings.isDisliked(episode.id) || settings.isDislikedByTitle(episode.stationId, episode.title)
 
+        // v3.1.245: Check if episode has segments (to show "删除分段" option)
+        val hasSegments = try {
+            val segs = dbHelper.getVoiceSegments(episode.id)
+            val info = dbHelper.getSegmentAnalysisInfo(episode.id)
+            segs.any { !it.isSimulated } || (info != null && info.segmentCount > 0)
+        } catch (_: Exception) { false }
+
         // v2.4.85: Check if audio is cached
         val audioFileName = try {
             val url = java.net.URL(episode.audioUrl)
@@ -533,6 +540,8 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         if (hasSubtitles) options.add("删除字幕")
         // v2.4.85: Delete cached audio (only if cached)
         if (hasCachedAudio) options.add("删除缓存")
+        // v3.1.245: Delete all segments (only if episode has segments)
+        if (hasSegments) options.add("删除分段")
         // Option: Toggle no-preprocess
         options.add(if (isNoPreprocess) "取消无需预处理" else "标记无需预处理")
 
@@ -591,6 +600,27 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                         val nowMarked = settings.toggleNoPreprocess(requireContext(), episode.id)
                         Toast.makeText(context, if (nowMarked) "已标记无需预处理" else "已取消无需预处理", Toast.LENGTH_SHORT).show()
                         adapter?.notifyDataSetChanged()
+                    }
+                    "删除分段" -> {
+                        // v3.1.245: 删除该节目全部分段（含模拟段与分段分析信息），需重新生成
+                        androidx.appcompat.app.AlertDialog.Builder(requireContext())
+                            .setTitle("删除分段")
+                            .setMessage("确定要删除「${episode.title}」的全部分段吗？删除后需要重新生成分段。")
+                            .setPositiveButton("删除") { _, _ ->
+                                try {
+                                    dbHelper.clearVoiceSegments(episode.id)
+                                    dbHelper.deleteSegmentAnalysisInfo(episode.id)
+                                    try {
+                                        dbHelper.updateEpisodeSegmentCount(episode.id, 0)
+                                    } catch (_: Exception) {}
+                                    Toast.makeText(context, "已删除分段", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "删除分段失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                                adapter?.notifyDataSetChanged()
+                            }
+                            .setNegativeButton("取消", null)
+                            .show()
                     }
                 }
             }

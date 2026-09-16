@@ -517,10 +517,57 @@ class SettingsFragment : Fragment() {
     }
 
     private fun showAboutDialog() {
-        AlertDialog.Builder(requireContext())
+        // v3.1.245: 应用名由"电台回放助手"改为"就AI听"，并增加"详细帮助"入口
+        val ctx = requireContext()
+        val aboutText = "就AI听\n版本: ${getAppVersion()}\n版本号: ${getAppVersionCode()}\n\n「就AI听」是一款电台回放助手，帮您轻松回听河南地方电台节目，自动分段、跳过水段、并生成字幕。"
+
+        val helpText = buildString {
+            appendLine("【基本操作】")
+            appendLine("· 节目单：选择电台和日期，点击节目即可回听；长按节目弹出管理菜单")
+            appendLine("· 播放页：拖拽进度条、点击分段快速跳转、可调节播放速度")
+            appendLine()
+            appendLine("【分段管理】")
+            appendLine("· 长按节目 → 删除分段：清除该节目所有分段数据，需要时重新生成")
+            appendLine("· 长按节目 → 标记无需预处理：该节目不再自动分段，录完即走")
+            appendLine("· 长按节目 → 标记不喜欢：每日同名节目不再突出显示")
+            appendLine()
+            appendLine("【自动跳过水段】")
+            appendLine("· 开启「自动跳过水段」后，播放到水货段会自动跳到下一段干货")
+             appendLine("· 开启「自动连播」后，当前节目播完自动续播下一个节目")
+            appendLine()
+            appendLine("【字幕】")
+            appendLine("· 自动生成字幕并跟随播放滚动；长按节目可删除字幕以重新生成")
+            appendLine()
+            appendLine("【缓存与预下载】")
+            appendLine("· 开启「自动缓存」后，在 WiFi 环境自动预缓存当天/次日节目")
+            appendLine("· 设置里可清理音频、字幕、PCM 等各类缓存")
+            appendLine()
+            appendLine("【其他】")
+            appendLine("· 指纹识别：自动识别并区分重复片花、片尾与正片内容")
+            appendLine("· 播放计划 / 播放历史：查看待播节目并一键续播")
+        }
+
+        val scroll = android.widget.ScrollView(ctx).apply {
+            val tv = android.widget.TextView(context).apply {
+                text = helpText
+                textSize = 14f
+                setLineSpacing(4f, 1.08f)
+                setPadding(44, 28, 44, 28)
+            }
+            addView(tv)
+        }
+
+        AlertDialog.Builder(ctx)
             .setTitle("关于")
-            .setMessage("电台回放助手\n版本: ${getAppVersion()}\n版本号: ${getAppVersionCode()}")
+            .setMessage(aboutText)
             .setPositiveButton("确定", null)
+            .setNeutralButton("详细帮助") { _, _ ->
+                AlertDialog.Builder(ctx)
+                    .setTitle("使用帮助")
+                    .setView(scroll)
+                    .setPositiveButton("知道了", null)
+                    .show()
+            }
             .show()
     }
 
