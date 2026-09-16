@@ -1,10 +1,7 @@
-version: 3.1.205
-file: /workspace/radioapp/releases/RadioApp-v3.1.205.apk
-source: Local Build v3.1.205 (with time-check fix)
-download_url: https://github.com/bingo17368222/RadioApp/releases/download/v3.1.205/RadioApp-v3.1.205.apk
-download_url_mirror: https://ghfast.top/https://github.com/bingo17368222/RadioApp/releases/download/v3.1.205/RadioApp-v3.1.205.apk
-size_bytes: 36358216
-size_mb: 34.67
-build_time: 2026-09-12 08:00 UTC
-sha256: (see GitHub release asset digest)
-changelog: buildPlaybackSchedule时间检查，跳过已超过当前播出时间的节目
+version: 3.1.244
+file: /workspace/radioapp/releases/RadioApp-v3.1.244.apk
+source: Local Build v3.1.244 (density-gate song segmentation fix)
+size_bytes: 33591592
+size_mb: 32.03
+build_time: 2026-09-16 06:50 UTC
+changelog: 歌曲检测密度门控+合并间隔30s+最短25s；修复歌曲被切4段、总分段数偏多

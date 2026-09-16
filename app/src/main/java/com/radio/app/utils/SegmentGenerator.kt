@@ -689,8 +689,9 @@ object SegmentGenerator {
     private const val LOUD_HOP_S = 0.25               // 检测步进（秒）
     private const val SONG_HARM_MAX = 0.48f           // 歌曲/片花谐波上限：music/片花 harm<0.48（讲话harm≈0.55更高）
     private const val SONG_RMS_MIN = 4200.0           // 歌曲/片花响度下限(int16): 唱歌/片花rms≈4700, 讲话≈3600 → 高响度=音乐听感
-    private const val SONG_MERGE_GAP_MS = 15000L      // 相邻音乐窗间隔<=15s视为同一段(片花内有间断)
-    private const val LOUD_MIN_RUN_MS = 15000L        // 单块至少15s才算水段（避免切碎）
+    private const val SONG_MERGE_GAP_MS = 30000L      // 相邻音乐窗间隔<=30s视为同一段(补歌内软段/歌唱间歇,原15s过碎)
+    private const val LOUD_MIN_RUN_MS = 25000L        // 单块至少25s才算歌曲（跳过讲话中短促片花，降低碎段）
+    private const val SONG_DENSITY_MIN = 0.30f        // 合并后run的"音乐窗占比">=30%才算歌(滤掉讲话低频缀乐幻影run)
     private const val LOUD_SCAN_MIN_SEG_MS = 60000L   // 仅对>=60s的长段做检测
 
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
@@ -1126,8 +1127,8 @@ object SegmentGenerator {
                 pos += hopN
             }
             if (isSongWindow.size < 4) return emptyList()
-            // 合并连续/近邻歌曲窗为 run（间隔<=SONG_MERGE_GAP_MS视为同一首）
-            val runs = mutableListOf<Pair<Long, Long>>()
+            // 合并连续/近邻歌曲窗为 run（间隔<=SONG_MERGE_GAP_MS视为同一首），以窗口下标记录便于算密度。
+            val idxRuns = mutableListOf<IntArray>()   // each [rs, re] inclusive window index
             var rs = -1
             var re = -1
             for (k in isSongWindow.indices) {
@@ -1136,37 +1137,52 @@ object SegmentGenerator {
                     re = k
                 } else {
                     if (rs >= 0) {
-                        // 若已有一段，且当前洞 <= SONG_MERGE_GAP_MS，则扩张连通
-                        if (runs.isNotEmpty()) {
-                            val last = runs.last()
+                        if (idxRuns.isNotEmpty()) {
+                            val last = idxRuns.last()
                             val gapStart = winToMs(startMs, rs)
-                            if (gapStart - last.second <= SONG_MERGE_GAP_MS) {
-                                runs[runs.size - 1] = last.first to winToMs(startMs, re, LOUD_WIN_S)
+                            // 当前洞（last.end -> rs）不超过 SONG_MERGE_GAP_MS 则扩张连通
+                            if (gapStart - winToMs(startMs, last[1], LOUD_WIN_S) <= SONG_MERGE_GAP_MS) {
+                                idxRuns[idxRuns.size - 1] = intArrayOf(last[0], re)
                                 rs = -1; re = -1
                                 continue
                             }
                         }
-                        runs.add(winToMs(startMs, rs) to winToMs(startMs, re, LOUD_WIN_S))
+                        idxRuns.add(intArrayOf(rs, re))
                         rs = -1; re = -1
                     }
                 }
             }
             if (rs >= 0) {
-                if (runs.isNotEmpty()) {
-                    val last = runs.last()
+                if (idxRuns.isNotEmpty()) {
+                    val last = idxRuns.last()
                     val gapStart = winToMs(startMs, rs)
-                    if (gapStart - last.second <= SONG_MERGE_GAP_MS) {
-                        runs[runs.size - 1] = last.first to winToMs(startMs, re, LOUD_WIN_S)
+                    if (gapStart - winToMs(startMs, last[1], LOUD_WIN_S) <= SONG_MERGE_GAP_MS) {
+                        idxRuns[idxRuns.size - 1] = intArrayOf(last[0], re)
                     } else {
-                        runs.add(winToMs(startMs, rs) to winToMs(startMs, re, LOUD_WIN_S))
+                        idxRuns.add(intArrayOf(rs, re))
                     }
                 } else {
-                    runs.add(winToMs(startMs, rs) to winToMs(startMs, re, LOUD_WIN_S))
+                    idxRuns.add(intArrayOf(rs, re))
                 }
             }
-            // clip 到段界 + 过滤过短区间
-            runs.map { maxOf(it.first, startMs) to minOf(it.second, endMs) }
+            // v3.1.244-fix: 密度门控 + 最短时长 + clip 段界。
+            // v3.1.243 的"rms>SR & harm<SH"窗级判据会把长干段切出大量歌曲段(03-07-3 22段/03-07-9 39段)，
+            // 并打散歌曲为干-song交替(用户反馈:歌曲被分4段+总分段偏多)。改为：
+            //  - 合并间隔放宽到30s，把歌内软段/歌唱间歇连成一整条歌（治碎段）；
+            //  - 仅当合并后 run 的"音乐窗占比">=SONG_DENSITY_MIN 才切为歌（滤掉讲话中低频缀乐合成的幻影run）；
+            //  - 长度>=LOUD_MIN_RUN_MS 才切（跳过讲话里短促片花）。
+            idxRuns
+                .asSequence()
+                .map { r ->
+                    val span = (r[1] - r[0] + 1).coerceAtLeast(1)
+                    val dense = isSongWindow.subList(r[0], r[1] + 1).count { it }.toFloat() / span
+                    Triple(r[0], r[1], dense)
+                }
+                .filter { it.third >= SONG_DENSITY_MIN }
+                .map { winToMs(startMs, it.first) to winToMs(startMs, it.second, LOUD_WIN_S) }
+                .map { maxOf(it.first, startMs) to minOf(it.second, endMs) }
                 .filter { (it.second - it.first) >= LOUD_MIN_RUN_MS }
+                .toList()
         } catch (_: Exception) {
             emptyList()
         }
