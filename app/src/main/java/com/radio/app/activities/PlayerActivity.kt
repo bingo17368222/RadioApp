@@ -450,11 +450,9 @@ class PlayerActivity : AppCompatActivity() {
                         setEpisodeSwitchLock(0L)
                         writeJitterLog(" episodeChanged broadcast: set position lock to 0 (no saved position)")
                     }
-                    // v3.1.117: 记录新节目到播放历史
-                    if (ep != null) {
-                        val epSavedPos = getSavedPositionForEpisode(this@PlayerActivity, ep.id ?: "")
-                        PlayHistoryUtils.recordHistory(this@PlayerActivity, ep, if (epSavedPos > 0) epSavedPos else 0L)
-                    }
+                    // v3.1.246-fix: 移除此处新节目历史写入。
+                    // 现在由 RadioPlaybackService.playEpisode() 在切集时就地写历史（v3.1.246），
+                    // 这样后台连续播放/UI 播放页未存活时节目也能进历史；此处只负责 UI 刷新，避免重复写入。
                 }
             }
         }

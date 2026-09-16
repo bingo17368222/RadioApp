@@ -36,6 +36,7 @@ import com.radio.app.models.Episode
 import com.radio.app.models.RadioStation
 import com.radio.app.models.VoiceSegment
 import com.radio.app.utils.NetworkUtils
+import com.radio.app.utils.PlayHistoryUtils
 import com.radio.app.utils.PreferenceManager
 import com.radio.app.utils.ThemeManager
 import kotlin.math.abs
@@ -5604,6 +5605,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // pre-cached episode_info table so the notification always shows title/date/time.
         var episode = enrichEpisodeFromDbIfNeeded(episode)
         currentEpisode = episode; currentStation = null; isLive = live
+        // v3.1.246-fix: 就地写入播放历史，避免依赖 PlayerActivity 前台广播。
+        // 根因：连续播放/后台自动切集时 UI 播放页可能已回收或未注册广播接收器，
+        // 导致自动连播进入的节目不进播放历史（BROADCAST_EPISODE_CHANGED 未被接收）。
+        // playEpisode 是所有播放路径（手动/续播/上一集下一集/自动连播/跨天）的唯一入口，
+        // 在此切集时写历史即可保证后台连播的每一集都被记录。仅当真正切换节目时记录。
+        if (!isSameEpisode) {
+            val historyPos = if (startPositionMs >= 0) startPositionMs else 0L
+            try {
+                PlayHistoryUtils.recordHistory(this, episode, historyPos)
+                writeServiceLog("notification", "playEpisode: history recorded for ${episode.id} (title=${episode.title}, pos=$historyPos)")
+            } catch (e: Exception) {
+                Log.w(TAG, "recordHistory failed on episode switch", e)
+            }
+        }
         // v3.1.179-fix: 立即同步加载当前节目的分段到内存，消除异步竞态条件
         // 根因：之前updatePlaybackSchedule异步加载，如果getSegmentList()提前被调用（如分段导航），
         // 会因为voiceSegments为空回退到生成15分钟固定分段。畅行早高峰是跨天第一个节目，最容易触发。
