@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.246 安装</title>
+<title>RadioApp v3.1.247 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.246</div>
+  <div class="version">v3.1.247</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.246</h3>
+    <h3>更新内容 v3.1.247</h3>
     <ul>
-      <li>修复：连续播放/后台自动切集时，新进入的节目未写入播放历史。现在由播放服务在切集时就地记录，后台连播的每一集都能在播放历史中看到</li>
-      <li>消除播放历史在切集时的重复写入，记录更稳定</li>
+      <li>修复：播放计划排序错乱——同一天内部分节目 startTime=0 时，早间档（0点/7点/9点）被排到晚间档之后，导致"手动播放晚间节目后，后续播放计划变成同日早间节目"</li>
+      <li>修复：连续播放/自动切集时，『下班路上·全城娱乐』等晚间节目被计划错误跳过/切到早间节目</li>
+      <li>同步统一 播放计划 &amp; 预缓存 &amp; API补充 三处排序逻辑（同日以节目ID序号为主，startTime 兜底）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.246.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.247.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

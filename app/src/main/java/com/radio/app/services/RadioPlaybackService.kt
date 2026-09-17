@@ -2000,8 +2000,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } else ep
         }.sortedWith(
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
-                .thenBy { it.startTime }
                 .thenBy { extractEpisodeIndex(it) }
+                .thenBy { it.startTime }
         )
         resultList.clear()
         resultList.addAll(resultListCopy)
@@ -6564,16 +6564,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             } else ep
         }
 
-        // v3.1.207-fix: 先按broadcastAt日期分组，再按节目ID中的序号排序。
-        // 根因：startTime可能为0（URL构造的节目等），导致同天节目排序混乱——
-        // 早间节目（ID 0~2）被排到了晚间节目（ID 9~11）之后，使播放计划列表错乱。
-        // 使用 extractEpisodeIndex 从ID中提取序号作为同天排序依据，不受startTime影响。
-        // v3.1.212-fix: 同天内改用startTime为主排序，extractEpisodeIndex为fallback。
-        // 此时所有节目的startTime已推导完毕（除非broadcastAt不含时间部分），可保证正确排序。
+        // 排序：先按broadcastAt日期，再按ID序号（extractEpisodeIndex），最后按startTime。
+        // v3.1.247-fix: 同一天内"ID序号"为主、startTime为次级。
+        // 根因（v3.1.246用户日志）：同一天内有的节目startTime=0（savedList=API拉取且broadcastAt
+        // 未含完整时间、推导失败时不满足length>=16），此时 thenBy{startTime} 会把 startTime>0 的
+        // 早间档（ID 0/1/2）排到 startTime=0 的上午~晚间档（ID 3~11）之后，导致：
+        //   "手动播放晚间档『下班路上·全城娱乐』(-9)后，向后取后续计划取到同日早间档(-0/-1/-2)，
+        //     后续播放计划错乱显示为同日早间节目"。
+        // 修复：同天按ID序号排序——序号 -0~-11 即一天从早到晚的播出顺序，天然正确且不受startTime影响。
         combinedList = combinedList.sortedWith(
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
-                .thenBy { it.startTime }
                 .thenBy { extractEpisodeIndex(it) }
+                .thenBy { it.startTime }
         )
 
         // 详细日志：记录combinedList中的所有节目，便于排查遗漏
@@ -6643,10 +6645,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     if (parsedTime > 0) ep.copy(startTime = parsedTime) else ep
                                 } catch (_: Exception) { ep }
                             } else ep
+                        // v3.1.247-fix: 排序键与主路径一致（日期→ID序号→startTime），避免fallback4下同日早间档错乱
                         }.sortedWith(
                             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
-                                .thenBy { it.startTime }
                                 .thenBy { extractEpisodeIndex(it) }
+                                .thenBy { it.startTime }
                         )
                         currentIdx = combinedList.indexOfFirst {
                             it.id == curId || it.id == curId.removeSuffix("-cross") || it.audioUrl == currentPlayingUrl ||
