@@ -4136,10 +4136,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
         val episodeKey = ep.id ?: ""
         if (episodeKey.isBlank()) return
-        // v2.4.182: Use apply() instead of commit() to avoid blocking the main thread.
+        // v3.1.250: 手动暂停/手动切换等低频用户主动动作，改为 commit() 同步落盘，
+        // 保证即使退出APP、进程被杀死，下次启动也能读到该进度（apply() 异步且可能丢失）。
         getSharedPreferences("playback_positions", MODE_PRIVATE)
-            .edit().putLong(episodeKey, pos).apply()
-        writeServiceLog("playback", " forceSaveCurrentPosition: SAVED pos=$pos for episodeId=$episodeKey")
+            .edit().putLong(episodeKey, pos).commit()
+        writeServiceLog("playback", " forceSaveCurrentPosition: SAVED(sync) pos=$pos for episodeId=$episodeKey")
     }
 
     /**
@@ -7740,6 +7741,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     } catch (e: Exception) { Log.w(TAG, "Failed to broadcast cross-day episode change", e) }
                     writeServiceLog("notification", "autoPlayNext: cross-day done: ${enrichedEp.title}")
                     writeNotifDetailLog("autoPlayNextEpisode: cross-day done")
+                    // v3.1.250: 跨天自动切集后立即重建播放计划任务，杜绝计划滞后
+                    buildPlaybackSchedule()
                     return
                 }
                 writeNotifDetailLog("autoPlayNextEpisode: no cross-day episodes available, stopping")
@@ -7766,6 +7769,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 LocalBroadcastManager.getInstance(this).sendBroadcast(broadcastIntent)
             } catch (e: Exception) { Log.w(TAG, "Failed to broadcast episode change", e) }
             writeServiceLog("notification", "autoPlayNext: episode changed to: ${enrichedEp.title} (${enrichedEp.id})")
+            // v3.1.250: 自动连播切集后立即重建播放计划任务，杜绝计划滞后
+            buildPlaybackSchedule()
         } catch (e: Exception) {
             Log.e(TAG, "autoPlayNextEpisode failed", e)
             notifyNextEpisode()
