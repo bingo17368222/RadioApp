@@ -7691,6 +7691,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
 
+            // v3.1.248-fix: 硬防线——连续播放不得回跳到更早日期。
+            // 根因：受播放计划构建在个别退化/匹配失败场景（cross-day 进入、startTime 推导失败等）影响，
+            // combinedList 起点可能被锚定到更早节目；队列第一个取到比当前更早日期的节目即出现
+            // "播完 19号节目后连播跳到 18号"（日志 autoPlayNext: episode changed to: ...-2025-03-18-2）。
+            // 此处把"下一节目日期 < 当前节目日期"判为异常回跳，交由下方 cross-day（nextDate=true）前向继续寻找。
+            if (nextEpisode != null) {
+                val curDateD = currentEpisode?.broadcastAt?.take(10)
+                val nextDateD = nextEpisode?.broadcastAt?.take(10)
+                if (curDateD != null && nextDateD != null && nextDateD < curDateD) {
+                    writeServiceLog("notification", "autoPlayNext: day-backward-jump blocked: ${nextEpisode!!.title} (date=$nextDateD) < current date=$curDateD, forcing cross-day")
+                    nextEpisode = null
+                }
+            }
+
             if (nextEpisode == null) {
                 // 播放计划列表已用尽 → 尝试跨天
                 writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes exhausted, trying cross-day")
