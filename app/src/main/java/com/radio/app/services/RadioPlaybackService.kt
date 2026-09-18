@@ -6676,14 +6676,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             //   2) 若当前节目时间<=0或不存在更晚的节目，则从列表开头开始；
             //   3) 仅当合并列表本身为空时才可能仍为空（无任何可排数据，属正常空态）。
             // 说明：起点设为 anchor-1，使下方 while(idx = currentIdx+1) 从 anchor 开始取满计划数。
+            val curDateForAnchor = currentEpisode?.broadcastAt?.take(10)
             val curStartTime = currentEpisode?.startTime ?: 0L
-            if (curStartTime > 0) {
+            if (curDateForAnchor != null) {
+                // v3.1.249-fix: 以"当前节目日期"为下限定位起点，绝不让更早日期的节目进入后继播放计划。
+                // 根因（schedule.log 佐证）：播放新一天节目(如 19-1)而 combinedList 仍是旧一天缓存
+                // (如 12 个全为 18 号)时，当前节目找不到，原 startTime 锚定退化 idx=-1 从列表头开始，
+                // 把前一天(18号)全天排进计划，导致连播误跳 18 号。
+                val anchor2 = combinedList.indexOfFirst { (it.broadcastAt?.take(10) ?: "") >= curDateForAnchor }
+                currentIdx = if (anchor2 >= 0) anchor2 - 1 else -1
+            } else if (curStartTime > 0) {
                 val anchor = combinedList.indexOfFirst { it.startTime > curStartTime }
                 currentIdx = if (anchor >= 0) anchor - 1 else -1
             } else {
                 currentIdx = -1
             }
-            writeServiceLog("schedule", "buildPlaybackSchedule: 退化起点 idx=$currentIdx (combinedList.size=${combinedList.size})")
+            writeServiceLog("schedule", "buildPlaybackSchedule: 退化起点 idx=$currentIdx (combinedList.size=${combinedList.size}, curDate=$curDateForAnchor)")
         }
 
         // v3.1.135: 获取当前节目日期，用于日期边界检查
@@ -6727,10 +6735,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // 历史节目（非当天）不做时间过滤，否则 startTime（2025年绝对时间戳）必然小于当前时间（2026年），导致全部被跳过。
             val epDate = ep.broadcastAt?.take(10)
             val isTimePassed = ep.startTime > 0 && epDate == todayStr && ep.startTime < System.currentTimeMillis()
-            if (!isDisliked && !isNoPreprocess && !isTimePassed) {
+            // v3.1.249-fix: 统一守卫——日期早于当前节目的节目不得进入后继播放计划。
+            // 兜底某些匹配/退化路径把更早日期节目（如 18 号）漏进 19 号计划的情况。
+            val isEarlierDay = curDateStr != null && epDate != null && epDate < curDateStr
+            if (!isEarlierDay && !isDisliked && !isNoPreprocess && !isTimePassed) {
                 nextPlanned.add(ep)
             } else {
                 val reason = when {
+                    isEarlierDay -> "earlier-day（早于当前节目日期，禁止入计划）"
                     isDislikedById -> "disliked-by-id"
                     isDislikedByTitle -> "disliked-by-title"
                     isNoPreprocess -> "no-preprocess"
