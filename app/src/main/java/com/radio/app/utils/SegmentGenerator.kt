@@ -124,6 +124,8 @@ object SegmentGenerator {
     private const val LAYER1_FAST_SCREEN_THRESHOLD = 0.70f
     // 第三层指纹漏判召回阈值（金标准匹配）
     private const val LAYER3_RECALL_THRESHOLD = 0.82f
+    // v3.1.251: 自动晋升长指纹"整段口径复核"阈值，与观察池判定口径(0.82)保持一致
+    private const val AUTO_FP_RECONFIRM_THRESHOLD = 0.82f
     // 观察池进入时的重复判定阈值（与正式库/观察池已有指纹比较）
     private const val POOL_DUPLICATE_THRESHOLD = 0.92f
     // 观察池候选最小/最大时长
@@ -3866,8 +3868,11 @@ object SegmentGenerator {
         val dedupKeyToIds = mutableMapOf<String, MutableList<Long>>() // v3.2.3-fix: 去重key→所有指纹ID列表
         for (entry in parsedLibrary) {
             if (entry.parsed.isEmpty()) continue
-            val dedupKey = entry.parsed.take(5).joinToString(",")
-            // v3.2.3-fix: 记录所有指纹ID（无论是否被去重淘汰）
+            // v3.1.251-fix(项1)：去重key由"指纹前5整数"改为"整个指纹字符串"，仅淘汰内容完全一致的真重复。
+            // 原方案：同一电台的台标/片头往往前5帧相同，导致自动晋升指纹被误判为重复而整条剔除、
+            // 从不参与匹配（用户反馈：晋升前3次命中、晋升后长期无匹配）。
+            val dedupKey = entry.originalFp
+            // 记录所有指纹ID（无论是否被去重淘汰）
             dedupKeyToIds.getOrPut(dedupKey) { mutableListOf() }.add(entry.id)
             if (dedupKey in seenFpKeys) continue
             seenFpKeys.add(dedupKey)
@@ -3985,7 +3990,7 @@ object SegmentGenerator {
                 var matched = false
                 var bestSim = 0f
                 var matchedFpId: Long? = null
-                var matchedDedupKey: String? = null // v3.2.3-fix: 记录匹配到的去重key，用于批量更新last_matched_at
+                var matchedDedupKey: String? = null // v3.1.251: 匹配到的去重key(整指纹)，用于批量更新last_matched_at
                 for (entry in candidates) {
                     if (entry.parsed.isEmpty()) continue
                     // v3.1.129: 如果该指纹有分组且不是代表指纹，跳过对比
@@ -3995,10 +4000,42 @@ object SegmentGenerator {
                     val sim = ChromaprintExtractor.compareFingerprintArraysFast(windowArray, entry.parsed)
                     if (sim > bestSim) { bestSim = sim; matchedFpId = entry.id }
                     if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
-                        matched = true
-                        matchedFpId = entry.id
-                        matchedDedupKey = entry.parsed.take(5).joinToString(",") // v3.2.3-fix
-                        break
+                        // v3.1.251-fix(项2)：对"长指纹"（候选帧数>窗口帧数，如自动晋升的整段广告/长水段）
+                        // 做"整段口径"复核，命中阈值回归观察池的0.82。
+                        // 根因：窗口投影对长指纹叠加长度惩罚(15s窗口vs长指纹ratio小)，
+                        // 使晋升后长指纹需raw≈0.76~0.81(远高于0.70初筛)才通过，常匹配不上；
+                        // 而晋升前观察池用的是"整段vs整段"0.82口径，口径不一致导致"晋升后长时间无匹配"。
+                        if (entry.parsed.size > windowFrames) {
+                            val tl = entry.parsed.size
+                            if (tl <= fullArray.size) {
+                                // 候选整段可能在窗口之前开始：以窗口为锚推算起止，做等长子序列对齐取最大raw相似度（无长度惩罚）
+                                val lo = (framePos - (tl - windowFrames)).coerceAtLeast(0)
+                                val hi = framePos.coerceAtMost(fullArray.size - tl)
+                                if (lo <= hi) {
+                                    var reSim = 0f
+                                    var p = lo
+                                    while (p <= hi) {
+                                        val sub = fullArray.copyOfRange(p, p + tl)
+                                        val s = ChromaprintExtractor.compareFingerprintArraysFast(sub, entry.parsed) // 等长→raw，无长度惩罚
+                                        if (s > reSim) reSim = s
+                                        if (reSim >= AUTO_FP_RECONFIRM_THRESHOLD) break
+                                        p += stepFrames
+                                    }
+                                    if (reSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
+                                        matched = true
+                                        matchedFpId = entry.id
+                                        matchedDedupKey = entry.originalFp
+                                        break
+                                    }
+                                }
+                                // 复核未达0.82则视为非同一整段，继续尝试其他候选
+                            }
+                        } else {
+                            matched = true
+                            matchedFpId = entry.id
+                            matchedDedupKey = entry.originalFp
+                            break
+                        }
                     }
                 }
 

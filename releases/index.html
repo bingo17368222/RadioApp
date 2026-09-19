@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.250 安装</title>
+<title>RadioApp v3.1.251 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.250</div>
+  <div class="version">v3.1.251</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.250</h3>
+    <h3>更新内容 v3.1.251</h3>
     <ul>
-      <li>每次切换节目（手动切换 / 连续播放自动切换，前台或后台）都会立即重建播放计划任务，从根源杜绝播放计划任务滞后</li>
-      <li>手动点击暂停或切换节目时，强制以同步方式永久保存播放进度（commit 落盘），退出 APP 后下次启动仍可读取</li>
+      <li>修复自动指纹晋升后长时间无法匹配：第一层指纹去重由"前5帧"改为"整个指纹"，不再把开头相同的自动晋升指纹误剔除</li>
+      <li>晋升后的长指纹（整段广告/长水段）改为"整段口径"复核，命中阈值回归观察池的0.82，消除窗口投影+长度惩罚造成的口径鸿沟</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.250.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.251.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
