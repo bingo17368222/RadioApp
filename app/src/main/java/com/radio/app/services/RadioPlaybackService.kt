@@ -6762,40 +6762,48 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (curStation != null && !curDate.isNullOrBlank()) {
                 try {
                     val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-                    // 尝试获取当前日期之后最多3天的节目
+                    // v3.1.252-fix: 未来覆盖由 3 天放宽到 7 天，且改为逐日独立容错（单日拉取失败不影响后续天）。
+                    // 根因：当日 preCacheList 仅覆盖单日(如 combinedList=12 个全为当天)时，计划很快用尽，
+                    // 连播便跌入 fetchCrossDayEpisode 的跨天构造；配合旧跨天逻辑固定取 07:00 早间档，
+                    // 造成"连续多天只播放早间节目"。放宽覆盖后 real 多档节目(老杨说车/旅行大玩家/下班路上)
+                    // 也能进入播放计划，减少对跨天兜底的依赖。
                     val dateFormat2 = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
                     dateFormat2.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-                    val curDateObj = dateFormat2.parse(curDate)
+                    val curDateObj = try { dateFormat2.parse(curDate) } catch (_: Exception) { null }
                     if (curDateObj != null) {
-                        for (dayOffset in 1..3) {
+                        for (dayOffset in 1..7) {
                             if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
-                            val nextDate = java.util.Date(curDateObj.time + dayOffset * 86400000L)
-                            val nextDateStr = dateFormat2.format(nextDate)
-                            val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, nextDateStr)
-                            if (!freshEpisodes.isNullOrEmpty()) {
-                                writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 $nextDateStr 共${freshEpisodes.size}个节目")
-                                for (ep in freshEpisodes) {
-                                    if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
-                                    val isDislikedById2 = settings.isDisliked(ep.id)
-                                    val isDislikedByTitle2 = settings.isDislikedByTitle(ep.stationId, ep.title)
-                                    val isNoPreprocess2 = settings.isNoPreprocess(ep.id ?: "")
-                                    val isDisliked2 = isDislikedById2 || isDislikedByTitle2
-                                    // v3.1.212-fix: 仅对当天节目做时间检查
-                                    val epDate2 = ep.broadcastAt?.take(10)
-                                    val isTimePassed2 = ep.startTime > 0 && epDate2 == todayStr && ep.startTime < System.currentTimeMillis()
-                                    if (!isDisliked2 && !isNoPreprocess2 && !isTimePassed2) {
-                                        nextPlanned.add(ep)
-                                    } else {
-                                        val reason2 = when {
-                                            isDislikedById2 -> "disliked-by-id"
-                                            isDislikedByTitle2 -> "disliked-by-title"
-                                            isNoPreprocess2 -> "no-preprocess"
-                                            isTimePassed2 -> "time-passed（已超过当前时间）"
-                                            else -> "unknown"
+                            try {
+                                val nextDate = java.util.Date(curDateObj.time + dayOffset * 86400000L)
+                                val nextDateStr = dateFormat2.format(nextDate)
+                                val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, nextDateStr)
+                                if (!freshEpisodes.isNullOrEmpty()) {
+                                    writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 $nextDateStr 共${freshEpisodes.size}个节目")
+                                    for (ep in freshEpisodes) {
+                                        if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
+                                        val isDislikedById2 = settings.isDisliked(ep.id)
+                                        val isDislikedByTitle2 = settings.isDislikedByTitle(ep.stationId, ep.title)
+                                        val isNoPreprocess2 = settings.isNoPreprocess(ep.id ?: "")
+                                        val isDisliked2 = isDislikedById2 || isDislikedByTitle2
+                                        // v3.1.212-fix: 仅对当天节目做时间检查
+                                        val epDate2 = ep.broadcastAt?.take(10)
+                                        val isTimePassed2 = ep.startTime > 0 && epDate2 == todayStr && ep.startTime < System.currentTimeMillis()
+                                        if (!isDisliked2 && !isNoPreprocess2 && !isTimePassed2) {
+                                            nextPlanned.add(ep)
+                                        } else {
+                                            val reason2 = when {
+                                                isDislikedById2 -> "disliked-by-id"
+                                                isDislikedByTitle2 -> "disliked-by-title"
+                                                isNoPreprocess2 -> "no-preprocess"
+                                                isTimePassed2 -> "time-passed（已超过当前时间）"
+                                                else -> "unknown"
+                                            }
+                                            writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 SKIP ${ep.id} (${ep.title}) - $reason2")
                                         }
-                                        writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 SKIP ${ep.id} (${ep.title}) - $reason2")
                                     }
                                 }
+                            } catch (e: Exception) {
+                                writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 第${dayOffset}天 失败，继续下一天: ${e.message}")
                             }
                         }
                     }
@@ -7313,14 +7321,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // 如果当天剩下的节目都是不喜欢的，那就取第2天的节目；上一个节目的逻辑也是这样。
                     val settings = AppSettings.getInstance(this)
                     val targetTimeSlot = if (nextDate) {
-                        // Going forward: find first non-disliked episode's time slot
-                        val firstNonDisliked = episodeList.firstOrNull { ep ->
-                            !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                        // v3.1.252-fix: 前向跨天时段必须"延续当前正播节目的时段"，而不是取"列表第一个非不喜欢节目"。
+                        // 根因（notification.log 佐证）：用户把早期档(如 -0 音乐自动驾驶)标为不喜欢/无需预处理后，
+                        // firstNonDisliked 几乎恒为 07:00 的「唱行早高峰」→ 每次跨天都构造次日 0700_0900 早间档，
+                        // 导致连续播放跨天后反复只播早间节目（用户反馈：连续三天只播放早间节目）。
+                        // 修复：从当前节目自身 URL 解析时段(如 sijiache_20250327_0700_0900 → 0700_0900)续播。
+                        val curParts = curUrl.substringAfterLast("/").substringBefore(".").split("_")
+                        val curSlot = if (curParts.size >= 4 &&
+                            curParts[2].matches(Regex("\\d{4}")) && curParts[3].matches(Regex("\\d{4}"))) {
+                            "${curParts[2]}_${curParts[3]}"
+                        } else null
+                        if (curSlot != null) {
+                            curSlot
+                        } else {
+                            // 兜底：解析失败才用列表第一个非不喜欢节目
+                            val firstNonDisliked = episodeList.firstOrNull { ep ->
+                                !settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                            }
+                            firstNonDisliked?.audioUrl?.let { url ->
+                                val parts = url.substringAfterLast("/").substringBefore(".").split("_")
+                                if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
+                            } ?: "0700_0900"
                         }
-                        firstNonDisliked?.audioUrl?.let { url ->
-                            val parts = url.substringAfterLast("/").substringBefore(".").split("_")
-                            if (parts.size >= 4) "${parts[2]}_${parts[3]}" else "0700_0900"
-                        } ?: "0700_0900"
                     } else {
                         // Going backward: find last non-disliked episode's time slot
                         val lastNonDisliked = episodeList.lastOrNull { ep ->
