@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.252 安装</title>
+<title>RadioApp v3.1.253 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.252</div>
+  <div class="version">v3.1.253</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.252</h3>
+    <h3>更新内容 v3.1.253</h3>
     <ul>
-      <li>修复"连续播放只播放早间节目"：跨天续播的时段由"列表第一个非不喜欢节目"改为"延续当前正播节目的时段"，不再被固定到 07:00 早间档</li>
-      <li>播放计划未来覆盖由 3 天放宽至 7 天，且改为逐日独立容错（单日拉取失败不影响后续天），确保次日起的老杨说车/旅行大玩家/下班路上等多档节目进入计划</li>
+      <li>播放计划补充获取改为"保满语义"：不再限制 3/7 天，持续向后拉取直到凑满 5 个或将未来 30 天真正拉完</li>
+      <li>根治"计划耗尽→跨天"：只要远端未来 30 天内有足够可播节目，每次切集重建都必然补满，计划不再因覆盖不足饿到空</li>
+      <li>配合 v3.1.252 的"跨天时段跟随当前时段"，不再固定跳到早间档</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.252.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.253.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

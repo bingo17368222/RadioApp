@@ -6771,7 +6771,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     dateFormat2.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
                     val curDateObj = try { dateFormat2.parse(curDate) } catch (_: Exception) { null }
                     if (curDateObj != null) {
-                        for (dayOffset in 1..7) {
+                        // v3.1.253-fix: 补充获取改为"保满语义"——不再人为限死 3/7 天上限，而是持续向后拉取，
+                        // 直到 nextPlanned 凑满 FUTURE_PLAN_COUNT 或确实拉完未来 MAX_FUTURE_DAYS 天（真正到数据边界）。
+                        // 根因（用户确认"每次切集都应更新计划、理应始终保持5个"）：
+                        //   原实现即使每次都重建，补充范围有限+单日失败即中断，重建结果可能 <5 甚至 0，
+                        //   消费即删的队列最终耗空 → 转入跨天兜底（旧跨天还固定 07:00 早间档）。
+                        // 保满后，只要远端未来 MAX_FUTURE_DAYS 天内有 ≥FUTURE_PLAN_COUNT 个可播真实节目，
+                        // 每次重建都必然补满，彻底消除"计划耗尽→跨天"的路径。
+                        for (dayOffset in 1..30) {
                             if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
                             try {
                                 val nextDate = java.util.Date(curDateObj.time + dayOffset * 86400000L)
