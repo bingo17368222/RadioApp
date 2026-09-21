@@ -113,7 +113,15 @@ object SegmentGenerator {
     // 根因：YAMNet频繁SIGSEGV崩溃导致大批区间无推理结果，VAD回退将失败区间全标记为干货，
     // mergeAdjacentSegments/postProcessSegments合并干货段无上限 → 全部连成1个段
     // 30分钟是合理上限——正常干货段（主持人讲话/访谈）不会超过30分钟
-    private const val MAX_DRY_SEGMENT_LENGTH_MS = 1_800_000L // 30分钟
+    private const val MAX_DRY_SEGMENT_LENGTH_MS = 1_800_000L // 30分钟（绝对兜底，VAD回退长块）
+
+    // v3.1.255-fix: 连续干段"合并上限"收紧（6分钟），取代合并链路中一概用 30 分钟的宽松限制。
+    // 用户反馈：三层分段把"小节后半段+片花+主持人讲话+片花+小节前半段"合并成一个十几分钟
+    // 的干货巨段，主持人讲话被并进大段中间、无法单独成段。根因是 mergeAdjacentSegments / 
+    // mergeConsecutiveSameTypeSegments 对干段合并只设 30 分钟上限，片花与讲话均 hasVoice=true，
+    // 于是被无脑连成超长干段。收紧后达到该长度即停止吸附、保留既有边界，
+    // 使主持人讲话/小节交界处能保留为独立干段；MAX_DRY_SEGMENT_LENGTH_MS(30分钟)仍作绝对兜底。
+    private const val DRY_MERGE_CAP_MS = 360_000L // 6分钟（连续干段合并上限）
 
     // v3.1.239-fix: 类级水段最大长度上限（供 mergeConsecutiveSameTypeSegments 最终归并使用）。
     // 与 mergeSilenceToAdjacentWater / mergeAdjacentSegments 内的局部 5 分钟上限保持一致。
@@ -589,7 +597,8 @@ object SegmentGenerator {
                     continue
                 }
                 // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
-                if (segments[i-1].hasVoice && seg.end - segments[i-1].start >= MAX_DRY_SEGMENT_LENGTH_MS) {
+                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)，避免静音延伸出十几分钟巨干段
+                if (segments[i-1].hasVoice && seg.end - segments[i-1].start >= DRY_MERGE_CAP_MS) {
                     i++
                     continue
                 }
@@ -605,7 +614,8 @@ object SegmentGenerator {
                     continue
                 }
                 // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
-                if (segments[i+1].hasVoice && segments[i+1].end - seg.start >= MAX_DRY_SEGMENT_LENGTH_MS) {
+                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)
+                if (segments[i+1].hasVoice && segments[i+1].end - seg.start >= DRY_MERGE_CAP_MS) {
                     i++
                     continue
                 }
@@ -1382,7 +1392,7 @@ object SegmentGenerator {
                 // 长度上限检查，避免合并成超长巨段
                 val newLen = newEnd - a.start
                 val tooLong = if (sameDry) {
-                    newLen >= MAX_DRY_SEGMENT_LENGTH_MS
+                    newLen >= DRY_MERGE_CAP_MS
                 } else {
                     newLen >= MAX_WATER_SEGMENT_LENGTH_MS
                 }
@@ -1675,7 +1685,8 @@ object SegmentGenerator {
                     // v3.1.135: 水段合并检查长度限制
                     if (isWaterLabel(curr.label) && (next.end - curr.start) >= MAX_WATER_SEGMENT_LENGTH_MS) continue
                     // v3.2.4-fix: 干货段合并检查长度限制，防止VAD回退连续干段合并为1个巨段
-                    if (curr.hasVoice && (next.end - curr.start) >= MAX_DRY_SEGMENT_LENGTH_MS) continue
+                    // v3.1.255: 干段合并上限收紧到 DRY_MERGE_CAP_MS(6分钟)，防止片花/讲话被连成十几分钟巨段
+                    if (curr.hasVoice && (next.end - curr.start) >= DRY_MERGE_CAP_MS) continue
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
                     changed = true

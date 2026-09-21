@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.254 安装</title>
+<title>RadioApp v3.1.255 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.254</div>
+  <div class="version">v3.1.255</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.254</h3>
+    <h3>更新内容 v3.1.255</h3>
     <ul>
-      <li>彻底修复"早间跳早间"：退化选段起点不再仅按"日期≥当前日"定位，改为"同日期内按时段(startTime)从当前节目下一档继续"</li>
-      <li>根治：当前节目在缓存列表匹配失败、进入退化逻辑时，计划不再重新锚到当天/最近日的第一档（早高峰），而是从当前时段的紧邻下一档开始连播</li>
-      <li>若当前节目已是当天最后一档，则自然跨向次日从第一档继续；仅当当天缓存缺失才跨到最近的完整日期块</li>
+      <li>修复三层分段"干货段合并过于宽松"：不再把"小节后半段+片花+主持人讲话+片花+小节前半段"合并成一个十几分钟的干货巨段</li>
+      <li>连续干货段合并上限由30分钟收紧到6分钟：达到即停止吸收相邻干段、保留既有边界，使主持人讲话/小节交界处能保留为独立干货段</li>
+      <li>收尾合并、相邻段合并、静音延伸三处干段合并逻辑统一收紧，防止片花与讲话被连成超长段</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.254.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.255.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
