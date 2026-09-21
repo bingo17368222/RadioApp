@@ -6573,9 +6573,33 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         //   "手动播放晚间档『下班路上·全城娱乐』(-9)后，向后取后续计划取到同日早间档(-0/-1/-2)，
         //     后续播放计划错乱显示为同日早间节目"。
         // 修复：同天按ID序号排序——序号 -0~-11 即一天从早到晚的播出顺序，天然正确且不受startTime影响。
+        //
+        // v3.1.256-fix: 标题→序号映射，把"-cross"跨天节目归位到其固有播出时段。
+        // 根因（schedule.log 佐证 22:41:35）：跨天节目 ID 形如 henan-private-car-2025-03-28-cross，
+        // extractEpisodeIndex() 因无数字后缀返回 Int.MAX_VALUE，被排到"同日期块末尾"。当当前节目恰是
+        // 该跨天早间档时，计划从它之后寻址，同天的 老杨说车/旅行大玩家/下班路上 等档位（排序靠前）
+        // 全被错失，计划跳跃数日直到下一个可播早间档，表现为"早间跳早间"（刚播完 03-28 早间，
+        // 下一个计划直接是 03-31 早间）。修复：跨天节目按标题匹配同名常规节目的序号归位，
+        // 使 03-28-cross(唱行早高峰 07:00) 排列在 -0 与 -2 之间，自然衔接当天后续档位。
+        val titleIndexMap = HashMap<String, Int>()
+        for (ep in combinedList) {
+            if (ep.id?.endsWith("-cross") == true) continue
+            val idx = extractEpisodeIndex(ep)
+            val title = ep.title ?: ""
+            if (idx != Int.MAX_VALUE && title.isNotBlank()) {
+                val cur = titleIndexMap[title]
+                if (cur == null || idx < cur) titleIndexMap[title] = idx
+            }
+        }
         combinedList = combinedList.sortedWith(
             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
-                .thenBy { extractEpisodeIndex(it) }
+                .thenBy { ep ->
+                    if (ep.id?.endsWith("-cross") == true) {
+                        titleIndexMap[ep.title ?: ""] ?: Int.MAX_VALUE
+                    } else {
+                        extractEpisodeIndex(ep)
+                    }
+                }
                 .thenBy { it.startTime }
         )
 
@@ -6646,10 +6670,28 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                     if (parsedTime > 0) ep.copy(startTime = parsedTime) else ep
                                 } catch (_: Exception) { ep }
                             } else ep
+                        }
                         // v3.1.247-fix: 排序键与主路径一致（日期→ID序号→startTime），避免fallback4下同日早间档错乱
-                        }.sortedWith(
+                        // v3.1.256-fix: 同步加入标题→序号归位，正确处理 list 中的"-cross"跨天节目
+                        val titleIndexMap2 = HashMap<String, Int>()
+                        for (epb in combinedList) {
+                            if (epb.id?.endsWith("-cross") == true) continue
+                            val idx2 = extractEpisodeIndex(epb)
+                            val title2 = epb.title ?: ""
+                            if (idx2 != Int.MAX_VALUE && title2.isNotBlank()) {
+                                val cur2 = titleIndexMap2[title2]
+                                if (cur2 == null || idx2 < cur2) titleIndexMap2[title2] = idx2
+                            }
+                        }
+                        combinedList = combinedList.sortedWith(
                             compareBy<Episode> { it.broadcastAt?.take(10) ?: "" }
-                                .thenBy { extractEpisodeIndex(it) }
+                                .thenBy { ep ->
+                                    if (ep.id?.endsWith("-cross") == true) {
+                                        titleIndexMap2[ep.title ?: ""] ?: Int.MAX_VALUE
+                                    } else {
+                                        extractEpisodeIndex(ep)
+                                    }
+                                }
                                 .thenBy { it.startTime }
                         )
                         currentIdx = combinedList.indexOfFirst {
