@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.253 安装</title>
+<title>RadioApp v3.1.254 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.253</div>
+  <div class="version">v3.1.254</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.253</h3>
+    <h3>更新内容 v3.1.254</h3>
     <ul>
-      <li>播放计划补充获取改为"保满语义"：不再限制 3/7 天，持续向后拉取直到凑满 5 个或将未来 30 天真正拉完</li>
-      <li>根治"计划耗尽→跨天"：只要远端未来 30 天内有足够可播节目，每次切集重建都必然补满，计划不再因覆盖不足饿到空</li>
-      <li>配合 v3.1.252 的"跨天时段跟随当前时段"，不再固定跳到早间档</li>
+      <li>彻底修复"早间跳早间"：退化选段起点不再仅按"日期≥当前日"定位，改为"同日期内按时段(startTime)从当前节目下一档继续"</li>
+      <li>根治：当前节目在缓存列表匹配失败、进入退化逻辑时，计划不再重新锚到当天/最近日的第一档（早高峰），而是从当前时段的紧邻下一档开始连播</li>
+      <li>若当前节目已是当天最后一档，则自然跨向次日从第一档继续；仅当当天缓存缺失才跨到最近的完整日期块</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.253.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.254.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

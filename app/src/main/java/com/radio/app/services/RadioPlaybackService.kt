@@ -6680,12 +6680,30 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val curDateForAnchor = currentEpisode?.broadcastAt?.take(10)
             val curStartTime = currentEpisode?.startTime ?: 0L
             if (curDateForAnchor != null) {
-                // v3.1.249-fix: 以"当前节目日期"为下限定位起点，绝不让更早日期的节目进入后继播放计划。
-                // 根因（schedule.log 佐证）：播放新一天节目(如 19-1)而 combinedList 仍是旧一天缓存
-                // (如 12 个全为 18 号)时，当前节目找不到，原 startTime 锚定退化 idx=-1 从列表头开始，
-                // 把前一天(18号)全天排进计划，导致连播误跳 18 号。
-                val anchor2 = combinedList.indexOfFirst { (it.broadcastAt?.take(10) ?: "") >= curDateForAnchor }
-                currentIdx = if (anchor2 >= 0) anchor2 - 1 else -1
+                // v3.1.254-fix: 退化锚点必须兼顾"同日期 + 时段(startTime)"，彻底修复"早间跳早间"。
+                // 根因（schedule.log 佐证 2025-09-20 23:09:46）：当前节目(03-25-1 唱行早高峰)在 combinedList
+                // 匹配失败后进入退化，旧逻辑(v3.1.249)只用 `date >= curDate` 取第一个节目作为块起点，
+                // 丢弃了时段维度。由于每天第一档正是早高峰(07:00)，退化后计划被重新锚定到
+                // "当天(或最近一日)的第一档"——恰好又是早高峰，于是自动连播"早间跳早间"：
+                // 刚播完 03-25 早高峰，连播又 03-27 早高峰(跨天缓存缺失时)，或 03-25 老杨说车被早高峰覆盖。
+                // 修复策略：
+                //   1) 若 combinedList 中存在"与当前同日期"的节目 → 在该日期块内，锚定到
+                //      `startTime 严格晚于当前节目 startTime 的第一个节目` 的前一项，
+                //      使 while(idx=currentIdx+1) 从"当前时段的下一档"开始排计划（不再回当天第一档）；
+                //   2) 若当前节目已是该日期块最后一档(同日无更晚时段) → 锚定到该日期块末尾，
+                //      让计划自然跨向更晚日期（从次日第一档继续）；
+                //   3) 若 combinedList 无同日期节目(缓存缺当天) → 回退到 `date >= curDate` 的第一个日期块开头。
+                val sameDayStart = combinedList.indexOfFirst { (it.broadcastAt?.take(10) ?: "") == curDateForAnchor }
+                if (sameDayStart >= 0) {
+                    val nextSlot = combinedList.indexOfFirst {
+                        (it.broadcastAt?.take(10) ?: "") >= curDateForAnchor && it.startTime > curStartTime
+                    }
+                    currentIdx = if (nextSlot >= 0) nextSlot - 1
+                                else combinedList.indexOfLast { (it.broadcastAt?.take(10) ?: "") == curDateForAnchor }
+                } else {
+                    val anchor2 = combinedList.indexOfFirst { (it.broadcastAt?.take(10) ?: "") >= curDateForAnchor }
+                    currentIdx = if (anchor2 >= 0) anchor2 - 1 else -1
+                }
             } else if (curStartTime > 0) {
                 val anchor = combinedList.indexOfFirst { it.startTime > curStartTime }
                 currentIdx = if (anchor >= 0) anchor - 1 else -1
