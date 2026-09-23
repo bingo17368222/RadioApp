@@ -6989,6 +6989,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     scan++
                     val alreadyPlanned = nextPlanned.any { it.id.isNotBlank() && it.id == ep.id }
                     if (alreadyPlanned || (ep.id != null && ep.id == curId)) continue
+                    // v3.1.261-fix: 兜底循环补齐会回绕列表开头，可能把"早于当前节目日期"的节目
+                    // (例如播放 04-02 时把 04-01)卷进计划 —— 用户日志"播放4月2日节目，计划却是4月1日"。
+                    // 主前向扫描有 isEarlierDay 守卫，此处回绕路径缺失才导致跨天日期倒退。补上同一守卫，
+                    // 只允许复用"当前节目当天及之后"的节目；同天回绕复用(较早档位)保留原设计。
+                    val epDate3 = ep.broadcastAt?.take(10)
+                    val isEarlierDay3 = curDateStr != null && epDate3 != null && epDate3 < curDateStr
+                    if (isEarlierDay3) {
+                        writeServiceLog("schedule", "buildPlaybackSchedule: 兜底循环补齐 SKIP ${ep.id}（${epDate3} 早于当前 ${curDateStr}，回绕禁止入计划）")
+                        continue
+                    }
                     val dId = settings.isDisliked(ep.id)
                     val dTitle = settings.isDislikedByTitle(ep.stationId, ep.title)
                     val noPre = settings.isNoPreprocess(ep.id ?: "")

@@ -173,23 +173,19 @@ class EpisodeApiService private constructor() {
             targetCal.set(Calendar.HOUR_OF_DAY, 0); targetCal.set(Calendar.MINUTE, 0)
             targetCal.set(Calendar.SECOND, 0); targetCal.set(Calendar.MILLISECOND, 0)
 
-            // v3.1.259-fix: "今天/未来"判定基准由"系统当前时间"改为"当前播放节目当天日期"。
-            // 根因：跨天补满/回放场景下，请求的 dateStr 可能是早于系统今天的"过去日期"——
-            // 但用户回放时以"节目播放当天"为基准，这些日期对用户而言就是"今天"，
-            // 旧逻辑按系统时间把它们误判为 isFuture 并返回空，导致计划补不满。
-            val baseToday = if (currentPlayStationDate != null) {
-                val d = dateFormat.parse(currentPlayStationDate!!)
-                val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
-                if (d != null) c.time = d
-                c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0)
-                c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
-                c
-            } else {
-                val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
-                c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0)
-                c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
-                c
-            }
+            // v3.1.261-fix: "今天/未来"判定基准必须用"真实系统今天"（内容可用性边界），
+            // 不能用当前播放节目的广播日期。
+            // 根因（schedule.log v3.1.260 佐证）：回放历史节目时，buildPlaybackSchedule 会把
+            // currentPlayStationDate 设为节目日期(如 2025-04-01)，随后跨天补满请求 2025-04-02、
+            // 2025-04-03……此时若以"节目当天"为基准，次日及以后一律被判为 isFuture 而返回空，
+            // 播放计划永远补不满 5 个（显示 0/3/4），且多次切换节目也无法解决。
+            // 修正：isFuture 只应表示"该日期尚未播出/远端无内容"，它只与真实系统今天有关——
+            // 回放 2025 年初的历史节目时，其前后所有 2025 日期都已是"过去已播出"，均可正常拉取。
+            // 因此此处固定以真实系统今天为基准；节目当天基准仅保留在预缓存裁剪(prunePreCacheList)
+            // 等本地排序/裁剪逻辑中，不影响"远端是否已播出"的可用性判定。
+            val baseToday = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
+            baseToday.set(Calendar.HOUR_OF_DAY, 0); baseToday.set(Calendar.MINUTE, 0)
+            baseToday.set(Calendar.SECOND, 0); baseToday.set(Calendar.MILLISECOND, 0)
 
             val isToday = targetCal.timeInMillis == baseToday.timeInMillis
             val isFuture = targetCal.timeInMillis > baseToday.timeInMillis
