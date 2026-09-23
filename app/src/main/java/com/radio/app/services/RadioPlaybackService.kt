@@ -558,9 +558,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      // 统一限制预取/计划最多覆盖未来这些天，距今更远的节目一律视为"过远"清理出队列。
      // 注：class 成员不可用 const，故用普通 val（实例级）；
      //     与 FUTURE_PLAN_COUNT（同为实例可读）保持一致，方便统一调整。
-     private val MAX_PRELOAD_FUTURE_DAYS = 6
+     // v3.1.258: 上界由6天放宽到15天。原因：国庆等长假可能连续十几天没有有效节目，
+     // 预缓存过窄会导致长假期间"无后续可播节目"。15天可覆盖春节/国庆等"双周级"长假。
+     private val MAX_PRELOAD_FUTURE_DAYS = 15
      // v3.1.257: 播放计划"保满"的最大跨天补拉天数（天）。
-     // 与 MAX_PRELOAD_FUTURE_DAYS 是两码事：预缓存队列收窄到6天是为了防止未来节目堆积成数百条、
+     // 与 MAX_PRELOAD_FUTURE_DAYS 是两码事：预缓存队列收窄到15天是为了防止未来节目堆积成数百条、
      // 拖垮预缓存/属巡逻任务；而播放计划保满的目的恰恰是"始终能re-roll出后续可播节目"，
      // 避免用户看到"暂无后续播放计划"。因此计划保满保留宽的跨天覆盖（30天）：
      // 只要远端未来30天内存在 ≥1 个未被 disliked/no-preprocess 的真实可播节目，计划就不会空。
@@ -6907,7 +6909,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         // 每次重建都必然补满，彻底消除"计划耗尽→跨天"的路径。
                         // v3.1.257-fix: 保满补拉覆盖放宽到 PLAN_FILL_MAX_FUTURE_DAYS(30天)，确保"后续播放计划"始终能
                         // 从远端未来足够的天数内补出可播节目，杜绝界面提示"暂无后续播放计划"。
-                        // （预缓存队列仍限 MAX_PRELOAD_FUTURE_DAYS=6天，二者解耦，互不影响。）
+                        // （预缓存队列仍限 MAX_PRELOAD_FUTURE_DAYS=15天，二者解耦，互不影响。）
                         for (dayOffset in 1..PLAN_FILL_MAX_FUTURE_DAYS) {
                             if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
                             try {

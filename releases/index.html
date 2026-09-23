@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.257 安装</title>
+<title>RadioApp v3.1.258 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.257</div>
+  <div class="version">v3.1.258</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.257</h3>
+    <h3>更新内容 v3.1.258</h3>
     <ul>
-      <li>根治「计划任务耗尽(提示暂无后续播放计划)」：此前预缓存队列会为凑够可下载节目而无界向后拉取到未来30天×每天12档（实测曾累积到369条），同时播放计划在广播日期缺省等情况下无法跨天补满，导致后续计划被清空、界面误报"暂无后续播放计划"</li>
-      <li>新增有界裁剪：所有读取预缓存队列的入口统一按"未来6天内"净化，主动清理过远/过期节目（一次升级即生效，旧大列表自动收敛），防止未来节目堆积拖垮预缓存</li>
-      <li>预缓存扩展上界由30天收紧到6天（控制下载任务量）；播放计划"保满"则保持30天宽覆盖并在日期缺省时以今天兜底，确保始终能重建出后续可播节目，不再出现"暂无后续播放计划"</li>
+      <li>预缓存上界由6天放宽到15天：适配国庆等长假期，长假期间可能连续十几天没有有效节目，15天覆盖可确保长假时段仍有足够可预缓存的后续节目，避免长假期间"无后续可下载节目"</li>
+      <li>合并 v3.1.257：根治「计划任务耗尽(提示暂无后续播放计划)」——预缓存队列按"未来15天内"有界净化，主动清理过远/过期节目；播放计划"保满"保持30天宽覆盖并在日期缺省时以今天兜底，确保始终能重建出后续可播节目</li>
       <li>合并 v3.1.256：修复跨天节目排序错乱导致的"早间跳早间"</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.257.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.258.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
