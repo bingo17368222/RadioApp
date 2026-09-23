@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.259 安装</title>
+<title>RadioApp v3.1.260 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.259</div>
+  <div class="version">v3.1.260</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.259</h3>
+    <h3>更新内容 v3.1.260</h3>
     <ul>
-      <li>根治「计划任务耗尽(提示暂无后续播放计划)」最终兜底：即便长假断更/频道无新档期导致预缓存清空、当前节目又处于当天靠后档位、跨天补拉因远端未来日期返回空而未命中，播放计划仍会循环复用该电台"仍未播、非不喜欢、无需处理"的真实节目补满5个，手动切换节目也不再生效，计划永不落空</li>
+      <li>日期基准统一调整为"节目播放当天"：回放历史节目（如播放 4 月 1 日的节目）时，预缓存裁剪与远端"今天/未来"判定均以节目当天为准。此前以系统当前时间为基准，会把历史节目预缓存清空、并把跨天补拉的历史后续日期误判为"未来"返回空，导致播放计划补不满、提示"暂无后续播放计划"</li>
+      <li>合并 v3.1.259：播放计划最终兜底——跨天补拉不足时循环复用该电台"仍未播、非不喜欢、无需处理"的真实节目补满5个，计划永不落空</li>
       <li>合并 v3.1.258：预缓存上界放宽到15天，适配国庆等长假</li>
-      <li>合并 v3.1.257：新增有界裁剪，播放计划"保满"保持30天宽覆盖并在日期缺省时以今天兜底</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.259.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.260.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

@@ -2106,14 +2106,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val original = loadPreCacheList()
         if (original.isEmpty()) return original
         val dayMs = 86400000L
-        val now = System.currentTimeMillis()
         val df = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
         df.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+        // v3.1.259-fix: 裁剪基准由"系统当前时间"改为"当前播放节目当天日期"。
+        // 根因（schedule.log 佐证）：用户回放的是历史节目（如广播日期 2025-04-01），
+        // 而此时系统时间已是当天/未来（如 2026-09），旧逻辑按系统时间把这些历史节目的
+        // 预缓存全部判为"过早/过期"清空（preCacheList 155→8→2→0），导致 combinedList
+        // 骤减、播放计划补不满、界面提示"暂无后续播放计划"。
+        // 现改为以 currentEpisode 的广播日期为基准：仅裁剪相对该基准"过早 > MAX_PRELOAD_FUTURE_DAYS 天
+        // 或过期 >=30 天前"的节目；回放场景下历史但算"当天/近几天"的节目一律保留。
+        // 若 currentEpisode 无有效日期，则回退到系统当前时间兜底。
+        val refMs = try {
+            val refStr = currentEpisode?.broadcastAt?.take(10)
+            if (refStr != null && refStr.length == 10) {
+                df.parse(refStr)?.time ?: System.currentTimeMillis()
+            } else System.currentTimeMillis()
+        } catch (_: Exception) { System.currentTimeMillis() }
         val pruned = original.filter { ep ->
             val d = ep.broadcastAt?.take(10) ?: ""
             if (d.length != 10) return@filter true // 无法解析日期，保守保留
             val ms = try { df.parse(d)?.time } catch (_: Exception) { null } ?: return@filter true
-            val diffDays = (now - ms) / dayMs
+            val diffDays = (refMs - ms) / dayMs
             diffDays > -MAX_PRELOAD_FUTURE_DAYS && diffDays < 30L
         }
         if (pruned.size < original.size) {
@@ -6599,6 +6612,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id ?: return emptyList()
         if (curId.isBlank()) return emptyList()
+
+        // v3.1.259-fix: 把接口内"今天/未来"判定基准同步为当前播放节目当天日期。
+        // 回放历史节目时，fetchEpisodesByDateSync 的跨天补满才能以"节目当天"为基准
+        // 拉取后续节目，而非被系统当前时间误判为 future 返回空。
+        com.radio.app.network.EpisodeApiService.getInstance().currentPlayStationDate = currentEpisode?.broadcastAt?.take(10)
 
         // v3.1.257: 播放计划基于有界净化后的预缓存队列，防止读到已污染的数百条未来节目
         val preCacheList = prunePreCacheList()

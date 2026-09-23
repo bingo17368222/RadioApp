@@ -95,6 +95,11 @@ class EpisodeApiService private constructor() {
 
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
+    // v3.1.259-fix: 当前播放节目当天日期（yyyy-MM-dd）。用于把接口内"今天/未来"判定基准
+    // 从系统当前时间改为节目播放当天日期（回放历史节目时仍以节目当天为基准拉取后续节目）。
+    @Volatile
+    var currentPlayStationDate: String? = null
+
     private fun httpGet(urlStr: String): String? {
         var conn: HttpURLConnection? = null
         try {
@@ -163,19 +168,34 @@ class EpisodeApiService private constructor() {
             dateFormat.timeZone = TimeZone.getTimeZone("Asia/Shanghai")
             val targetDate = dateFormat.parse(dateStr) ?: return null
 
-            val today = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
             val targetCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
             targetCal.time = targetDate
-            today.set(Calendar.HOUR_OF_DAY, 0); today.set(Calendar.MINUTE, 0)
-            today.set(Calendar.SECOND, 0); today.set(Calendar.MILLISECOND, 0)
             targetCal.set(Calendar.HOUR_OF_DAY, 0); targetCal.set(Calendar.MINUTE, 0)
             targetCal.set(Calendar.SECOND, 0); targetCal.set(Calendar.MILLISECOND, 0)
 
-            val isToday = targetCal.timeInMillis == today.timeInMillis
-            val isFuture = targetCal.timeInMillis > today.timeInMillis
+            // v3.1.259-fix: "今天/未来"判定基准由"系统当前时间"改为"当前播放节目当天日期"。
+            // 根因：跨天补满/回放场景下，请求的 dateStr 可能是早于系统今天的"过去日期"——
+            // 但用户回放时以"节目播放当天"为基准，这些日期对用户而言就是"今天"，
+            // 旧逻辑按系统时间把它们误判为 isFuture 并返回空，导致计划补不满。
+            val baseToday = if (currentPlayStationDate != null) {
+                val d = dateFormat.parse(currentPlayStationDate!!)
+                val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
+                if (d != null) c.time = d
+                c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0)
+                c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
+                c
+            } else {
+                val c = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
+                c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0)
+                c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
+                c
+            }
+
+            val isToday = targetCal.timeInMillis == baseToday.timeInMillis
+            val isFuture = targetCal.timeInMillis > baseToday.timeInMillis
 
             if (isFuture) {
-                Log.d(TAG, "fetchEpisodesByDateSync: future date $dateStr, returning empty")
+                Log.d(TAG, "fetchEpisodesByDateSync: future date $dateStr (base=${baseToday.timeInMillis / 86400000L}), returning empty")
                 return emptyList()
             }
 
