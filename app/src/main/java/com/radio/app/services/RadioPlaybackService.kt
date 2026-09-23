@@ -551,6 +551,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // v3.1.133: 后续计划播放列表（当前节目之后的5个节目），每次切换节目后更新
     private val futurePlannedEpisodes = mutableListOf<Episode>()
     private val FUTURE_PLAN_COUNT = 5  // 提前计划后续5个节目
+    // v3.1.257: 预缓存/播放计划的"未来跨天上限"（天）。
+     // 根治"计划任务耗尽"：此前预缓存与计划保满都无界向后扩展到未来30天×每天12档，
+     // 配合大量 disliked/周末 no-preprocess，preCacheList 曾积累到 369 条且被
+     // savePreCacheList 的防截断防护锁死，导致未来节目把预缓存/播放计划任务占满耗尽。
+     // 统一限制预取/计划最多覆盖未来这些天，距今更远的节目一律视为"过远"清理出队列。
+     // 注：class 成员不可用 const，故用普通 val（实例级）；
+     //     与 FUTURE_PLAN_COUNT（同为实例可读）保持一致，方便统一调整。
+     private val MAX_PRELOAD_FUTURE_DAYS = 6
+     // v3.1.257: 播放计划"保满"的最大跨天补拉天数（天）。
+     // 与 MAX_PRELOAD_FUTURE_DAYS 是两码事：预缓存队列收窄到6天是为了防止未来节目堆积成数百条、
+     // 拖垮预缓存/属巡逻任务；而播放计划保满的目的恰恰是"始终能re-roll出后续可播节目"，
+     // 避免用户看到"暂无后续播放计划"。因此计划保满保留宽的跨天覆盖（30天）：
+     // 只要远端未来30天内存在 ≥1 个未被 disliked/no-preprocess 的真实可播节目，计划就不会空。
+     private val PLAN_FILL_MAX_FUTURE_DAYS = 30
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
@@ -1483,7 +1497,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         if (!episodesDir.exists()) episodesDir.mkdirs()
 
-        var preCacheList = loadPreCacheList()
+        var preCacheList = prunePreCacheList()
         // v3.0.3: 对预缓存列表中的周末节目补标记为无需预处理
         markWeekendEpisodesNoPreprocess(preCacheList)
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
@@ -1734,7 +1748,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val episodesDir = com.radio.app.RadioApplication.getEpisodesCacheDir(this@RadioPlaybackService)
         val cachedFiles = episodesDir.listFiles()?.filter { it.isFile && it.length() > 1024 } ?: emptyList()
         val cachedNames = cachedFiles.map { it.name }.toSet()
-        val preCacheList = loadPreCacheList()
+        val preCacheList = prunePreCacheList()  // v3.1.257: 先裁剪过期/过远节目，读取有界净化后的队列
         val currentEp = currentEpisode
         val currentIdx = if (currentEp != null)
             preCacheList.indexOfFirst { it.id == currentEp.id || it.audioUrl == currentEp.audioUrl } else -1
@@ -1820,7 +1834,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             return existingList
         }
 
-        val maxDays = 30  // v3.1.59: 增加取数范围，优先处理近期但不限于近期
+        // v3.1.59: 增加取数范围，优先处理近期但不限于近期
+        // v3.1.257-fix: 上限由 30 收紧到 MAX_PRELOAD_FUTURE_DAYS，避免为凑够 targetCount 个
+        // "有效(非disliked/no-preprocess)可下载节目"而把未来30天×每天12档全拉进 preCacheList，
+        // 造成 preCacheList 累积到数百条、预缓存/播放计划任务被未来节目占满(耗尽)。
+        val maxDays = MAX_PRELOAD_FUTURE_DAYS
         if (daysFetched >= maxDays) {
             writePreCacheLog("fetchMoreDaysForPreCache: limit reached ($daysFetched days)")
             return existingList
@@ -2072,6 +2090,51 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // v3.1.257: 主动裁剪预缓存队列中的"过期/过远"节目，根治"计划任务耗尽"。
+    // 根因：v3.1.207 在 savePreCacheList 加的防截断防护（新列表<旧的一半/大列表<20 即拦截）
+    // 会把无界跨天扩展产生的已污染大列表（曾达369条，覆盖未来30天×每天12档）锁死，
+    // 使其永远无法收敛，未来节目占满预缓存/播放计划任务 = 耗尽。
+    // 这里"绕过该防护"针对性地做有界清理：仅移除广播日期能精确解析、
+    // 且"距今 > MAX_PRELOAD_FUTURE_DAYS 天（过远）或距今 >= 30 天前（过期）"的节目；
+    // 今天/近几天/日期未知的节目一律保留，不误伤有效内容。
+    // 返回裁剪后的列表，供 triggerPreCache / buildPlaybackSchedule 直接使用。
+    private fun prunePreCacheList(): List<Episode> {
+        val original = loadPreCacheList()
+        if (original.isEmpty()) return original
+        val dayMs = 86400000L
+        val now = System.currentTimeMillis()
+        val df = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+        df.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+        val pruned = original.filter { ep ->
+            val d = ep.broadcastAt?.take(10) ?: ""
+            if (d.length != 10) return@filter true // 无法解析日期，保守保留
+            val ms = try { df.parse(d)?.time } catch (_: Exception) { null } ?: return@filter true
+            val diffDays = (now - ms) / dayMs
+            diffDays > -MAX_PRELOAD_FUTURE_DAYS && diffDays < 30L
+        }
+        if (pruned.size < original.size) {
+            // 直接写原始存储，绕过 savePreCacheList 的防截断防护（净化已污染大列表）
+            val arr = org.json.JSONArray()
+            for (ep in pruned) {
+                val o = org.json.JSONObject()
+                o.put("id", ep.id ?: "")
+                o.put("title", ep.title ?: "")
+                o.put("audio_url", ep.audioUrl ?: "")
+                o.put("station_name", ep.stationName ?: "")
+                o.put("station_id", ep.stationId ?: "")
+                o.put("duration", ep.duration)
+                o.put("broadcast_at", ep.broadcastAt ?: "")
+                o.put("start_time", ep.startTime)
+                o.put("end_time", ep.endTime)
+                arr.put(o)
+            }
+            getSharedPreferences("precache_list", MODE_PRIVATE)
+                .edit().putString("episodes", arr.toString()).apply()
+            writePreCacheLog("prunePreCacheList: ${original.size} -> ${pruned.size} (dropped ${original.size - pruned.size})")
+        }
+        return pruned
     }
 
     private fun loadEpisodeList(): List<Episode> {
@@ -3026,7 +3089,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 writePreCacheLog("patrolSubtitle:  patrol started, currentEp=${currentEp.title}")
 
                 // Load pre-cache list and find episodes after current one
-                val preCacheList = loadPreCacheList()
+                // v3.1.257: 字幕巡逻也基于有界净化后的预缓存队列，避免遍历数百条未来节目
+                val preCacheList = prunePreCacheList()
                 var currentIdx = preCacheList.indexOfFirst { it.id == currentEp.id }
                 if (currentIdx < 0) {
                     currentIdx = preCacheList.indexOfFirst { it.audioUrl == currentEp.audioUrl }
@@ -6469,7 +6533,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val curId = currentEpisode?.id ?: return
         if (curId.isBlank()) return
 
-        val preCacheList = loadPreCacheList()
+        val preCacheList = prunePreCacheList()
         var savedList = loadEpisodeList()
 
         // v3.1.212-fix: 当savedList为空时，主动从API获取当前日期的节目列表。
@@ -6534,7 +6598,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val curId = currentEpisode?.id ?: return emptyList()
         if (curId.isBlank()) return emptyList()
 
-        val preCacheList = loadPreCacheList()
+        // v3.1.257: 播放计划基于有界净化后的预缓存队列，防止读到已污染的数百条未来节目
+        val preCacheList = prunePreCacheList()
         val savedList = loadEpisodeList()
 
         // 合并列表，preCacheList优先，去重
@@ -6819,7 +6884,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (nextPlanned.size < FUTURE_PLAN_COUNT) {
             val curStation = currentEpisode?.stationId
             val curDate = currentEpisode?.broadcastAt?.take(10)
-            if (curStation != null && !curDate.isNullOrBlank()) {
+            // v3.1.257-fix: curDate 允许为空/缺省——当 currentEpisode 未携带广播日期时，
+            // 用"今天"作为基准日继续跨天补满，避免保满整个被跳过导致计划为空、界面提示"暂无后续播放计划"。
+            if (curStation != null) {
                 try {
                     val apiService = com.radio.app.network.EpisodeApiService.getInstance()
                     // v3.1.252-fix: 未来覆盖由 3 天放宽到 7 天，且改为逐日独立容错（单日拉取失败不影响后续天）。
@@ -6829,16 +6896,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // 也能进入播放计划，减少对跨天兜底的依赖。
                     val dateFormat2 = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
                     dateFormat2.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-                    val curDateObj = try { dateFormat2.parse(curDate) } catch (_: Exception) { null }
+                    val curDateObj = try { dateFormat2.parse(if (curDate.isNullOrBlank() || curDate.length != 10) todayStr else curDate) } catch (_: Exception) { null }
                     if (curDateObj != null) {
                         // v3.1.253-fix: 补充获取改为"保满语义"——不再人为限死 3/7 天上限，而是持续向后拉取，
                         // 直到 nextPlanned 凑满 FUTURE_PLAN_COUNT 或确实拉完未来 MAX_FUTURE_DAYS 天（真正到数据边界）。
                         // 根因（用户确认"每次切集都应更新计划、理应始终保持5个"）：
                         //   原实现即使每次都重建，补充范围有限+单日失败即中断，重建结果可能 <5 甚至 0，
                         //   消费即删的队列最终耗空 → 转入跨天兜底（旧跨天还固定 07:00 早间档）。
-                        // 保满后，只要远端未来 MAX_FUTURE_DAYS 天内有 ≥FUTURE_PLAN_COUNT 个可播真实节目，
+                        // 保满后，只要远端未来 MAX_PRELOAD_FUTURE_DAYS 天内有 ≥FUTURE_PLAN_COUNT 个可播真实节目，
                         // 每次重建都必然补满，彻底消除"计划耗尽→跨天"的路径。
-                        for (dayOffset in 1..30) {
+                        // v3.1.257-fix: 保满补拉覆盖放宽到 PLAN_FILL_MAX_FUTURE_DAYS(30天)，确保"后续播放计划"始终能
+                        // 从远端未来足够的天数内补出可播节目，杜绝界面提示"暂无后续播放计划"。
+                        // （预缓存队列仍限 MAX_PRELOAD_FUTURE_DAYS=6天，二者解耦，互不影响。）
+                        for (dayOffset in 1..PLAN_FILL_MAX_FUTURE_DAYS) {
                             if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
                             try {
                                 val nextDate = java.util.Date(curDateObj.time + dayOffset * 86400000L)
@@ -7560,7 +7630,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // Try preCacheList first
-        val preCacheList = loadPreCacheList()
+        // v3.1.257: 统一基于净化后的预缓存队列，避免旧大列表被再次写回
+        val preCacheList = prunePreCacheList()
         val savedList = loadEpisodeList()
         writeServiceLog("notification", "notifyPrevEpisode: searching for prev of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
         writeServiceLog("notification", "notifyPrevEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
@@ -7633,7 +7704,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
 
         // Try preCacheList first
-        val preCacheList = loadPreCacheList()
+        // v3.1.257: 统一基于净化后的预缓存队列，避免旧大列表被再次写回
+        val preCacheList = prunePreCacheList()
         val savedList = loadEpisodeList()
         writeServiceLog("notification", "notifyNextEpisode: searching for next of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
         writeServiceLog("notification", "notifyNextEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
