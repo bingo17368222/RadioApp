@@ -100,6 +100,14 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val pcmPregenCancelFlags: MutableMap<String, Boolean> = ConcurrentHashMap()
         private val pcmPregenNotifIdCounter = java.util.concurrent.atomic.AtomicInteger(2000)
 
+        // v3.1.262: PCM生成失败时间戳缓存（key=episodeId → 最近一次PCM生成失败时间）。
+        // 巡逻"补全PCM"机制依据它把失败的节目优先排到下一轮扫描最前，尽快再次重试生成PCM，
+        // 避免失败节目被后续大量新节目挤占批次、长期补不上PCM（从而也无法进入三分段/预分段）。
+        private val pcmGenFailTimestamps: MutableMap<String, Long> = ConcurrentHashMap()
+        // v3.1.262: 失败节目在窗口期内保持"优先重试"身份的超时（1小时）。超过后降级，
+        // 防止某个永久失败（如URL彻底失效）的节目每轮都霸占批次、饿死队列里其余正常节目。
+        private val PCM_FAIL_RETRY_WINDOW_MS = 60L * 60 * 1000
+
         const val BROADCAST_BUFFER_UPDATE = "com.radio.app.BUFFER_UPDATE"
         const val BROADCAST_STATE_CHANGED = "com.radio.app.STATE_CHANGED"
         const val BROADCAST_CACHE_UPDATE = "com.radio.app.CACHE_UPDATE"
@@ -2769,6 +2777,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * This generates 5-min PCM and full PCM without generating subtitles.
      * Used when pre-generate subtitles is OFF but preprocessing is ON.
      */
+    // v3.1.262: 记录一次PCM生成失败。巡逻据此把该节目优先重试。
+    private fun recordPcmGenFailure(episodeId: String) {
+        if (episodeId.isBlank()) return
+        pcmGenFailTimestamps[episodeId] = System.currentTimeMillis()
+        writePreCacheLog("recordPcmGenFailure: ${episodeId} 已登记PCM失败，下一巡逻优先重试")
+    }
+
     private fun startPreCachePcmGeneration(episode: Episode) {
         val episodeId = episode.id ?: return
         if (episodeId.isBlank()) return
@@ -2841,6 +2856,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             writePreCacheLog("startPreCachePcmGeneration:  MP4 downloaded for $episodeId: ${cachedAudioFile.length()} bytes")
                         } else {
                             writePreCacheLog("startPreCachePcmGeneration:  MP4 download FAILED for $episodeId")
+                            recordPcmGenFailure(episodeId)
                             pcmPregenCancelFlags.remove(episodeId)
                             try {
                                 val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2850,6 +2866,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         }
                     } catch (e: Exception) {
                         writePreCacheLog("startPreCachePcmGeneration:  MP4 download exception for $episodeId: ${e.message}")
+                        recordPcmGenFailure(episodeId)
                         pcmPregenCancelFlags.remove(episodeId)
                         try {
                             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -2979,6 +2996,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }
                 )
                 if (success) {
+                    // v3.1.262: PCM生成成功，清除失败标记，解除优先重试身份
+                    pcmGenFailTimestamps.remove(episodeId)
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation SUCCESS for $episodeId")
                 } else {
                     // v3.1.67: 记录PCM生成失败原因到专用日志
@@ -3008,6 +3027,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val failTimeMs = System.currentTimeMillis() - pcmStartTime
                     writePcmGenLog(episodeId, audioUrl, failTimeMs, 0L, false, "preGeneratePcmFiles_failed audioFile=$audioInfo")
                     writePreCacheLog("startPreCachePcmGeneration:  PCM generation FAILED for $episodeId (audio file may not be cached)")
+                    recordPcmGenFailure(episodeId)
                 }
                 // 完成后清除取消标志并取消进度通知
                 pcmPregenCancelFlags.remove(episodeId)
@@ -3017,6 +3037,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } catch (_: Exception) {}
             } catch (e: Exception) {
                 writePreCacheLog("startPreCachePcmGeneration:  PCM generation exception: ${e.message}")
+                recordPcmGenFailure(episodeId)
                 writePcmFailureLog(
                     episodeId = episodeId,
                     episodeTitle = episode.title,
@@ -3129,7 +3150,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // processing past episodes that the user has already moved past.
                 // v3.1.59: 优先处理近期节目，非近期节目也会被扫描（两遍扫描策略）
                 val recentDateRange = getRecentDateRange()
-                val scanOrder = if (currentIdx >= 0) {
+                val baseOrder = if (currentIdx >= 0) {
                     if (recentDateRange != null) {
                         val recent = mutableListOf<Int>()
                         val nonRecent = mutableListOf<Int>()
@@ -3149,6 +3170,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } else {
                     writePreCacheLog("patrolSubtitle:  current episode not in preCacheList, cannot determine position — skipping patrol")
                     emptyList()
+                }
+                // v3.1.262: "补全PCM"优先——把PCM生成失败过的节目排到本轮扫描最前，尽快再次重试生成PCM。
+                // 失败节目会先被再次尝试(仍缺音频则先触发预缓存下载)，成功后(或超过窗口期)自动降级回普通顺序。
+                val failCutoff = System.currentTimeMillis() - PCM_FAIL_RETRY_WINDOW_MS
+                val pcmFailFirst = baseOrder.filter { i ->
+                    val eid = preCacheList[i].id ?: return@filter false
+                    val t = pcmGenFailTimestamps[eid]
+                    t != null && t > failCutoff
+                }
+                val scanOrder = if (pcmFailFirst.isNotEmpty()) {
+                    writePreCacheLog("patrolSubtitle:  检测到 ${pcmFailFirst.size} 个PCM生成失败的节目，优先重试补全PCM")
+                    (pcmFailFirst + baseOrder).distinct()
+                } else {
+                    baseOrder
                 }
 
                 // [v2.4.81] Better patrol logging: count what was scanned

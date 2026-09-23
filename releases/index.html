@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.261 安装</title>
+<title>RadioApp v3.1.262 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.261</div>
+  <div class="version">v3.1.262</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.261</h3>
+    <h3>更新内容 v3.1.262</h3>
     <ul>
-      <li>根治"回放历史节目时播放计划补不满5个"：远端"今天/未来"可用性判定基准纠正为真实系统今天。此前 v3.1.259/260 误把基准改为"节目播放当天"，导致回放 4 月 1 日节目时，跨天补拉请求的 4 月 2/3 等重点被误判为"未来"返回空，播放计划始终只有 0/3/4 个、反复切换也不满5个。现在回放历史节目时其前后日期均可正常拉取，计划必然补满。</li>
-      <li>修复"播放 4 月 2 日节目、计划却显示 4 月 1 日"：播放计划兜底循环复用逻辑在回绕列表时会把早于当前节目的历史日期（4 月 1 日）卷进计划。已补上与主扫描一致的"早于当前日期禁止入计划"守卫，杜绝日期倒退注入。</li>
-      <li>合并 v3.1.258：预缓存上界放宽到15天，适配国庆等长假。</li>
+      <li>强化"巡逻补全PCM"机制：当某节目PCM生成失败（下载失败、解码异常、生成函数失败等）时会被登记为"失败"状态，下一轮巡逻会把它排到扫描最前、<b>优先再次重试生成PCM</b>，避免失败节目被大量后续新节目挤占批次而长期补不上PCM（从而也无法进入预分段/三分段）。PCM生成成功后自动解除优先身份；若持续失败超过1小时则自动降级为普通顺序，防止单个坏节目永久霸占批次饿死后面的正常节目。</li>
+      <li>合并 v3.1.261：修复播放计划补不满5个（远端今天/未来判定基准纠正为真实系统今天）及兜底循环把早于当前日期的节目卷进计划（播放4/2却显示4/1）。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.261.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.262.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
