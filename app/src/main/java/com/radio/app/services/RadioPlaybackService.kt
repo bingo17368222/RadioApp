@@ -6952,6 +6952,38 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
         }
 
+        // v3.1.259-fix: 最终兜底——跨天补拉不足时，从该电台已有列表中"循环回绕"补齐节目，
+        // 保证播放计划始终有 FUTURE_PLAN_COUNT 个后续可播节目，杜绝界面提示"暂无后续播放计划"。
+        // 根因（schedule.log v3.1.256/258 佐证）：长假断更/频道无新档期时，preCache 被 prune 清空，
+        // combinedList 只剩当天(savedList)少量档位；当当前节目恰处于当天靠后档位（如 -9 下班路上），
+        // 其后仅剩的档位又多被 disliked 过滤，跨天补拉又因远端未来日期返回空而未命中，
+        // 最终 nextPlanned=0/1，且"手动切换节目"也一样补不满。
+        // 兜底：从 combinedList 当前节目之后的位置开始，循环扫描整个电台已有列表，
+        // 复用"仍未播、非 disliked、非 no-preprocess"的真实节目补足名额，确保计划永不落空。
+        if (nextPlanned.size < FUTURE_PLAN_COUNT) {
+            val poolSize = combinedList.size
+            if (poolSize > 0) {
+                val starting = if (currentIdx >= 0) (currentIdx + 1) % poolSize else 0
+                var scan = 0
+                var added = 0
+                while (nextPlanned.size < FUTURE_PLAN_COUNT && scan < poolSize) {
+                    val ep = combinedList[(starting + scan) % poolSize]
+                    scan++
+                    val alreadyPlanned = nextPlanned.any { it.id.isNotBlank() && it.id == ep.id }
+                    if (alreadyPlanned || (ep.id != null && ep.id == curId)) continue
+                    val dId = settings.isDisliked(ep.id)
+                    val dTitle = settings.isDislikedByTitle(ep.stationId, ep.title)
+                    val noPre = settings.isNoPreprocess(ep.id ?: "")
+                    if (dId || dTitle || noPre) continue
+                    nextPlanned.add(ep)
+                    added++
+                }
+                if (added > 0) {
+                    writeServiceLog("schedule", "buildPlaybackSchedule: 兜底循环补齐 ${added} 个（复用该电台${poolSize}条，扫描${scan}次）")
+                }
+            }
+        }
+
         // 更新futurePlannedEpisodes
         // v3.1.xxx: 对每个节目进行富化，确保标题/起止时间完整
         val enrichedPlanned = nextPlanned.map { enrichEpisodeFromDbIfNeeded(it) }
