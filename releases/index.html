@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.262 安装</title>
+<title>RadioApp v3.1.264 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.262</div>
+  <div class="version">v3.1.264</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.262</h3>
+    <h3>更新内容 v3.1.264</h3>
     <ul>
-      <li>强化"巡逻补全PCM"机制：当某节目PCM生成失败（下载失败、解码异常、生成函数失败等）时会被登记为"失败"状态，下一轮巡逻会把它排到扫描最前、<b>优先再次重试生成PCM</b>，避免失败节目被大量后续新节目挤占批次而长期补不上PCM（从而也无法进入预分段/三分段）。PCM生成成功后自动解除优先身份；若持续失败超过1小时则自动降级为普通顺序，防止单个坏节目永久霸占批次饿死后面的正常节目。</li>
-      <li>合并 v3.1.261：修复播放计划补不满5个（远端今天/未来判定基准纠正为真实系统今天）及兜底循环把早于当前日期的节目卷进计划（播放4/2却显示4/1）。</li>
+      <li><b>彻底修复「暂无后续播放计划」</b>：当播放计划合并列表里完全不存在“&gt;= 当前节目日期”的节目时（例如回放数据被截断、或该日期远端本就无排期），此前维护的 earlier-day 守卫会把池内全部节目判为“早于当前日期”而统一跳过，导致后续计划算成 0 个、界面误报“暂无后续播放计划”。现放宽该守卫：一旦检测到池内无当前日期及之后的可排节目，就自动复用池内已有真实节目回放补足计划；仅在池内确有当前日期及之后节目时才维持严格守卫（不回归 4/2 却排出 4/1 的问题）。</li>
+      <li>合并 v3.1.263：冷启动/缓存未就绪或合并列表缺当前日时，同步补拉当日节目入样。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.262.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.264.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

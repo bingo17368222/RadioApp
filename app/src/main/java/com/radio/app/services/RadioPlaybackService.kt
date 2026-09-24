@@ -6661,6 +6661,53 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.139: 改为var，fallback4需要重新赋值
         var combinedList = (preCacheList + savedList).distinctBy { it.id }
 
+        // v3.1.263-fix: 冷启动/缓存未就绪时，若合并列表为空且能拿到当前电台与日期，提前同步拉取当日节目，
+        // 避免"首次构建 combinedList=空 → 退化起点 idx=-1 → 后续0个 → 界面提示暂无后续播放计划"。
+        // 根因（schedule.log 佐证）：preCacheList/savedList 均为空（尚未预缓存/DB未加载）时，整个函数在
+        // 空列表上走 fallback1~4 + 退化 + 循环回绕，回绕池为空，最终 nextPlanned=0，UI 闪提示"暂无后续播放计划"。
+        if (combinedList.isEmpty()) {
+            val curStation0 = currentEpisode?.stationId
+            val curDate0 = currentEpisode?.broadcastAt?.take(10)
+            if (curStation0 != null && curDate0 != null) {
+                try {
+                    val fresh0 = com.radio.app.network.EpisodeApiService.getInstance().fetchEpisodesByDateSync(curStation0, curDate0)
+                    if (!fresh0.isNullOrEmpty()) {
+                        val merged0 = (preCacheList + fresh0).distinctBy { it.id }
+                        if (merged0.isNotEmpty()) {
+                            combinedList = merged0
+                            writeServiceLog("schedule", "buildPlaybackSchedule: combinedList为空，提前同步拉取当日${fresh0.size}个节目（${curDate0}）以规避空计划")
+                        }
+                    }
+                } catch (e: Exception) {
+                    writeServiceLog("schedule", "buildPlaybackSchedule: 提前补拉当日节目失败: ${e.message}")
+                }
+            }
+        } else {
+            // v3.1.263-fix: 合并列表非空但"不含当前节目归属日期"时，同步补拉当前日一批。
+            // 根因（schedule.log 佐证 14:56:58）：缓存/预缓存只存了 04-01（combinedList=12），
+            // 但当前正播 04-02-1（唱行早高峰）；curId 在 combinedList 中找不到 → 退化起点 idx=-1，
+            // 主前向扫描把 04-01 全部判为 earlier-day 过滤，循环回绕池也全是 04-01，最终计划=4(<5)。
+            val curStation1 = currentEpisode?.stationId
+            val curDate1 = currentEpisode?.broadcastAt?.take(10)
+            if (curStation1 != null && curDate1 != null) {
+                val hasCurDay = combinedList.any { (it.broadcastAt?.take(10) ?: "") == curDate1 }
+                if (!hasCurDay) {
+                    try {
+                        val fresh1 = com.radio.app.network.EpisodeApiService.getInstance().fetchEpisodesByDateSync(curStation1, curDate1)
+                        if (!fresh1.isNullOrEmpty()) {
+                            val merged1 = (combinedList + fresh1).distinctBy { it.id }
+                            if (merged1.size > combinedList.size) {
+                                combinedList = merged1
+                                writeServiceLog("schedule", "buildPlaybackSchedule: 合并列表缺当前日${curDate1}，同步补拉${fresh1.size}个节目入样（combinedList ${combinedList.size}）")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        writeServiceLog("schedule", "buildPlaybackSchedule: 补拉当前归属日失败: ${e.message}")
+                    }
+                }
+            }
+        }
+
         // v3.1.212-fix: 先遍历combinedList，为所有startTime=0的节目从broadcastAt推导时间戳，
         // 再按broadcastAt日期+startTime排序。顺序不可调换：推导必须在排序之前进行。
         //
@@ -6881,6 +6928,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
         val curDateParsed = curDateStr?.let { try { dateFormat.parse(it) } catch (_: Exception) { null } }
 
+        // v3.1.264-fix: 当合并列表中完全不存在">= 当前节目日期"的任何节目时，说明当前节目属于一个
+        // 本地/远端均无可排数据的"孤立日期"（例如回放数据被截断后的历史节目，或该日期远端本就断更）。
+        // schedule.log(13:21~13:27 持续复现) 佐证：combinedList 只含 04-02/04-03(23个)，但当前正播
+        // 04-04-1(唱行早高峰)；fallback4 与 v3.1.263 的补拉对 04-04 均返回空（远端确无该日数据），
+        // currentIdx 退化为 -1，主前向扫描与循环回绕又都因 earlier-day 守卫把所有 04-02/04-03 判为
+        // "早于当前日期"而全部跳过 → nextPlanned=0 → 界面误报"暂无后续播放计划"。
+        // 修复：检测到"池内无 >= 当前日期 的节目"时放宽 earlier-day 守卫，允许复用池内既有真实节目
+        // 回放补足计划。仅当池内确有 >= 当前日期 的节目时才维持严格守卫（防止 v3.1.261 已修复的
+        // "播放 04-02 却排出 04-01" 回归）。
+        val poolHasDateGeCurrent = curDateStr != null && combinedList.any { (it.broadcastAt?.take(10) ?: "") >= curDateStr }
+        if (!poolHasDateGeCurrent) {
+            writeServiceLog("schedule", "buildPlaybackSchedule: 池内无 >= 当前日期($curDateStr) 的节目，放宽earlier-day守卫，复用更早真实节目回放补足计划（防：暂无后续播放计划）")
+        }
+
         // v3.1.212-fix: 获取今天日期字符串，用于时间检查（仅当天节目才做past-time过滤）
         val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date(System.currentTimeMillis()))
 
@@ -6918,7 +6979,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val isTimePassed = ep.startTime > 0 && epDate == todayStr && ep.startTime < System.currentTimeMillis()
             // v3.1.249-fix: 统一守卫——日期早于当前节目的节目不得进入后继播放计划。
             // 兜底某些匹配/退化路径把更早日期节目（如 18 号）漏进 19 号计划的情况。
-            val isEarlierDay = curDateStr != null && epDate != null && epDate < curDateStr
+            // v3.1.264-fix: 池内无 >= 当前日期的节目时放宽守卫，允许复用更早真实节目回放补足计划
+            val isEarlierDay = !poolHasDateGeCurrent && curDateStr != null && epDate != null && epDate < curDateStr
             if (!isEarlierDay && !isDisliked && !isNoPreprocess && !isTimePassed) {
                 nextPlanned.add(ep)
             } else {
@@ -7029,7 +7091,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // 主前向扫描有 isEarlierDay 守卫，此处回绕路径缺失才导致跨天日期倒退。补上同一守卫，
                     // 只允许复用"当前节目当天及之后"的节目；同天回绕复用(较早档位)保留原设计。
                     val epDate3 = ep.broadcastAt?.take(10)
-                    val isEarlierDay3 = curDateStr != null && epDate3 != null && epDate3 < curDateStr
+                    // v3.1.264-fix: 与主前向扫描一致——池内无 >= 当前日期的节目时放宽回绕守卫，
+                    // 允许复用更早真实节目回放补足计划，避免"暂无后续播放计划"。
+                    val isEarlierDay3 = !poolHasDateGeCurrent && curDateStr != null && epDate3 != null && epDate3 < curDateStr
                     if (isEarlierDay3) {
                         writeServiceLog("schedule", "buildPlaybackSchedule: 兜底循环补齐 SKIP ${ep.id}（${epDate3} 早于当前 ${curDateStr}，回绕禁止入计划）")
                         continue

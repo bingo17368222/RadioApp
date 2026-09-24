@@ -685,7 +685,14 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             Toast.makeText(ctx, "播放服务未连接", Toast.LENGTH_SHORT).show()
             return
         }
-        val scheduleList = playbackService.getPlaybackSchedule()
+        val scheduleList0 = playbackService.getPlaybackSchedule()
+        // v3.1.263-fix: 与 PlayerActivity 保持一致——遇空先尝试重建一次（同步含 fallback/补拉），
+        // 避免首次缓存未就绪时直接误报"暂无后续播放计划"。
+        var scheduleList = scheduleList0
+        if (scheduleList.isEmpty()) {
+            playbackService.rebuildPlaybackSchedule()
+            scheduleList = playbackService.getPlaybackSchedule()
+        }
         if (scheduleList.isEmpty()) {
             Toast.makeText(ctx, "暂无后续播放计划", Toast.LENGTH_SHORT).show()
             return
