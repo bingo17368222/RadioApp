@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.264 安装</title>
+<title>RadioApp v3.1.265 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.264</div>
+  <div class="version">v3.1.265</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.264</h3>
+    <h3>更新内容 v3.1.265</h3>
     <ul>
-      <li><b>彻底修复「暂无后续播放计划」</b>：当播放计划合并列表里完全不存在“&gt;= 当前节目日期”的节目时（例如回放数据被截断、或该日期远端本就无排期），此前维护的 earlier-day 守卫会把池内全部节目判为“早于当前日期”而统一跳过，导致后续计划算成 0 个、界面误报“暂无后续播放计划”。现放宽该守卫：一旦检测到池内无当前日期及之后的可排节目，就自动复用池内已有真实节目回放补足计划；仅在池内确有当前日期及之后节目时才维持严格守卫（不回归 4/2 却排出 4/1 的问题）。</li>
-      <li>合并 v3.1.263：冷启动/缓存未就绪或合并列表缺当前日时，同步补拉当日节目入样。</li>
+      <li><b>彻底修复「自动指纹长时间从不匹配/晋升」</b>：观察池“重复判定”与“命中+1”两道门槛统一从 0.92 放款到 0.82（POOL_HIT_THRESHOLD），与进池召回(0.82)/整段复核(0.82)口径一致。</li>
+      <li>根因链：同一水段在跨节目/跨设备的指纹提取仅 82%~91% 相似（日志中所有成功的跨节目命中相似度都在 94%~99%，82~91% 的被 0.92 门禁全部堵死）。旧逻辑外层“是否重复”门禁用的是 0.92，导致 82~91% 的跨节目重复每次都被判成“新水段”各自新建候选 → 观察池无限膨胀(152→157)而 hit_count 卡在1、永不晋升、无从参与匹配。本次将重复判定与命中判定统一为 0.82。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.264.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.265.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

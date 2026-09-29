@@ -134,8 +134,15 @@ object SegmentGenerator {
     private const val LAYER3_RECALL_THRESHOLD = 0.82f
     // v3.1.251: 自动晋升长指纹"整段口径复核"阈值，与观察池判定口径(0.82)保持一致
     private const val AUTO_FP_RECONFIRM_THRESHOLD = 0.82f
-    // 观察池进入时的重复判定阈值（与正式库/观察池已有指纹比较）
-    private const val POOL_DUPLICATE_THRESHOLD = 0.92f
+    // v3.1.265-fix: 观察池"重复判定/命中+1"统一阈值=0.82。
+    // 原内外两道门都误用了 POOL_DUPLICATE_THRESHOLD(0.92)，而同一水段在跨节目/跨设备的指纹提取
+    // 仅 82%~91% 相似，导致：
+    //  1) 外层"是否重复"门禁(0.92)：82~91% 的跨节目重复全被判为"新水段"，每次各自新建候选
+    //     → 观察池无限膨胀(152→157)、hit_count 卡在1、永不晋升；
+    //  2) 内层"命中+1"(0.92)：即便进了门配到候选也 +1 不了。
+    // 统一降到 0.82，与"进池召回(0.82)/整段复核(0.82)"识别口径一致。
+    // （用户反馈：自动指纹全部长时间从未匹配。）
+    private const val POOL_HIT_THRESHOLD = 0.82f
     // 观察池候选最小/最大时长
     private const val POOL_MIN_DURATION_MS = 15_000L   // 15秒
     private const val POOL_MAX_DURATION_MS = 600_000L  // 600秒
@@ -4375,7 +4382,7 @@ object SegmentGenerator {
      * 前置过滤条件：
      * 1. 合并后片段时长：15秒～600秒
      * 2. 第三层指纹匹配相似度 ≥0.82
-     * 3. 和正式库、观察池内已有指纹相似度大于0.92视为重复，不重复新增候选
+     * 3. 和正式库、观察池内已有指纹相似度大于0.82视为重复，不重复新增候选（v3.1.265-fix 原0.92）
      */
     private fun processObservationPoolForSegment(
         context: Context,
@@ -4421,8 +4428,11 @@ object SegmentGenerator {
                         continue
                     }
 
-                    // 前置过滤3: 检查是否与正式库或观察池重复（相似度 > 0.92）
-                    if (dbHelper.isDuplicateFingerprint(fingerprint, POOL_DUPLICATE_THRESHOLD)) {
+                    // 前置过滤3: 检查是否与正式库或观察池重复。
+                    // v3.1.265-fix: 重复判定阈值由 0.92 放宽到统一口径 0.82（POOL_HIT_THRESHOLD）。
+                    // 原 0.92 门禁太高：同一水段跨节目重复仅 82~91% 相似，全被判为"新水段"，
+                    // 导致每次重复都新建候选而永不 +1，是自动指纹从不晋升/匹配的根因。
+                    if (dbHelper.isDuplicateFingerprint(fingerprint, POOL_HIT_THRESHOLD)) {
                         val hash = fingerprintHash(fingerprint)
                         val existing = dbHelper.findObservationPoolCandidateByHash(hash)
                         if (existing != null) {
@@ -4441,7 +4451,7 @@ object SegmentGenerator {
                                 val allCandidates = dbHelper.getAllObservationPoolCandidates()
                                 for (cand in allCandidates) {
                                     val sim = ChromaprintExtractor.compareFingerprints(fingerprint, cand.fingerprint)
-                                    if (sim > POOL_DUPLICATE_THRESHOLD && sim > maxSim) {
+                                    if (sim > POOL_HIT_THRESHOLD && sim > maxSim) {
                                         maxSim = sim
                                         matchedCandidate = cand
                                     }
