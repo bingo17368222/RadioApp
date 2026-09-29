@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.265 安装</title>
+<title>RadioApp v3.1.266 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.265</div>
+  <div class="version">v3.1.266</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.265</h3>
+    <h3>更新内容 v3.1.266</h3>
     <ul>
-      <li><b>彻底修复「自动指纹长时间从不匹配/晋升」</b>：观察池“重复判定”与“命中+1”两道门槛统一从 0.92 放款到 0.82（POOL_HIT_THRESHOLD），与进池召回(0.82)/整段复核(0.82)口径一致。</li>
-      <li>根因链：同一水段在跨节目/跨设备的指纹提取仅 82%~91% 相似（日志中所有成功的跨节目命中相似度都在 94%~99%，82~91% 的被 0.92 门禁全部堵死）。旧逻辑外层“是否重复”门禁用的是 0.92，导致 82~91% 的跨节目重复每次都被判成“新水段”各自新建候选 → 观察池无限膨胀(152→157)而 hit_count 卡在1、永不晋升、无从参与匹配。本次将重复判定与命中判定统一为 0.82。</li>
+      <li><b>双模型音频分段与三层分段解耦</b>：不再共用双模型算法。三层分段算法保持不变，仍走当前版本实现；双模型音频分段（VAD+YAMNet 独立模式）改用 <b>v3.1.99 的独立算法</b>（独立对象 AudioSegmentAnalyzerV399）。</li>
+      <li>变更范围：双模型音频分段的手动、预分段、巡逻后分段三条调用路径（postSegmentKeyword 的 audio-vad 分支、preSegmentAudio 非三层分支、PlayerActivity 手动分段）全部切换到 v3.1.99 独立实现；三层架构（就AI听）及其内部回退逻辑不受影响。</li>
+      <li>本次拆分后，双模型算法与三层架构各自独立演进，互不干扰。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.265.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.266.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

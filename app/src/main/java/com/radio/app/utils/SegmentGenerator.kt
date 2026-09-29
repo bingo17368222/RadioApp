@@ -1964,12 +1964,14 @@ object SegmentGenerator {
 
             if (settings.aiModel == com.radio.app.models.AppSettings.AI_MODEL_AUDIO_VAD) {
                 // v2.4.95: Audio-based segmentation (Silero VAD + YAMNet)
-                Log.i(TAG, "postSegmentKeyword: using audio-vad mode for episode=$episodeId")
+                // v3.1.265-fix: 双模型音频分段（AI_MODEL_AUDIO_VAD 独立模式）采用
+                // v3.1.99 的独立算法（AudioSegmentAnalyzerV399），与三层架构解耦。
+                Log.i(TAG, "postSegmentKeyword: using audio-vad mode(v3.1.99独立算法) for episode=$episodeId")
                 // v2.4.99: Look up audio URL from database for PCM file finding
                 val audioUrl = try {
                     RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)?.audioUrl
                 } catch (_: Exception) { null }
-                val result = tryGenerateAudioSegments(context, episodeId, durationMs, audioUrl)
+                val result = tryGenerateAudioSegmentsV399(context, episodeId, durationMs, audioUrl)
                 segments = result?.segments ?: emptyList()
                 engineName = result?.engineName ?: "VAD+YAMNet"
                 processingTimeMs = result?.processingTimeMs ?: (System.currentTimeMillis() - segStartTime)
@@ -2167,7 +2169,9 @@ object SegmentGenerator {
                     audioDurationMs = result?.audioDurationMs ?: durationMs
                 }
             } else {
-                val result = tryGenerateAudioSegments(
+                // v3.1.265-fix: 双模型音频分段独立模式（非三层）采用 v3.1.99 独立算法，
+                // 与三层架构解耦。三层架构内部的回退仍走 AudioSegmentAnalyzer。
+                val result = tryGenerateAudioSegmentsV399(
                     context, episodeId, durationMs, audioUrl,
                     progressCallback = { permille, _, _ ->
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille)
@@ -2273,6 +2277,35 @@ object SegmentGenerator {
             return result
         } catch (e: Exception) {
             Log.e(TAG, "tryGenerateAudioSegments failed: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * v3.1.265-fix: 双模型音频分段独立算法入口（采用 v3.1.99）。
+     * 依据用户要求：双模型音频分段与三层分段不再共用双模型算法。
+     * 三层分段算法不变；双模型音频分段（AI_MODEL_AUDIO_VAD 独立模式）改用
+     * version 3.1.99 的 AudioSegmentAnalyzerV399 独立实现，与三层架构解耦。
+     * 注意：三层架构内部的回退（generateJiuAiTingSegments 的 fallback）仍走
+     * AudioSegmentAnalyzer（当前版本），保持三层算法不受影响。
+     */
+    private fun tryGenerateAudioSegmentsV399(
+        context: Context,
+        episodeId: String,
+        durationMs: Long,
+        audioUrl: String? = null,
+        progressCallback: ((Int, Long, Long) -> Unit)? = null,
+        blocking: Boolean = true
+    ): AudioSegmentAnalyzerV399.SegmentAnalysisResult? {
+        try {
+            val result = AudioSegmentAnalyzerV399.analyzeEpisode(
+                context, episodeId, durationMs, audioUrl,
+                progressCallback = progressCallback, blocking = blocking
+            )
+            Log.i(TAG, "tryGenerateAudioSegmentsV399: got ${result.segments.size} segments from v3.1.99 independent dual-model analysis (engine=${result.engineName}, time=${result.processingTimeMs}ms)")
+            return result
+        } catch (e: Exception) {
+            Log.e(TAG, "tryGenerateAudioSegmentsV399 failed: ${e.message}")
             return null
         }
     }

@@ -2485,7 +2485,7 @@ class PlayerActivity : AppCompatActivity() {
                             val episodeIdForProgress = episode.id
                             val appCtx = applicationContext
                             val notifTitle = buildSegmentNotificationTitle(episode)
-                            val result = com.radio.app.utils.AudioSegmentAnalyzer.analyzeEpisode(
+                            val result = com.radio.app.utils.AudioSegmentAnalyzerV399.analyzeEpisode(
                                 appCtx, episode.id, maxEnd.toLong(), episode.audioUrl,
                                 progressCallback = { rawPermille, elapsedMs, etaMs ->
                                     // v2.4.155: If the user switched episodes, drop stale callbacks.
