@@ -22,9 +22,11 @@
 - 编译成功后，把新 APK 复制到 `/workspace/radioapp/releases/` 目录。
 - 同步更新 `/workspace/radioapp/releases/index.html`：版本号、更新说明、下载链接 `href` 全部改为新版本。
 
-## 铁律 2：分享 APK 必须用可点击的 computer:// 链接
-- 向用户交付 APK 时，**必须**使用 `computer://` 协议的可点击安装链接（形如 `[标签](computer:///workspace/radioapp/releases/RadioApp-vX.Y.Z.apk)`），而**不是** GitHub 链接、也不只是文件路径。
+## 铁律 2：分享 APK 唯一方式 = computer:// 链接（用户强制，不可用其他方式）
+- 向用户交付 APK 时，**唯一且必须**使用 `computer://` 协议的可点击安装链接，形如 `[下载安装](computer:///workspace/radioapp/releases/RadioApp-vX.Y.Z.apk)`。
+- **禁止**使用其他任何方式交付 APK：不得用 GitHub 链接、不得只贴文件路径、不得只写文字说明"APK 在 XX 目录"。
 - 链接文本用自然语言说明（如"下载安装"），让用户能在结果里直接点击安装。
+- 每次交付都必须附上该链接，无例外。
 
 ## 铁律 3：每次改动代码 → 备份到 GitHub
 - 每次改完代码/页面，必须在交付前把改动 commit 并 push 到 GitHub（`git add` 相关源码文件 → `git commit` → `git push origin main`）。
