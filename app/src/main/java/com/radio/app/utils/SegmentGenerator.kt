@@ -134,6 +134,10 @@ object SegmentGenerator {
     private const val LAYER3_RECALL_THRESHOLD = 0.82f
     // v3.1.251: 自动晋升长指纹"整段口径复核"阈值，与观察池判定口径(0.82)保持一致
     private const val AUTO_FP_RECONFIRM_THRESHOLD = 0.82f
+    // v3.2.8-fix: 长指纹进入整段复核的宽松预筛门槛。晋升指纹多为长指纹(观察池最低15秒)，其"短窗口投影"
+    // sim 会被长度惩罚拉低到0.70以下，若依赖 sim>=0.70 才复核会系统性卡死晋升指纹(晋升后永不匹配)。
+    // 改为：只要 sim 达到该宽松值(窗口落入广告内容即远超此值)，即执行整段对齐复核，命中0.82才判匹配。
+    private const val LONG_FP_PRESCREEN = 0.25f
     // v3.1.265-fix: 观察池"重复判定/命中+1"统一阈值=0.82。
     // 原内外两道门都误用了 POOL_DUPLICATE_THRESHOLD(0.92)，而同一水段在跨节目/跨设备的指纹提取
     // 仅 82%~91% 相似，导致：
@@ -4050,16 +4054,16 @@ object SegmentGenerator {
                     // v3.1.132: 使用IntArray版快速比较，消除装箱开销
                     val sim = ChromaprintExtractor.compareFingerprintArraysFast(windowArray, entry.parsed)
                     if (sim > bestSim) { bestSim = sim; matchedFpId = entry.id }
-                    if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
-                        // v3.1.251-fix(项2)：对"长指纹"（候选帧数>窗口帧数，如自动晋升的整段广告/长水段）
-                        // 做"整段口径"复核，命中阈值回归观察池的0.82。
-                        // 根因：窗口投影对长指纹叠加长度惩罚(15s窗口vs长指纹ratio小)，
-                        // 使晋升后长指纹需raw≈0.76~0.81(远高于0.70初筛)才通过，常匹配不上；
-                        // 而晋升前观察池用的是"整段vs整段"0.82口径，口径不一致导致"晋升后长时间无匹配"。
-                        if (entry.parsed.size > windowFrames) {
+                    val isLongFp = entry.parsed.size > windowFrames
+                    if (isLongFp) {
+                        // v3.2.8-fix: 长指纹(以自动晋升指纹为主，观察池最低15秒)的匹配改走"宽松预筛 + 整段对齐复核"。
+                        // 根因：原逻辑依赖"窗口投影 sim >= LAYER1_FAST_SCREEN_THRESHOLD(0.70)"作为进入整段复核的入口，
+                        // 而 sim 是"15秒窗口 vs 整段广告"叠加长度惩罚后的值，晋升指纹越长惩罚越大，常被压到0.70以下，
+                        // 导致晋升指纹永远进不了复核 → 晋升后长时间从不匹配(晋升前观察池用"整段vs整段"raw≥0.82可命中)。
+                        // 现在只要 sim 达到宽松预筛 LONG_FP_PRESCREEN 即做整段对齐，命中 AUTO_FP_RECONFIRM_THRESHOLD(0.82)才判匹配。
+                        if (sim >= LONG_FP_PRESCREEN) {
                             val tl = entry.parsed.size
                             if (tl <= fullArray.size) {
-                                // 候选整段可能在窗口之前开始：以窗口为锚推算起止，做等长子序列对齐取最大raw相似度（无长度惩罚）
                                 val lo = (framePos - (tl - windowFrames)).coerceAtLeast(0)
                                 val hi = framePos.coerceAtMost(fullArray.size - tl)
                                 if (lo <= hi) {
@@ -4079,14 +4083,14 @@ object SegmentGenerator {
                                         break
                                     }
                                 }
-                                // 复核未达0.82则视为非同一整段，继续尝试其他候选
+                                // 整段复核未达0.82，视为非同一段内容，继续尝试其他候选
                             }
-                        } else {
-                            matched = true
-                            matchedFpId = entry.id
-                            matchedDedupKey = entry.originalFp
-                            break
                         }
+                    } else if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
+                        matched = true
+                        matchedFpId = entry.id
+                        matchedDedupKey = entry.originalFp
+                        break
                     }
                 }
 

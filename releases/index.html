@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.266 安装</title>
+<title>RadioApp v3.1.267 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.266</div>
+  <div class="version">v3.1.267</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.266</h3>
+    <h3>更新内容 v3.1.267</h3>
     <ul>
-      <li><b>双模型音频分段与三层分段解耦</b>：不再共用双模型算法。三层分段算法保持不变，仍走当前版本实现；双模型音频分段（VAD+YAMNet 独立模式）改用 <b>v3.1.99 的独立算法</b>（独立对象 AudioSegmentAnalyzerV399）。</li>
-      <li>变更范围：双模型音频分段的手动、预分段、巡逻后分段三条调用路径（postSegmentKeyword 的 audio-vad 分支、preSegmentAudio 非三层分支、PlayerActivity 手动分段）全部切换到 v3.1.99 独立实现；三层架构（就AI听）及其内部回退逻辑不受影响。</li>
-      <li>本次拆分后，双模型算法与三层架构各自独立演进，互不干扰。</li>
+      <li><b>修复：自动晋升指纹晋升后长时间从不匹配</b>。<br>根因：晋升指纹多为长指纹(整段广告/水段，观察池最低15秒)，其在第一层的匹配被"窗口投影相似度"的长度惩罚压低到0.70以下，永远进不了"整段复核"，故晋升后从不匹配；而晋升前观察池用"整段vs整段"≥0.82可命中，两端口径不一致。</li>
+      <li>修复：长指纹(以自动晋升指纹为主)的匹配改为<b>宽松预筛 + 直接整段对齐复核</b>。不再依赖被长度惩罚压低的窗口相似度，只要窗口落入候选内容即执行整段对齐，命中 0.82 判定为标准水段并更新 last_matched_at。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.266.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.267.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
