@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.267 安装</title>
+<title>RadioApp v3.1.268 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.267</div>
+  <div class="version">v3.1.268</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.267</h3>
+    <h3>更新内容 v3.1.268</h3>
     <ul>
-      <li><b>修复：自动晋升指纹晋升后长时间从不匹配</b>。<br>根因：晋升指纹多为长指纹(整段广告/水段，观察池最低15秒)，其在第一层的匹配被"窗口投影相似度"的长度惩罚压低到0.70以下，永远进不了"整段复核"，故晋升后从不匹配；而晋升前观察池用"整段vs整段"≥0.82可命中，两端口径不一致。</li>
-      <li>修复：长指纹(以自动晋升指纹为主)的匹配改为<b>宽松预筛 + 直接整段对齐复核</b>。不再依赖被长度惩罚压低的窗口相似度，只要窗口落入候选内容即执行整段对齐，命中 0.82 判定为标准水段并更新 last_matched_at。</li>
+      <li><b>修复：播放计划混入更早日期节目（如播放 5月6日 却排出 4月16日）</b>。<br>根因：earlier-day 守卫布尔条件写反——原本应"池内有 ≥ 当前日期节目时严格禁早"，代码却写成 `!poolHasDateGeCurrent`，导致正常场景下更早日期的历史节目（预缓存保留的过去30天节目）未被拦截，全部混入播放计划。</li>
+      <li>修复：自动连播不再因计划里全是"过期"节目而反复跨天播次日同档。此前更早日期的节目混入计划后，连播的"日期回跳防线"把它们逐个拦截，计划等于作废，只能跌入跨天兜底，表现为"播完 05-06 旅行大玩家后总是播次日旅行大玩家"。守卫修正后，播放计划只会排当前节目当天及之后的节目。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.267.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.268.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

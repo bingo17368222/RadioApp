@@ -6980,7 +6980,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             // v3.1.249-fix: 统一守卫——日期早于当前节目的节目不得进入后继播放计划。
             // 兜底某些匹配/退化路径把更早日期节目（如 18 号）漏进 19 号计划的情况。
             // v3.1.264-fix: 池内无 >= 当前日期的节目时放宽守卫，允许复用更早真实节目回放补足计划
-            val isEarlierDay = !poolHasDateGeCurrent && curDateStr != null && epDate != null && epDate < curDateStr
+            // v3.1.268-fix: 守卫布尔写反——原 !poolHasDateGeCurrent 在"池内有 >= 当前日期节目"的正常
+            // 场景反而放行更早日期的历史节目（用户日志：播放 05-06 计划混入 04-16/04-17）。
+            // 正确语义：池内有 >= 当前日期节目时才严格禁早；池内确实没有时才放宽复用更早真实节目。
+            val isEarlierDay = poolHasDateGeCurrent && curDateStr != null && epDate != null && epDate < curDateStr
             if (!isEarlierDay && !isDisliked && !isNoPreprocess && !isTimePassed) {
                 nextPlanned.add(ep)
             } else {
@@ -7093,7 +7096,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val epDate3 = ep.broadcastAt?.take(10)
                     // v3.1.264-fix: 与主前向扫描一致——池内无 >= 当前日期的节目时放宽回绕守卫，
                     // 允许复用更早真实节目回放补足计划，避免"暂无后续播放计划"。
-                    val isEarlierDay3 = !poolHasDateGeCurrent && curDateStr != null && epDate3 != null && epDate3 < curDateStr
+                    // v3.1.268-fix: 与主前向扫描同步——守卫布尔写反，改为 poolHasDateGeCurrent 才严格禁早。
+                    val isEarlierDay3 = poolHasDateGeCurrent && curDateStr != null && epDate3 != null && epDate3 < curDateStr
                     if (isEarlierDay3) {
                         writeServiceLog("schedule", "buildPlaybackSchedule: 兜底循环补齐 SKIP ${ep.id}（${epDate3} 早于当前 ${curDateStr}，回绕禁止入计划）")
                         continue
