@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.270 安装</title>
+<title>RadioApp v3.1.271 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.270</div>
+  <div class="version">v3.1.271</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.270</h3>
+    <h3>更新内容 v3.1.271</h3>
     <ul>
-      <li><b>修复：App 重启后播放计划队列被更早日期（05-06）旧节目污染</b>。<br>根因：重启后持久化的预缓存/播放列表可能只剩更早日期的旧数据，合并列表不含当前节目日期时，旧逻辑会放宽日期守卫，把 05-06 旧节目塞进播放计划覆盖掉正确计划（05-09 之后）。</li>
-      <li>修复：播放计划构建时新增严格日期过滤——无论池内是否存在当天节目，一律只允许「广播日期 ≥ 当前节目日期」的节目进入计划；计划缺口改由跨天 API（仅拉未来日期）补足，宁可计划暂缺也绝不回放旧节目。</li>
-      <li>修复：移除「池内无当天节目时放宽日期守卫」逻辑，主前向扫描与兜底循环回绕的日期守卫均恒为严格。</li>
+      <li><b>根治：定位到污染播放计划的元凶异步任务——setPreCacheEpisodeList</b>。<br>日志佐证（15:45:36.489）：切换节目到 05-09 时，PlayerActivity 的预缓存列表仍是内存旧节目单（05-06），重新加载失败后未中止，把 11 个 05-06 旧节目直接覆盖写入预缓存存储（119 条 → 11 条），随后播放计划构建读到全为 05-06 的队列 → 播放计划被更早日期旧节目污染。</li>
+      <li>修复：PlayerActivity.setupPreCacheList 重新加载节目单失败后立即中止，禁止用与当前节目无关的旧列表覆盖预缓存。</li>
+      <li>修复：setPreCacheEpisodeList 增加覆盖防护——若传入列表全部早于当前播放节目日期，拒绝覆盖存储并保留原有正确预缓存列表。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.270.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.271.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

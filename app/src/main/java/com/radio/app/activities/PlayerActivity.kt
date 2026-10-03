@@ -1119,6 +1119,12 @@ class PlayerActivity : AppCompatActivity() {
             if (!reloaded) {
                 android.util.Log.d("PlayerActivity", "setupPreCacheList: failed to reload episode list for station=$curStation date=$curDate")
                 writeJitterLog("setupPreCacheList: FAILED to reload episode list")
+                // v3.1.271-fix: 重新加载失败必须中止，禁止继续使用内存中与当前节目无关的旧 episodeList。
+                // 根因（schedule.log 15:45:36.167/.173 佐证）：切换节目到 05-09 时内存 episodeList 仍是
+                // 05-06 旧节目单，reload 失败后未 return，旧列表 subList 出的 11 个 05-06 节目被
+                // setPreCacheEpisodeList 直接覆盖 precache_list 存储（119条→11条），随后 buildPlaybackSchedule
+                // 读到的预缓存队列全是 05-06 旧数据 → 播放计划被更早日期旧节目污染。
+                return
             }
         }
         if (episodeList.isEmpty() || currentEpisodeIndex < 0) {

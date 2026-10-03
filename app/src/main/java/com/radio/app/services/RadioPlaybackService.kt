@@ -2258,6 +2258,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     fun setPreCacheEpisodeList(episodes: List<Episode>) {
+        // v3.1.271-fix: 覆盖防护——禁止用"全部早于当前播放节目日期"的旧列表覆盖 precache_list 存储。
+        // 根因（schedule.log 15:45:36.489 佐证）：PlayerActivity.setupPreCacheList 在重新加载失败后
+        // 仍用内存旧节目单（05-06）调用本函数，直接 putString 覆盖存储（119条→11条，全为05-06），
+        // 随后 buildPlaybackSchedule 读到被污染的预缓存队列，播放计划被更早日期旧节目污染。
+        // 现在若传入列表没有任何节目 >= 当前节目日期，则拒绝覆盖并丢弃，保留原有正确预缓存。
+        val curDateRef = currentEpisode?.broadcastAt?.take(10)
+        if (curDateRef != null && curDateRef.length == 10) {
+            val hasRelevant = episodes.any { ep ->
+                val d = ep.broadcastAt?.take(10)
+                d != null && d.length == 10 && d >= curDateRef
+            }
+            if (!hasRelevant) {
+                writePreCacheLog("setPreCacheEpisodeList: BLOCKED - all ${episodes.size} episodes are before current date $curDateRef (old-list pollution guard), preserving existing pre-cache list")
+                Log.w(TAG, "Pre-cache: BLOCKED setPreCacheEpisodeList (all ${episodes.size} eps < current date $curDateRef), preserving existing list")
+                return
+            }
+        }
         val arr = org.json.JSONArray()
         for (ep in episodes) {
             val obj = org.json.JSONObject()
