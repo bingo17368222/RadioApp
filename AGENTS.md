@@ -19,12 +19,12 @@
 ## 铁律 1：每次改动代码 → 必须编译 APK
 - 凡是对本项目代码/配置/页面做了任何修改，都必须立刻运行 `./gradlew assembleRelease` 编译出对应版本的 Release APK。
 - 产出路径：`/workspace/radioapp/app/build/outputs/apk/release/RadioApp-v<版本号>.apk`。
-- 编译成功后，把新 APK 复制到 `/workspace/radioapp/releases/` 目录。
+- 编译成功后，把新 APK 复制到工作区根目录：`/workspace/RadioApp-v<版本号>.apk`。
 - 同步更新 `/workspace/radioapp/releases/index.html`：版本号、更新说明、下载链接 `href` 全部改为新版本。
 
-## 铁律 2：分享 APK 唯一方式 = computer:// 链接（用户强制，不可用其他方式）
-- 向用户交付 APK 时，**唯一且必须**使用 `computer://` 协议的可点击安装链接，形如 `[下载安装](computer:///workspace/radioapp/releases/RadioApp-vX.Y.Z.apk)`。
-- **禁止**使用其他任何方式交付 APK：不得用 GitHub 链接、不得只贴文件路径、不得只写文字说明"APK 在 XX 目录"。
+## 铁律 2：交付 APK 唯一方式 = 工作区根目录 computer:// 链接（用户强制，不可用其他方式）
+- 向用户交付 APK 时，**唯一且必须**：先把 APK 复制到工作区根目录 `/workspace/RadioApp-vX.Y.Z.apk`，再用 `computer://` 协议的可点击安装链接分享，形如 `[下载安装](computer:///workspace/RadioApp-vX.Y.Z.apk)`。
+- **禁止**使用其他任何方式交付 APK：不得用 GitHub Release、不得用 GitHub 链接、不得用 `releases/` 目录路径、不得只贴文件路径、不得只写文字说明"APK 在 XX 目录"。
 - 链接文本用自然语言说明（如"下载安装"），让用户能在结果里直接点击安装。
 - 每次交付都必须附上该链接，无例外。
 
@@ -34,7 +34,7 @@
 
 ## 执行顺序
 每次改动后，按此顺序完成三件事后再向用户汇报：
-1. 编译并复制 APK 到 `releases/`
+1. 编译 APK，并把新 APK 复制到工作区根目录 `/workspace/RadioApp-v<版本号>.apk`
 2. 更新 `releases/index.html`
 3. 提交并推送源码到 GitHub
-4. 最后用 computer:// 链接把 APK 交付给用户
+4. 最后用 `computer:///workspace/RadioApp-vX.Y.Z.apk` 链接把 APK 交付给用户
