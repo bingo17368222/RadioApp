@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.268 安装</title>
+<title>RadioApp v3.1.269 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.268</div>
+  <div class="version">v3.1.269</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.268</h3>
+    <h3>更新内容 v3.1.269</h3>
     <ul>
-      <li><b>修复：播放计划混入更早日期节目（如播放 5月6日 却排出 4月16日）</b>。<br>根因：earlier-day 守卫布尔条件写反——原本应"池内有 ≥ 当前日期节目时严格禁早"，代码却写成 `!poolHasDateGeCurrent`，导致正常场景下更早日期的历史节目（预缓存保留的过去30天节目）未被拦截，全部混入播放计划。</li>
-      <li>修复：自动连播不再因计划里全是"过期"节目而反复跨天播次日同档。此前更早日期的节目混入计划后，连播的"日期回跳防线"把它们逐个拦截，计划等于作废，只能跌入跨天兜底，表现为"播完 05-06 旅行大玩家后总是播次日旅行大玩家"。守卫修正后，播放计划只会排当前节目当天及之后的节目。</li>
+      <li><b>修复：连续播放异常跳转（播完 05-09 旅行大玩家后，应接 05-09 下班路上·全城娱乐，却跳到 05-12 旅行大玩家）</b>。<br>根因：App 重启后播放计划队列被更早日期（如 05-06）的旧节目污染，连播取号时"日期回跳防线"把无效条目逐条拦截后队列作废，直接坠入跨天兜底，跳过了当天后续节目。</li>
+      <li>修复：自动连播取号时新增日期过滤——跳过队列中早于当前节目日期的条目；若过滤后队列无有效节目，先重建播放计划（触发当前日节目补拉）并重试，重建后仍无结果才走跨天兜底，确保优先播放当天后续节目。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.268.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.269.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

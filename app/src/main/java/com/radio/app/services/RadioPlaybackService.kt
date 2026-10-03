@@ -7988,9 +7988,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     writeNotifDetailLog("autoPlayNextEpisode: reading futurePlannedEpisodes (size=${futurePlannedEpisodes.size})")
                     writeServiceLog("notification", "autoPlayNext: reading from futurePlannedEpisodes (${futurePlannedEpisodes.size})")
                     val iterator = futurePlannedEpisodes.iterator()
+                    val curDateCmp = currentEpisode?.broadcastAt?.take(10)
                     while (iterator.hasNext()) {
                         val ep = iterator.next()
                         iterator.remove()  // 取出即删除，避免重复播放
+                        val epDateCmp = ep.broadcastAt?.take(10)
+                        // v3.1.269-fix: 跳过日期早于当前节目的条目（App重启后旧数据可能污染队列，
+                        // 如播放 05-09 时队列首个却是 05-06-1）。否则取出后被 day-backward 防线拦截，
+                        // 剩余队列被丢弃并坠入 cross-day，导致"05-09 旅行大玩家→05-12 旅行大玩家"。
+                        if (curDateCmp != null && epDateCmp != null && epDateCmp < curDateCmp) {
+                            writeNotifDetailLog("autoPlayNextEpisode: skip earlier-date ${ep.id} (${epDateCmp} < ${curDateCmp})")
+                            continue
+                        }
                         if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
                             && !settings.isNoPreprocess(ep.id ?: "")) {
                             nextEpisode = ep
@@ -8002,6 +8011,39 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 } else {
                     writeNotifDetailLog("autoPlayNextEpisode: futurePlannedEpisodes empty")
                     writeServiceLog("notification", "autoPlayNext: futurePlannedEpisodes empty")
+                }
+            }
+
+            // v3.1.269-fix: 队列无合适节目时，先重建播放计划并重试一次，再考虑跨天。
+            // 根因（用户日志 2026-10-03 17:32）：App 重启后旧数据污染队列（首个节目日期早于当前日期），
+            // 且该日数据未及时补拉，直接 cross-day 会跳到下个工作日（05-09→05-12），跳过当天剩余节目
+            // （05-09-9 下班路上·全城娱乐）。重建会触发 buildPlaybackSchedule 的当前日补拉，通常能取回
+            // 当天后续真实节目；仅当重建后仍无合适节目（远端确无该日数据）才允许坠入跨天兜底。
+            if (nextEpisode == null) {
+                writeNotifDetailLog("autoPlayNextEpisode: queue has no valid episode, rebuilding schedule & retry")
+                writeServiceLog("notification", "autoPlayNext: queue no valid episode, rebuild schedule & retry")
+                buildPlaybackSchedule()
+                synchronized(futurePlannedEpisodes) {
+                    val retryIterator = futurePlannedEpisodes.iterator()
+                    val curDateCmp2 = currentEpisode?.broadcastAt?.take(10)
+                    while (retryIterator.hasNext()) {
+                        val ep = retryIterator.next()
+                        retryIterator.remove()
+                        val epDateCmp2 = ep.broadcastAt?.take(10)
+                        if (curDateCmp2 != null && epDateCmp2 != null && epDateCmp2 < curDateCmp2) {
+                            writeNotifDetailLog("autoPlayNextEpisode: retry skip earlier-date ${ep.id} (${epDateCmp2})")
+                            continue
+                        }
+                        if (!settings.isDisliked(ep.id) && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                            && !settings.isNoPreprocess(ep.id ?: "")) {
+                            nextEpisode = ep
+                            writeNotifDetailLog("autoPlayNextEpisode: retry got ${ep.id} (${ep.title})")
+                            break
+                        }
+                    }
+                }
+                if (nextEpisode != null) {
+                    writeNotifDetailLog("autoPlayNextEpisode: retry success, will play: ${nextEpisode!!.title} (${nextEpisode!!.id})")
                 }
             }
 
