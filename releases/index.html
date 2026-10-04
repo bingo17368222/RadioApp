@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.271 安装</title>
+<title>RadioApp v3.1.272 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.271</div>
+  <div class="version">v3.1.272</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.271</h3>
+    <h3>更新内容 v3.1.272</h3>
     <ul>
-      <li><b>根治：定位到污染播放计划的元凶异步任务——setPreCacheEpisodeList</b>。<br>日志佐证（15:45:36.489）：切换节目到 05-09 时，PlayerActivity 的预缓存列表仍是内存旧节目单（05-06），重新加载失败后未中止，把 11 个 05-06 旧节目直接覆盖写入预缓存存储（119 条 → 11 条），随后播放计划构建读到全为 05-06 的队列 → 播放计划被更早日期旧节目污染。</li>
-      <li>修复：PlayerActivity.setupPreCacheList 重新加载节目单失败后立即中止，禁止用与当前节目无关的旧列表覆盖预缓存。</li>
-      <li>修复：setPreCacheEpisodeList 增加覆盖防护——若传入列表全部早于当前播放节目日期，拒绝覆盖存储并保留原有正确预缓存列表。</li>
+      <li><b>修复：跨天节目（如2025-05-12旅行大玩家）分段时长异常</b>。<br>90分钟节目此前因时长单位误判被回退为2小时（120分钟）。现在优先从音频URL时间范围（如 _0930_1100.mp4 → 90分钟）解析时长，并兼容秒/毫秒两种单位，节目时长准确显示为90分钟。</li>
+      <li><b>修复：跨天节目分段总数暴涨（如304段）</b>。<br>跨天节目此前通过前缀匹配把当天所有节目（早高峰/旅行/晚高峰等）的分段全部合并，导致分段叠加。现在按音频URL时间段过滤，只合并同一节目时段的分段，分段总数恢复为合理水平。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.271.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.272.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

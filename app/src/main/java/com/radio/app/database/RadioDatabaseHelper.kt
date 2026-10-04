@@ -556,26 +556,36 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     /**
-     * v3.1.195-fix: 使用LIKE前缀匹配查询分段。
-     * 用于跨天节目（如henan-private-car-2025-02-13-cross）找不到精确匹配的分段时，
-     * 尝试查找各个独立部分的分段（如henan-private-car-2025-02-13-1, henan-private-car-2025-02-13-2）。
-     * 分段按segment_start ASC排序合并返回。
+     * v3.1.270-fix: 按前缀+时间段查询分段。
+     * 用于跨天节目（如henan-private-car-2025-05-12-cross）：跨天ID与当天所有节目共享前缀，
+     * 直接LIKE前缀匹配会合并无关节目的分段（用户反馈：分段总数暴涨到300+）。
+     * 通过 episode_info.audio_url 中的时间段（如 _0930_1100.mp4）过滤，
+     * 只合并属于同一节目时段的分段。分段按segment_start ASC排序返回。
      */
-    fun getVoiceSegmentsByPrefix(episodeIdPrefix: String): List<VoiceSegment> {
+    fun getVoiceSegmentsByPrefixAndTime(episodeIdPrefix: String, timeRange: String): List<VoiceSegment> {
         val segments = mutableListOf<VoiceSegment>()
+        if (episodeIdPrefix.isBlank() || timeRange.isBlank()) return segments
         val db = readableDatabase
-        val cursor = db.query(TABLE_VOICE_SEGMENTS_AI, null, "episode_id LIKE ?", arrayOf("$episodeIdPrefix-%"), null, null, "segment_start ASC")
-        while (cursor.moveToNext()) {
-            val seg = VoiceSegment(
-                start = cursor.getLong(cursor.getColumnIndexOrThrow("segment_start")),
-                end = cursor.getLong(cursor.getColumnIndexOrThrow("segment_end")),
-                hasVoice = cursor.getInt(cursor.getColumnIndexOrThrow("has_voice")) == 1,
-                label = cursor.getString(cursor.getColumnIndexOrThrow("label")),
-                isSimulated = cursor.getInt(cursor.getColumnIndexOrThrow("is_simulated")) == 1
-            )
-            segments.add(seg)
-        }
-        cursor.close()
+        val sql = """
+            SELECT s.segment_start, s.segment_end, s.has_voice, s.label, s.is_simulated
+            FROM $TABLE_VOICE_SEGMENTS_AI s
+            JOIN $TABLE_EPISODE_INFO e ON s.episode_id = e.episode_id
+            WHERE s.episode_id LIKE ? AND e.audio_url LIKE ?
+            ORDER BY s.segment_start ASC
+        """.trimIndent()
+        try {
+            val cursor = db.rawQuery(sql, arrayOf("$episodeIdPrefix-%", "%_${timeRange}.%"))
+            while (cursor.moveToNext()) {
+                segments.add(VoiceSegment(
+                    start = cursor.getLong(0),
+                    end = cursor.getLong(1),
+                    hasVoice = cursor.getInt(2) == 1,
+                    label = cursor.getString(3),
+                    isSimulated = cursor.getInt(4) == 1
+                ))
+            }
+            cursor.close()
+        } catch (_: Exception) {}
         return segments
     }
 

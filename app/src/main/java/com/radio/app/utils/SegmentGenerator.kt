@@ -188,8 +188,9 @@ object SegmentGenerator {
      * v3.1.46: 从音频URL解析节目时长（毫秒）。
      * 解析URL中的时间范围（如 0700_0900），计算时长。
      * 用于durationMs无效时的兜底。
+     * v3.1.270-fix: 改为public，供RadioPlaybackService统一时长解析使用。
      */
-    private fun getDurationFromAudioUrl(audioUrl: String?): Long {
+    fun getDurationFromAudioUrl(audioUrl: String?): Long {
         if (audioUrl.isNullOrBlank()) return 0L
         try {
             val path = audioUrl.substringAfterLast("/").substringBefore("?")
