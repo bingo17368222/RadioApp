@@ -134,10 +134,17 @@ object SegmentGenerator {
     private const val LAYER3_RECALL_THRESHOLD = 0.82f
     // v3.1.251: 自动晋升长指纹"整段口径复核"阈值，与观察池判定口径(0.82)保持一致
     private const val AUTO_FP_RECONFIRM_THRESHOLD = 0.82f
-    // v3.2.8-fix: 长指纹进入整段复核的宽松预筛门槛。晋升指纹多为长指纹(观察池最低15秒)，其"短窗口投影"
-    // sim 会被长度惩罚拉低到0.70以下，若依赖 sim>=0.70 才复核会系统性卡死晋升指纹(晋升后永不匹配)。
-    // 改为：只要 sim 达到该宽松值(窗口落入广告内容即远超此值)，即执行整段对齐复核，命中0.82才判匹配。
-    private const val LONG_FP_PRESCREEN = 0.25f
+    // v3.2.10-fix: 长指纹全局对齐预扫参数。
+    // 根因：晋升前观察池用"整段vs整段+1帧粒度全滑动"(compareFingerprints,阈值0.82)命中85%后晋升；
+    // 晋升后原"宽松预筛+整段复核"的复核步长是 stepFrames(≈5秒/40~50帧)粗采样，而音频对齐位置是任意的，
+    // 粗采样永远无法帧级对齐 → 自动晋升指纹晋升后从不匹配。
+    // 修复：窗口循环外对每个长指纹候选做一次"粗扫(step=4帧)→精扫(±4帧,1帧粒度)"整段对齐，
+    // 命中 AUTO_FP_RECONFIRM_THRESHOLD(0.82) 即把指纹覆盖区间直接标记为匹配。
+    // 粗扫阈值0.58：随机数据整段等长raw相似度最高约0.51~0.55（tl=1800时σ≈0.002），不会误报；
+    // 真实对齐位置±2帧内 chromaprint 帧强相关，raw通常≥0.65，稳定命中粗扫门槛。
+    private const val LONG_FP_ALIGN_COARSE_STEP = 4          // 粗扫步长（帧）
+    private const val LONG_FP_ALIGN_COARSE_THRESHOLD = 0.58f // 粗扫阈值（raw相似度）
+    private const val LONG_FP_ALIGN_FINE_RADIUS = 4          // 精扫半径（帧，1帧粒度）
     // v3.1.265-fix: 观察池"重复判定/命中+1"统一阈值=0.82。
     // 原内外两道门都误用了 POOL_DUPLICATE_THRESHOLD(0.92)，而同一水段在跨节目/跨设备的指纹提取
     // 仅 82%~91% 相似，导致：
@@ -4007,6 +4014,71 @@ object SegmentGenerator {
         val stepFrames = (STEP_MS / msPerFrame).toInt().coerceAtLeast(10)
         val maxOffset = fullArray.size - windowFrames
 
+        // ========== 长指纹全局对齐预扫（v3.2.10-fix） ==========
+        // 根因：自动晋升指纹多为长指纹（观察池最低15秒）。晋升前观察池用"整段vs整段+1帧粒度全滑动"(
+        // compareFingerprints, 阈值0.82)命中85%后晋升；晋升后原"宽松预筛+整段复核"的复核步长为
+        // stepFrames(≈5秒/40~50帧)粗采样，而音频对齐位置是任意的，粗采样无法帧级对齐，
+        // rawSimilarity被帧偏移拉到0.82以下 → 自动晋升指纹晋升后长时间从不匹配。
+        // 修复：窗口循环外对每个长指纹候选在整段上做一次"粗扫(step=4帧)→精扫(±4帧,1帧粒度)"对齐，
+        // 命中 AUTO_FP_RECONFIRM_THRESHOLD(0.82)（与观察池判定口径一致）即把指纹覆盖区间直接标记为匹配。
+        // 窗口循环不再处理长指纹（预扫已1帧粒度完整覆盖），避免逐窗口重复整段复核的性能爆炸。
+        var longFpMatchedCount = 0
+        val longFpCandidates = dedupedLibrary.filter { it.parsed.size > windowFrames }
+        if (longFpCandidates.isNotEmpty()) {
+            val tLongStart = System.currentTimeMillis()
+            val longFpDetail = StringBuilder()
+            try {
+                for (entry in longFpCandidates) {
+                    val tl = entry.parsed.size
+                    if (tl <= 0 || tl > fullArray.size) continue
+                    val maxStart = fullArray.size - tl
+                    var bestRawSim = 0f
+                    var bestP = -1
+                    var p = 0
+                    // 粗扫：step=4帧，无分配等长raw比较
+                    while (p <= maxStart) {
+                        val cs = ChromaprintExtractor.compareSliceRaw(fullArray, p, tl, entry.parsed)
+                        if (cs >= LONG_FP_ALIGN_COARSE_THRESHOLD) {
+                            // 精扫：±4帧内1帧粒度，取最大raw
+                            val fineLo = if (p - LONG_FP_ALIGN_FINE_RADIUS > 0) p - LONG_FP_ALIGN_FINE_RADIUS else 0
+                            val fineHi = if (p + LONG_FP_ALIGN_FINE_RADIUS < maxStart) p + LONG_FP_ALIGN_FINE_RADIUS else maxStart
+                            for (fp in fineLo..fineHi) {
+                                val s = ChromaprintExtractor.compareSliceRaw(fullArray, fp, tl, entry.parsed)
+                                if (s > bestRawSim) { bestRawSim = s; bestP = fp }
+                            }
+                        }
+                        p += LONG_FP_ALIGN_COARSE_STEP
+                    }
+                    if (bestRawSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
+                        val startMs = (bestP * msPerFrame).toLong()
+                        val endMs = ((bestP + tl) * msPerFrame).toLong()
+                        matchedRanges.add(startMs to endMs)
+                        longFpMatchedCount++
+                        // 更新该指纹（及同去重key指纹）的last_matched_at，与窗口循环批量更新口径一致
+                        if (dbHelper != null) {
+                            try {
+                                val allIds = dedupKeyToIds[entry.originalFp]
+                                if (allIds != null && allIds.isNotEmpty()) {
+                                    if (allIds.size == 1) dbHelper.updateFingerprintLastMatched(allIds[0])
+                                    else dbHelper.batchUpdateFingerprintLastMatched(allIds)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        if (longFpMatchedCount <= 5 || longFpMatchedCount % 5 == 0) {
+                            longFpDetail.append("${startMs/1000}-${endMs/1000}s(${"%.0f".format(bestRawSim*100)}%) ")
+                        }
+                    }
+                }
+                val fpMsgLong = "第一层滑动窗口: 长指纹全局对齐预扫完成，长指纹候选${longFpCandidates.size}条，匹配${longFpMatchedCount}条，耗时${System.currentTimeMillis() - tLongStart}ms [${longFpDetail}]"
+                Log.i(TAG, fpMsgLong)
+                writeFingerprintLog(context, fpMsgLong)
+            } catch (e: Throwable) {
+                val fpMsgLongErr = "第一层滑动窗口: 长指纹全局对齐预扫异常: ${e.javaClass.name}: ${e.message}"
+                Log.w(TAG, fpMsgLongErr)
+                writeFingerprintLog(context, fpMsgLongErr)
+            }
+        }
+
         var framePos = 0
         // v3.1.59: 外层循环用try-catch捕获Throwable，防止单次窗口异常导致整个分段崩溃
         try {
@@ -4049,45 +4121,17 @@ object SegmentGenerator {
                 var matchedDedupKey: String? = null // v3.1.251: 匹配到的去重key(整指纹)，用于批量更新last_matched_at
                 for (entry in candidates) {
                     if (entry.parsed.isEmpty()) continue
+                    // v3.2.10-fix: 长指纹已在窗口循环外的"长指纹全局对齐预扫"中做1帧粒度整段对齐并标记区间，
+                    // 这里直接跳过（原"宽松预筛+整段复核"用 stepFrames(≈5秒)粗采样无法帧级对齐，
+                    // 是自动晋升指纹晋升后从不匹配的根因）。
+                    if (entry.parsed.size > windowFrames) continue
                     // v3.1.129: 如果该指纹有分组且不是代表指纹，跳过对比
                     val isRepresentative = fpGroupMap[entry.id] ?: true // 默认true（无分组时参与对比）
                     if (!isRepresentative) continue
                     // v3.1.132: 使用IntArray版快速比较，消除装箱开销
                     val sim = ChromaprintExtractor.compareFingerprintArraysFast(windowArray, entry.parsed)
                     if (sim > bestSim) { bestSim = sim; matchedFpId = entry.id }
-                    val isLongFp = entry.parsed.size > windowFrames
-                    if (isLongFp) {
-                        // v3.2.8-fix: 长指纹(以自动晋升指纹为主，观察池最低15秒)的匹配改走"宽松预筛 + 整段对齐复核"。
-                        // 根因：原逻辑依赖"窗口投影 sim >= LAYER1_FAST_SCREEN_THRESHOLD(0.70)"作为进入整段复核的入口，
-                        // 而 sim 是"15秒窗口 vs 整段广告"叠加长度惩罚后的值，晋升指纹越长惩罚越大，常被压到0.70以下，
-                        // 导致晋升指纹永远进不了复核 → 晋升后长时间从不匹配(晋升前观察池用"整段vs整段"raw≥0.82可命中)。
-                        // 现在只要 sim 达到宽松预筛 LONG_FP_PRESCREEN 即做整段对齐，命中 AUTO_FP_RECONFIRM_THRESHOLD(0.82)才判匹配。
-                        if (sim >= LONG_FP_PRESCREEN) {
-                            val tl = entry.parsed.size
-                            if (tl <= fullArray.size) {
-                                val lo = (framePos - (tl - windowFrames)).coerceAtLeast(0)
-                                val hi = framePos.coerceAtMost(fullArray.size - tl)
-                                if (lo <= hi) {
-                                    var reSim = 0f
-                                    var p = lo
-                                    while (p <= hi) {
-                                        val sub = fullArray.copyOfRange(p, p + tl)
-                                        val s = ChromaprintExtractor.compareFingerprintArraysFast(sub, entry.parsed) // 等长→raw，无长度惩罚
-                                        if (s > reSim) reSim = s
-                                        if (reSim >= AUTO_FP_RECONFIRM_THRESHOLD) break
-                                        p += stepFrames
-                                    }
-                                    if (reSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
-                                        matched = true
-                                        matchedFpId = entry.id
-                                        matchedDedupKey = entry.originalFp
-                                        break
-                                    }
-                                }
-                                // 整段复核未达0.82，视为非同一段内容，继续尝试其他候选
-                            }
-                        }
-                    } else if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
+                    if (sim >= LAYER1_FAST_SCREEN_THRESHOLD) {
                         matched = true
                         matchedFpId = entry.id
                         matchedDedupKey = entry.originalFp
@@ -4141,7 +4185,7 @@ object SegmentGenerator {
 
         val t2 = System.currentTimeMillis()
         val loopTime = t2 - t0
-        val fpMsgLoop = "第一层滑动窗口: 循环完成，总耗时${formatDuration(loopTime)}，窗口数=${totalWindows}，匹配=${matchedWindows}/${totalWindows}，正式库=${dedupedLibrary.size}条"
+        val fpMsgLoop = "第一层滑动窗口: 循环完成，总耗时${formatDuration(loopTime)}，窗口数=${totalWindows}，匹配=${matchedWindows}/${totalWindows}（另长指纹预扫匹配${longFpMatchedCount}段），正式库=${dedupedLibrary.size}条"
         Log.i(TAG, fpMsgLoop)
         writeFingerprintLog(context, fpMsgLoop)
 
@@ -4190,7 +4234,7 @@ object SegmentGenerator {
             })
         }
 
-        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（${mergedRanges.size}个水货段），${segments.size}个片段，去重${dedupCount}个近似指纹 [${hitDetails.joinToString("; ")}]"
+        val fpMsg = "第一层滑动窗口: 共${totalWindows}个窗口，匹配${matchedWindows}个（含长指纹预扫${longFpMatchedCount}段），${mergedRanges.size}个水货段，${segments.size}个片段，去重${dedupCount}个近似指纹 [${hitDetails.joinToString("; ")}]"
         Log.i(TAG, fpMsg)
         writeFingerprintLog(context, fpMsg)
 

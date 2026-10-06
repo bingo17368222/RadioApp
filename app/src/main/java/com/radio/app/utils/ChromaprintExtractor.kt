@@ -355,6 +355,23 @@ object ChromaprintExtractor {
     }
 
     /**
+     * v3.2.10-fix: 无分配的"切片 vs 数组"等长raw相似度比较（长指纹全局对齐预扫热路径）。
+     * 计算 full[offset, offset+len) 与 target 逐帧的位误差率，返回 rawSimilarity（无长度惩罚、无滑动）。
+     * 粗扫要遍历上万个对齐位置，若每次 copyOfRange + compareFingerprintArraysFast 会产生巨量 int[]
+     * 分配（长指纹下每个候选数百万 int），本函数直接内存访问避免GC压力。
+     * @param len 必须等于 target.size，否则返回 0f（调用方保证等长）。
+     */
+    fun compareSliceRaw(full: IntArray, offset: Int, len: Int, target: IntArray): Float {
+        if (len <= 0 || offset < 0 || offset + len > full.size || target.size != len) return 0f
+        var errors = 0
+        for (i in 0 until len) {
+            errors += Integer.bitCount(full[offset + i] xor target[i])
+        }
+        val raw = 1f - (errors.toFloat() / (len * 32).toFloat())
+        return raw.coerceIn(0f, 1f)
+    }
+
+    /**
      * 判断两段指纹是否匹配。
      * v3.1.3: 默认阈值从 0.75 降至 0.70，适应跨节目匹配的轻微差异。
      * @param threshold 相似度阈值，默认 0.70

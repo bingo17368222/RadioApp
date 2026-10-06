@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.272 安装</title>
+<title>RadioApp v3.1.273 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.272</div>
+  <div class="version">v3.1.273</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.272</h3>
+    <h3>更新内容 v3.1.273</h3>
     <ul>
-      <li><b>修复：跨天节目（如2025-05-12旅行大玩家）分段时长异常</b>。<br>90分钟节目此前因时长单位误判被回退为2小时（120分钟）。现在优先从音频URL时间范围（如 _0930_1100.mp4 → 90分钟）解析时长，并兼容秒/毫秒两种单位，节目时长准确显示为90分钟。</li>
-      <li><b>修复：跨天节目分段总数暴涨（如304段）</b>。<br>跨天节目此前通过前缀匹配把当天所有节目（早高峰/旅行/晚高峰等）的分段全部合并，导致分段叠加。现在按音频URL时间段过滤，只合并同一节目时段的分段，分段总数恢复为合理水平。</li>
+      <li><b>修复：自动晋升指纹晋升后长时间从不匹配</b>。<br>排查确认根因：晋升前观察池用「整段 vs 整段 + 1帧粒度全滑动」比对（可命中85%），晋升后第一层滑动窗口的「整段复核」却用约5秒/50帧的粗采样步长，而音频对齐位置是任意的，粗采样永远无法帧级对齐，相似度被帧偏移拉到0.82以下 → 所有自动晋升指纹晋升后全部无匹配记录。<br>现改为窗口循环外的「长指纹全局对齐预扫」：对每个长指纹候选在整段音频上做粗扫（4帧步长）+ 精扫（±4帧、1帧粒度）对齐，命中0.82即把指纹覆盖区间直接标记为匹配，与晋升前观察池判定口径完全一致。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.272.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.273.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
