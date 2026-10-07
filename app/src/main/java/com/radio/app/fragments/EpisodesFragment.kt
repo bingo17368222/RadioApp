@@ -244,6 +244,11 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
 
         tvSelectedDate?.text = "${selectedDate.get(Calendar.YEAR)}年${selectedDate.get(Calendar.MONTH) + 1}月${selectedDate.get(Calendar.DAY_OF_MONTH)}日"
 
+        // v3.1.246: 参考蜻蜓FM——日期胶囊圆角化，今天/昨天/前天语义化显示
+        val surfaceColor = resolveAppAttr(com.radio.app.R.attr.appSurface)
+        val textSecondary = resolveAppAttr(com.radio.app.R.attr.appTextSecondary)
+        val colorPrimary = getColorPrimary()
+
         for (i in -7..7) {
             val cal = Calendar.getInstance().apply {
                 timeInMillis = selectedDate.timeInMillis
@@ -254,27 +259,36 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                     cal.get(Calendar.YEAR) == today.get(Calendar.YEAR)
             val isSelected = cal.get(Calendar.DAY_OF_YEAR) == selectedDate.get(Calendar.DAY_OF_YEAR) &&
                     cal.get(Calendar.YEAR) == selectedDate.get(Calendar.YEAR)
+            val diffDays = daysBetween(cal, today)
             val pill = TextView(context).apply {
-                text = "${dayFormat.format(cal.time)}"
-                textSize = 11f
+                text = when {
+                    isToday -> "今天"
+                    diffDays == -1 -> "昨天"
+                    diffDays == 1 -> "明天"
+                    diffDays == -2 -> "前天"
+                    else -> dayFormat.format(cal.time)
+                }
+                textSize = 12f
                 gravity = Gravity.CENTER
-                setPadding(12, 6, 12, 6)
+                setPadding(16, 8, 16, 8)
                 if (isSelected) {
                     setTextColor(Color.WHITE)
-                    setBackgroundColor(getColorPrimary())
+                    background = roundedPillBg(colorPrimary)
                     setTypeface(null, Typeface.BOLD)
                 } else if (isToday) {
-                    setTextColor(getColorPrimary())
-                    setBackgroundColor(Color.parseColor("#E8F5E9"))
+                    setTextColor(colorPrimary)
+                    background = roundedPillBg(Color.TRANSPARENT, colorPrimary, 1)
+                    setTypeface(null, Typeface.BOLD)
                 } else {
-                    setTextColor(Color.parseColor("#666666"))
-                    setBackgroundColor(Color.parseColor("#F0F0F0"))
+                    setTextColor(textSecondary)
+                    background = roundedPillBg(surfaceColor)
+                    setTypeface(null, Typeface.NORMAL)
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.MATCH_PARENT
                 ).apply {
-                    marginStart = if (i > -7) 4 else 0
+                    marginStart = if (i > -7) 6 else 0
                     marginEnd = 2
                 }
             }
@@ -307,26 +321,33 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
         val settings = AppSettings.getInstance(requireContext())
         val stations = getBuiltinStations()
 
+        // v3.1.246: 参考蜻蜓FM——电台胶囊圆角化
+        val surfaceColor = resolveAppAttr(com.radio.app.R.attr.appSurface)
+        val textSecondary = resolveAppAttr(com.radio.app.R.attr.appTextSecondary)
+        val colorPrimary = getColorPrimary()
+
         val sortedStations = stations.sortedByDescending { settings.getStationPlayCount(it.id) }
 
         sortedStations.forEachIndexed { index, station ->
             val pill = TextView(context).apply {
                 text = station.name
-                textSize = 12f
+                textSize = 13f
                 gravity = Gravity.CENTER
-                setPadding(14, 6, 14, 6)
+                setPadding(18, 8, 18, 8)
                 if (station.id == selectedStationId) {
                     setTextColor(Color.WHITE)
-                    setBackgroundColor(getColorPrimary())
+                    background = roundedPillBg(colorPrimary)
+                    setTypeface(null, Typeface.BOLD)
                 } else {
-                    setTextColor(Color.parseColor("#666666"))
-                    setBackgroundColor(Color.parseColor("#F0F0F0"))
+                    setTextColor(textSecondary)
+                    background = roundedPillBg(surfaceColor)
+                    setTypeface(null, Typeface.NORMAL)
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.MATCH_PARENT
                 ).apply {
-                    marginStart = if (index > 0) 4 else 0
+                    marginStart = if (index > 0) 6 else 0
                     marginEnd = 2
                 }
             }
@@ -352,6 +373,36 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             typedValue.data
         } catch (e: Exception) {
             Color.parseColor("#7ED321")
+        }
+    }
+
+    // v3.1.246: 解析主题属性颜色（用于胶囊背景等）
+    private fun resolveAppAttr(attrResId: Int): Int {
+        return try {
+            val typedValue = android.util.TypedValue()
+            context?.theme?.resolveAttribute(attrResId, typedValue, true)
+            typedValue.data
+        } catch (e: Exception) {
+            Color.parseColor("#F0F0F0")
+        }
+    }
+
+    // v3.1.246: 计算两个日期相差的天数（a - b，考虑跨年）
+    private fun daysBetween(a: Calendar, b: Calendar): Int {
+        val aDay = a.get(Calendar.DAY_OF_YEAR) + a.get(Calendar.YEAR) * 366
+        val bDay = b.get(Calendar.DAY_OF_YEAR) + b.get(Calendar.YEAR) * 366
+        return aDay - bDay
+    }
+
+    // v3.1.246: 创建圆角胶囊背景
+    private fun roundedPillBg(color: Int, strokeColor: Int = 0, strokeWidthDp: Int = 0): android.graphics.drawable.GradientDrawable {
+        val density = resources.displayMetrics.density
+        return android.graphics.drawable.GradientDrawable().apply {
+            cornerRadius = 16f * density
+            setColor(color)
+            if (strokeColor != 0 && strokeWidthDp > 0) {
+                setStroke((strokeWidthDp * density).toInt(), strokeColor)
+            }
         }
     }
 

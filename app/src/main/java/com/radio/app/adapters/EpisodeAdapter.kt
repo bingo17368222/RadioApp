@@ -114,7 +114,13 @@ class EpisodeAdapter(
                 tv.data
             } catch (_: Exception) { Color.parseColor("#7ED321") }
             val tint = Color.argb(180, Color.red(accentColor), Color.green(accentColor), Color.blue(accentColor))
-            holder.itemView.setBackgroundColor(tint)
+            // v3.1.246: 保持卡片圆角，高亮用带圆角的背景（参考蜻蜓FM卡片选中态）
+            val density = ctx.resources.displayMetrics.density
+            val highlightBg = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = 12f * density
+                setColor(tint)
+            }
+            holder.itemView.background = highlightBg
             holder.tvTitle.setTypeface(null, android.graphics.Typeface.BOLD)
             holder.tvTitle.setTextColor(accentColor)
             holder.tvPlayingIndicator.text = "正在播放"

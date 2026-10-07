@@ -18,26 +18,70 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_close"
             android:contentDescription="Close" />
-        <ImageButton
-            android:id="@+id/btn_schedule"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_toStartOf="@id/btn_history"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/ic_calendar"
-            android:contentDescription="Schedule" />
-        <ImageButton
-            android:id="@+id/btn_history"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_alignParentEnd="true"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/ic_history"
-            android:contentDescription="History" />
+        <!-- v3.1.246: 播放计划按钮：图标+文字（参考蜻蜓FM，必须显示文字提示） -->
         <LinearLayout
+            android:id="@+id/btn_schedule"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_toStartOf="@id/btn_history"
+            android:layout_centerVertical="true"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingStart="4dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp">
+            <ImageButton
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:background="@null"
+                android:src="@drawable/ic_calendar"
+                android:contentDescription="播放计划"
+                android:clickable="false"
+                android:focusable="false" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="播放计划"
+                android:textSize="10sp"
+                android:textColor="?attr/appTextSecondary"
+                android:layout_marginStart="2dp" />
+        </LinearLayout>
+        <!-- v3.1.246: 播放历史按钮：图标+文字 -->
+        <LinearLayout
+            android:id="@+id/btn_history"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingStart="4dp"
+            android:paddingEnd="10dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp">
+            <ImageButton
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:background="@null"
+                android:src="@drawable/ic_history"
+                android:contentDescription="播放历史"
+                android:clickable="false"
+                android:focusable="false" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="播放历史"
+                android:textSize="10sp"
+                android:textColor="?attr/appTextSecondary"
+                android:layout_marginStart="2dp" />
+        </LinearLayout>
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_toStartOf="@id/btn_schedule"
             android:layout_toEndOf="@id/btn_close"
             android:layout_centerVertical="true"
             android:gravity="center"

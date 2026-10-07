@@ -16,18 +16,21 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Radio Stations"
-            android:textSize="24sp"
+            android:text="电台"
+            android:textSize="20sp"
             android:textStyle="bold"
             android:textColor="?attr/appTextPrimary" />
 
         <Button
             android:id="@+id/btn_refresh"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Refresh"
+            android:layout_height="32dp"
+            android:text="刷新"
+            android:textSize="12sp"
             android:textColor="?attr/colorOnPrimary"
-            android:backgroundTint="?attr/colorPrimary" />
+            android:backgroundTint="?attr/colorPrimary"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp" />
     </LinearLayout>
 
     <ProgressBar
