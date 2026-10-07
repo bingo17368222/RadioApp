@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 26
         targetSdk 33
-        versionCode 669
-        versionName "3.1.277"
+        versionCode 670
+        versionName "3.1.278"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -98,6 +98,62 @@ android {
         variant.outputs.all {
             outputFileName = "RadioApp-v${variant.versionName}.apk"
         }
+    }
+}
+
+// =====================================================================
+// [铁律 000 代码级硬校验] APK 单独交付（第一铁律，双保险之一）
+// 与 AGENTS.md 铁律 000 互为双保险：每次 assembleRelease 自动运行本任务，
+// 校验失败则构建失败，强制保证交付产物契约：
+//   1. 构建产物自动复制到工作区根目录 /workspace/RadioApp-v<版本>.apk
+//      （computer:// 链接的唯一来源，禁止交付其他产物）；
+//   2. 发布页 releases/index.html 下载链接必须唯一且指向当前版本；
+//   3. 输出唯一允许的交付链接模板（交付回复中必须仅含该一个可点击链接）。
+// =====================================================================
+tasks.register('verifyApkDelivery') {
+    group = 'delivery'
+    description = '[铁律000] APK单独交付硬校验: 复制APK到工作区根目录、校验发布页唯一链接、输出交付模板'
+    doLast {
+        def vName = android.defaultConfig.versionName
+        def srcApk = new File(project.buildDir, "outputs/apk/release/RadioApp-v${vName}.apk")
+        def rootApk = new File("/workspace/RadioApp-v${vName}.apk")
+
+        // 1. 构建产物必须存在，并复制到工作区根目录
+        if (!srcApk.exists()) {
+            throw new GradleException("[铁律000] 构建产物缺失: ${srcApk.absolutePath}")
+        }
+        rootApk.parentFile.mkdirs()
+        rootApk.bytes = srcApk.bytes
+        if (!rootApk.exists() || rootApk.length() != srcApk.length()) {
+            throw new GradleException("[铁律000] 复制交付APK到工作区根目录失败: ${rootApk.absolutePath}")
+        }
+
+        // 2. 发布页下载链接必须唯一且指向当前版本
+        def indexHtml = new File(project.rootProject.projectDir, "releases/index.html")
+        if (!indexHtml.exists()) {
+            throw new GradleException("[铁律000] 发布页缺失: ${indexHtml.absolutePath}")
+        }
+        def html = indexHtml.getText("UTF-8")
+        def hrefs = (html =~ /href="(RadioApp-v[^"]+\.apk)"/).collect { it[1] }
+        if (hrefs.size() != 1 || hrefs[0] != "RadioApp-v${vName}.apk") {
+            throw new GradleException("[铁律000] 发布页下载链接必须唯一且指向 RadioApp-v${vName}.apk，实际: ${hrefs}")
+        }
+
+        // 3. 输出唯一允许的交付链接模板
+        println ""
+        println "=== [铁律000] APK单独交付硬校验通过 ==="
+        println "工作区根目录交付APK: ${rootApk.absolutePath}"
+        println "发布页: ${indexHtml.absolutePath}"
+        println "交付回复中唯一可点击链接必须为:"
+        println "[下载安装](computer:///workspace/RadioApp-v${vName}.apk)"
+        println "该链接必须是整条回复中唯一可点击链接，禁止混入任何其他链接。"
+    }
+}
+
+// assembleRelease 完成后自动执行铁律000硬校验（硬门禁，校验失败即构建失败）
+tasks.whenTaskAdded { task ->
+    if (task.name == 'assembleRelease') {
+        task.finalizedBy 'verifyApkDelivery'
     }
 }
 
