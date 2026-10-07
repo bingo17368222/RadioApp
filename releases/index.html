@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.274 安装</title>
+<title>RadioApp v3.1.275 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.274</div>
+  <div class="version">v3.1.275</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.274</h3>
+    <h3>更新内容 v3.1.275</h3>
     <ul>
-      <li><b>修复：预缓存连续多天不下载新节目。</b><br>根因：每次触发预缓存都无条件把跨天取数计数 days_fetched 清零，导致扩展取数永远从 offset=+1 重试同一天（日志中反复出现 "fetching ... offset=+1" 一百多次），推进不到更远日期、找不到未缓存节目。<br>现改为：days_fetched 跨触发保留，仅在播放日期变化时才重置，让取数能逐日推进直至找到可下载节目或达到 15 天上限。</li>
+      <li><b>修复：扩展取数对一年前历史日期（如 2025-05-13）返回空。</b><br>根因：API 对一年前日期返回空列表，而 URL 构造完全依赖 savedList 提取时间段；savedList 为空或为跨天数据时无法构造任何节目，取数直接"返回空"。<br>现改为：savedList 无法提取时间段时自动使用默认 8 档时间段模板（0000_0700 … 2100_2400），pathPrefix/stationPart 从当前播放节目 URL 推导兜底，保证历史日期也能持续构造节目。</li>
+      <li><b>修复：URL 构造后全部去重失败、取数永不推进。</b><br>根因：days_fetched 在列表刷新/播放日期变化时被清零，取数永远从 offset=+1 重复构造已覆盖的日期（构造 URL 与 preCacheList 已有完全相同 → 全部去重失败 → size 不变即中断）。<br>现改为：fetchMoreDaysForPreCache 改为多天循环推进——单日无新增（API 空 / 构造 URL 全部已覆盖 / 全部被过滤）时自动尝试下一天，直到找到新增节目或达到 15 天上限；已覆盖的时间段明确记日志后跳过，不再死等在同一天。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.274.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.275.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

@@ -1872,24 +1872,40 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
 
         val resultList = existingList.toMutableList()
-        val existingUrls = resultList.map { it.audioUrl }.toSet()
         val cachedNames = cachedFiles.map { it.name }.toSet()
 
-        // Only go forward (future dates)
-        val dayOffset = daysFetched + 1
-        try {
-            val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
-            cal.time = dateFormat.parse(startDate) ?: return existingList
-            cal.add(java.util.Calendar.DAY_OF_YEAR, dayOffset)
-            val targetDate = dateFormat.format(cal.time)
+        // v3.1.275-fix: 多天循环推进——单日无新增（API 空 / 构造 URL 全部已覆盖 / 全部被过滤）时
+        // 继续尝试后续日期，直到找到新增节目或达到 maxDays。
+        // 根因：此前只尝试一天（offset=daysFetched+1），失败后调用方因 size 不变直接 break；
+        // 而 days_fetched 在 base 日期变化/列表刷新时会被重置为 0，导致永远从 offset=+1 重复
+        // 构造已覆盖日期（如一年前的 2025-05-13：API 返回空，构造 URL 又与 preCacheList 中
+        // 已存在的完全相同 → 全部去重失败 → "returning 105 (was 105)"，永远取不到更远日期）。
+        var lastAttemptedOffset = daysFetched
+        var attemptOffset = daysFetched + 1
+        var addedAny = false
+        val baseCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+        baseCal.time = dateFormat.parse(startDate) ?: return existingList
+        baseCal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        baseCal.set(java.util.Calendar.MINUTE, 0)
+        baseCal.set(java.util.Calendar.SECOND, 0)
+        baseCal.set(java.util.Calendar.MILLISECOND, 0)
 
-            writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$dayOffset)")
+        while (attemptOffset <= maxDays && !addedAny) {
+            try {
+                val cal = (baseCal.clone() as java.util.Calendar)
+                cal.add(java.util.Calendar.DAY_OF_YEAR, attemptOffset)
+                val targetDate = dateFormat.format(cal.time)
 
-            val apiService = com.radio.app.network.EpisodeApiService.getInstance()
-            val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+                writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$attemptOffset)")
 
-            if (newEpisodes != null && newEpisodes.isNotEmpty()) {
+                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                val newEpisodes = apiService.fetchEpisodesByDateSync(stationId, targetDate)
+
+                if (newEpisodes != null && newEpisodes.isNotEmpty()) {
                 val settings = AppSettings.getInstance(this)
+                // v3.1.275-fix: 每次循环内重新计算 existingUrls，resultList 会随循环增长
+                //（此前构造的节目也参与去重），不能在函数开头一次性固定。
+                val existingUrls = resultList.map { it.audioUrl }.toSet()
                 // v2.4.92: Do NOT exclude episodes whose audio is already cached.
                 // Previously, `extractCacheFileName(ep.audioUrl) !in cachedNames` filtered them out,
                 // which meant cached episodes were never added to the preCacheList, so the subtitle
@@ -1940,93 +1956,116 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         writePreCacheLog("fetchMoreDaysForPreCache: ensureScheduleComplete error for $targetDate: ${e.message}")
                     }
                 }
-                resultList.addAll(validNewEpisodes)
+                if (validNewEpisodes.isEmpty()) {
+                    // v3.1.275-fix: 该日期 API 有数据但全部已被覆盖/过滤（重复、disliked 等），
+                    // 视为已覆盖，跳过并尝试下一天
+                    writePreCacheLog("fetchMoreDaysForPreCache: all ${newEpisodes.size} episodes for $targetDate already covered/filtered, trying next day")
+                } else {
+                    resultList.addAll(validNewEpisodes)
+                    addedAny = true
+                }
             } else {
                 writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate, trying URL construction")
                 // Issue 7 Fix: 网络抓取失败时，根据已保存节目的时间段和 URL 模式构造节目，
                 // 让 preCacheList 能持续增长，避免永远停留在 6 个节目。
                 val savedList = loadEpisodeList()
-                if (savedList.isNotEmpty()) {
-                    // 从已保存节目中提取时间段（如 0700_0900）
-                    // v3.1.212-fix: 按时间段起始时间排序，确保slotIdx映射到正确的节目播出顺序。
-                    // 根因：savedList中节目的顺序可能不是按时间排序的（如先晚间后早间），
-                    // 导致timeSlots遍历时slotIdx=0对应晚间节目、slotIdx=3对应早间节目，
-                    // URL构造的节目ID使用slotIdx作为序号，extractEpisodeIndex提取后排序错乱。
-                    val timeSlots = savedList.mapNotNull { ep ->
-                        val url = ep.audioUrl ?: ""
-                        val parts = url.substringAfterLast("/").substringBefore(".").split("_")
-                        if (parts.size >= 4) "${parts[2]}_${parts[3]}" else null
-                    }.distinct().sortedBy { slot ->
-                        // 按时段起始时间排序（如 0700_0900 按 0700 排序）
-                        slot.substringBefore("_").toIntOrNull() ?: 0
+                // v3.1.275-fix: 每次循环内重新计算 existingUrls（resultList 随循环增长）
+                val existingUrls = resultList.map { it.audioUrl }.toSet()
+                // 从已保存节目中提取时间段（如 0700_0900），按时间段起始时间排序，
+                // 确保slotIdx映射到正确的节目播出顺序（v3.1.212-fix）
+                var timeSlots = savedList.mapNotNull { ep ->
+                    val url = ep.audioUrl ?: ""
+                    val parts = url.substringAfterLast("/").substringBefore(".").split("_")
+                    if (parts.size >= 4) "${parts[2]}_${parts[3]}" else null
+                }.distinct().sortedBy { slot ->
+                    slot.substringBefore("_").toIntOrNull() ?: 0
+                }
+                // v3.1.275-fix: savedList 为空或无法解析时间段时，用默认8档模板兜底，
+                // 避免一年前历史日期（API 返回空 + savedList 空/跨天数据）完全无法构造 → "返回空"
+                if (timeSlots.isEmpty()) {
+                    timeSlots = listOf("0000_0700", "0700_0900", "0900_1200", "1200_1400", "1400_1700", "1700_1900", "1900_2100", "2100_2400")
+                    writePreCacheLog("fetchMoreDaysForPreCache: savedList 无法提取时间段(${savedList.size}条)，使用默认8档模板")
+                }
+                val newDateStr = targetDate.replace("-", "")
+                // 与 fetchCrossDayEpisode 保持一致：从 URL 推导 pathPrefix，避免硬编码 base 路径
+                val sampleUrl = savedList.firstOrNull { !it.audioUrl.isNullOrBlank() }?.audioUrl
+                    ?: currentEpisode?.audioUrl ?: ""
+                val pathPrefix = if (sampleUrl.isNotBlank()) sampleUrl.substringBeforeLast("/").substringBeforeLast("/") else "https://new-file.hntv.tv/bdmz/data/new_record"
+                var stationPart = if (sampleUrl.isNotBlank()) sampleUrl.substringAfterLast("/").substringBefore("_") else stationId
+                if (stationPart.isBlank()) stationPart = stationId
+                var constructedCount = 0
+                var dupCount = 0
+                for ((slotIdx, slot) in timeSlots.withIndex()) {
+                    val constructedUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$slot.mp4"
+                    if (constructedUrl in existingUrls) {
+                        // v3.1.275-fix: 该时段 URL 已存在（此前已构造过/API 已有）→ 视为已覆盖，跳过
+                        dupCount++
+                        writePreCacheLog("fetchMoreDaysForPreCache: constructed URL already covered for $slot: $constructedUrl")
+                        continue
                     }
-                    val newDateStr = targetDate.replace("-", "")
-                    // 与 fetchCrossDayEpisode 保持一致：从已保存节目的 URL 推导 pathPrefix，
-                    // 避免硬编码 base 路径在不同电台/路径下出错。
-                    val sampleUrl = savedList.firstOrNull { !it.audioUrl.isNullOrBlank() }?.audioUrl ?: ""
-                    val pathPrefix = if (sampleUrl.isNotBlank()) sampleUrl.substringBeforeLast("/").substringBeforeLast("/") else "https://new-file.hntv.tv/bdmz/data/new_record"
-                    val stationPart = savedList.firstOrNull { !it.audioUrl.isNullOrBlank() }?.audioUrl?.substringAfterLast("/")?.substringBefore("_") ?: stationId
-                    for ((slotIdx, slot) in timeSlots.withIndex()) {
-                        val constructedUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$slot.mp4"
-                        if (constructedUrl !in existingUrls) {
-                            // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
-                            // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
-                            // v3.1.212-fix: 改善构造节目的标题匹配。先尝试按时间槽匹配（原逻辑），
-                            // 失败后再按slotIdx在savedList中取对应位置的标题（确保顺序一致时取到正确标题）。
-                            // 同时将构造的节目信息持久化到DB，使enrichEpisodeFromDbIfNeeded后续能通过ID找到标题。
-                            var constructedTitle = savedList.firstOrNull {
-                                val parts = it.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
-                                parts.size >= 4 && "${parts[2]}_${parts[3]}" == slot
-                            }?.title
-                            if (constructedTitle.isNullOrBlank() && slotIdx < savedList.size) {
-                                constructedTitle = savedList[slotIdx].title
-                            }
-                            // v3.1.207-fix: 从timeSlot解析startTime，确保构造节目有正确的开始时间戳。
-                            // slot格式如 "0700_0900"，解析出小时和分钟。
-                            var derivedStartTime = 0L
-                            var derivedEndTime = 0L
-                            var derivedDuration = 0L
-                            if (slot.length >= 5 && slot.contains("_")) {
-                                val parts = slot.split("_")
-                                if (parts.size == 2 && parts[0].length >= 4 && parts[1].length >= 4) {
-                                    try {
-                                        val dateFormatForTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                                        dateFormatForTime.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
-                                        val startHour = parts[0].substring(0, 2).toIntOrNull() ?: 0
-                                        val startMin = parts[0].substring(2, 4).toIntOrNull() ?: 0
-                                        val endHour = parts[1].substring(0, 2).toIntOrNull() ?: 0
-                                        val endMin = parts[1].substring(2, 4).toIntOrNull() ?: 0
-                                        derivedStartTime = dateFormatForTime.parse("$targetDate $startHour:$startMin")?.time ?: 0L
-                                        derivedEndTime = dateFormatForTime.parse("$targetDate $endHour:$endMin")?.time ?: 0L
-                                        derivedDuration = if (derivedEndTime > derivedStartTime) (derivedEndTime - derivedStartTime) / 1000 else 7200L
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                            val constructedEp = Episode(
-                                id = "$stationId-$targetDate-$slotIdx",
-                                title = constructedTitle ?: "节目",
-                                audioUrl = constructedUrl,
-                                stationId = stationId,
-                                broadcastAt = targetDate,
-                                startTime = derivedStartTime,
-                                endTime = derivedEndTime,
-                                duration = derivedDuration
-                            )
-                            resultList.add(constructedEp)
-                            // v3.1.207-fix: 持久化构造节目到DB，便于enrichEpisodeFromDbIfNeeded后续查找
+                    // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
+                    // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
+                    // v3.1.212-fix: 标题匹配。先按时间槽匹配，失败后按slotIdx取对应位置标题
+                    var constructedTitle = savedList.firstOrNull {
+                        val parts = it.audioUrl?.substringAfterLast("/")?.substringBefore(".")?.split("_") ?: emptyList()
+                        parts.size >= 4 && "${parts[2]}_${parts[3]}" == slot
+                    }?.title
+                    if (constructedTitle.isNullOrBlank() && slotIdx < savedList.size) {
+                        constructedTitle = savedList[slotIdx].title
+                    }
+                    // v3.1.207-fix: 从timeSlot解析startTime，确保构造节目有正确的开始时间戳
+                    var derivedStartTime = 0L
+                    var derivedEndTime = 0L
+                    var derivedDuration = 0L
+                    if (slot.length >= 5 && slot.contains("_")) {
+                        val parts = slot.split("_")
+                        if (parts.size == 2 && parts[0].length >= 4 && parts[1].length >= 4) {
                             try {
-                                RadioDatabaseHelper.getInstance(this@RadioPlaybackService).saveEpisodeInfos(listOf(constructedEp))
+                                val dateFormatForTime = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                                dateFormatForTime.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                                val startHour = parts[0].substring(0, 2).toIntOrNull() ?: 0
+                                val startMin = parts[0].substring(2, 4).toIntOrNull() ?: 0
+                                val endHour = parts[1].substring(0, 2).toIntOrNull() ?: 0
+                                val endMin = parts[1].substring(2, 4).toIntOrNull() ?: 0
+                                derivedStartTime = dateFormatForTime.parse("$targetDate $startHour:$startMin")?.time ?: 0L
+                                derivedEndTime = dateFormatForTime.parse("$targetDate $endHour:$endMin")?.time ?: 0L
+                                derivedDuration = if (derivedEndTime > derivedStartTime) (derivedEndTime - derivedStartTime) / 1000 else 7200L
                             } catch (_: Exception) {}
-                            writePreCacheLog("fetchMoreDaysForPreCache: constructed episode: ${constructedEp.id}, title=${constructedTitle ?: "节目"}, url=$constructedUrl")
                         }
                     }
+                    val constructedEp = Episode(
+                        id = "$stationId-$targetDate-$slotIdx",
+                        title = constructedTitle ?: "节目",
+                        audioUrl = constructedUrl,
+                        stationId = stationId,
+                        broadcastAt = targetDate,
+                        startTime = derivedStartTime,
+                        endTime = derivedEndTime,
+                        duration = derivedDuration
+                    )
+                    resultList.add(constructedEp)
+                    // v3.1.207-fix: 持久化构造节目到DB，便于enrichEpisodeFromDbIfNeeded后续查找
+                    try {
+                        RadioDatabaseHelper.getInstance(this@RadioPlaybackService).saveEpisodeInfos(listOf(constructedEp))
+                    } catch (_: Exception) {}
+                    constructedCount++
+                    writePreCacheLog("fetchMoreDaysForPreCache: constructed episode: ${constructedEp.id}, title=${constructedTitle ?: "节目"}, url=$constructedUrl")
+                }
+                if (constructedCount > 0) {
+                    addedAny = true
+                    writePreCacheLog("fetchMoreDaysForPreCache: constructed $constructedCount new episodes for $targetDate ($dupCount slots already covered)")
+                } else {
+                    writePreCacheLog("fetchMoreDaysForPreCache: URL construction produced no new episodes for $targetDate ($dupCount slots already covered), trying next day")
                 }
             }
-        } catch (e: Exception) {
-            writePreCacheLog("fetchMoreDaysForPreCache: error: ${e.message}")
+                lastAttemptedOffset = attemptOffset
+            } catch (e: Exception) {
+                writePreCacheLog("fetchMoreDaysForPreCache: error: ${e.message}")
+            }
+            if (!addedAny) attemptOffset++
         }
 
-        prefs.edit().putInt("days_fetched", daysFetched + 1).apply()
+        prefs.edit().putInt("days_fetched", lastAttemptedOffset).apply()
         // v3.1.207-fix: 与buildPlaybackSchedule保持一致，使用节目ID序号排序
         // v3.1.212-fix: 同步改用startTime为主排序，与buildPlaybackSchedule一致。
         // 先推导startTime（构造节目的startTime已在构造时设置，API节目需要从broadcastAt推导）
