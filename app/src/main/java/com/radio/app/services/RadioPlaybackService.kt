@@ -2017,6 +2017,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     var derivedStartTime = 0L
                     var derivedEndTime = 0L
                     var derivedDuration = 0L
+                    // v3.1.276-fix: 提取slot起始时间，构造完整broadcastAt（"yyyy-MM-ddTHH:mm:ss"）。
+                    // 根因：此前broadcastAt只存日期（如"2025-05-22"），EpisodeAdapter按完整时间格式
+                    // 解析失败→回退显示纯日期字符串（无开始时间）；且DB按broadcast_at ASC排序时
+                    // 纯日期串排在带时间戳的API节目之前，导致预缓存节目排最前。
+                    var slotStartHour = ""
+                    var slotStartMin = ""
                     if (slot.length >= 5 && slot.contains("_")) {
                         val parts = slot.split("_")
                         if (parts.size == 2 && parts[0].length >= 4 && parts[1].length >= 4) {
@@ -2027,18 +2033,25 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                 val startMin = parts[0].substring(2, 4).toIntOrNull() ?: 0
                                 val endHour = parts[1].substring(0, 2).toIntOrNull() ?: 0
                                 val endMin = parts[1].substring(2, 4).toIntOrNull() ?: 0
+                                slotStartHour = parts[0].substring(0, 2)
+                                slotStartMin = parts[0].substring(2, 4)
                                 derivedStartTime = dateFormatForTime.parse("$targetDate $startHour:$startMin")?.time ?: 0L
                                 derivedEndTime = dateFormatForTime.parse("$targetDate $endHour:$endMin")?.time ?: 0L
                                 derivedDuration = if (derivedEndTime > derivedStartTime) (derivedEndTime - derivedStartTime) / 1000 else 7200L
                             } catch (_: Exception) {}
                         }
                     }
+                    val constructedBroadcastAt = if (slotStartHour.length == 2 && slotStartMin.length == 2) {
+                        "$targetDate" + "T" + slotStartHour + ":" + slotStartMin + ":00"
+                    } else {
+                        targetDate
+                    }
                     val constructedEp = Episode(
                         id = "$stationId-$targetDate-$slotIdx",
                         title = constructedTitle ?: "节目",
                         audioUrl = constructedUrl,
                         stationId = stationId,
-                        broadcastAt = targetDate,
+                        broadcastAt = constructedBroadcastAt,
                         startTime = derivedStartTime,
                         endTime = derivedEndTime,
                         duration = derivedDuration
@@ -6780,6 +6793,38 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         return cleanSuffix.toIntOrNull() ?: Int.MAX_VALUE
     }
 
+    // v3.1.276-fix: 按audioUrl去重。同一节目槽位的"构造版(URL生成)"与"API版"ID序号可能不同，
+    // distinctBy{id}无法合并，但audioUrl（jmd_日期/电台_日期_时段.mp4）唯一标识一个播出时段。
+    // 两版并存时优先保留"带完整时间戳broadcastAt（长度>=16，可解析为HH:mm）"的版本，
+    // 避免节目单/播放计划出现重复节目且保留可显示的开始时间。
+    private fun dedupeEpisodesByUrl(list: List<Episode>): List<Episode> {
+        val byUrl = HashMap<String, Episode>()
+        val result = mutableListOf<Episode>()
+        for (ep in list) {
+            val key = ep.audioUrl?.takeIf { it.isNotBlank() } ?: (ep.id ?: "")
+            if (key.isBlank()) {
+                result.add(ep)
+                continue
+            }
+            val existing = byUrl[key]
+            if (existing == null) {
+                byUrl[key] = ep
+                result.add(ep)
+            } else {
+                val existingFull = (existing.broadcastAt?.length ?: 0) >= 16
+                val newFull = (ep.broadcastAt?.length ?: 0) >= 16
+                if (newFull && !existingFull) {
+                    val idx = result.indexOf(existing)
+                    if (idx >= 0) {
+                        result[idx] = ep
+                        byUrl[key] = ep
+                    }
+                }
+            }
+        }
+        return result
+    }
+
     private fun buildPlaybackSchedule(): List<Episode> {
         val settings = AppSettings.getInstance(this)
         val curId = currentEpisode?.id ?: return emptyList()
@@ -6844,6 +6889,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             }
         }
+
+        // v3.1.276-fix: 同一节目槽位可能同时存在"构造版"与"API版"（audioUrl相同但ID序号不同），
+        // distinctBy{id}无法合并 → 再按audioUrl去重一次，优先保留带完整时间戳的版本，
+        // 避免播放计划/节目单出现重复节目。必须在startTime推导与排序之前执行。
+        combinedList = dedupeEpisodesByUrl(combinedList)
 
         // v3.1.212-fix: 先遍历combinedList，为所有startTime=0的节目从broadcastAt推导时间戳，
         // 再按broadcastAt日期+startTime排序。顺序不可调换：推导必须在排序之前进行。

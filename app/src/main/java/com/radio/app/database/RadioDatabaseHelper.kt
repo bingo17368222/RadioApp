@@ -841,7 +841,35 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             while (cursor.moveToNext()) list.add(cursorToEpisode(cursor))
             cursor.close()
         } catch (_: Exception) {}
-        return list
+        // v3.1.276-fix: 同一节目槽位可能同时存在"构造版(URL生成)"与"API版"两条记录
+        // （audioUrl相同但ID序号不同，episode_id主键无法合并）。按audioUrl去重，
+        // 优先保留带完整时间戳broadcastAt（长度>=16，可显示HH:mm）的版本，
+        // 修复节目单出现重复节目及"预缓存节目排最前但无开始时间"的问题。
+        val byUrl = HashMap<String, Episode>()
+        val deduped = mutableListOf<Episode>()
+        for (ep in list) {
+            val key = ep.audioUrl?.takeIf { it.isNotBlank() } ?: (ep.id ?: "")
+            if (key.isBlank()) {
+                deduped.add(ep)
+                continue
+            }
+            val existing = byUrl[key]
+            if (existing == null) {
+                byUrl[key] = ep
+                deduped.add(ep)
+            } else {
+                val existingFull = (existing.broadcastAt?.length ?: 0) >= 16
+                val newFull = (ep.broadcastAt?.length ?: 0) >= 16
+                if (newFull && !existingFull) {
+                    val idx = deduped.indexOf(existing)
+                    if (idx >= 0) {
+                        deduped[idx] = ep
+                        byUrl[key] = ep
+                    }
+                }
+            }
+        }
+        return deduped
     }
 
     private fun cursorToEpisode(c: Cursor): Episode = Episode().apply {

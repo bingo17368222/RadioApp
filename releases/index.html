@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.275 安装</title>
+<title>RadioApp v3.1.276 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.275</div>
+  <div class="version">v3.1.276</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.275</h3>
+    <h3>更新内容 v3.1.276</h3>
     <ul>
-      <li><b>修复：扩展取数对一年前历史日期（如 2025-05-13）返回空。</b><br>根因：API 对一年前日期返回空列表，而 URL 构造完全依赖 savedList 提取时间段；savedList 为空或为跨天数据时无法构造任何节目，取数直接"返回空"。<br>现改为：savedList 无法提取时间段时自动使用默认 8 档时间段模板（0000_0700 … 2100_2400），pathPrefix/stationPart 从当前播放节目 URL 推导兜底，保证历史日期也能持续构造节目。</li>
-      <li><b>修复：URL 构造后全部去重失败、取数永不推进。</b><br>根因：days_fetched 在列表刷新/播放日期变化时被清零，取数永远从 offset=+1 重复构造已覆盖的日期（构造 URL 与 preCacheList 已有完全相同 → 全部去重失败 → size 不变即中断）。<br>现改为：fetchMoreDaysForPreCache 改为多天循环推进——单日无新增（API 空 / 构造 URL 全部已覆盖 / 全部被过滤）时自动尝试下一天，直到找到新增节目或达到 15 天上限；已覆盖的时间段明确记日志后跳过，不再死等在同一天。</li>
+      <li><b>修复：预缓存自动获取的新日期节目单中，预缓存节目排最前且只显示日期、不显示开始时间。</b><br>根因：URL 构造节目时 broadcastAt 只存了日期（如"2025-05-22"），节目单时间解析失败后回退显示纯日期；且 DB 按 broadcast_at 排序时纯日期串排在带时间戳的 API 节目之前。<br>现改为：构造节目时从时间段 slot 提取开始时间，生成完整 broadcastAt（如"2025-05-22T07:00:00"），节目单即可正常显示"07:00"开始时间，并与 API 节目按时间正确交错排序。</li>
+      <li><b>修复：节目单/播放计划出现重复节目（同一节目同时存在构造版与 API 版）。</b><br>根因：同一节目槽位的"构造版(URL生成)"与"API版"ID 序号可能不同（去重依赖的 ID 主键/ distinctBy{id} 无法合并），但 audioUrl 唯一标识一个播出时段。<br>现改为：节目单 DB 查询与播放计划构建均按 audioUrl 二次去重，优先保留带完整时间戳的版本，重复节目不再出现。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.275.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.276.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
