@@ -1498,9 +1498,23 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // 标记预缓存开始，通知栏进度轮询将跳过更新
         precacheCompletedCount = 0
         isPrecaching = true
-        // Reset days_fetched counter for new pre-cache cycle so fetchMoreDaysForPreCache
-        // can fetch up to 20 fresh days each cycle
-        getSharedPreferences("precache_list", MODE_PRIVATE).edit().putInt("days_fetched", 0).apply()
+        // v3.1.274-fix: 预缓存推进修复——days_fetched 跨 triggerPreCache 保留，
+        // 仅在播放日期变化时才重置。此前每次触发都无条件清零，导致
+        // fetchMoreDaysForPreCache 永远从 offset=+1 重试同一天（日志中
+        // "fetching ... on 2025-05-13 (offset=+1)" 出现 116 次），
+        // 推进不到更远日期、找不到未缓存节目，表现为预缓存"两天不启动"。
+        val pcPrefs = getSharedPreferences("precache_list", MODE_PRIVATE)
+        val baseDate = pcPrefs.getString("current_date", null) ?: currentEp.broadcastAt?.take(10) ?: ""
+        val lastBaseDate = pcPrefs.getString("last_precache_date", null) ?: ""
+        if (lastBaseDate != baseDate) {
+            pcPrefs.edit()
+                .putInt("days_fetched", 0)
+                .putString("last_precache_date", baseDate)
+                .apply()
+            writePreCacheLog("triggerPreCache: reset days_fetched=0 (base date changed $lastBaseDate -> $baseDate)")
+        } else {
+            writePreCacheLog("triggerPreCache: keep days_fetched=${pcPrefs.getInt("days_fetched", 0)} (base date $baseDate)")
+        }
         writeServiceLog("notification", "triggerPreCache: starting pre-cache loop, isPrecaching=true")
 
         // [v2.1.0] Use centralized cache dir
