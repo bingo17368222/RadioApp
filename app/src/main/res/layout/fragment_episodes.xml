@@ -6,6 +6,7 @@
     android:background="?attr/appBackground">
 
     <!-- v3.1.246: 参考蜻蜓FM优化：标题 + 轻量工具按钮，去除 emoji -->
+    <!-- v3.1.281: 按钮高度提升到40dp，修复文字显示不全 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -28,9 +29,10 @@
         <Button
             android:id="@+id/btn_date_picker"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="40dp"
+            android:minHeight="40dp"
             android:text="选日期"
-            android:textSize="12sp"
+            android:textSize="13sp"
             android:textColor="?attr/colorOnPrimary"
             android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="14dp"
@@ -39,9 +41,10 @@
         <Button
             android:id="@+id/btn_today"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="40dp"
+            android:minHeight="40dp"
             android:text="今天"
-            android:textSize="12sp"
+            android:textSize="13sp"
             android:textColor="?attr/colorOnPrimary"
             android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="14dp"
@@ -51,9 +54,10 @@
         <Button
             android:id="@+id/btn_refresh"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="40dp"
+            android:minHeight="40dp"
             android:text="刷新"
-            android:textSize="12sp"
+            android:textSize="13sp"
             android:textColor="?attr/colorOnPrimary"
             android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="14dp"
@@ -74,10 +78,11 @@
         <Button
             android:id="@+id/btn_history"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="40dp"
+            android:minHeight="40dp"
             android:layout_weight="1"
             android:text="播放历史"
-            android:textSize="12sp"
+            android:textSize="13sp"
             android:textColor="?attr/colorOnPrimary"
             android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="12dp"
@@ -86,10 +91,11 @@
         <Button
             android:id="@+id/btn_schedule"
             android:layout_width="0dp"
-            android:layout_height="34dp"
+            android:layout_height="40dp"
+            android:minHeight="40dp"
             android:layout_weight="1"
             android:text="播放计划"
-            android:textSize="12sp"
+            android:textSize="13sp"
             android:textColor="?attr/colorOnPrimary"
             android:backgroundTint="?attr/colorPrimary"
             android:paddingStart="12dp"

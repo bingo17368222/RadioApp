@@ -18,70 +18,10 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_close"
             android:contentDescription="Close" />
-        <!-- v3.1.246: 播放计划按钮：图标+文字（参考蜻蜓FM，必须显示文字提示） -->
+        <!-- v3.1.281: 播放计划/播放历史移出标题栏（曾挤压标题显示不全），标题栏只保留关闭+完整标题 -->
         <LinearLayout
-            android:id="@+id/btn_schedule"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_toStartOf="@id/btn_history"
-            android:layout_centerVertical="true"
-            android:orientation="horizontal"
-            android:gravity="center"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:paddingStart="4dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp">
-            <ImageButton
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:background="@null"
-                android:src="@drawable/ic_calendar"
-                android:contentDescription="播放计划"
-                android:clickable="false"
-                android:focusable="false" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="播放计划"
-                android:textSize="10sp"
-                android:textColor="?attr/appTextSecondary"
-                android:layout_marginStart="2dp" />
-        </LinearLayout>
-        <!-- v3.1.246: 播放历史按钮：图标+文字 -->
-        <LinearLayout
-            android:id="@+id/btn_history"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_alignParentEnd="true"
-            android:layout_centerVertical="true"
-            android:orientation="horizontal"
-            android:gravity="center"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:paddingStart="4dp"
-            android:paddingEnd="10dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp">
-            <ImageButton
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:background="@null"
-                android:src="@drawable/ic_history"
-                android:contentDescription="播放历史"
-                android:clickable="false"
-                android:focusable="false" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="播放历史"
-                android:textSize="10sp"
-                android:textColor="?attr/appTextSecondary"
-                android:layout_marginStart="2dp" />
-        </LinearLayout>
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_toStartOf="@id/btn_schedule"
             android:layout_toEndOf="@id/btn_close"
             android:layout_centerVertical="true"
             android:gravity="center"
@@ -370,6 +310,7 @@
             android:gravity="center" />
     </LinearLayout>
 
+    <!-- v3.1.281: 片段列表行：右侧放置 播放计划/播放历史/字幕开关（按钮从标题栏移到这里，不再挤压标题） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -384,6 +325,60 @@
             android:textColor="?attr/appTextPrimary"
             android:textSize="14sp"
             android:textStyle="bold" />
+        <LinearLayout
+            android:id="@+id/btn_schedule"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingStart="4dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp">
+            <ImageButton
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:background="@null"
+                android:src="@drawable/ic_calendar"
+                android:contentDescription="播放计划"
+                android:clickable="false"
+                android:focusable="false" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="播放计划"
+                android:textSize="12sp"
+                android:textColor="?attr/appTextSecondary"
+                android:layout_marginStart="2dp" />
+        </LinearLayout>
+        <LinearLayout
+            android:id="@+id/btn_history"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:paddingStart="4dp"
+            android:paddingEnd="8dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp">
+            <ImageButton
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:background="@null"
+                android:src="@drawable/ic_history"
+                android:contentDescription="播放历史"
+                android:clickable="false"
+                android:focusable="false" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="播放历史"
+                android:textSize="12sp"
+                android:textColor="?attr/appTextSecondary"
+                android:layout_marginStart="2dp" />
+        </LinearLayout>
         <ImageButton
             android:id="@+id/btn_subtitle_toggle"
             android:layout_width="40dp"
