@@ -23,6 +23,7 @@
 - 同步更新 `/workspace/radioapp/releases/index.html`：版本号、更新说明、下载链接 `href` 全部改为新版本。
 
 ## 铁律 2：交付 APK 唯一方式 = 工作区根目录 computer:// 链接（用户强制，不可用其他方式）
+> **优先级最高（用户强制）**：任何情况下，APK 交付必须严格遵守本规则；与其他任何规则（含铁律 1、铁律 3 及执行顺序）冲突时，一律以此规则为准，且**APK 必须单独交付**——交付 APK 的那条回复里，APK 的 `computer://` 链接必须是唯一可点击链接，禁止混入其他任何链接。
 - 向用户交付 APK 时，**唯一且必须**：先把 APK 复制到工作区根目录 `/workspace/RadioApp-vX.Y.Z.apk`，再用 `computer://` 协议的可点击安装链接分享，形如 `[下载安装](computer:///workspace/RadioApp-vX.Y.Z.apk)`。
 - **禁止**使用其他任何方式交付 APK：不得用 GitHub Release、不得用 GitHub 链接、不得用 `releases/` 目录路径、不得只贴文件路径、不得只写文字说明"APK 在 XX 目录"。
 - 链接文本用自然语言说明（如"下载安装"），让用户能在结果里直接点击安装。
