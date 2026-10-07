@@ -1908,7 +1908,7 @@ object SegmentGenerator {
         // v3.1.36: 使用PRIORITY_MANUAL确保预分段进度通知始终可见，不被后台会话拦截
         val episodeTitle = try {
             val info = RadioDatabaseHelper.getInstance(context).getEpisodeInfo(episodeId)
-            buildSegmentNotificationTitle(episodeId, info?.title)
+            buildSegmentNotificationTitle(context, episodeId, info?.title)
         } catch (_: Exception) { episodeId }
         // v3.1.36: 使用PRIORITY_MANUAL，与手动分段同样的优先级，确保通知始终显示
         SegmentNotificationHelper.startSession(context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL)
@@ -2125,7 +2125,7 @@ object SegmentGenerator {
             }
 
             val episodeInfo = dbHelper.getEpisodeInfo(episodeId)
-            val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
+            val episodeTitle = buildSegmentNotificationTitle(context, episodeId, episodeInfo?.title)
 
             // v2.4.186: Start a notification session for this episode only when we are actually
             // going to run analysis. Because the helper uses a single notification ID, a later
@@ -2256,12 +2256,47 @@ object SegmentGenerator {
     /**
      * v2.4.180: Build a segment-notification title that includes the broadcast date, matching
      * the style used in PlayerActivity for manual segmentation.
+     * v3.1.279-fix: 标题为空/占位时，从DB反查同station同日期的真实标题。
+     * 根因：构造版节目（URL生成）ID序号与API版错位（0/1/2 vs 1/3/9）时，
+     * 按episodeId查到的可能是占位标题"节目"，导致分段通知标题显示错误。
      */
-    private fun buildSegmentNotificationTitle(episodeId: String?, title: String?): String {
+    private fun buildSegmentNotificationTitle(context: Context, episodeId: String?, title: String?): String {
         val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(episodeId ?: "")
         val dateStr = dateMatch?.value ?: ""
-        val baseTitle = title ?: episodeId ?: "未知节目"
+        var baseTitle = title ?: episodeId ?: "未知节目"
+        if (!isEffectiveTitle(baseTitle)) {
+            val realTitle = queryRealTitleFromDb(context, episodeId, dateStr)
+            if (!realTitle.isNullOrBlank()) {
+                baseTitle = realTitle
+            }
+        }
         return if (dateStr.isNotEmpty()) "$dateStr $baseTitle" else baseTitle
+    }
+
+    /**
+     * v3.1.279: 从DB反查真实标题。episodeId格式 stationId-date-idx
+     * （如 henan-private-car-2026-10-07-9），查询同station同日期的记录中，
+     * ID序号一致且标题有效的版本。
+     */
+    private fun queryRealTitleFromDb(context: Context, episodeId: String?, dateStr: String): String? {
+        if (episodeId.isNullOrBlank() || dateStr.isEmpty()) return null
+        val m = Regex("^(.+?)-\\d{4}-\\d{2}-\\d{2}-(\\d+)$").find(episodeId) ?: return null
+        val stationId = m.groupValues[1]
+        val idx = m.groupValues[2]
+        try {
+            val db = RadioDatabaseHelper.getInstance(context)
+            val episodes = db.getEpisodesByDateAndStation(stationId, dateStr)
+            return episodes.firstOrNull { ep ->
+                ep.id?.endsWith("-$idx") == true && isEffectiveTitle(ep.title)
+            }?.title
+        } catch (_: Exception) { return null }
+    }
+
+    private fun isEffectiveTitle(title: String?): Boolean {
+        if (title.isNullOrBlank()) return false
+        if (title == "节目" || title == "未知节目") return false
+        if (title.startsWith("广播节目录音")) return false
+        return true
     }
 
     /**
@@ -2411,7 +2446,7 @@ object SegmentGenerator {
         // v3.1.52: 先启动通知会话，成功后再设置 isSegmenting 标志。
         // 顺序不可颠倒——先设 isSegmenting 会导致自身的 startSession 被拒绝。
         val episodeInfo = try { dbHelper.getEpisodeInfo(episodeId) } catch (_: Exception) { null }
-        val episodeTitle = buildSegmentNotificationTitle(episodeId, episodeInfo?.title)
+        val episodeTitle = buildSegmentNotificationTitle(context, episodeId, episodeInfo?.title)
         val sessionStarted = SegmentNotificationHelper.startSession(
             context, episodeId, episodeTitle, SegmentNotificationHelper.PRIORITY_MANUAL
         )

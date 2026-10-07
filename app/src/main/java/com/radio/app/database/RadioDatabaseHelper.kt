@@ -721,6 +721,20 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     fun saveEpisodeInfo(episode: Episode) {
         try {
             val db = writableDatabase
+            // v3.1.279-fix: 防占位标题覆盖（同saveEpisodeInfos逻辑），保留DB已有的有效标题。
+            if (!isEffectiveTitle(episode.title)) {
+                try {
+                    val cursor = db.query(TABLE_EPISODE_INFO, arrayOf("title"),
+                        "episode_id = ?", arrayOf(episode.id), null, null, null)
+                    if (cursor.moveToFirst()) {
+                        val existingTitle = cursor.getString(cursor.getColumnIndexOrThrow("title"))
+                        if (isEffectiveTitle(existingTitle)) {
+                            episode.title = existingTitle
+                        }
+                    }
+                    cursor.close()
+                } catch (_: Exception) {}
+            }
             val (effectiveBroadcastAt, effectiveTitle) = normalizeEpisodeFields(episode)
             // v3.1.41-fix: 如果duration为0，尝试保留DB中已有的duration，避免覆盖正确数据
             var finalDuration = episode.duration
@@ -776,6 +790,24 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                                 val existingDuration = cursor.getLong(cursor.getColumnIndexOrThrow("duration"))
                                 if (existingDuration > 0) {
                                     finalDuration = existingDuration
+                                }
+                            }
+                            cursor.close()
+                        } catch (_: Exception) {}
+                    }
+                    // v3.1.279-fix: 防占位标题覆盖。若DB已有同episode_id的有效标题，
+                    // 而本次写入的标题为空/占位（构造版"节目"等），保留已有标题，
+                    // 避免构造版覆盖API版真实标题导致分段通知标题显示错误。
+                    var finalTitle = episode.title
+                    if (!isEffectiveTitle(finalTitle)) {
+                        try {
+                            val cursor = db.query(TABLE_EPISODE_INFO, arrayOf("title"),
+                                "episode_id = ?", arrayOf(episode.id), null, null, null)
+                            if (cursor.moveToFirst()) {
+                                val existingTitle = cursor.getString(cursor.getColumnIndexOrThrow("title"))
+                                if (isEffectiveTitle(existingTitle)) {
+                                    finalTitle = existingTitle
+                                    episode.title = finalTitle
                                 }
                             }
                             cursor.close()
@@ -843,8 +875,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         } catch (_: Exception) {}
         // v3.1.276-fix: 同一节目槽位可能同时存在"构造版(URL生成)"与"API版"两条记录
         // （audioUrl相同但ID序号不同，episode_id主键无法合并）。按audioUrl去重，
-        // 优先保留带完整时间戳broadcastAt（长度>=16，可显示HH:mm）的版本，
         // 修复节目单出现重复节目及"预缓存节目排最前但无开始时间"的问题。
+        // v3.1.279-fix: 去重优先级改为「标题有效 > broadcastAt完整度」。
+        // 根因：构造版占位标题（"节目"等）若覆盖API版真实标题，会导致分段通知标题显示错误。
         val byUrl = HashMap<String, Episode>()
         val deduped = mutableListOf<Episode>()
         for (ep in list) {
@@ -858,18 +891,57 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 byUrl[key] = ep
                 deduped.add(ep)
             } else {
-                val existingFull = (existing.broadcastAt?.length ?: 0) >= 16
-                val newFull = (ep.broadcastAt?.length ?: 0) >= 16
-                if (newFull && !existingFull) {
+                val existingTitleOk = isEffectiveTitle(existing.title)
+                val newTitleOk = isEffectiveTitle(ep.title)
+                if (newTitleOk && !existingTitleOk) {
+                    // 新版本标题有效而旧版本为占位 → 替换（真实标题优先）
                     val idx = deduped.indexOf(existing)
                     if (idx >= 0) {
                         deduped[idx] = ep
                         byUrl[key] = ep
                     }
+                } else if (newTitleOk == existingTitleOk) {
+                    // 标题有效性相同 → 再比较broadcastAt完整度（长度>=16可显示HH:mm）
+                    val existingFull = (existing.broadcastAt?.length ?: 0) >= 16
+                    val newFull = (ep.broadcastAt?.length ?: 0) >= 16
+                    if (newFull && !existingFull) {
+                        val idx = deduped.indexOf(existing)
+                        if (idx >= 0) {
+                            deduped[idx] = ep
+                            byUrl[key] = ep
+                        }
+                    }
                 }
             }
         }
         return deduped
+    }
+
+    /**
+     * v3.1.279: 判断标题是否为"有效标题"（非空、非构造占位、非API缺省占位）。
+     * 用于去重/防覆盖时的标题优先级比较。
+     */
+    private fun isEffectiveTitle(title: String?): Boolean {
+        if (title.isNullOrBlank()) return false
+        if (title == "节目" || title == "未知节目") return false
+        if (title.startsWith("广播节目录音")) return false
+        return true
+    }
+
+    /**
+     * v3.1.279: 按stationId查询历史节目信息（供槽号映射学习与标题反查）。
+     * 按updated_at倒序，取最近的记录。
+     */
+    fun getEpisodeInfosByStation(stationId: String, limit: Int = 500): List<Episode> {
+        val list = mutableListOf<Episode>()
+        try {
+            val db = readableDatabase
+            val cursor = db.query(TABLE_EPISODE_INFO, null, "station_id = ?",
+                arrayOf(stationId), null, null, "updated_at DESC LIMIT $limit")
+            while (cursor.moveToNext()) list.add(cursorToEpisode(cursor))
+            cursor.close()
+        } catch (_: Exception) {}
+        return list
     }
 
     private fun cursorToEpisode(c: Cursor): Episode = Episode().apply {

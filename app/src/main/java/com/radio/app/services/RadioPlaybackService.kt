@@ -1986,6 +1986,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     timeSlots = listOf("0000_0700", "0700_0900", "0900_1200", "1200_1400", "1400_1700", "1700_1900", "1900_2100", "2100_2400")
                     writePreCacheLog("fetchMoreDaysForPreCache: savedList 无法提取时间段(${savedList.size}条)，使用默认8档模板")
                 }
+                // v3.1.279-fix: 槽号确定性映射——学习并持久化「开始时间HH:mm → 节目表序号」。
+                // 学习源：savedList（API节目）+ DB历史记录。老用户DB中已有API版（1/3/9）记录，
+                // 学习后构造版ID与API版一致，PCM文件名与通知标题恢复正常。
+                learnSlotIndexMap(stationId, savedList)
+                try {
+                    val dbHistory = RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                        .getEpisodeInfosByStation(stationId, 300)
+                    if (dbHistory.isNotEmpty()) {
+                        learnSlotIndexMap(stationId, dbHistory)
+                        writePreCacheLog("fetchMoreDaysForPreCache: learned slot index map from DB (${dbHistory.size}条历史记录)")
+                    }
+                } catch (_: Exception) {}
+                val slotIndexMap = loadSlotIndexMap(stationId)
+                if (slotIndexMap.isNotEmpty()) {
+                    writePreCacheLog("fetchMoreDaysForPreCache: slot index map (${slotIndexMap.size}项): ${slotIndexMap.entries.sortedBy { it.key }.joinToString { "${it.key}=${it.value}" }}")
+                }
                 val newDateStr = targetDate.replace("-", "")
                 // 与 fetchCrossDayEpisode 保持一致：从 URL 推导 pathPrefix，避免硬编码 base 路径
                 val sampleUrl = savedList.firstOrNull { !it.audioUrl.isNullOrBlank() }?.audioUrl
@@ -1995,13 +2011,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (stationPart.isBlank()) stationPart = stationId
                 var constructedCount = 0
                 var dupCount = 0
-                for ((slotIdx, slot) in timeSlots.withIndex()) {
+                var unMappedCounter = 0
+                for ((_, slot) in timeSlots.withIndex()) {
                     val constructedUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$slot.mp4"
                     if (constructedUrl in existingUrls) {
                         // v3.1.275-fix: 该时段 URL 已存在（此前已构造过/API 已有）→ 视为已覆盖，跳过
                         dupCount++
                         writePreCacheLog("fetchMoreDaysForPreCache: constructed URL already covered for $slot: $constructedUrl")
                         continue
+                    }
+                    // v3.1.279-fix: 槽号确定性映射。优先查「开始时间→节目表序号」映射，
+                    // 保证构造版ID与API版ID（stationId-date-i，如1/3/9）一致；
+                    // 未命中时从timeSlots.size起递增兜底，避免与映射值冲突导致ID重复。
+                    val slotStart = slot.substringBefore("_")
+                    val slotStartTime = if (slotStart.length >= 4) "${slotStart.substring(0, 2)}:${slotStart.substring(2, 4)}" else null
+                    val mappedIdx = slotStartTime?.let { slotIndexMap[it] }
+                    val slotIdx = mappedIdx ?: (timeSlots.size + unMappedCounter++)
+                    val constructedId = "$stationId-$targetDate-$slotIdx"
+                    // 防同ID冲突：同一日期内ID必须唯一（映射命中与兜底值可能碰撞）
+                    if (resultList.any { it.id == constructedId }) {
+                        dupCount++
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP $constructedId - duplicate id for slot=$slot (mappedIdx=$mappedIdx)")
+                        continue
+                    }
+                    if (mappedIdx != null) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: slot=$slot mapped to idx=$mappedIdx (from slot index map)")
                     }
                     // [v2.1.6] Use stationId (not stationPart) in episode.id to match API format
                     // This prevents duplicate PCM files (e.g., sijiache-20240712-0700 vs henan-private-car-2024-07-12-0)
@@ -2012,6 +2046,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     }?.title
                     if (constructedTitle.isNullOrBlank() && slotIdx < savedList.size) {
                         constructedTitle = savedList[slotIdx].title
+                    }
+                    // v3.1.279-fix: savedList无匹配（为空/跨天数据）时，从DB历史节目按时段反查真实标题，
+                    // 避免构造版使用占位标题"节目"导致分段通知标题错误。
+                    if (constructedTitle.isNullOrBlank()) {
+                        constructedTitle = queryTitleFromDbHistory(stationId, slot)
+                        if (constructedTitle.isNullOrBlank()) {
+                            writePreCacheLog("fetchMoreDaysForPreCache: no effective title for slot=$slot, using placeholder")
+                        } else {
+                            writePreCacheLog("fetchMoreDaysForPreCache: title for slot=$slot from DB history: $constructedTitle")
+                        }
                     }
                     // v3.1.207-fix: 从timeSlot解析startTime，确保构造节目有正确的开始时间戳
                     var derivedStartTime = 0L
@@ -2101,6 +2145,77 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         resultList.addAll(resultListCopy)
         writePreCacheLog("fetchMoreDaysForPreCache: returning ${resultList.size} episodes (was ${existingList.size}), sorted by episode index")
         return resultList
+    }
+
+    // ===== v3.1.279-fix: 槽号确定性映射 =====
+    // 根因：构造版节目ID的slotIdx来自timeSlots枚举下标（0/1/2），而API版ID序号是
+    // 当天完整节目表序号（1/3/9），两者错位导致PCM文件名与通知标题错误。
+    // 方案：学习并持久化「开始时间HH:mm → 节目表序号」映射，构造时优先查映射生成slotIdx，
+    // 保证构造版ID与API版ID一致。学习源：savedList（API节目）、本次循环API返回、DB历史记录。
+
+    private fun loadSlotIndexMap(stationId: String): HashMap<String, Int> {
+        try {
+            val prefs = getSharedPreferences("slot_index_map", Context.MODE_PRIVATE)
+            val json = prefs.getString("map_$stationId", "") ?: ""
+            if (json.isNotBlank()) {
+                val type = object : TypeToken<HashMap<String, Int>>() {}.type
+                return Gson().fromJson<HashMap<String, Int>>(json, type) ?: HashMap()
+            }
+        } catch (_: Exception) {}
+        return HashMap()
+    }
+
+    private fun saveSlotIndexMap(stationId: String, map: Map<String, Int>) {
+        try {
+            val prefs = getSharedPreferences("slot_index_map", Context.MODE_PRIVATE)
+            prefs.edit().putString("map_$stationId", Gson().toJson(map)).apply()
+        } catch (_: Exception) {}
+    }
+
+    /** 从一组节目中提取「开始时间HH:mm → 节目表序号」，合并进持久化映射。 */
+    private fun learnSlotIndexMap(stationId: String, episodes: List<Episode>) {
+        if (episodes.isEmpty()) return
+        val merged = loadSlotIndexMap(stationId)
+        val apiIdRegex = Regex("^.+\\d{4}-\\d{2}-\\d{2}-\\d+$")
+        var changed = false
+        for (ep in episodes) {
+            val id = ep.id ?: continue
+            if (!apiIdRegex.matches(id)) continue
+            val idx = id.substringAfterLast("-").toIntOrNull() ?: continue
+            if (idx < 0) continue
+            val start = parseBroadcastStartHm(ep.broadcastAt) ?: continue
+            if (merged[start] == null) {
+                merged[start] = idx
+                changed = true
+            }
+        }
+        if (changed) saveSlotIndexMap(stationId, merged)
+    }
+
+    private fun parseBroadcastStartHm(broadcastAt: String?): String? {
+        if (broadcastAt.isNullOrBlank()) return null
+        val m = Regex("T(\\d{2}):(\\d{2})").find(broadcastAt) ?: return null
+        return m.groupValues[1] + ":" + m.groupValues[2]
+    }
+
+    /** 从DB历史节目中按时段反查有效标题（savedList无匹配时的兜底）。 */
+    private fun queryTitleFromDbHistory(stationId: String, slot: String): String? {
+        try {
+            val dbHistory = RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                .getEpisodeInfosByStation(stationId, 300)
+            return dbHistory.firstOrNull { ep ->
+                val url = ep.audioUrl ?: ""
+                val parts = url.substringAfterLast("/").substringBefore(".").split("_")
+                parts.size >= 4 && "${parts[2]}_${parts[3]}" == slot && isEffectiveTitle(ep.title)
+            }?.title
+        } catch (_: Exception) { return null }
+    }
+
+    private fun isEffectiveTitle(title: String?): Boolean {
+        if (title.isNullOrBlank()) return false
+        if (title == "节目" || title == "未知节目") return false
+        if (title.startsWith("广播节目录音")) return false
+        return true
     }
 
     private fun savePreCacheList(episodes: List<Episode>) {

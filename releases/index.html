@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.278 安装</title>
+<title>RadioApp v3.1.279 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.278</div>
+  <div class="version">v3.1.279</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.278</h3>
+    <h3>更新内容 v3.1.279</h3>
     <ul>
-      <li><b>工程级加固：APK 单独交付升级为代码级硬校验（铁律 000 硬门禁）。</b><br>每次 assembleRelease 自动运行 verifyApkDelivery 任务：构建产物强制复制到工作区根目录、发布页下载链接强制唯一且指向当前版本；校验失败构建即失败，从机制上杜绝交付链接被遗忘/混入其他链接。</li>
+      <li><b>修复：分段通知栏标题显示错误（PCM 命名槽号错位）。</b><br>13 点后新版本生成的 PCM 槽号从 1/3/9 变为 0/1/2，导致"畅行早高峰""旅行大玩家""下班路上全城娱乐"等节目通知标题显示错误。本版引入槽号确定性映射：学习并持久化"开始时间→节目表序号"关系，构造节目 ID 与 API 版一致；标题支持按时间段反查真实节目名；数据库去重优先保留有效标题。修复后 PCM 文件名与通知标题恢复正常。</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.278.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.279.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
