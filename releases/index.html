@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.280 安装</title>
+<title>RadioApp v3.1.282 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.280</div>
+  <div class="version">v3.1.282</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.280</h3>
+    <h3>更新内容 v3.1.282</h3>
     <ul>
-      <li><b>界面优化（参考蜻蜓FM）：</b><br>· 往期节目页：顶部按钮去 emoji、统一胶囊风格；日期/电台胶囊圆角化，今天/昨天/前天语义化显示<br>· 节目列表改为圆角卡片式，正在播放高亮保持圆角<br>· 播放页顶部"播放计划""播放历史"按钮由纯图标改为图标+文字提示<br>· 首页标题改为中文"电台"</li>
+      <li><b>播放计划补足持续运行，回前台不再为空：</b><br>· 之前未在播放/回前台时 currentEpisode 为 null，构建计划直接返空，导致「打开播放计划是空的」<br>· 现在无当前节目时自动用持久化档期派生锚点，强制构建并持续补足未来播放计划<br>· 允许标题重复、允许多日跨天，未来 30 天内尽量排满，不再出现「暂无后续播放计划」</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.280.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.1.282.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

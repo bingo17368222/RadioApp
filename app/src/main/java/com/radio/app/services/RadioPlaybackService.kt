@@ -575,6 +575,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      // 避免用户看到"暂无后续播放计划"。因此计划保满保留宽的跨天覆盖（30天）：
      // 只要远端未来30天内存在 ≥1 个未被 disliked/no-preprocess 的真实可播节目，计划就不会空。
      private val PLAN_FILL_MAX_FUTURE_DAYS = 30
+     // v3.1.282-note: 用户明确「允许标题重复、允许多日跨天」，故不收紧跳天/去重；只须保证
+     // 后台"播放计划补足/预取"任务持续运行、不被系统停掉即可。
 
     // MediaSession for Bluetooth/media button support
     private var mediaSession: MediaSessionCompat? = null
@@ -6717,13 +6719,58 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
+     * v3.1.282-fix: 无当前播放时，从持久化档期(precache_list 的 station_id/current_date)派生一个
+     * 锚点节目，使 buildPlaybackSchedule 在未播放/回到前台时也能构建出未来播放计划，
+     * 避免"回前台播放计划是空的"。优先复用本地真实档期节目；无则构造最小锚点走"按日补拉 + 退化就近"。
+     */
+    private fun buildScheduleAnchorEpisode(): Episode? {
+        return try {
+            val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
+            val stationId = prefs.getString("station_id", null)
+            val date = prefs.getString("current_date", null)
+            if (stationId.isNullOrBlank() || date.isNullOrBlank()) {
+                writeServiceLog("schedule", "buildScheduleAnchorEpisode: 无持久化档期(station/date)，无法派生锚点")
+                null
+            } else {
+                val localReal = (loadEpisodeList() + prunePreCacheList())
+                    .filter { (it.stationId ?: "") == stationId && it.broadcastAt?.take(10) == date }
+                    .maxByOrNull { it.startTime }
+                if (localReal != null) {
+                    writeServiceLog("schedule", "buildScheduleAnchorEpisode: 复用本地真实档期 ${localReal.id} (${localReal.title})")
+                    localReal
+                } else {
+                    writeServiceLog("schedule", "buildScheduleAnchorEpisode: 构造最小锚点 station=$stationId date=$date")
+                    Episode(
+                        id = "schedule-anchor-$stationId-$date",
+                        stationId = stationId,
+                        stationName = stationId,
+                        broadcastAt = "$date"
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            writeServiceLog("schedule", "buildScheduleAnchorEpisode: 异常 ${e.message}")
+            null
+        }
+    }
+
+    /**
      * v3.1.139: 客户端请求重新构建播放计划，解决"暂无节目"问题。
      * 当用户点击播放计划按钮时，如果列表为空，客户端会调用此方法强制重建。
      */
     fun rebuildPlaybackSchedule() {
-        // 同步重建播放计划，更新futurePlannedEpisodes
-        // v3.1.xxx: buildPlaybackSchedule()内部已写入futurePlannedEpisodes（已富化），无需重复写入
-        buildPlaybackSchedule()
+        // v3.1.282-fix: 回到前台时 currentEpisode 可能为 null（未在播放），原 buildPlaybackSchedule()
+        // 开头 curId==null 会直接 return emptyList()，导致"打开播放计划是空的"。此处若无当前节目，
+        // 先用持久化档期派生的锚点注入构建，再于 finally 中还原，保证回前台也能补足未来播放计划。
+        val hadAnchor = currentEpisode
+        val anchor = if (currentEpisode == null) buildScheduleAnchorEpisode() else null
+        if (anchor != null) currentEpisode = anchor
+        try {
+            // 同步重建播放计划，更新futurePlannedEpisodes
+            buildPlaybackSchedule()
+        } finally {
+            currentEpisode = hadAnchor
+        }
     }
 
     // v2.0.73: Safely get player duration, filtering out invalid values (0, negative, TIME_UNSET).
