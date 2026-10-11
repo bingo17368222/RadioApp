@@ -145,6 +145,18 @@ object SegmentGenerator {
     private const val LONG_FP_ALIGN_COARSE_STEP = 4          // 粗扫步长（帧）
     private const val LONG_FP_ALIGN_COARSE_THRESHOLD = 0.58f // 粗扫阈值（raw相似度）
     private const val LONG_FP_ALIGN_FINE_RADIUS = 4          // 精扫半径（帧，1帧粒度）
+    // v3.2.11-fix: 多尺度中段裁剪探测参数。
+    // 根因：自动晋升指纹晋升时直接复制观察池整段指纹（start_ms=0/end_ms=duration_ms），
+    // 该整段包含大量边界污染帧（片头/片尾台呼、音效、静音等非核心内容，占比可达 r≈0.6~0.7）。
+    // 晋升前观察池口径用"minLen滑动+0.3长度惩罚"(compareFingerprints)只比较较短一方，
+    // 边界污染占比被滑动窗口稀释，命中0.82；晋升后预扫用"全长等长"对比（compareSliceRaw），
+    // 边界污染帧逐帧计入误差，raw被稀释到0.82以下 → 晋升后从不匹配。
+    // （决定性实验 repro_decisive.py：r=0.6~0.7 时池口径0.83命中、预扫0.77~0.81未命中、
+    //   中段裁剪探测0.88~0.93可恢复命中，与生产日志观察池命中82~86%区间完全对应。）
+    // 修复：全长对齐未达阈值时，对指纹中段做 90%/80%/70% 多尺度裁剪，
+    // 裁剪掉首尾污染帧后仅对比核心内容，在"全长最佳对齐位置+裁剪起始偏移"附近精扫恢复命中。
+    private const val CROP_PROBE_FINE_RADIUS = 8             // 裁剪探测精扫半径（帧），覆盖相位抖动
+    private val CROP_PROBE_SCALES = floatArrayOf(0.9f, 0.8f, 0.7f) // 中段保留比例（100%已由全长对比覆盖）
     // v3.1.265-fix: 观察池"重复判定/命中+1"统一阈值=0.82。
     // 原内外两道门都误用了 POOL_DUPLICATE_THRESHOLD(0.92)，而同一水段在跨节目/跨设备的指纹提取
     // 仅 82%~91% 相似，导致：
@@ -4084,9 +4096,46 @@ object SegmentGenerator {
                         }
                         p += LONG_FP_ALIGN_COARSE_STEP
                     }
-                    if (bestRawSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
-                        val startMs = (bestP * msPerFrame).toLong()
-                        val endMs = ((bestP + tl) * msPerFrame).toLong()
+
+                    // v3.2.11-fix: 多尺度中段裁剪探测。
+                    // 全长等长对比未达阈值时，晋升指纹首尾的边界污染帧（片头/片尾台呼、音效、静音，
+                    // 占比可达 r≈0.6~0.7）把整段 raw 稀释到 0.82 以下；裁剪掉首尾后仅对比中段核心，
+                    // 在"全长最佳对齐位置 + 裁剪起始偏移"附近精扫即可恢复命中（决定性实验实测可恢复
+                    // 0.88~0.93，与观察池命中口径 0.82~0.86 区间一致）。正常路径零额外分配。
+                    var hitStartP = -1
+                    var matched = false
+                    if (bestP >= 0 && bestRawSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
+                        matched = true
+                        hitStartP = bestP
+                    } else if (bestP >= 0 && tl > 16) {
+                        for (scale in CROP_PROBE_SCALES) {
+                            val cropLen = (tl * scale).toInt()
+                            if (cropLen < 8) continue
+                            val cropStart = (tl - cropLen) / 2
+                            val cropTarget = IntArray(cropLen)
+                            System.arraycopy(entry.parsed, cropStart, cropTarget, 0, cropLen)
+                            // 中段在流中的对齐位置 ≈ 全长最佳位置 + 裁剪起始帧偏移（同一全局对齐）
+                            val probeCenter = bestP + cropStart
+                            val probeLo = maxOf(0, probeCenter - CROP_PROBE_FINE_RADIUS)
+                            val probeHi = minOf(fullArray.size - cropLen, probeCenter + CROP_PROBE_FINE_RADIUS)
+                            var cropBestSim = 0f
+                            var cropBestPos = -1
+                            for (fp in probeLo..probeHi) {
+                                val s = ChromaprintExtractor.compareSliceRaw(fullArray, fp, cropLen, cropTarget)
+                                if (s > cropBestSim) { cropBestSim = s; cropBestPos = fp }
+                            }
+                            if (cropBestSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
+                                bestRawSim = cropBestSim
+                                // 由中段对齐位置反推整条指纹在流中的起点（覆盖区间仍按整条指纹计时）
+                                hitStartP = (cropBestPos - cropStart).coerceAtLeast(0)
+                                matched = true
+                                break
+                            }
+                        }
+                    }
+                    if (matched) {
+                        val startMs = (hitStartP * msPerFrame).toLong()
+                        val endMs = ((hitStartP + tl) * msPerFrame).toLong()
                         matchedRanges.add(startMs to endMs)
                         longFpMatchedCount++
                         // 更新该指纹（及同去重key指纹）的last_matched_at，与窗口循环批量更新口径一致

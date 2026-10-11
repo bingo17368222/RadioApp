@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.1.282 安装</title>
+<title>RadioApp v3.2.11 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.1.282</div>
+  <div class="version">v3.2.11</div>
   <div class="changelog">
-    <h3>更新内容 v3.1.282</h3>
+    <h3>更新内容 v3.2.11</h3>
     <ul>
-      <li><b>播放计划补足持续运行，回前台不再为空：</b><br>· 之前未在播放/回前台时 currentEpisode 为 null，构建计划直接返空，导致「打开播放计划是空的」<br>· 现在无当前节目时自动用持久化档期派生锚点，强制构建并持续补足未来播放计划<br>· 允许标题重复、允许多日跨天，未来 30 天内尽量排满，不再出现「暂无后续播放计划」</li>
+      <li><b>修复自动晋升指纹晋升后从不匹配：</b><br>· 根因：晋升指纹直接复制观察池整段（含大量边界污染帧，占比可达60~70%），晋升后全长等长对比被污染帧稀释到0.82阈值以下，而观察池minLen滑动口径能命中<br>· 修复：长指纹预扫新增多尺度中段裁剪探测（100%/90%/80%/70%中段），裁剪掉首尾污染帧后仅对比核心内容，命中即更新匹配时间戳</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.1.282.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.11.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
