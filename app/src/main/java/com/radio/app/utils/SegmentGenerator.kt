@@ -680,7 +680,9 @@ object SegmentGenerator {
     private val MAX_SPEECH_RESCUE_MS = 15000L // 15秒
 
     // v3.1.224-fix: VAD抢救锚点最小持续（秒级以下视为杂音/音乐碎片，不抢救）
-    private val VAD_RESCUE_MIN_MS = 1000L
+    // v3.2.16-fix: 1s -> 2s，跳过 1~2s 的 VAD 微碎窗口（口癖/换气/音乐碎片），降低分段总数；
+    // 目标 10 秒主持人讲话远大于该值，不受影响。
+    private val VAD_RESCUE_MIN_MS = 2000L
     // v3.1.224-fix: 每个水段最多抢救的短语音窗口数，防止把一段歌曲内的多个口播碎片过度切开
     private const val VAD_RESCUE_PER_WATER_MAX = 8
     // v3.1.224-fix: PCM谐波比判定帧长/步进（16kHz采样）
@@ -701,7 +703,11 @@ object SegmentGenerator {
     private const val PCMS_RMS_MIN = 800.0            // 排除静音/极弱（int16尺度）
     private const val PCMS_WIN_S = 1.0                // 中值窗口（秒）
     private const val PCMS_WIN_HOP_S = 0.25           // 窗口步进（秒）
-    private const val PCMS_RUN_MIN_MS = 1500L         // 短讲话最少时长
+    // v3.2.16-fix: 短讲话最少时长 1.5s -> 3s。根因（用户反馈：分段数158偏多）：
+    // v3.2.15 响度化判据后 PCM 扫描把大量 1.5~3s 微碎讲话挖出独立成段，把整集切成 468 段中途态，
+    // 即使后续 reabsorb/归并也只压回 158 段。收紧到 3s 后 10 秒主持人讲话(目标段)不受影响，
+    // 但几秒内的杂音/口癖/停顿不再被挖出，从源头降低分段总数。
+    private const val PCMS_RUN_MIN_MS = 3000L         // 短讲话最少时长
     private const val PCMS_RUN_MAX_MS = 20000L        // 短讲话最多时长（防止误切长段音乐）
     private const val PCMS_MERGE_GAP_MS = 2500L       // v3.2.4-fix: 相邻讲话run间隔<=此值合并为一段（一句连贯讲话的停顿/换气间隙，避免同一句话被切碎）
     private const val PCMS_PER_WATER_MAX = 200        // 每个水段最多抢救数（v3.1.226提高以不丢尾部讲话）
@@ -742,6 +748,16 @@ object SegmentGenerator {
     private const val LOUD_MIN_RUN_MS = 25000L        // 单块至少25s才算歌曲（跳过讲话中短促片花，降低碎段）
     private const val SONG_DENSITY_MIN = 0.30f        // 合并后run的"音乐窗占比">=30%才算歌(滤掉讲话低频缀乐幻影run)
     private const val LOUD_SCAN_MIN_SEG_MS = 60000L   // 仅对>=60s的长段做检测
+
+    // v3.2.16-fix: 长干段"段首/段尾片头/片尾"切分参数。
+    // 根因（用户反馈：大段主持人讲话由一个带音乐的片头开始，未能切分出片头）：
+    // 电台片头/片尾通常只有几秒~二十几秒，findSongRunsByZcr 的 LOUD_MIN_RUN_MS(25s) 门槛
+    // 会把短片头滤掉；且片头常带人声/强节拍，谐波比可能越过 SONG_HARM_MAX，导致长干段
+    // 内部的音乐被吞入讲话。此处对"贴边"音乐块单独放行：仅响度超限(rms>SONG_RMS_MIN)、
+    // 连续时长>=INTRO_MIN_RUN_MS 且贴近段首/段尾即切出为歌曲段，段内中部仍走严格判据。
+    private const val INTRO_MIN_RUN_MS = 8000L        // 边界音乐块至少8s才切（短片头/片尾）
+    private const val INTRO_SCAN_EDGE_MS = 45000L     // 只扫段首/段尾各45s内的边界音乐
+    private const val INTRO_TOUCH_SLACK_MS = 10000L   // 音乐块距段边界10s内视为贴边（容纳片头话音过渡）
 
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
     private fun fillSpeechHoles(isSpeech: MutableList<Boolean>, maxHole: Int) {
@@ -1059,6 +1075,9 @@ object SegmentGenerator {
 
     /**
      * v3.1.242-fix: 用"低过零率+谐波"歌曲边界把长干段拆开（取代 v3.1.241 的响度跳变）。
+     * v3.1.243-fix: 判据改为"高响度+低谐波"（findSongRunsByZcr 内部实现），见其注释。
+     * v3.2.16-fix: 增加"段首/段尾片头/片尾"检测——带音乐的短片头(8~25s)由边界宽松判据
+     * （仅响度超限、忽略谐波）独立切出，不再被吞入大段主持人讲话（用户反馈）。
      * 仅对 hasVoice=true 的长干段操作——这样"广告+预录制节目+歌曲前半"被合并的长干段就能被
      * 歌曲边界拆开，歌曲独立成段，不再并入前后内容。
      * @return 切出的歌曲段数量
@@ -1074,16 +1093,26 @@ object SegmentGenerator {
             if (!seg.hasVoice || !isCleanLabel(seg.label)) { i--; continue }
             val dur = seg.end - seg.start
             if (dur < LOUD_SCAN_MIN_SEG_MS) { i--; continue }
-            // 扫出歌曲区间（低zcr+高谐波）
-            val songRuns = findSongRunsByZcr(pcmFile, seg.start, seg.end)
-            if (songRuns.isEmpty()) { i--; continue }
+            // 段内歌曲区间（严格判据，需>=LOUD_MIN_RUN_MS）+ 段首/段尾片头/片尾（宽松判据，需>=INTRO_MIN_RUN_MS）
+            val interiorRuns = findSongRunsByZcr(pcmFile, seg.start, seg.end)
+                .map { Triple(it.first, it.second, LOUD_MIN_RUN_MS) }
+            val boundaryRuns = findBoundaryMusicRuns(pcmFile, seg.start, seg.end)
+                .map { Triple(it.first, it.second, INTRO_MIN_RUN_MS) }
+            val runs = (interiorRuns + boundaryRuns)
+                .sortedBy { it.first }
+                .fold(mutableListOf<Triple<Long, Long, Long>>()) { acc, r ->
+                    if (acc.isEmpty() || r.first > acc.last().second) acc.add(r)
+                    else acc[acc.size - 1] = Triple(acc.last().first, maxOf(acc.last().second, r.second), minOf(acc.last().third, r.third))
+                    acc
+                }
+            if (runs.isEmpty()) { i--; continue }
             // 逐个歌曲区间把 seg 拆开
             var pieces = mutableListOf(seg)
             var added = false
-            for ((a, b) in songRuns.sortedBy { it.first }) {
+            for ((a, b, minLen) in runs) {
                 val newPieces = mutableListOf<VoiceSegment>()
                 for (p in pieces) {
-                    if (p.hasVoice && a >= p.start && b <= p.end && (b - a) >= LOUD_MIN_RUN_MS) {
+                    if (p.hasVoice && a >= p.start && b <= p.end && (b - a) >= minLen) {
                         if (a > p.start) newPieces.add(p.copy(start = p.start, end = a, hasVoice = true, label = p.label))
                         newPieces.add(VoiceSegment(start = a, end = b, hasVoice = false, label = "歌曲", isSimulated = true))
                         if (b < p.end) newPieces.add(p.copy(start = b, end = p.end, hasVoice = true, label = p.label))
@@ -1103,6 +1132,113 @@ object SegmentGenerator {
             i--
         }
         return cutCount
+    }
+
+    /**
+     * v3.2.16-fix: 检测长干段"段首/段尾"的片头/片尾音乐块（宽松判据：仅响度超限，忽略谐波）。
+     * 根因（用户反馈：大段主持人讲话由带音乐的片头开始，未能切分出片头）：
+     * 电台片头/片尾通常只有几秒~二十几秒，且常带人声/强节拍，谐波比可能越过 SONG_HARM_MAX；
+     * findSongRunsByZcr 的 LOUD_MIN_RUN_MS(25s) 门槛也会把短片头滤掉。此处只扫段首/段尾各
+     * INTRO_SCAN_EDGE_MS 范围，音乐窗(rms>SONG_RMS_MIN)连续时长>=INTRO_MIN_RUN_MS 且贴边
+     * （距段首或段尾<=INTRO_TOUCH_SLACK_MS）即返回；段内中部不在此函数范围，仍走严格判据，
+     * 避免把讲话中短促音乐垫底误切、不增加中部碎段。
+     * @return 贴边歌曲区间(start, end)毫秒列表（均已在[startMs,endMs]内裁剪）
+     */
+    private fun findBoundaryMusicRuns(pcmFile: File, startMs: Long, endMs: Long): List<Pair<Long, Long>> {
+        val sr = PCMS_SR
+        val winN = (LOUD_WIN_S * sr).toInt()     // 1s
+        val hopN = (LOUD_HOP_S * sr).toInt()     // 0.25s
+        val out = mutableListOf<Pair<Long, Long>>()
+        // 段首/段尾各扫 INTRO_SCAN_EDGE_MS；段短于两倍边缘+最短音乐块则整段扫（调用方已保证>=60s）
+        val edges = mutableListOf<Pair<Long, Long>>()
+        if (endMs - startMs >= INTRO_SCAN_EDGE_MS * 2 + INTRO_MIN_RUN_MS) {
+            edges.add(startMs to (startMs + INTRO_SCAN_EDGE_MS))
+            edges.add((endMs - INTRO_SCAN_EDGE_MS) to endMs)
+        } else {
+            edges.add(startMs to endMs)
+        }
+        for ((eStart, eEnd) in edges) {
+            if (eEnd - eStart < INTRO_MIN_RUN_MS) continue
+            val startSample = (eStart * sr / 1000).coerceAtLeast(0)
+            val endSample = eEnd * sr / 1000
+            if (endSample - startSample < winN) continue
+            val byteLen = ((endSample - startSample) * 2).toInt()
+            try {
+                val bytes = ByteArray(byteLen)
+                var read = 0
+                java.io.RandomAccessFile(pcmFile, "r").use { raf ->
+                    raf.seek(startSample * 2)
+                    while (read < bytes.size) {
+                        val n = raf.read(bytes, read, bytes.size - read)
+                        if (n < 0) break
+                        read += n
+                    }
+                }
+                if (read < winN * 2) continue
+                val nSamples = read / 2
+                val samples = ShortArray(nSamples)
+                for (k in 0 until nSamples) {
+                    val low = bytes[k * 2].toInt() and 0xFF
+                    val high = bytes[k * 2 + 1].toInt() and 0xFF
+                    samples[k] = (low or (high shl 8)).toShort()
+                }
+                val isSongWin = java.util.ArrayList<Boolean>()
+                var pos = 0
+                while (pos + winN <= nSamples) {
+                    var sumSq = 0.0
+                    for (j in 0 until winN) {
+                        val s = samples[pos + j].toInt()
+                        sumSq += (s * s).toDouble()
+                    }
+                    val rms = kotlin.math.sqrt(sumSq / winN)
+                    // 边界宽松判据：仅响度超限（片头常带人声/强节拍，谐波比不设上限）
+                    isSongWin.add(rms > SONG_RMS_MIN)
+                    pos += hopN
+                }
+                if (isSongWin.size < 4) continue
+                // 连续/近邻(洞<=2s=8窗)音乐窗成 run
+                val idxRuns = mutableListOf<IntArray>()
+                var rs = -1
+                var re = -1
+                for (k in isSongWin.indices) {
+                    if (isSongWin[k]) {
+                        if (rs < 0) rs = k
+                        re = k
+                    } else {
+                        if (rs >= 0) {
+                            if (idxRuns.isNotEmpty() && rs - idxRuns.last()[1] <= 8) {
+                                idxRuns[idxRuns.size - 1] = intArrayOf(idxRuns.last()[0], re)
+                            } else {
+                                idxRuns.add(intArrayOf(rs, re))
+                            }
+                            rs = -1; re = -1
+                        }
+                    }
+                }
+                if (rs >= 0) {
+                    if (idxRuns.isNotEmpty() && rs - idxRuns.last()[1] <= 8) {
+                        idxRuns[idxRuns.size - 1] = intArrayOf(idxRuns.last()[0], re)
+                    } else {
+                        idxRuns.add(intArrayOf(rs, re))
+                    }
+                }
+                for (r in idxRuns) {
+                    val span = (r[1] - r[0] + 1).coerceAtLeast(1)
+                    val dense = isSongWin.subList(r[0], r[1] + 1).count { it }.toFloat() / span
+                    if (dense < SONG_DENSITY_MIN) continue
+                    val aMs = maxOf(winToMs(eStart, r[0]), startMs)
+                    val bMs = minOf(winToMs(eStart, r[1], LOUD_WIN_S), endMs)
+                    if (bMs - aMs < INTRO_MIN_RUN_MS) continue
+                    // 必须贴边：run 距段首或段尾 <= INTRO_TOUCH_SLACK_MS（容纳片头话音过渡）
+                    val touchStart = aMs - startMs <= INTRO_TOUCH_SLACK_MS
+                    val touchEnd = endMs - bMs <= INTRO_TOUCH_SLACK_MS
+                    if (touchStart || touchEnd) out.add(aMs to bMs)
+                }
+            } catch (_: Exception) {
+                // 单边读取失败不影响其他边
+            }
+        }
+        return out
     }
 
     /** 判定某标签是否为"干净可操作的干货/水标签"（非"分类失败"、非"歌曲"、非null）。 */
@@ -3308,6 +3444,25 @@ object SegmentGenerator {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
 
+        // v3.2.16-fix: 把"歌曲/片头/片尾切出"提前到抢救与归并之前执行。
+        // 根因（用户反馈：带音乐的片头被吞入大段主持人讲话，未切出；分段数158偏多）：
+        // v3.2.15 把 cutSongByLoudnessJump 放在整条链路最后，此时长干段已经由抢救线切碎的
+        // 短讲话 + mergeAdjacentSpeechFragments 无上限链式归并 连成 8 分钟巨干段，片头/片花
+        // 因 hasVoice=true 被一并吞入，切歌点被淹没，最终只能从巨段里勉强切出7段、总段数爆炸。
+        // 移到此处（fillSilenceGaps 之后、所有抢救线之前）：
+        //  1) 长干段此时还是"干净"的 YAMNet/第三层状态，歌曲/片头/片尾先被独立切为水段；
+        //  2) 切出的"歌曲"标签段不在 isWaterLabel 内，后续 rescueShortSpeech / VAD / PCM 抢救线
+        //     自动跳过它们，不会再被挖碎；
+        //  3) 归并线(mergeAdjacentSpeechFragments 等)对 8~45s 的歌曲段超过 PCMS_FRAG_GAP_MS(4s)，
+        //     不会把它吞回长干段，片头从此保持独立。
+        // 段内中部的歌曲仍需 >= LOUD_MIN_RUN_MS(25s)，段首/段尾短片头走 findBoundaryMusicRuns
+        // 的宽松边界判据(>=INTRO_MIN_RUN_MS=8s)，见 cutSongByLoudnessJump 注释。
+        val songCutCount = cutSongByLoudnessJump(finalSegments, pcmSourceFile)
+        if (songCutCount > 0) {
+            writeFingerprintLog(context, "三层架构: 歌曲/片头提前切出${songCutCount}个歌曲段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: 歌曲/片头提前切出${songCutCount}个歌曲段 for episode=$episodeId")
+        }
+
         // v3.1.221-fix: 水段内嵌短人声抢救（在静音合并之前），把第二层识别出的短主持人讲话
         // (数秒、无背景音乐)从水段内部切出为干货，杜绝"短讲话被并入歌曲/指纹水段末尾"。
         val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns, pcmSourceFile)
@@ -3378,17 +3533,6 @@ object SegmentGenerator {
         if (consecutiveMergeCount > 0) {
             writeFingerprintLog(context, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
             Log.i(TAG, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段 for episode=$episodeId")
-        }
-
-        // v3.1.242-fix: 低过零率(zcr)+谐波 歌曲边界——从长干段内部切出"歌曲/背景音乐"。
-        // 取代 v3.1.241 的响度跳变判据：电台成品已做响度归一化(实测RMS仅±3dB波动)，
-        // 响度无法作为边界；改用"音乐波形规整→zcr低+谐波高"判别，响度仅用于排除静音。
-        // 放在最终合并之后执行，保证长干段已成形；切出的歌曲段为水段(hasVoice=false)，
-        // 之后 enforceHardRules 的 R2"同类型合并"只并 干-干/水-水，不会把歌曲重新并回相邻讲话干段。
-        val songCutCount = cutSongByLoudnessJump(finalSegments, pcmSourceFile)
-        if (songCutCount > 0) {
-            writeFingerprintLog(context, "歌曲检测(zcr): 从长干段切出${songCutCount}个歌曲/背景音乐段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
-            Log.i(TAG, "歌曲检测(zcr): 切出${songCutCount}个歌曲段 for episode=$episodeId")
         }
 
         // v3.1.240-hard: 【运行时硬校验·铁律固化】在任何后续逻辑与返回前，对最终结果强制执行

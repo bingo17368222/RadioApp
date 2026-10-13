@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.15 安装</title>
+<title>RadioApp v3.2.16 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.15</div>
+  <div class="version">v3.2.16</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.15</h3>
+    <h3>更新内容 v3.2.16</h3>
     <ul>
-      <li><b>修复：10 秒主持人讲话仍被并入指纹水段</b><br>· 讲话判据由过零率/平坦度/谐波比改为「响度+音调」（实测真值：此类节目清声讲话 rms≈3600 偏轻、唱歌/片花 rms≈4700 偏响，旧判据完全反向）<br>· 接通此前已定义却从未执行的 VAD 锚点抢救线，与 YAMNet 锚点抢救互为兜底</li>
-      <li><b>修复：分段总数偏多</b><br>· 音乐判定同样改为响度超限判据，杜绝把响亮的歌曲/片花误当讲话切碎，从源头减少误抢救导致的碎片段</li>
+      <li><b>修复：带音乐片头被吞入大段主持人讲话</b><br>· 歌曲/片头切出提前到抢救与归并之前执行，长干段在未被切碎前先切出片头<br>· 新增边界宽松检测：仅扫长干段首尾各 45 秒，响度超限且连续 ≥8 秒即切出为歌曲段，不产生中部碎段</li>
+      <li><b>修复：分段总数偏多（158 段）</b><br>· 抢救参数收紧：短讲话最少 3 秒、VAD 抢救窗口最少 2 秒，从源头减少微碎段被挖出<br>· 切出的歌曲/片头自动跳过后续抢救线，不再被挖碎</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.15.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.16.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
