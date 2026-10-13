@@ -130,6 +130,10 @@ object SegmentGenerator {
     // v3.2.2: 三层架构参数
     // 第一层指纹快筛阈值（正式库匹配）
     private const val LAYER1_FAST_SCREEN_THRESHOLD = 0.70f
+    // v3.1.252-fix: 窗口命中后精修边界时，允许向指纹真实覆盖区外扩展的余量。
+    // 吸收 chromaprint 帧边界与音频对齐的微小抖动，避免精修过紧把真实水货切碎；
+    // 但严格控制（1.5s），保证指纹边缘的独特讲话落在余量之外、不被连坐为水货。
+    private const val HIT_ALIGN_SLACK_MS = 1500L
     // 第三层指纹漏判召回阈值（金标准匹配）
     private const val LAYER3_RECALL_THRESHOLD = 0.82f
     // v3.1.251: 自动晋升长指纹"整段口径复核"阈值，与观察池判定口径(0.82)保持一致
@@ -999,9 +1003,21 @@ object SegmentGenerator {
             if (seg.hasVoice || !isWaterLabel(seg.label)) { i--; continue }
             val dur = seg.end - seg.start
             if (dur <= 2500L) { i--; continue }
-            val scanEnd = minOf(seg.end, seg.start + PCMS_MAX_SCAN_MS)
-            val runs = findSpeechRunsInPcm(pcmFile, seg.start, scanEnd)
-            val rescued = runs
+            // v3.1.252-fix: 从"只扫段头6分钟"改为"分块全段覆盖"。
+            // 根因（用户反馈：35:04~42:34 大水段末端10秒独特讲话被吞）：PCMS_MAX_SCAN_MS=360s
+            // 使 findSpeechRunsInPcm 只读 [seg.start, seg.start+360s)，段尾讲话(尤其长水段)完全
+            // 不在扫描范围，rescueSpeechByPcmScanInWater 无从抢救。改为按块遍历整个水段，
+            // 每块≤PCMS_MAX_SCAN_MS防一次性读入超大PCM，把所有块run汇总后统一合并再选取。
+            val allRuns = mutableListOf<Pair<Long, Long>>()
+            var chunkStart = seg.start
+            while (chunkStart < seg.end) {
+                val chunkEnd = minOf(seg.end, chunkStart + PCMS_MAX_SCAN_MS)
+                if (chunkEnd > chunkStart) {
+                    allRuns.addAll(findSpeechRunsInPcm(pcmFile, chunkStart, chunkEnd))
+                }
+                chunkStart = chunkEnd
+            }
+            val rescued = allRuns
                 .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
                 .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
                 // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
@@ -1012,6 +1028,7 @@ object SegmentGenerator {
                 // 把"同一句话因短暂停顿/呼吸被切成多段"重新连成一段，消除碎片；
                 // 仅在合并后仍未超过PCMS_RUN_MAX_MS时合并，避免误吞噬长歌曲。
                 // v3.1.230-fix: 合并间隙提升到4s(PCMS_MERGE_GAP_MS_V3)、单段上限45s。
+                // 跨块run在汇总后统一合并，块间的连贯讲话也能连成一段。
                 .let { mergeNearbySpeechRunsV3(it) }
                 // v3.1.230-fix: 抢救出的短段若超长仍不救（护歌）；最终按每个水段上限取值。
                 .take(PCMS_PER_WATER_MAX)
@@ -4224,8 +4241,37 @@ object SegmentGenerator {
                 }
 
                 if (matched) {
-                    val startMs = (framePos * msPerFrame).toLong()
-                    val endMs = ((framePos + windowFrames) * msPerFrame).toLong()
+                    // v3.1.252-fix: 窗口命中后，对命中指纹做窗口内帧级精确对齐，把水货区间
+                    // 从"整个15秒窗口"收敛到"指纹实际覆盖的精确区间"。
+                    // 根因（用户反馈：35:04~42:34 指纹水段吞掉边缘10秒独特讲话）：
+                    // 窗口命中即把整个窗口标为"指纹水货"，窗口末端常越过指纹实际边界，
+                    // 把窗口内的独特讲话一并连坐为水货；且第2层对"指纹水货"段不再回切。
+                    // 修复：命中后在该窗口内以1帧粒度对命中指纹做滑动对齐，取最高相似度的
+                    // 起点，把水货区间收敛到该指纹真实覆盖范围（最多扩展HIT_ALIGN_SLACK_MS
+                    // 吸收对齐抖动），使边缘独特讲话落入"待处理"区，交由第2层VAD正确回切。
+                    var hitStartMs = (framePos * msPerFrame).toLong()
+                    var hitEndMs = ((framePos + windowFrames) * msPerFrame).toLong()
+                    val hitFp = candidates.firstOrNull { it.id == matchedFpId }
+                    if (hitFp != null && hitFp.parsed.size in 8..windowFrames) {
+                        val tl = hitFp.parsed.size
+                        val windowLo = framePos
+                        val windowHi = (framePos + windowFrames) - tl
+                        var bestAlignedSim = bestSim
+                        var bestAlignedPos = windowLo
+                        if (windowHi >= windowLo) {
+                            for (p in windowLo..windowHi) {
+                                val s = ChromaprintExtractor.compareSliceRaw(fullArray, p, tl, hitFp.parsed)
+                                if (s > bestAlignedSim) { bestAlignedSim = s; bestAlignedPos = p }
+                            }
+                        }
+                        val slackFrames = (HIT_ALIGN_SLACK_MS / msPerFrame).toInt().coerceAtLeast(0)
+                        val trimStart = (bestAlignedPos - slackFrames).coerceAtLeast(framePos)
+                        val trimEnd = (bestAlignedPos + tl + slackFrames).coerceAtMost(framePos + windowFrames)
+                        hitStartMs = (trimStart * msPerFrame).toLong()
+                        hitEndMs = (trimEnd * msPerFrame).toLong()
+                    }
+                    val startMs = hitStartMs
+                    val endMs = hitEndMs
                     matchedRanges.add(startMs to endMs)
                     matchedWindows++
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {

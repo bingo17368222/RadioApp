@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.11 安装</title>
+<title>RadioApp v3.2.12 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.11</div>
+  <div class="version">v3.2.12</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.11</h3>
+    <h3>更新内容 v3.2.12</h3>
     <ul>
-      <li><b>修复自动晋升指纹晋升后从不匹配：</b><br>· 根因：晋升指纹直接复制观察池整段（含大量边界污染帧，占比可达60~70%），晋升后全长等长对比被污染帧稀释到0.82阈值以下，而观察池minLen滑动口径能命中<br>· 修复：长指纹预扫新增多尺度中段裁剪探测（100%/90%/80%/70%中段），裁剪掉首尾污染帧后仅对比核心内容，命中即更新匹配时间戳</li>
+      <li><b>修复"指纹水段吞掉边缘独特讲话"（如35:04~42:34 水段末端10秒主持人讲话被误判为水货）：</b><br>· 根因① 第1层滑动窗口命中时把整个15秒窗口都标为"指纹水货"，边界被窗口粒度拉长、越过指纹实际边界，把窗内独特讲话连坐为水货<br>· 修复① 窗口命中后对指纹做帧级精确对齐，把水货区间收敛到指纹真实覆盖范围，边缘讲话落入待处理区交由第2层正确判断<br>· 根因② PCM短讲话抢救只扫段头前6分钟，长水段尾部讲话完全没被扫描<br>· 修复② 改为分块全段覆盖扫描，确保段尾讲话也能被抢救为干货</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.11.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.12.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
