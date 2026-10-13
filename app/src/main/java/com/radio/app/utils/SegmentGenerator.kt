@@ -3444,25 +3444,6 @@ object SegmentGenerator {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
 
-        // v3.2.16-fix: 把"歌曲/片头/片尾切出"提前到抢救与归并之前执行。
-        // 根因（用户反馈：带音乐的片头被吞入大段主持人讲话，未切出；分段数158偏多）：
-        // v3.2.15 把 cutSongByLoudnessJump 放在整条链路最后，此时长干段已经由抢救线切碎的
-        // 短讲话 + mergeAdjacentSpeechFragments 无上限链式归并 连成 8 分钟巨干段，片头/片花
-        // 因 hasVoice=true 被一并吞入，切歌点被淹没，最终只能从巨段里勉强切出7段、总段数爆炸。
-        // 移到此处（fillSilenceGaps 之后、所有抢救线之前）：
-        //  1) 长干段此时还是"干净"的 YAMNet/第三层状态，歌曲/片头/片尾先被独立切为水段；
-        //  2) 切出的"歌曲"标签段不在 isWaterLabel 内，后续 rescueShortSpeech / VAD / PCM 抢救线
-        //     自动跳过它们，不会再被挖碎；
-        //  3) 归并线(mergeAdjacentSpeechFragments 等)对 8~45s 的歌曲段超过 PCMS_FRAG_GAP_MS(4s)，
-        //     不会把它吞回长干段，片头从此保持独立。
-        // 段内中部的歌曲仍需 >= LOUD_MIN_RUN_MS(25s)，段首/段尾短片头走 findBoundaryMusicRuns
-        // 的宽松边界判据(>=INTRO_MIN_RUN_MS=8s)，见 cutSongByLoudnessJump 注释。
-        val songCutCount = cutSongByLoudnessJump(finalSegments, pcmSourceFile)
-        if (songCutCount > 0) {
-            writeFingerprintLog(context, "三层架构: 歌曲/片头提前切出${songCutCount}个歌曲段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
-            Log.i(TAG, "三层架构: 歌曲/片头提前切出${songCutCount}个歌曲段 for episode=$episodeId")
-        }
-
         // v3.1.221-fix: 水段内嵌短人声抢救（在静音合并之前），把第二层识别出的短主持人讲话
         // (数秒、无背景音乐)从水段内部切出为干货，杜绝"短讲话被并入歌曲/指纹水段末尾"。
         val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns, pcmSourceFile)
@@ -3533,6 +3514,24 @@ object SegmentGenerator {
         if (consecutiveMergeCount > 0) {
             writeFingerprintLog(context, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
             Log.i(TAG, "三层架构: 最终合并${consecutiveMergeCount}处相邻同类型连续段 for episode=$episodeId")
+        }
+
+        // v3.2.17-fix: 把"歌曲/片头/片尾切出"移到最终合并之后、硬校验之前执行。
+        // 根因（用户实测 v3.2.16 仍失败：带音乐的片头被吞入大段主持人讲话，未切出）：
+        // v3.2.16 把 cutSongByLoudnessJump 放在 fillSilenceGaps 之后、抢救线之前执行时，
+        // 目标区域(720~960s)还是几十个 <60s 的 YAMNet 小干段，被 LOUD_SCAN_MIN_SEG_MS(60s)
+        // 全部跳过；等后续抢救/归并线把它们连成 549472~1031866ms 巨干段时，切歌早已执行完毕，
+        // 片头被吞。移到此处（mergeConsecutiveSameTypeSegments 之后）后：
+        //  1) 巨干段已形成（dur>=60s），findBoundaryMusicRuns 能扫段首/段尾各45s范围，
+        //     把带音乐的片头(>=INTRO_MIN_RUN_MS=8s、仅响度超限)从大段主持人讲话开头切出；
+        //  2) 切出的"歌曲"标签段不在 isWaterLabel 内，enforceHardRules 的 mergeConsecutive
+        //     只合并同类型相邻段，干-歌曲-干不会重新归并，片头保持独立；
+        //  3) 段内中部的歌曲仍需 >= LOUD_MIN_RUN_MS(25s)，段首/段尾短片头走 findBoundaryMusicRuns
+        //     的宽松边界判据(>=INTRO_MIN_RUN_MS=8s)，见 cutSongByLoudnessJump 注释。
+        val songCutCount = cutSongByLoudnessJump(finalSegments, pcmSourceFile)
+        if (songCutCount > 0) {
+            writeFingerprintLog(context, "三层架构: 歌曲/片头切出${songCutCount}个歌曲段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: 歌曲/片头切出${songCutCount}个歌曲段 for episode=$episodeId")
         }
 
         // v3.1.240-hard: 【运行时硬校验·铁律固化】在任何后续逻辑与返回前，对最终结果强制执行
