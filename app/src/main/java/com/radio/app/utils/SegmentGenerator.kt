@@ -179,6 +179,15 @@ object SegmentGenerator {
     private const val FINGERPRINT_HASH_PREFIX_LEN = 64
     // v3.1.131: 移除SILENCE_RMS_THRESHOLD和PCM_BYTES_PER_MS（第1层改用全量指纹提取，不再需要PCM切片）
 
+    // v3.2.18-fix: 记录最近一次第一层指纹匹配的"指纹水货"区间（合并重叠后的精确覆盖范围）。
+    // 用途1：抢救线（VAD锚点抢救/PCM短讲话扫描抢救）对落在该区间内的锚点不抢救——指纹区间是
+    // 金标准库匹配确认的台标/片头/广告/音乐区，其内部口播属于音乐内容，不应被切碎成干段。
+    // 用途2：最终合并后，cutByFingerprintWaterRanges 用该区间把大干段内部的片头/歌曲强制切出，
+    // 解决"带音乐的片头(如42:10~42:24)被吞入大段主持人讲话"（边界宽松判据只扫段边45s、中部需>=25s）。
+    // generateJiuAiTingSegments 受全局三层分段锁保护，单并发，字段无需额外同步。
+    @Volatile
+    private var lastLayer1WaterRanges: List<Pair<Long, Long>> = emptyList()
+
     // v3.1.12: 指纹审核日志同时写入文件（logcat + 持久日志文件）
     // v3.1.175-fix: 每一行加上版本标志，避免版本混淆
     private fun writeFingerprintLog(context: Context, message: String) {
@@ -1034,7 +1043,11 @@ object SegmentGenerator {
                 }
                 chunkStart = chunkEnd
             }
-            val rescued = allRuns
+            // v3.2.18-fix: 过滤掉落在第一层指纹水货区间内的短讲话run（中心点在区间内）。
+            // 指纹区间是金标准库匹配确认的台标/片头/广告/歌曲区，其内部口播属于音乐内容，
+            // 抢救会造成"片头被切碎并并入大段主持人讲话"（用户反馈 42:10~42:24 未拆出）。
+            val outsideFpRuns = allRuns.filter { (a, b) -> !insideFingerprintWaterRange((a + b) / 2) }
+            val rescued = outsideFpRuns
                 .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
                 .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
                 // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
@@ -1244,6 +1257,69 @@ object SegmentGenerator {
     /** 判定某标签是否为"干净可操作的干货/水标签"（非"分类失败"、非"歌曲"、非null）。 */
     private fun isCleanLabel(label: String?): Boolean {
         return label != null && label != "分类失败" && label != "歌曲"
+    }
+
+    /**
+     * v3.2.18-fix: 判断给定时间点是否落在第一层指纹匹配确认的水货区间内。
+     * 指纹区间来自金标准库匹配（台标/片头/广告/歌曲），其内部口播属于音乐内容，
+     * 抢救线据此抑制"音乐区内的短讲话抢救"，避免片头被切碎后并入大段主持人讲话。
+     */
+    private fun insideFingerprintWaterRange(centerMs: Long): Boolean {
+        return lastLayer1WaterRanges.any { centerMs >= it.first && centerMs <= it.second }
+    }
+
+    /**
+     * v3.2.18-fix: 用第一层指纹匹配区间对长干段做最终强制切分。
+     * 根因（用户反馈：42:10~42:24带音乐的片头仍被吞入大段主持人讲话）：
+     * cutSongByLoudnessJump 的边界宽松判据只扫段首/段尾各 INTRO_SCAN_EDGE_MS(45s)，
+     * 段内中部歌曲需 >= LOUD_MIN_RUN_MS(25s)；而指纹匹配确认的片头区（如 2493~2534s、
+     * 长度14s）位于大干段内部时两者都漏检。第一层指纹是金标准库匹配的强证据，
+     * 这里用其精确区间（合并重叠后，按 INTRO_MIN_RUN_MS 过滤）把长干段内部的水货区
+     * 强制切出为"歌曲/片头"段，不依赖响度/谐波猜测，不会误切讲话。
+     * @return 切出的歌曲/片头段数量
+     */
+    private fun cutByFingerprintWaterRanges(segments: MutableList<VoiceSegment>): Int {
+        val waterRanges = lastLayer1WaterRanges
+        if (waterRanges.isEmpty() || segments.size <= 1) return 0
+        // 只保留达到片头/歌曲最短长度的指纹区间（过滤掉过短碎匹配）
+        val usableRanges = waterRanges
+            .filter { it.second - it.first >= INTRO_MIN_RUN_MS }
+        if (usableRanges.isEmpty()) return 0
+        segments.sortBy { it.start }
+        var cutCount = 0
+        var i = segments.size - 1
+        while (i >= 0) {
+            val seg = segments[i]
+            // 只处理长干段：片头/歌曲被并入的主讲干段
+            if (!seg.hasVoice || !isCleanLabel(seg.label)) { i--; continue }
+            if (seg.end - seg.start < LOUD_SCAN_MIN_SEG_MS) { i--; continue }
+            val hits = usableRanges.filter { (a, b) -> a >= seg.start && b <= seg.end && (b - a) >= INTRO_MIN_RUN_MS }
+            if (hits.isEmpty()) { i--; continue }
+            var pieces = mutableListOf(seg)
+            var added = false
+            for ((a, b) in hits) {
+                val newPieces = mutableListOf<VoiceSegment>()
+                for (p in pieces) {
+                    if (p.hasVoice && a >= p.start && b <= p.end) {
+                        if (a > p.start) newPieces.add(p.copy(start = p.start, end = a, hasVoice = true, label = p.label))
+                        newPieces.add(VoiceSegment(start = a, end = b, hasVoice = false, label = "歌曲", isSimulated = true))
+                        if (b < p.end) newPieces.add(p.copy(start = b, end = p.end, hasVoice = true, label = p.label))
+                        added = true
+                    } else {
+                        newPieces.add(p)
+                    }
+                }
+                pieces = newPieces
+            }
+            if (added) {
+                segments.removeAt(i)
+                segments.addAll(i, pieces)
+                cutCount += pieces.count { !it.hasVoice }
+                i += pieces.size - 1
+            }
+            i--
+        }
+        return cutCount
     }
 
     /**
@@ -1703,8 +1779,13 @@ object SegmentGenerator {
                 .distinctBy { it.start to it.end }
                 .sortedBy { it.start }
             if (embedded.isEmpty()) { i--; continue }
+            // v3.2.18-fix: 过滤掉落在第一层指纹水货区间内的VAD锚点（中心点在区间内）。
+            // 指纹区间是金标准库匹配确认的台标/片头/广告/歌曲区，其内部口播属于音乐内容，
+            // 抢救会造成"片头被切碎并并入大段主持人讲话"（用户反馈 42:10~42:24 未拆出）。
+            val outsideFpEmbedded = embedded.filter { !insideFingerprintWaterRange((it.start + it.end) / 2) }
+            if (outsideFpEmbedded.isEmpty()) { i--; continue }
             // 频谱"非音乐"确认：过滤掉强谐波(音乐/歌唱)的VAD窗口，只抢救真正的无BGM短讲话
-            val confirmed = embedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
+            val confirmed = outsideFpEmbedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
             if (confirmed.isEmpty()) { i--; continue }
             // 每个水段最多抢救N个，防止过度切开整段歌曲的口播
             val rescuedDry = confirmed.take(VAD_RESCUE_PER_WATER_MAX)
@@ -3534,6 +3615,17 @@ object SegmentGenerator {
             Log.i(TAG, "三层架构: 歌曲/片头切出${songCutCount}个歌曲段 for episode=$episodeId")
         }
 
+        // v3.2.18-fix: 指纹区间强制切出片头/歌曲——最终兜底。
+        // 根因（用户反馈：42:10~42:24带音乐的片头仍未被拆分，被吞入大段主持人讲话）：
+        // cutSongByLoudnessJump 边界宽松判据只扫段首/段尾各45s、中部歌曲需>=25s，短片头(14s)
+        // 位于大干段中部时两者均漏检。此处用第一层指纹匹配确认的水货区间（金标准库强证据）
+        // 把长干段内部的水货区强制切出为"歌曲/片头"段，不依赖响度/谐波猜测。
+        val fpSongCutCount = cutByFingerprintWaterRanges(finalSegments)
+        if (fpSongCutCount > 0) {
+            writeFingerprintLog(context, "三层架构: 指纹区间强制切出${fpSongCutCount}个歌曲/片头段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: 指纹区间强制切出${fpSongCutCount}个歌曲/片头段 for episode=$episodeId")
+        }
+
         // v3.1.240-hard: 【运行时硬校验·铁律固化】在任何后续逻辑与返回前，对最终结果强制执行
         // 不可变规则（R1时间轴连续/R2无同类型碎段/R3长度上限/R4标签合法），并对可自动修正项就地修复。
         // 这是"永久规则不依赖记忆"的兜底：只要本函数在 generateJiuAiTingSegments 中被调用，
@@ -4463,6 +4555,8 @@ object SegmentGenerator {
                 mergedRanges.add(range)
             }
         }
+        // v3.2.18-fix: 保存第一层指纹水货区间供抢救线抑制与最终片头强制切出使用
+        lastLayer1WaterRanges = mergedRanges.map { it.first to it.second }
 
         // 生成全量分段列表（待处理+指纹水货交替）
         // v3.1.30: 第1层只负责指纹匹配，不管理hasVoice标签。
