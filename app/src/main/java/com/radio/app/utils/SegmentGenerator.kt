@@ -672,7 +672,12 @@ object SegmentGenerator {
 
     // v3.1.221-fix: 水段内嵌短人声抢救上限。用户规则：短主持人讲话(数秒、无背景音乐)
     // 必须独立成干货，绝不能并入歌曲/指纹水段末尾。
-    private val MAX_SPEECH_RESCUE_MS = 8000L // 8秒
+    // v3.2.12-fix: 内嵌短讲话救援上限 8s -> 15s。
+    // 根因（用户反馈：大指纹水货段内 10 秒主持人讲话仍被并入较小的指纹水货段）：
+    // 原 8s 上限使 >8s 的讲话在 rescueShortSpeechInWater / rescueSpeechByVadAndPcmInWater
+    // 两条锚点线上都不被抢救，仍留在指纹水段内。放宽到 15s 覆盖此场景；
+    // 歌曲/强谐波仍由调用处的 isMusicLikePcm 频谱确认拦下，护住整段歌不被切碎。
+    private val MAX_SPEECH_RESCUE_MS = 15000L // 15秒
 
     // v3.1.224-fix: VAD抢救锚点最小持续（秒级以下视为杂音/音乐碎片，不抢救）
     private val VAD_RESCUE_MIN_MS = 1000L
@@ -1469,7 +1474,11 @@ object SegmentGenerator {
      * @param layer2SpeechRuns 第二层YAMNet产出的干段(含主持人讲话)
      * @return 抢救出的短讲话段数量
      */
-    private fun rescueShortSpeechInWater(segments: MutableList<VoiceSegment>, layer2SpeechRuns: List<VoiceSegment>): Int {
+    private fun rescueShortSpeechInWater(
+        segments: MutableList<VoiceSegment>,
+        layer2SpeechRuns: List<VoiceSegment>,
+        pcmFile: File?
+    ): Int {
         if (segments.size <= 1 || layer2SpeechRuns.isEmpty()) return 0
         segments.sortBy { it.start }
         var rescueCount = 0
@@ -1477,7 +1486,7 @@ object SegmentGenerator {
         while (i >= 0) {
             val seg = segments[i]
             if (seg.hasVoice || !isWaterLabel(seg.label)) { i--; continue }
-            // 与当前水段重叠、且在水段内部分时长≤8秒的第二层干段（短主持人讲话）
+            // 与当前水段重叠、且在水段内部分时长≤MAX_SPEECH_RESCUE_MS(15s)的第二层干段（短主持人讲话）
             val embedded = layer2SpeechRuns
                 .filter { dry ->
                     dry.hasVoice &&
@@ -1494,11 +1503,19 @@ object SegmentGenerator {
                     )
                 }
                 .sortedBy { it.start }
-            if (embedded.isEmpty()) { i--; continue }
+            // v3.2.12-fix: 对候选做频谱"非音乐"确认（与 VAD 抢救线对齐）。
+            // MAX_SPEECH_RESCUE_MS 放宽到 15s 后，用 isMusicLikePcm 过滤掉被 YAMNet 误判为干段
+            // 的歌曲人声/乐音片段，护住完整歌曲不被切成上百块口播碎段。
+            val confirmed = if (pcmFile != null && pcmFile.exists()) {
+                embedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
+            } else {
+                embedded
+            }
+            if (confirmed.isEmpty()) { i--; continue }
             // 用内嵌干段边界把水段切成 水/干/水/干/水...
             val pieces = mutableListOf<VoiceSegment>()
             var cur = seg.start
-            for (dry in embedded) {
+            for (dry in confirmed) {
                 if (dry.start > cur) {
                     pieces.add(seg.copy(start = cur, end = dry.start, hasVoice = false, label = seg.label))
                 }
@@ -1512,7 +1529,7 @@ object SegmentGenerator {
                 // 会话保护：保证后处理才调用，避免影响正在使用的段
                 segments.removeAt(i)
                 segments.addAll(i, pieces)
-                rescueCount += embedded.size
+                rescueCount += confirmed.size
                 i += pieces.size - 1
             }
             i--
@@ -3330,7 +3347,7 @@ object SegmentGenerator {
 
         // v3.1.221-fix: 水段内嵌短人声抢救（在静音合并之前），把第二层识别出的短主持人讲话
         // (数秒、无背景音乐)从水段内部切出为干货，杜绝"短讲话被并入歌曲/指纹水段末尾"。
-        val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns)
+        val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns, pcmSourceFile)
         if (speechRescueCount > 0) {
             writeFingerprintLog(context, "三层架构: 抢救${speechRescueCount}个内嵌短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
         }

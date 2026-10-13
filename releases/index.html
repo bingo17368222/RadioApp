@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.12 安装</title>
+<title>RadioApp v3.2.13 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.12</div>
+  <div class="version">v3.2.13</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.12</h3>
+    <h3>更新内容 v3.2.13</h3>
     <ul>
-      <li><b>修复"指纹水段吞掉边缘独特讲话"（如35:04~42:34 水段末端10秒主持人讲话被误判为水货）：</b><br>· 根因① 第1层滑动窗口命中时把整个15秒窗口都标为"指纹水货"，边界被窗口粒度拉长、越过指纹实际边界，把窗内独特讲话连坐为水货<br>· 修复① 窗口命中后对指纹做帧级精确对齐，把水货区间收敛到指纹真实覆盖范围，边缘讲话落入待处理区交由第2层正确判断<br>· 根因② PCM短讲话抢救只扫段头前6分钟，长水段尾部讲话完全没被扫描<br>· 修复② 改为分块全段覆盖扫描，确保段尾讲话也能被抢救为干货</li>
+      <li><b>修复"大指纹水货段被拆分，10秒主持人讲话仍被并入较小的指纹水货段"：</b><br>· 根因：水段内"短讲话抢救为干货"的救援上限只有8秒，超过8秒的主持人讲话不会被救出，仍留在指纹水段里<br>· 修复① 救援上限由8s放宽到15s，≤15秒的无背景音乐主持人讲话可可靠脱离指纹水段、独立成干货<br>· 修复② 同时为YAMNet锚点线补充"频谱非音乐确认"，放宽阈值后不会误把歌曲/乐音人声切成大量口播碎段，护住整段歌曲</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.12.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.13.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
