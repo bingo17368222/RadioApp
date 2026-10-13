@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.13 安装</title>
+<title>RadioApp v3.2.14 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.13</div>
+  <div class="version">v3.2.14</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.13</h3>
+    <h3>更新内容 v3.2.14</h3>
     <ul>
-      <li><b>修复"大指纹水货段被拆分，10秒主持人讲话仍被并入较小的指纹水货段"：</b><br>· 根因：水段内"短讲话抢救为干货"的救援上限只有8秒，超过8秒的主持人讲话不会被救出，仍留在指纹水段里<br>· 修复① 救援上限由8s放宽到15s，≤15秒的无背景音乐主持人讲话可可靠脱离指纹水段、独立成干货<br>· 修复② 同时为YAMNet锚点线补充"频谱非音乐确认"，放宽阈值后不会误把歌曲/乐音人声切成大量口播碎段，护住整段歌曲</li>
+      <li><b>APK 单独交付机制加固：</b><br>· 构建期硬校验升级：发布页除下载链接外不得存在任何其他可点击条目（其他 href / 图片 src / http 外链一律禁止），从源头堵住"多个可点击文件条目"<br>· 交付回复全文本链接审计固化：交付 APK 的回复只允许唯一一个下载链接，杜绝混入源码引用/发布页/路径等任何其他链接</li>
+      <li><b>（延续 3.2.13 分段修复）</b>：大指纹水货段内 ≤15 秒无背景音乐主持人讲话可靠脱离指纹水段、独立成干货，且不误伤完整歌曲</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.13.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.14.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

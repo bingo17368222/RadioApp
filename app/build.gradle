@@ -12,8 +12,8 @@ android {
         applicationId "com.radio.app"
         minSdk 26
         targetSdk 33
-        versionCode 677
-        versionName "3.2.13"
+        versionCode 678
+        versionName "3.2.14"
         ndkVersion "25.1.8937393"
 
         // Issue 5: NDK / CMake support for whisper.cpp JNI bridge (whisper_jni.c)
@@ -139,14 +139,35 @@ tasks.register('verifyApkDelivery') {
             throw new GradleException("[铁律000] 发布页下载链接必须唯一且指向 RadioApp-v${vName}.apk，实际: ${hrefs}")
         }
 
-        // 3. 输出唯一允许的交付链接模板
+        // v3.2.14: 发布页深度校验——除下载链接外，不得存在任何其他可点击条目
+        // （其他 href、任何 src 图片/资源、http/https/www 外链），
+        // 防止发布页自身出现"多个可点击文件条目"导致点击异常跳转。
+        def allHrefs = (html =~ /href="([^"]*)"/).collect { it[1] }
+        def allSrcs = (html =~ /src="([^"]*)"/).collect { it[1] }
+        if (allHrefs.size() != 1 || !allSrcs.isEmpty()) {
+            throw new GradleException("[铁律000] 发布页除下载链接外不得存在任何其他 href/src（防多可点击条目），href=${allHrefs}, src=${allSrcs}")
+        }
+        if (html.contains("http://") || html.contains("https://") || html.contains("www.")) {
+            throw new GradleException("[铁律000] 发布页禁止包含外链（http/https/www），防异常跳转")
+        }
+
+        // 3. 输出唯一允许的交付链接模板 + 交付回复全文本审计清单
         println ""
         println "=== [铁律000] APK单独交付硬校验通过 ==="
         println "工作区根目录交付APK: ${rootApk.absolutePath}"
         println "发布页: ${indexHtml.absolutePath}"
-        println "交付回复中唯一可点击链接必须为:"
+        println "--------------------------------------------------------------"
+        println "交付回复唯一允许的全文结构（除说明文字外只允许以下模板链接）："
         println "[下载安装](computer:///workspace/RadioApp-v${vName}.apk)"
-        println "该链接必须是整条回复中唯一可点击链接，禁止混入任何其他链接。"
+        println "--------------------------------------------------------------"
+        println "发出交付回复前的全文本链接审计（逐字扫描，缺一不可）："
+        println "1. 全回复只允许出现上述模板这一处 markdown 链接；"
+        println "2. 禁止出现任何其他 [ ] ( ) 组合、http/https/www、file:///、computer:/// 字样"
+        println "   （模板本身除外），连纯文字路径 /workspace/RadioApp-vX.Y.Z.apk 也不得写出；"
+        println "3. 禁止 <a href、<img、![图片] 等任何 HTML/图片链接语法；"
+        println "4. 说明文字不得含任何文件路径；"
+        println "5. 若发现任一违规，必须先删除该处再发出，禁止直接交付。"
+        println "构建期硬校验只能保证产物与发布页，回复纯净由交付时刻审计兜底。"
     }
 }
 
