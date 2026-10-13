@@ -683,9 +683,6 @@ object SegmentGenerator {
     private val VAD_RESCUE_MIN_MS = 1000L
     // v3.1.224-fix: 每个水段最多抢救的短语音窗口数，防止把一段歌曲内的多个口播碎片过度切开
     private const val VAD_RESCUE_PER_WATER_MAX = 8
-    // v3.1.224-fix: PCM谐波比判定音乐/歌唱的门槛。经验值：无BGM纯讲话谐波比<0.35，
-    // 强谐波的歌曲/乐音>0.60。以0.50为界，>=0.50视为"音乐/歌唱"，不抢救，护住完整歌曲。
-    private const val MUSIC_HARM_RATIO_THRESHOLD = 0.50f
     // v3.1.224-fix: PCM谐波比判定帧长/步进（16kHz采样）
     private const val MUSIC_PROBE_FFT_N = 2048
     private const val MUSIC_PROBE_HOP = 1024
@@ -836,58 +833,57 @@ object SegmentGenerator {
                 samples[k] = (low or (high shl 8)).toShort()
             }
             val relSec = java.util.ArrayList<Double>()
-            val zcrs = java.util.ArrayList<Double>()
-            val flats = java.util.ArrayList<Double>()
+            val rmsVals = java.util.ArrayList<Double>()
             val harms = java.util.ArrayList<Double>()
             var pos = 0
             while (pos + PCMS_FFT_N <= nSamples) {
                 val rel = pos.toDouble() / sr
                 var sumSq = 0.0
-                var zc = 0
                 for (j in 0 until PCMS_FFT_N) {
                     val s = samples[pos + j].toInt()
                     sumSq += (s * s).toDouble()
                 }
-                for (j in 1 until PCMS_FFT_N) {
-                    val a = samples[pos + j - 1].toInt()
-                    val b2 = samples[pos + j].toInt()
-                    if (kotlin.math.abs(a) > 100 && (a > 0) == (b2 < 0)) zc++
-                }
-                relSec.add(rel); zcrs.add(zc.toDouble() / PCMS_FFT_N)
-                // 静音帧无需计算频谱（用0代替，由1秒窗静音过滤）
-                var rr = kotlin.math.sqrt(sumSq / PCMS_FFT_N)
+                relSec.add(rel)
+                // v3.2.15-fix: 讲话判据改为"响度"（见下方1秒窗分类）：逐帧记录RMS，供窗口内
+                // 中值响度区分"安静讲话"与"响唱歌/片花"（v3.1.243真值：讲话rms≈3614，唱歌/片花rms≈4700）。
+                val rr = kotlin.math.sqrt(sumSq / PCMS_FFT_N)
+                rmsVals.add(rr)
+                // 静音帧无需计算频谱（用0代替，由1秒窗"活动帧占比"过滤）
                 if (rr < PCMS_RMS_MIN) {
-                    flats.add(1.0); harms.add(0.0)
+                    harms.add(0.0)
                 } else {
                     val spec = computeFrameSpectral(samples, pos, PCMS_FFT_N, sr)
-                    flats.add(spec[0].toDouble()); harms.add(spec[1].toDouble())
+                    harms.add(spec[1].toDouble())
                 }
                 pos += PCMS_HOP
             }
             // 1秒窗口（步进0.25s）中值分类
-            val winIdxs = IntArray(relSec.size)
             var winStart = 0.0
             val maxRel = if (relSec.isEmpty()) 0.0 else relSec[relSec.size - 1]
             val isSpeech = java.util.ArrayList<Boolean>()
             while (winStart < maxRel) {
                 // 收集[winStart, winStart+WIN_S)的帧
-                val zlist = java.util.ArrayList<Double>()
-                val flist = java.util.ArrayList<Double>()
                 val hlist = java.util.ArrayList<Double>()
+                val rlist = java.util.ArrayList<Double>()
                 for (idx in relSec.indices) {
                     val r = relSec[idx]
                     if (r >= winStart && r < winStart + PCMS_WIN_S) {
-                        zlist.add(zcrs[idx]); flist.add(flats[idx]); hlist.add(harms[idx])
+                        hlist.add(harms[idx]); rlist.add(rmsVals[idx])
                     }
                 }
-                val nf = zlist.size
+                val nf = hlist.size
                 var speech = false
                 if (nf >= 8) {
-                    val mz = medianOf(zlist); val mf = medianOf(flist); val mh = medianOf(hlist)
-                    // 该窗内须为"讲话"（不是纯静音：harm>0 说明有活动帧）
-                    // v3.1.230-fix: 增加谐波比上界 PCMS_HARM_MAX：谐波比>0.42多为带和声/乐音的歌曲片段，
-                    // 不判为讲话，从源头护住歌曲不被切碎。
-                    if (mh > 0f && mz < PCMS_ZCR_MAX && mf < PCMS_FLAT_MAX && mh >= PCMS_HARM_MIN && mh <= PCMS_HARM_MAX) {
+                    val activeRatio = rlist.count { it > PCMS_RMS_MIN }.toFloat() / nf
+                    val mr = medianOf(rlist); val mh = medianOf(hlist)
+                    // v3.2.15-fix: 讲话判据由 zcr/flat/harm 改为"响度+音调"，对齐 v3.1.243 真值：
+                    // 此类节目中过零率完全反向（讲话zcr≈0.122 > 唱歌0.082）、flat几乎无区分（0.484 vs 0.458）、
+                    // 谐波比也反向（讲话harm≈0.547 > 唱歌0.445/片花0.422），旧判据 mz<0.09&mf<0.45&
+                    // 0.15<=mh<=0.42 把真实主持讲话一律拒之门外（用户反馈：10秒讲话仍并入指纹水段）。
+                    // 真正可分的是响度：电台响度归一化后音乐/唱歌/片花偏响(rms≈4700)、清声讲话偏轻(rms≈3600)。
+                    // 新判据：多数帧活动(rms>800) 且 中值响度<=SONG_RMS_MIN(4200)→"安静讲话"；mh>=PCMS_HARM_MIN
+                    // 仅作"有音调、非噪声/非纯静音"门槛（静音帧harm=0）。歌曲/唱歌因响度超限自然落选，护歌不切。
+                    if (activeRatio >= 0.5f && mr <= SONG_RMS_MIN && mh >= PCMS_HARM_MIN) {
                         speech = true
                     }
                 }
@@ -1602,8 +1598,13 @@ object SegmentGenerator {
     }
 
     /**
-     * v3.1.224-fix: 判定一段PCM是否"音乐/歌唱"（强谐波）。用于抢救前的非音乐确认。
-     * 逐帧做2048点FFT谐波比分析：无活动帧或读取出错时按"音乐"处理（保守不抢救）。
+     * v3.1.224-fix: 判定一段PCM是否"音乐/歌唱"。用于抢救前的非音乐确认。
+     * v3.2.15-fix: 判据由"谐波比>=0.50"改为"响度超限"。原因：v3.1.243真值显示此类节目中
+     * 谐波比反向——清声主持讲话harm≈0.547反而高于唱歌(0.445)/片花(0.422)，旧判据把真实讲话
+     * 一律当音乐拒救（用户反馈：10秒主持人讲话仍并入指纹水段）。电台成品响度归一化后，
+     * 音乐/唱歌/片花偏响(rms≈4700)、清声讲话偏轻(rms≈3600)，SONG_RMS_MIN(4200)恰在其间。
+     * 新判据：活动帧(rms>=PCMS_RMS_MIN)中"响帧"(rms>SONG_RMS_MIN)占比>=50%→音乐，不抢救；
+     * 无活动帧或读取出错时按"音乐"处理（保守不抢救）。
      */
     private fun isMusicLikePcm(pcmFile: File, startMs: Long, endMs: Long): Boolean {
         val sr = 16000
@@ -1624,66 +1625,28 @@ object SegmentGenerator {
                     val high = bytes[k * 2 + 1].toInt() and 0xFF
                     samples[k] = (low or (high shl 8)).toShort()
                 }
-                var frames = 0
-                var musicFrames = 0
+                var activeFrames = 0
+                var loudFrames = 0
                 var pos = 0
                 while (pos + MUSIC_PROBE_FFT_N <= sampleCount) {
-                    // 活动帧能量门限（跳过静音）
                     var sumSq = 0.0
                     for (j in 0 until MUSIC_PROBE_FFT_N) {
                         val s = samples[pos + j].toInt()
                         sumSq += (s * s).toDouble()
                     }
                     val rms = kotlin.math.sqrt(sumSq / MUSIC_PROBE_FFT_N)
-                    if (rms < 60.0) { pos += MUSIC_PROBE_HOP; continue }
-                    val hr = computeFrameHarmRatio(samples, pos, MUSIC_PROBE_FFT_N, sr)
-                    frames++
-                    if (hr >= MUSIC_HARM_RATIO_THRESHOLD) musicFrames++
+                    if (rms >= PCMS_RMS_MIN) {
+                        activeFrames++
+                        if (rms > SONG_RMS_MIN) loudFrames++
+                    }
                     pos += MUSIC_PROBE_HOP
                 }
-                if (frames == 0) return true // 无活动帧→保守视作音乐，不抢救
-                return (musicFrames.toFloat() / frames) >= 0.5f
+                if (activeFrames == 0) return true // 无活动帧→保守视作音乐，不抢救
+                return (loudFrames.toFloat() / activeFrames) >= 0.5f
             }
         } catch (_: Exception) {
             return true // 出错保守处理：不抢救
         }
-    }
-
-    /** v3.1.224-fix: 计算一帧的谐波比（能量集中在基频整数倍的比例）。 */
-    private fun computeFrameHarmRatio(samples: ShortArray, off: Int, n: Int, sr: Int): Float {
-        val re = FloatArray(n)
-        val im = FloatArray(n)
-        for (k in 0 until n) {
-            val w = (0.5f - 0.5f * kotlin.math.cos(2.0 * kotlin.math.PI * k / (n - 1))).toFloat()
-            re[k] = samples[off + k] * w
-        }
-        fftRadix2(re, im)
-        val mag = FloatArray(n / 2 + 1)
-        var total = 0f
-        for (b in 1 until n / 2 + 1) {
-            val m = kotlin.math.sqrt(re[b] * re[b] + im[b] * im[b])
-            mag[b] = m
-            total += m
-        }
-        if (total <= 0f) return 0f
-        val binHz = sr.toFloat() / n
-        var best = 0f
-        var f0 = 80f
-        while (f0 <= 500f) {
-            var harmonicSum = 0f
-            for (k in 1..5) {
-                val bin = (k * f0 / binHz).toInt()
-                if (bin in 1 until mag.size) {
-                    var acc = mag[bin]
-                    if (bin - 1 >= 1) acc += mag[bin - 1]
-                    if (bin + 1 < mag.size) acc += mag[bin + 1]
-                    harmonicSum += acc
-                }
-            }
-            if (harmonicSum > best) best = harmonicSum
-            f0 += 5f
-        }
-        return best / total
     }
 
     /** v3.1.224-fix: 原地迭代基-2 FFT（n为2的幂，实部re, 虚部im）。 */
@@ -3350,6 +3313,16 @@ object SegmentGenerator {
         val speechRescueCount = rescueShortSpeechInWater(finalSegments, layer2SpeechRuns, pcmSourceFile)
         if (speechRescueCount > 0) {
             writeFingerprintLog(context, "三层架构: 抢救${speechRescueCount}个内嵌短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+        }
+
+        // v3.2.15-fix: 补接 VAD 锚点抢救线。此前 rescueSpeechByVadAndPcmInWater 已定义却从未被主链路调用，
+        // 导致"YAMNet 把无BGM短讲话判作MUS → 不在YAMNet干段锚点中 → 上一行抢救不到"时无兜底。
+        // 此处以 Silero VAD 活动段为补充锚点（纯语音活动检测，不依赖YAMNet类别裁决），
+        // 配合 v3.2.15 响度化"非音乐"确认，把 10 秒主持人讲话这类被指纹水段合并的内容切回干货。
+        val vadRescueCount = rescueSpeechByVadAndPcmInWater(finalSegments, layer2VadRanges, pcmSourceFile)
+        if (vadRescueCount > 0) {
+            writeFingerprintLog(context, "三层架构: VAD锚点抢救${vadRescueCount}个内嵌短讲话为干货，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")
+            Log.i(TAG, "三层架构: VAD锚点抢救${vadRescueCount}个内嵌短讲话为干货 for episode=$episodeId")
         }
 
         // v3.1.224-fix: VAD+PCM频谱确认的短人声抢救（第二层-B YAMNet把无BGM短讲话判作MUS时，

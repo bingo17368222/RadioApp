@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.14 安装</title>
+<title>RadioApp v3.2.15 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.14</div>
+  <div class="version">v3.2.15</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.14</h3>
+    <h3>更新内容 v3.2.15</h3>
     <ul>
-      <li><b>APK 单独交付机制加固：</b><br>· 构建期硬校验升级：发布页除下载链接外不得存在任何其他可点击条目（其他 href / 图片 src / http 外链一律禁止），从源头堵住"多个可点击文件条目"<br>· 交付回复全文本链接审计固化：交付 APK 的回复只允许唯一一个下载链接，杜绝混入源码引用/发布页/路径等任何其他链接</li>
-      <li><b>（延续 3.2.13 分段修复）</b>：大指纹水货段内 ≤15 秒无背景音乐主持人讲话可靠脱离指纹水段、独立成干货，且不误伤完整歌曲</li>
+      <li><b>修复：10 秒主持人讲话仍被并入指纹水段</b><br>· 讲话判据由过零率/平坦度/谐波比改为「响度+音调」（实测真值：此类节目清声讲话 rms≈3600 偏轻、唱歌/片花 rms≈4700 偏响，旧判据完全反向）<br>· 接通此前已定义却从未执行的 VAD 锚点抢救线，与 YAMNet 锚点抢救互为兜底</li>
+      <li><b>修复：分段总数偏多</b><br>· 音乐判定同样改为响度超限判据，杜绝把响亮的歌曲/片花误当讲话切碎，从源头减少误抢救导致的碎片段</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.14.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.15.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
