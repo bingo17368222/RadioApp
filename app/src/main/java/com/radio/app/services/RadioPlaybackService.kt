@@ -1898,6 +1898,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 cal.add(java.util.Calendar.DAY_OF_YEAR, attemptOffset)
                 val targetDate = dateFormat.format(cal.time)
 
+                // v3.2.21-fix: 周末（周六/周日）无节目可预缓存，跨天取数顺延到下周一。
+                // 与 buildPlaybackSchedule 跨天补充循环保持一致：周六/周日虽能拉到12档API数据，
+                // 但全部被 disliked-by-title 或 fetchEpisodesByDateSync 自动标上的 weekend
+                // no-preprocess 过滤，预缓存取数不应在"有数据却全部无效"的周末日停留，
+                // 直接跳过，从下一个工作日(周一)起取。
+                val dowCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                dowCal.time = cal.time
+                val dow = dowCal.get(java.util.Calendar.DAY_OF_WEEK)
+                if (dow == java.util.Calendar.SATURDAY || dow == java.util.Calendar.SUNDAY) {
+                    writePreCacheLog("fetchMoreDaysForPreCache: 跳过周末 $targetDate（周六/周日无节目可预缓存），顺延到下周一")
+                    attemptOffset++
+                    continue
+                }
+
                 writePreCacheLog("fetchMoreDaysForPreCache: fetching $stationId on $targetDate (offset=+$attemptOffset)")
 
                 val apiService = com.radio.app.network.EpisodeApiService.getInstance()
@@ -7412,6 +7426,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             try {
                                 val nextDate = java.util.Date(curDateObj.time + dayOffset * 86400000L)
                                 val nextDateStr = dateFormat2.format(nextDate)
+                                // v3.2.21-fix: 周末（周六/周日）无节目，跨天取数顺延到下周一。
+                                // 根因（schedule.log v3.2.18 佐证 11:01）：跨天补充遇到周六/周日时，
+                                // 虽拉了 06-14/06-15 的12档，但全部被 disliked-by-title 或 fetchEpisodesByDateSync
+                                // 自动标上的 weekend no-preprocess 过滤，计划凑不满，随后触发兜底循环把当前
+                                // 节目当天更早档位绕回进计划（用户反馈"周末无数据不顺延到下周一"）。
+                                // 修正：跨天取数直接跳过周六/周日，从下一个工作日(周一)起取，避免在
+                                // "有数据却全部无效"的周末日停留。
+                                val nextDowCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                                nextDowCal.time = nextDate
+                                val dow = nextDowCal.get(java.util.Calendar.DAY_OF_WEEK)
+                                if (dow == java.util.Calendar.SATURDAY || dow == java.util.Calendar.SUNDAY) {
+                                    writeServiceLog("schedule", "buildPlaybackSchedule: 跳过周末 $nextDateStr（周六/周日无节目可播），顺延到下周一")
+                                    continue
+                                }
                                 val freshEpisodes = apiService.fetchEpisodesByDateSync(curStation, nextDateStr)
                                 if (!freshEpisodes.isNullOrEmpty()) {
                                     writeServiceLog("schedule", "buildPlaybackSchedule: API补充获取 $nextDateStr 共${freshEpisodes.size}个节目")
