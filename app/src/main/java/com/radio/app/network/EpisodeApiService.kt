@@ -188,12 +188,13 @@ class EpisodeApiService private constructor() {
             baseToday.set(Calendar.SECOND, 0); baseToday.set(Calendar.MILLISECOND, 0)
 
             val isToday = targetCal.timeInMillis == baseToday.timeInMillis
-            val isFuture = targetCal.timeInMillis > baseToday.timeInMillis
 
-            if (isFuture) {
-                Log.d(TAG, "fetchEpisodesByDateSync: future date $dateStr (base=${baseToday.timeInMillis / 86400000L}), returning empty")
-                return emptyList()
-            }
+            // v3.2.21-fix: 移除"晚于真实系统今天即回空"的未来日期守卫。
+            // 该守卫是实时态逻辑，不应作用于历史回放的跨天补满：回放2025-06时 buildPlaybackSchedule
+            // 会逐日请求 2025-06-12…下周一，这些是该电台"待播/可播"的排期，属于回放的时间推进，
+            // 不应被"真实系统今天"这个实时基准挡住。远端对确实未播出的日期本身会返回空/错误，
+            // 30天前向循环(PLAN_FILL_MAX_FUTURE_DAYS)会 day++ 自然空转，无需在此提前拦截。
+            // 去掉后回放与实时都只按"远端实际有无内容"取数，实时态取未来期同样安全(空→继续下一天)。
 
             val now = Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai"))
             val nowTimestamp = now.timeInMillis / 1000

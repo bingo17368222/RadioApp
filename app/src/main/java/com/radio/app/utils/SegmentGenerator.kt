@@ -1043,11 +1043,12 @@ object SegmentGenerator {
                 }
                 chunkStart = chunkEnd
             }
-            // v3.2.18-fix: 过滤掉落在第一层指纹水货区间内的短讲话run（中心点在区间内）。
-            // 指纹区间是金标准库匹配确认的台标/片头/广告/歌曲区，其内部口播属于音乐内容，
-            // 抢救会造成"片头被切碎并并入大段主持人讲话"（用户反馈 42:10~42:24 未拆出）。
-            val outsideFpRuns = allRuns.filter { (a, b) -> !insideFingerprintWaterRange((a + b) / 2) }
-            val rescued = outsideFpRuns
+            // v3.2.21-fix: 移除 v3.2.18 的"中心点落在指纹水区即抑制救回"。
+            // 主持讲话是独特无重复的音频事件，不被任何金标准台标/片头/歌曲指纹命中，
+            // isMusicLikePcm 已足以区分"带音乐片头(强谐波→不救回)"与"真讲话(非音乐→救回)"。
+            // 用指纹区二次抑制会误伤压在片头边缘/邻近的唯一人声。14s音乐片头的正确拆分
+            // 由 cutByFingerprintWaterRanges 强制完成，不需在此用指纹区过滤讲话。
+            val rescued = allRuns
                 .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
                 .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
                 // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
@@ -1257,15 +1258,6 @@ object SegmentGenerator {
     /** 判定某标签是否为"干净可操作的干货/水标签"（非"分类失败"、非"歌曲"、非null）。 */
     private fun isCleanLabel(label: String?): Boolean {
         return label != null && label != "分类失败" && label != "歌曲"
-    }
-
-    /**
-     * v3.2.18-fix: 判断给定时间点是否落在第一层指纹匹配确认的水货区间内。
-     * 指纹区间来自金标准库匹配（台标/片头/广告/歌曲），其内部口播属于音乐内容，
-     * 抢救线据此抑制"音乐区内的短讲话抢救"，避免片头被切碎后并入大段主持人讲话。
-     */
-    private fun insideFingerprintWaterRange(centerMs: Long): Boolean {
-        return lastLayer1WaterRanges.any { centerMs >= it.first && centerMs <= it.second }
     }
 
     /**
@@ -1779,10 +1771,10 @@ object SegmentGenerator {
                 .distinctBy { it.start to it.end }
                 .sortedBy { it.start }
             if (embedded.isEmpty()) { i--; continue }
-            // v3.2.18-fix: 过滤掉落在第一层指纹水货区间内的VAD锚点（中心点在区间内）。
-            // 指纹区间是金标准库匹配确认的台标/片头/广告/歌曲区，其内部口播属于音乐内容，
-            // 抢救会造成"片头被切碎并并入大段主持人讲话"（用户反馈 42:10~42:24 未拆出）。
-            val outsideFpEmbedded = embedded.filter { !insideFingerprintWaterRange((it.start + it.end) / 2) }
+            // v3.2.21-fix: 移除 v3.2.18 的指纹水区抑制。独特主持讲话不被任何指纹命中，
+            // isMusicLikePcm 即足以区分"带音乐片头(不救回)"与"真讲话(救回)"，片区头拆分交给
+            // cutByFingerprintWaterRanges。
+            val outsideFpEmbedded = embedded
             if (outsideFpEmbedded.isEmpty()) { i--; continue }
             // 频谱"非音乐"确认：过滤掉强谐波(音乐/歌唱)的VAD窗口，只抢救真正的无BGM短讲话
             val confirmed = outsideFpEmbedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
