@@ -768,6 +768,39 @@ object SegmentGenerator {
     private const val INTRO_SCAN_EDGE_MS = 45000L     // 只扫段首/段尾各45s内的边界音乐
     private const val INTRO_TOUCH_SLACK_MS = 10000L   // 音乐块距段边界10s内视为贴边（容纳片头话音过渡）
 
+    // v3.2.22-fix: 抢救线"指纹水区深埋抑制"参数。
+    // 根因（用户反馈：带音乐的片头未切出+分段数151偏多）：v3.2.21-fix 移除 v3.2.18 的指纹水区
+    // 抑制后，抢救线把片头/歌曲内的口播逐段挖成干段，再被归并线并入大干段，片头被吞、整集碎段激增。
+    // 此处以"深埋"判据恢复抑制：仅当抢救run完全落在指纹区间内、且两端距区间边界均>=3s、且区间
+    // 本身>=15s（真实台标/片头/歌曲，非短促边缘匹配）时才视为"音乐内容"抑制抢救；
+    // "贴在片头边缘/邻近的唯一人声"（距边界<3s）与区间外真讲话不受影响，照常救回。
+    private const val INTRO_FP_SUPPRESS_MIN_MS = 15000L // 指纹区间>=15s才抑制（真实重复台标/片头/歌曲）
+    private const val INTRO_FP_EDGE_SLACK_MS = 3000L    // run距区间两端均>=3s才算深埋（贴边人声照常救）
+
+    /**
+     * v3.2.22-fix: 判断一个抢救run是否"深埋"于第一层指纹水区（真实台标/片头/歌曲的金标准证据）。
+     * 判据（保守，只抑制确凿的重复音乐内容）：
+     *  - 存在一个指纹水区间 [a,b]，且区间长度 >= INTRO_FP_SUPPRESS_MIN_MS(15s)——真实重复台标/片头/歌曲；
+     *  - run 完全落在该区间内（runStart >= a 且 runEnd <= b）；
+     *  - run 距区间左端、右端均 >= INTRO_FP_EDGE_SLACK_MS(3s)——贴边人声（距边界<3s）不算深埋，照常救回，
+     *    避免误伤"压在片头边缘/邻近的唯一人声"。
+     * 区间外真讲话、短促边缘匹配（区间<15s）一律不抑制。
+     */
+    private fun isDeepInFingerprintWater(runStart: Long, runEnd: Long): Boolean {
+        val ranges = lastLayer1WaterRanges
+        if (ranges.isEmpty()) return false
+        for ((a, b) in ranges) {
+            if (b - a < INTRO_FP_SUPPRESS_MIN_MS) continue
+            if (runStart >= a && runEnd <= b &&
+                (runStart - a) >= INTRO_FP_EDGE_SLACK_MS &&
+                (b - runEnd) >= INTRO_FP_EDGE_SLACK_MS
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
     private fun fillSpeechHoles(isSpeech: MutableList<Boolean>, maxHole: Int) {
         if (isSpeech.size <= 2) return
@@ -1043,13 +1076,15 @@ object SegmentGenerator {
                 }
                 chunkStart = chunkEnd
             }
-            // v3.2.21-fix: 移除 v3.2.18 的"中心点落在指纹水区即抑制救回"。
-            // 主持讲话是独特无重复的音频事件，不被任何金标准台标/片头/歌曲指纹命中，
-            // isMusicLikePcm 已足以区分"带音乐片头(强谐波→不救回)"与"真讲话(非音乐→救回)"。
-            // 用指纹区二次抑制会误伤压在片头边缘/邻近的唯一人声。14s音乐片头的正确拆分
-            // 由 cutByFingerprintWaterRanges 强制完成，不需在此用指纹区过滤讲话。
+            // v3.2.22-fix: 恢复 v3.2.18 的"指纹水区抑制"，但改为保守的"深埋"判据。
+            // 根因（用户反馈：带音乐的片头未切出+分段数151偏多）：v3.2.21-fix 完全移除抑制后，
+            // 抢救线把片头/歌曲内的口播逐段挖成干段，再被归并线(干-短水-干→干)并入大干段，
+            // 片头被吞、整集碎段激增。此处仅抑制"深埋"于指纹水区的run（run完全落在>=15s的
+            // 指纹区间内、且距两端均>=3s，见 isDeepInFingerprintWater）；贴边人声与区间外真讲话
+            // 照常救回，14s音乐片头的正确拆分由 cutByFingerprintWaterRanges 兜底。
             val rescued = allRuns
                 .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
+                .filter { (a, b) -> !isDeepInFingerprintWater(a, b) }
                 .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
                 // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
                 // 做二次确认，凡整段偏"音乐/歌唱"(强谐波占比高)一律不抢救，护住完整歌曲不被切成十几段。
@@ -1268,6 +1303,10 @@ object SegmentGenerator {
      * 长度14s）位于大干段内部时两者都漏检。第一层指纹是金标准库匹配的强证据，
      * 这里用其精确区间（合并重叠后，按 INTRO_MIN_RUN_MS 过滤）把长干段内部的水货区
      * 强制切出为"歌曲/片头"段，不依赖响度/谐波猜测，不会误切讲话。
+     * v3.2.22-fix: 不再限制段长>=LOUD_SCAN_MIN_SEG_MS(60s)——带音乐的片头被抢救/归并线
+     * 吞成干段后，其所在干段未必有60s（如片头前、后讲话各只几十秒时），此前漏切导致
+     * 片头仍埋在大段讲话中（用户反馈）。指纹区间本身就是金标准水证据，任何完整包含
+     * 该区间的干段都应当被切开，与段长无关；切出的碎片由 enforceHardRules 兜底。
      * @return 切出的歌曲/片头段数量
      */
     private fun cutByFingerprintWaterRanges(segments: MutableList<VoiceSegment>): Int {
@@ -1282,9 +1321,8 @@ object SegmentGenerator {
         var i = segments.size - 1
         while (i >= 0) {
             val seg = segments[i]
-            // 只处理长干段：片头/歌曲被并入的主讲干段
+            // 只处理干段：片头/歌曲被并入的主讲干段（不限制段长，见 v3.2.22-fix 注释）
             if (!seg.hasVoice || !isCleanLabel(seg.label)) { i--; continue }
-            if (seg.end - seg.start < LOUD_SCAN_MIN_SEG_MS) { i--; continue }
             val hits = usableRanges.filter { (a, b) -> a >= seg.start && b <= seg.end && (b - a) >= INTRO_MIN_RUN_MS }
             if (hits.isEmpty()) { i--; continue }
             var pieces = mutableListOf(seg)
@@ -1771,10 +1809,10 @@ object SegmentGenerator {
                 .distinctBy { it.start to it.end }
                 .sortedBy { it.start }
             if (embedded.isEmpty()) { i--; continue }
-            // v3.2.21-fix: 移除 v3.2.18 的指纹水区抑制。独特主持讲话不被任何指纹命中，
-            // isMusicLikePcm 即足以区分"带音乐片头(不救回)"与"真讲话(救回)"，片区头拆分交给
-            // cutByFingerprintWaterRanges。
-            val outsideFpEmbedded = embedded
+            // v3.2.22-fix: 恢复 v3.2.18 的指纹水区抑制（深埋判据，见 isDeepInFingerprintWater）。
+            // 仅过滤"完全落在>=15s指纹区间内、且距两端均>=3s"的VAD锚点（真实台标/片头/歌曲），
+            // 防止抢救线把片头内部口播挖成干段后被归并线吞入大干段；贴边人声照常救回。
+            val outsideFpEmbedded = embedded.filter { !isDeepInFingerprintWater(it.start, it.end) }
             if (outsideFpEmbedded.isEmpty()) { i--; continue }
             // 频谱"非音乐"确认：过滤掉强谐波(音乐/歌唱)的VAD窗口，只抢救真正的无BGM短讲话
             val confirmed = outsideFpEmbedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
@@ -3611,7 +3649,9 @@ object SegmentGenerator {
         // 根因（用户反馈：42:10~42:24带音乐的片头仍未被拆分，被吞入大段主持人讲话）：
         // cutSongByLoudnessJump 边界宽松判据只扫段首/段尾各45s、中部歌曲需>=25s，短片头(14s)
         // 位于大干段中部时两者均漏检。此处用第一层指纹匹配确认的水货区间（金标准库强证据）
-        // 把长干段内部的水货区强制切出为"歌曲/片头"段，不依赖响度/谐波猜测。
+        // 把干段内部的水货区强制切出为"歌曲/片头"段，不依赖响度/谐波猜测。
+        // v3.2.22-fix: 内部不再限制段长>=60s，短干段内完整包含的指纹水区同样切出；
+        // 与抢救线"深埋抑制"配合，从源头阻止片头被抢救/归并线吞入大干段。
         val fpSongCutCount = cutByFingerprintWaterRanges(finalSegments)
         if (fpSongCutCount > 0) {
             writeFingerprintLog(context, "三层架构: 指纹区间强制切出${fpSongCutCount}个歌曲/片头段，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice && isWaterLabel(it.label) }})")

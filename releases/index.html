@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.21 安装</title>
+<title>RadioApp v3.2.22 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.21</div>
+  <div class="version">v3.2.22</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.21</h3>
+    <h3>更新内容 v3.2.22</h3>
     <ul>
-      <li>播放计划周末无数据时顺延到下周一：移除"晚于真实系统今天即回空"的未来日期守卫，历史回放跨天补满不再被实时态逻辑挡住，配合既有30天前向循环自然顺延到下周一取数</li>
-      <li>修复10秒主持讲话被指纹水货分段吞并：移除v3.2.18在救回线新增的指纹水区抑制，以 isMusicLikePcm 单一判据区分"带音乐片头(不救回)"与"独一无二的真主持讲话(救回)"</li>
+      <li>修复带音乐的片头仍被吞入大段主持人讲话：恢复抢救线"深埋指纹水区抑制"（run完全落在≥15s指纹区间内、距两端均≥3s才抑制），阻止片头内部口播被挖成干段后被归并线并入大干段</li>
+      <li>指纹区间强制切出不再限制干段≥60s：任何完整包含金标准指纹水区的干段都切开为歌曲/片头段，短干段内埋的片头同样切出</li>
+      <li>显著减少整集分段数：抢救线不再把片头/歌曲内的口播逐段挖出，归并线无处可并，151段类碎段大幅回落</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.21.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.22.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
