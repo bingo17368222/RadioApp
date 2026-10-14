@@ -6945,6 +6945,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      * 使用序号排序比用 startTime 更可靠，因为URL构造的节目 startTime 可能为0。
      * 也兼容可能存在的 "-cross" 后缀。
      */
+    // v3.2.20-fix: 过滤 API 返回的占位/无效标题节目（如 title="节目"、空白、"未知节目"等），
+    // 根因（schedule.log 佐证 12:53/13:23）：06-13 返回了 henan-private-car-2025-06-13-12:节目，
+    // 序号-12 超出正常 0-11 档位且标题为占位符，未经过滤直接进入播放计划，用户反馈
+    // "播放计划任务列表异常出现名叫'节目'的节目"。此类无效数据一律不得进入计划。
+    private fun isPlaceholderTitle(title: String?): Boolean {
+        if (title.isNullOrBlank()) return true
+        val t = title.trim()
+        return t == "节目" || t == "未知节目" || t == "暂无节目" || t == "节目内容"
+    }
+
     private fun extractEpisodeIndex(ep: Episode): Int {
         val idStr = ep.id ?: return Int.MAX_VALUE
         val lastDash = idStr.lastIndexOf('-')
@@ -7118,6 +7128,16 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 .thenBy { it.startTime }
         )
+
+        // v3.2.20-fix: 过滤占位/无效标题节目（title="节目"/空白/"未知节目"等）。
+        // 必须在主扫描/兜底循环补齐之前执行，使两类取节目路径都拿不到无效数据。
+        // 覆盖所有 combinedList 来源（preCacheList + savedList + fallback4/补拉重新赋值），
+        // 因主扫描与兜底都基于此处过滤后的列表。
+        val sizeBeforePlaceholderFilter = combinedList.size
+        combinedList = combinedList.filter { !isPlaceholderTitle(it.title) }
+        if (combinedList.size < sizeBeforePlaceholderFilter) {
+            writeServiceLog("schedule", "buildPlaybackSchedule: 过滤 ${sizeBeforePlaceholderFilter - combinedList.size} 个占位/无效标题节目（如 title=\"节目\"）")
+        }
 
         // v3.1.270-fix: 严格日期过滤——只保留"广播日期 >= 当前节目日期"的节目进入播放计划。
         // 根因（schedule.log 佐证 15:45:36）：App重启后持久化的 precache_list/episode_list 可能只
@@ -7458,6 +7478,17 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val isEarlierDay3 = curDateStr != null && epDate3 != null && epDate3 < curDateStr
                     if (isEarlierDay3) {
                         writeServiceLog("schedule", "buildPlaybackSchedule: 兜底循环补齐 SKIP ${ep.id}（${epDate3} 早于当前 ${curDateStr}，回绕禁止入计划）")
+                        continue
+                    }
+                    // v3.2.20-fix: 同天"已播时段"守卫——回绕到当天更早时段的节目禁止入计划。
+                    // 根因（schedule.log 佐证 13:23：播放 06-12-9 下班路上17:30 时，兜底回绕把同天
+                    // 06-12-1 唱行早高峰07:00、06-12-3 旅行大玩家09:30 又补进计划，用户反馈
+                    // "6月13日后边异常出现6月12日的节目"）。同天更早档位已被当前节目覆盖/播过，
+                    // 复用会造成"计划日期回退到当天已播时段"的观感。仅当当前节目与候选节目都有
+                    // 有效 startTime 时启用；startTime 缺失（0）时不启用，避免误杀无法判断的节目。
+                    val curStartForFill = currentEpisode?.startTime ?: 0L
+                    if (epDate3 == curDateStr && curStartForFill > 0 && ep.startTime > 0 && ep.startTime <= curStartForFill) {
+                        writeServiceLog("schedule", "buildPlaybackSchedule: 兜底循环补齐 SKIP ${ep.id}（${epDate3} 同天时段 ${ep.startTime} 不晚于当前 ${curStartForFill}，已播回绕禁止入计划）")
                         continue
                     }
                     val dId = settings.isDisliked(ep.id)
