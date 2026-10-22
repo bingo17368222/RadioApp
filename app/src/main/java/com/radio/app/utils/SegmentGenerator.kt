@@ -4355,10 +4355,19 @@ object SegmentGenerator {
                     val maxStart = fullArray.size - tl
                     var bestRawSim = 0f
                     var bestP = -1
+                    // v3.2.23-fix: 粗扫阶段记录"全局最高raw位置"（无论是否达到0.58门槛）。
+                    // 根因：自动晋升指纹晋升时直接复制观察池整段指纹，含大量边界污染帧（片头/片尾台呼、
+                    // 音效、静音，占比可达r≈0.6~0.7）。全长等长raw被稀释后可能低于粗扫门槛0.58，
+                    // 粗扫永不达标 → bestP恒为-1 → 多尺度中段裁剪探测（v3.2.11，唯一为污染指纹设计的
+                    // 恢复手段）因"bestP>=0"前置条件永不触发 → 晋升后长时间从不匹配（用户反馈）。
+                    // 修复：粗扫未达标时，用全局最高raw位置兜底作为裁剪探测中心，恢复中段核心命中。
+                    var bestAnySim = 0f
+                    var bestAnyP = -1
                     var p = 0
                     // 粗扫：step=4帧，无分配等长raw比较
                     while (p <= maxStart) {
                         val cs = ChromaprintExtractor.compareSliceRaw(fullArray, p, tl, entry.parsed)
+                        if (cs > bestAnySim) { bestAnySim = cs; bestAnyP = p }
                         if (cs >= LONG_FP_ALIGN_COARSE_THRESHOLD) {
                             // 精扫：±4帧内1帧粒度，取最大raw
                             val fineLo = if (p - LONG_FP_ALIGN_FINE_RADIUS > 0) p - LONG_FP_ALIGN_FINE_RADIUS else 0
@@ -4369,6 +4378,12 @@ object SegmentGenerator {
                             }
                         }
                         p += LONG_FP_ALIGN_COARSE_STEP
+                    }
+                    // v3.2.23-fix: 全长等长从未达标（污染指纹）时，用粗扫全局最高位置兜底，
+                    // 使下方的中段裁剪探测能够执行（裁剪后仅对比核心中段，可恢复0.82+命中）。
+                    if (bestP < 0 && bestAnyP >= 0) {
+                        bestP = bestAnyP
+                        bestRawSim = bestAnySim
                     }
 
                     // v3.2.11-fix: 多尺度中段裁剪探测。

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.22 安装</title>
+<title>RadioApp v3.2.23 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.22</div>
+  <div class="version">v3.2.23</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.22</h3>
+    <h3>更新内容 v3.2.23</h3>
     <ul>
-      <li>修复带音乐的片头仍被吞入大段主持人讲话：恢复抢救线"深埋指纹水区抑制"（run完全落在≥15s指纹区间内、距两端均≥3s才抑制），阻止片头内部口播被挖成干段后被归并线并入大干段</li>
-      <li>指纹区间强制切出不再限制干段≥60s：任何完整包含金标准指纹水区的干段都切开为歌曲/片头段，短干段内埋的片头同样切出</li>
-      <li>显著减少整集分段数：抢救线不再把片头/歌曲内的口播逐段挖出，归并线无处可并，151段类碎段大幅回落</li>
+      <li>修复自动晋升指纹晋升后长时间从不匹配：根因是晋升时直接复制观察池整段指纹（含片头/片尾台呼、音效、静音等边界污染帧，占比可达60%~70%），全长等长raw被稀释后低于粗扫门槛0.58，bestP恒为-1，导致唯一为污染指纹设计的多尺度中段裁剪探测（v3.2.11）永不触发</li>
+      <li>修复方案：长指纹全局对齐预扫的粗扫阶段新增"全局最高raw位置"记录（不要求达0.58门槛），粗扫未达标时用该位置兜底作为裁剪探测中心，裁剪后仅对比核心中段，可恢复0.82+命中</li>
+      <li>恢复观察池自动晋升链路：晋升前观察池走全长全滑动+长度惩罚对比天然抗污染，晋升后走等长raw预扫被污染帧稀释，两种口径不一致导致晋升后匹配中断，本次修复统一了晋升前后匹配能力</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.22.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.23.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
