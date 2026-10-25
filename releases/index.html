@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.29 安装</title>
+<title>RadioApp v3.2.31 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.29</div>
+  <div class="version">v3.2.31</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.29</h3>
+    <h3>更新内容 v3.2.31</h3>
     <ul>
-      <li>彻底修复《节目》刷新不掉：v3.2.28 只清理预缓存列表、未删除数据库记录（构造版条目 ID 与 API 真实节目不同，手动刷新只覆盖同 ID 记录，虚假条目永久残留）。本次统一两段式覆盖判定（含长节目 endTime 无效时的最后节目兜底规则），节目单加载、手动刷新成功、刷新失败回退三条路径全部接入：显示层过滤 + 显式删除数据库残留；同时占位标题（空白/「节目」/「未知节目」）不再参与构造，杜绝新虚假节目产生</li>
-      <li>修复播放时无响应（ANR）：播放启动路径中预缓存触发含同步网络请求（多天扫描循环，单次 HTTP 超时 10 秒）且下载完成后链式续跑，长时间阻塞主线程导致界面无响应、崩溃日志无记录。本次将预缓存整体切换到 IO 协程执行（含主线程检测兜底），播放计划构建的网络补拉分支加主线程守卫，主线程不再承担任何网络/数据库阻塞</li>
+      <li>修复预缓存扫描死循环导致日志爆炸（一小时 70 多 MB）：扫描循环的数据库兜底分支提前跳出时跳过了日期递增，同一日期无限重扫（58.8 万行日志中 99.7% 来自该死循环）。本次修复后在 continue 前先递增扫描日期，扫描恢复逐日推进</li>
+      <li>预缓存日志加 5MB 轮转保护：单文件超过上限自动重命名归档并新建，任何异常都不再无界刷爆磁盘</li>
+      <li>巡逻任务 SKIP 明细降为 logcat 不写文件（保留汇总计数），进一步降低日志量</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.29.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.31.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
