@@ -578,6 +578,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      // 提前返回卡死（days_fetched 仅作断点位置），上限只作为"远端持续无节目"时的
      // 防无界扫描保护，杜绝预缓存"到达上限后彻底停止"。
      private val MAX_PRELOAD_FUTURE_DAYS = 30
+     // v3.2.31-fix: 预缓存日志单文件轮转上限（5MB）。防止任何循环 bug 无界刷爆磁盘
+     //（用户实测死循环一小时内 precache.log 膨胀到 70 多 MB）。
+     private val PRECACHE_LOG_MAX_BYTES = 5L * 1024 * 1024
      // v3.1.257: 播放计划"保满"的最大跨天补拉天数（天）。
      // 与 MAX_PRELOAD_FUTURE_DAYS 是两码事：预缓存队列收窄到15天是为了防止未来节目堆积成数百条、
      // 拖垮预缓存/属巡逻任务；而播放计划保满的目的恰恰是"始终能re-roll出后续可播节目"，
@@ -1205,6 +1208,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     val logDir = java.io.File(com.radio.app.RadioApplication.getLogDir(this), "precache")
                     if (!logDir.exists()) logDir.mkdirs()
                     val logFile = File(logDir, "precache.log")
+                    // v3.2.31-fix: 日志轮转——单文件超过上限（5MB）时重命名为 precache.old.log 并新建，
+                    // 防止任何循环 bug 无界刷爆磁盘（用户实测死循环一小时内膨胀到 70 多 MB）。
+                    if (logFile.exists() && logFile.length() > PRECACHE_LOG_MAX_BYTES) {
+                        try {
+                            val oldFile = File(logDir, "precache.old.log")
+                            if (oldFile.exists()) oldFile.delete()
+                            logFile.renameTo(oldFile)
+                        } catch (_: Exception) {}
+                    }
                     val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
                     FileWriter(logFile, true).use { it.append("[$ts][${com.radio.app.RadioApplication.appVersionTag()}] $msg\n") }
                     Log.d(TAG, "[PreCache] $msg")
@@ -2059,7 +2071,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     } else {
                         writePreCacheLog("fetchMoreDaysForPreCache: DB has ${dbValid.size} real episodes for $targetDate but all already covered, skip construction")
                     }
-                    // 无论 fresh 是否为空，该日期都以 DB 真实数据为准，不再走 URL 构造
+                    // 无论 fresh 是否为空，该日期都以 DB 真实数据为准，不再走 URL 构造。
+                    // v3.2.31-fix: 必须先递增 attemptOffset 再 continue——continue 会跳过循环体
+                    // 末尾的 "if (!addedAny) attemptOffset++"，此前导致同一日期（如 2025-07-19）
+                    // 无限循环：fetching(offset=+1)→no episodes→DB已覆盖→continue→重复，
+                    // 每 ~10ms 一轮刷出几十万行日志（用户实测一小时 70 多 MB，58 万行占 99.7%）。
+                    attemptOffset++
                     continue
                 }
                 // Issue 7 Fix: 网络抓取失败时，根据已保存节目的时间段和 URL 模式构造节目，
@@ -3667,11 +3684,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
                     // v3.1.2: 跳过不喜欢和无需预处理的节目，不计入有效节目计数
                     if (settings.isNoPreprocess(ep.id)) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, noPreprocess")
+                        // v3.2.31-fix: SKIP 明细降为 logcat（不写文件），巡逻完成仍有汇总计数
+                        Log.d(TAG, "patrolSubtitle: SKIP ep=${ep.id}, noPreprocess")
                         continue
                     }
                     if (settings.isDisliked(ep.id) || (!ep.title.isNullOrBlank() && settings.isDislikedByTitle(ep.stationId, ep.title))) {
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, disliked")
+                        Log.d(TAG, "patrolSubtitle: SKIP ep=${ep.id}, disliked")
                         continue
                     }
 
@@ -3691,7 +3709,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             // 触发预缓存后继续扫描已缓存的节目，不停止巡逻
                             continue
                         }
-                        writePreCacheLog("patrolSubtitle:  SKIP ep=${ep.id}, audio NOT cached (beyond target range #$validEpisodeCounter > $targetCount)")
+                        // v3.2.31-fix: SKIP 明细降为 logcat（不写文件），巡逻完成仍有汇总计数
+                        Log.d(TAG, "patrolSubtitle: SKIP ep=${ep.id}, audio NOT cached (beyond target range #$validEpisodeCounter > $targetCount)")
                         continue
                     }
 
