@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.24 安装</title>
+<title>RadioApp v3.2.25 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.24</div>
+  <div class="version">v3.2.25</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.24</h3>
+    <h3>更新内容 v3.2.25</h3>
     <ul>
-      <li>新增自动指纹ID级诊断日志：长指纹全局对齐预扫与窗口循环每次命中均打印指纹ID、自动晋升/金标准标记、命中方式（全长对齐或中段裁剪）与相似度</li>
-      <li>每期节目新增"自动指纹匹配汇总"日志：长指纹预扫命中X/Y条、窗口循环命中N条、合计命中数，直接验证晋升后自动指纹是否恢复匹配</li>
-      <li>配合v3.2.23的粗扫兜底修复，本版本用于确认"晋升前有匹配、晋升后从不匹配"现象已消除；若仍有未命中的自动指纹，日志可直接定位到具体指纹ID与其相似度</li>
+      <li>修复预缓存长时间不工作：扫描基准强制校准为当前播放节目日期。此前 base date 沿用陈旧的 current_date（日志中 base=2025-07-09 而当前播放 2025-07-16），days_fetched 卡死在 15 天上限，fetchMoreDaysForPreCache 永远 limit reached，无法拉取当前日期之后的节目</li>
+      <li>预缓存只扫描当前播放日期之后的节目：fetchMoreDaysForPreCache 的 startDate 优先取当前播放节目日期，扫描方向只向未来推进，不再受陈旧基准影响</li>
+      <li>修复预缓存日志过大：字幕巡逻对当前播放日期之前的缓存文件（历史回放归档）静默跳过，不再逐文件打 ORPHAN SKIP（原占日志 68%，2704/3963 行）；findPreCacheTarget 的 disliked/no-preprocess SKIP 改计数汇总为单行输出</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.24.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.25.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

@@ -1389,6 +1389,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         var futureCachedCount = 0
         var neededCount = 0
         var nextToDownload: Episode? = null
+        // v3.2.25-fix: SKIP 原因改计数汇总输出（原逐个写日志，preCacheList 数十条时每轮刷屏几十行）
+        var skipDisliked = 0
+        var skipNoPreprocess = 0
+        var skipInvalidUrl = 0
 
         // 构建扫描顺序：近期节目在前，非近期节目在后
         val scanIndices = if (recentDateRange != null) {
@@ -1414,15 +1418,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val isDisliked = settings.isDisliked(ep.id) || settings.isDislikedByTitle(ep.stationId, ep.title)
             val isNoPreprocess = settings.isNoPreprocess(ep.id ?: "")
             if (isDisliked) {
-                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=disliked")
+                skipDisliked++
                 continue
             }
             if (isNoPreprocess) {
-                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=no-preprocess")
+                skipNoPreprocess++
                 continue
             }
             if (ep.audioUrl.isBlank() || !ep.audioUrl.startsWith("http")) {
-                writePreCacheLog("findPreCacheTarget: SKIP ep=${ep.id}, reason=invalid url")
+                skipInvalidUrl++
                 continue
             }
             neededCount++
@@ -1434,7 +1438,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (neededCount >= targetCount) break
         }
-        writePreCacheLog("findPreCacheTarget: neededCount=$neededCount, futureCachedCount=$futureCachedCount, targetCount=$targetCount")
+        writePreCacheLog("findPreCacheTarget: neededCount=$neededCount, futureCachedCount=$futureCachedCount, targetCount=$targetCount, skipped(disliked=$skipDisliked, noPreprocess=$skipNoPreprocess, invalidUrl=$skipInvalidUrl)")
         return nextToDownload to futureCachedCount
     }
 
@@ -1506,12 +1510,18 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // "fetching ... on 2025-05-13 (offset=+1)" 出现 116 次），
         // 推进不到更远日期、找不到未缓存节目，表现为预缓存"两天不启动"。
         val pcPrefs = getSharedPreferences("precache_list", MODE_PRIVATE)
-        val baseDate = pcPrefs.getString("current_date", null) ?: currentEp.broadcastAt?.take(10) ?: ""
+        // v3.2.25-fix: base date 强制校准为当前播放节目日期，不再信任 prefs 的 current_date。
+        // 根因（precache.log 佐证）：current_date 由 setPreCacheEpisodeList 用"列表首元素日期"写入，
+        // 可能陈旧（日志中 base=2025-07-09 而当前播放 2025-07-16），陈旧 base 使 days_fetched 卡死在
+        // MAX_PRELOAD_FUTURE_DAYS 上限 → fetchMoreDaysForPreCache 永远 limit reached → 预缓存无法拉取
+        // 当前播放日期之后的更多节目，表现为"预缓存长时间不工作"。
+        val baseDate = currentEp.broadcastAt?.take(10) ?: pcPrefs.getString("current_date", null) ?: ""
         val lastBaseDate = pcPrefs.getString("last_precache_date", null) ?: ""
         if (lastBaseDate != baseDate) {
             pcPrefs.edit()
                 .putInt("days_fetched", 0)
                 .putString("last_precache_date", baseDate)
+                .putString("current_date", baseDate) // 同步校准陈旧 current_date，fetchMoreDaysForPreCache 依赖它作扫描基准
                 .apply()
             writePreCacheLog("triggerPreCache: reset days_fetched=0 (base date changed $lastBaseDate -> $baseDate)")
         } else {
@@ -1852,7 +1862,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     private fun fetchMoreDaysForPreCache(existingList: List<Episode>, cachedFiles: List<File>): List<Episode> {
         val prefs = getSharedPreferences("precache_list", MODE_PRIVATE)
         val stationId = prefs.getString("station_id", null) ?: currentEpisode?.stationId
-        val startDate = prefs.getString("current_date", null) ?: currentEpisode?.broadcastAt?.take(10)
+        // v3.2.25-fix: startDate 优先当前播放节目日期。prefs current_date 可能陈旧
+        //（由 setPreCacheEpisodeList 用列表首元素日期写入），陈旧基准会把扫描推进到
+        // 当前播放日期之前/卡死上限，导致预缓存拉不到当前日期之后的节目。
+        val startDate = currentEpisode?.broadcastAt?.take(10) ?: prefs.getString("current_date", null)
         val daysFetched = prefs.getInt("days_fetched", 0)
 
         if (stationId.isNullOrBlank() || startDate.isNullOrBlank()) {
@@ -3750,7 +3763,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         "${fileDateMatch.groupValues[1]}-${fileDateMatch.groupValues[2]}-${fileDateMatch.groupValues[3]}"
                     } else ""
                     if (currentDateStr.isNotBlank() && fileDateStr.isNotBlank() && fileDateStr < currentDateStr) {
-                        writePreCacheLog("patrolSubtitle:  ORPHAN SKIP $cachedName: date $fileDateStr < current $currentDateStr (past episode)")
+                        // v3.2.25-fix: 当前播放日期之前的缓存文件静默跳过，不再写日志。
+                        // 根因（precache.log 佐证）：缓存目录含全部历史回放文件（sijiache_202504~0715 等），
+                        // 每个 past 文件都打一行 ORPHAN SKIP，占日志 68%（2704/3963 行），日志爆炸。
+                        // 预缓存/字幕巡逻本就不该扫描当前播放日期之前的节目，直接跳过即可。
                         continue
                     }
                     // Try to find episode in DB by audio filename
