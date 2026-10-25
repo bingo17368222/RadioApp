@@ -4230,10 +4230,14 @@ object SegmentGenerator {
         // 格式差异频繁不命中，导致回退到全量库，实际效果等同于直接全量对比，且增加复杂度）。
         // v3.1.129: 增加指纹ID字段，用于分组映射和last_matched_at更新
         // v3.1.132: parsed改为IntArray——原始int[]直接内存访问，消除List<Int>装箱开销
+        // v3.2.24-fix: ParsedFpEntry增加isAuto/note，匹配日志可区分自动晋升指纹与金标准指纹，
+        // 用于诊断"晋升后从不匹配"是否仍存在。
         data class ParsedFpEntry(
             val id: Long,
             val parsed: IntArray,
-            val originalFp: String
+            val originalFp: String,
+            val isAuto: Boolean = false,
+            val note: String = ""
         )
         val parsedLibrary = formalLibrary.map { fp ->
             val parsed = ChromaprintExtractor.parseFingerprint(fp.fingerprint)
@@ -4243,7 +4247,7 @@ object SegmentGenerator {
             } else {
                 parsed.toIntArray()
             }
-            ParsedFpEntry(fp.id, parsedArray, fp.fingerprint)
+            ParsedFpEntry(fp.id, parsedArray, fp.fingerprint, isAuto = !fp.isGoldStandard, note = fp.note)
         }
         // 指纹去重：取指纹的前5个整数作为快速去重标识
         // v3.2.3-fix: 建立去重key→所有指纹ID的映射，匹配时更新所有同key指纹的last_matched_at
@@ -4284,6 +4288,8 @@ object SegmentGenerator {
         val hitDetails = mutableListOf<String>()
         var totalWindows = 0
         var matchedWindows = 0
+        // v3.2.24-fix: 统计窗口循环中自动晋升指纹命中数，汇总验证"晋升后是否匹配"
+        var windowAutoMatchedCount = 0
         var lastReportedPct = -1
 
         // v3.1.131: 改用全量指纹一次提取+指纹级滑动窗口替代每窗口PCM提取+JNI调用。
@@ -4345,6 +4351,9 @@ object SegmentGenerator {
         // 窗口循环不再处理长指纹（预扫已1帧粒度完整覆盖），避免逐窗口重复整段复核的性能爆炸。
         var longFpMatchedCount = 0
         val longFpCandidates = dedupedLibrary.filter { it.parsed.size > windowFrames }
+        // v3.2.24-fix: 统计自动晋升指纹在预扫中的命中数，每期节目汇总输出，直接验证"晋升后是否匹配"
+        val longFpAutoCandidateCount = longFpCandidates.count { it.isAuto }
+        var longFpAutoMatchedCount = 0
         if (longFpCandidates.isNotEmpty()) {
             val tLongStart = System.currentTimeMillis()
             val longFpDetail = StringBuilder()
@@ -4393,9 +4402,12 @@ object SegmentGenerator {
                     // 0.88~0.93，与观察池命中口径 0.82~0.86 区间一致）。正常路径零额外分配。
                     var hitStartP = -1
                     var matched = false
+                    // v3.2.24-fix: 记录命中方式（全长对齐/中段裁剪探测），用于诊断自动晋升指纹恢复情况
+                    var hitVia = ""
                     if (bestP >= 0 && bestRawSim >= AUTO_FP_RECONFIRM_THRESHOLD) {
                         matched = true
                         hitStartP = bestP
+                        hitVia = "全长对齐"
                     } else if (bestP >= 0 && tl > 16) {
                         for (scale in CROP_PROBE_SCALES) {
                             val cropLen = (tl * scale).toInt()
@@ -4418,6 +4430,7 @@ object SegmentGenerator {
                                 // 由中段对齐位置反推整条指纹在流中的起点（覆盖区间仍按整条指纹计时）
                                 hitStartP = (cropBestPos - cropStart).coerceAtLeast(0)
                                 matched = true
+                                hitVia = "中段裁剪(${"%.0f".format(scale*100)}%)"
                                 break
                             }
                         }
@@ -4427,6 +4440,12 @@ object SegmentGenerator {
                         val endMs = ((hitStartP + tl) * msPerFrame).toLong()
                         matchedRanges.add(startMs to endMs)
                         longFpMatchedCount++
+                        if (entry.isAuto) longFpAutoMatchedCount++
+                        // v3.2.24-fix: ID级命中日志——区分自动晋升/金标准指纹与命中方式，
+                        // 直接回答"晋升后是否匹配"（此前仅打印区间+相似度，无法定位到指纹）。
+                        val fpHitMsg = "长指纹预扫命中: 指纹#${entry.id}(${if (entry.isAuto) "自动晋升" else "金标准"}${if (entry.note.isNotEmpty()) "/${entry.note}" else ""}), 方式=${hitVia}, 长度=${tl}帧, 相似度=${"%.2f".format(bestRawSim)}, 区间=${startMs/1000}-${endMs/1000}s for episode=$episodeId"
+                        Log.i(TAG, fpHitMsg)
+                        writeFingerprintLog(context, fpHitMsg)
                         // 更新该指纹（及同去重key指纹）的last_matched_at，与窗口循环批量更新口径一致
                         if (dbHelper != null) {
                             try {
@@ -4442,7 +4461,7 @@ object SegmentGenerator {
                         }
                     }
                 }
-                val fpMsgLong = "第一层滑动窗口: 长指纹全局对齐预扫完成，长指纹候选${longFpCandidates.size}条，匹配${longFpMatchedCount}条，耗时${System.currentTimeMillis() - tLongStart}ms [${longFpDetail}]"
+                val fpMsgLong = "第一层滑动窗口: 长指纹全局对齐预扫完成，长指纹候选${longFpCandidates.size}条，匹配${longFpMatchedCount}条（其中自动晋升${longFpAutoMatchedCount}/${longFpAutoCandidateCount}条），耗时${System.currentTimeMillis() - tLongStart}ms [${longFpDetail}]"
                 Log.i(TAG, fpMsgLong)
                 writeFingerprintLog(context, fpMsgLong)
             } catch (e: Throwable) {
@@ -4549,6 +4568,15 @@ object SegmentGenerator {
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
                         hitDetails.add("${startMs/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
                     }
+                    // v3.2.24-fix: ID级命中日志——窗口循环命中时区分自动晋升/金标准指纹，
+                    // 与长指纹预扫日志共同覆盖所有匹配路径。
+                    val winHitFp = candidates.firstOrNull { it.id == matchedFpId }
+                    if (winHitFp != null) {
+                        if (winHitFp.isAuto) windowAutoMatchedCount++
+                        val fpHitMsg = "窗口匹配: 指纹#${winHitFp.id}(${if (winHitFp.isAuto) "自动晋升" else "金标准"}${if (winHitFp.note.isNotEmpty()) "/${winHitFp.note}" else ""}), 长度=${winHitFp.parsed.size}帧, 相似度=${"%.2f".format(bestSim)}, 区间=${startMs/1000}-${endMs/1000}s for episode=$episodeId"
+                        Log.i(TAG, fpHitMsg)
+                        writeFingerprintLog(context, fpHitMsg)
+                    }
                     // v3.2.3-fix: 批量更新所有同去重key指纹的last_matched_at（包括被去重淘汰的自动指纹）
                     // v3.2.7: 添加日志跟踪自动指纹的last_matched_at更新情况
                     if (dbHelper != null) {
@@ -4590,6 +4618,10 @@ object SegmentGenerator {
         val fpMsgLoop = "第一层滑动窗口: 循环完成，总耗时${formatDuration(loopTime)}，窗口数=${totalWindows}，匹配=${matchedWindows}/${totalWindows}（另长指纹预扫匹配${longFpMatchedCount}段），正式库=${dedupedLibrary.size}条"
         Log.i(TAG, fpMsgLoop)
         writeFingerprintLog(context, fpMsgLoop)
+        // v3.2.24-fix: 自动指纹匹配汇总（窗口循环+长指纹预扫），验证晋升后自动指纹是否恢复匹配
+        val fpMsgAuto = "自动指纹匹配汇总: 长指纹预扫 ${longFpAutoMatchedCount}/${longFpAutoCandidateCount} 条命中，窗口循环命中 ${windowAutoMatchedCount} 条，合计命中 ${longFpAutoMatchedCount + windowAutoMatchedCount} 条自动晋升指纹 for episode=$episodeId"
+        Log.i(TAG, fpMsgAuto)
+        writeFingerprintLog(context, fpMsgAuto)
 
         // 合并重叠/相邻的匹配范围
         matchedRanges.sortBy { it.first }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.23 安装</title>
+<title>RadioApp v3.2.24 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.23</div>
+  <div class="version">v3.2.24</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.23</h3>
+    <h3>更新内容 v3.2.24</h3>
     <ul>
-      <li>修复自动晋升指纹晋升后长时间从不匹配：根因是晋升时直接复制观察池整段指纹（含片头/片尾台呼、音效、静音等边界污染帧，占比可达60%~70%），全长等长raw被稀释后低于粗扫门槛0.58，bestP恒为-1，导致唯一为污染指纹设计的多尺度中段裁剪探测（v3.2.11）永不触发</li>
-      <li>修复方案：长指纹全局对齐预扫的粗扫阶段新增"全局最高raw位置"记录（不要求达0.58门槛），粗扫未达标时用该位置兜底作为裁剪探测中心，裁剪后仅对比核心中段，可恢复0.82+命中</li>
-      <li>恢复观察池自动晋升链路：晋升前观察池走全长全滑动+长度惩罚对比天然抗污染，晋升后走等长raw预扫被污染帧稀释，两种口径不一致导致晋升后匹配中断，本次修复统一了晋升前后匹配能力</li>
+      <li>新增自动指纹ID级诊断日志：长指纹全局对齐预扫与窗口循环每次命中均打印指纹ID、自动晋升/金标准标记、命中方式（全长对齐或中段裁剪）与相似度</li>
+      <li>每期节目新增"自动指纹匹配汇总"日志：长指纹预扫命中X/Y条、窗口循环命中N条、合计命中数，直接验证晋升后自动指纹是否恢复匹配</li>
+      <li>配合v3.2.23的粗扫兜底修复，本版本用于确认"晋升前有匹配、晋升后从不匹配"现象已消除；若仍有未命中的自动指纹，日志可直接定位到具体指纹ID与其相似度</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.23.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.24.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
