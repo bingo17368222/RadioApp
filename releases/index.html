@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.26 安装</title>
+<title>RadioApp v3.2.27 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.26</div>
+  <div class="version">v3.2.27</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.26</h3>
+    <h3>更新内容 v3.2.27</h3>
     <ul>
-      <li>取消预缓存 days_fetched 达上限即停止的卡死逻辑：15 天上限不再作为"停止开关"，days_fetched 仅作为扫描断点位置，预缓存持续推进，不再出现日志中反复的 limit reached</li>
-      <li>预缓存扫描上限由 15 天放宽到 30 天（与播放计划保满覆盖一致），覆盖更长假/停播；上限仅作为远端持续无节目时的防无界扫描保护，防止日志/请求刷屏</li>
-      <li>预缓存队列裁剪边界同步放宽到 ±30 天，与扫描上限一致，避免"拉进来的节目又被清掉"的浪费</li>
+      <li>修复预缓存死循环：某个节目下载失败后 continueChain 立即重试同一目标（precache.log 佐证同一目标被扫描 2934 次、14 分钟刷几千条日志、预缓存永远不推进），现在失败目标进入黑名单跳过、失败后续链延迟 3 秒，预缓存推进到下一个可下载节目</li>
+      <li>新增失败黑名单日志计数（findPreCacheTarget 汇总增加 failed 字段），失败原因一眼可见；播放日期变化时自动清空黑名单，旧失败目标有机会重新尝试，下载成功后也会从黑名单移除</li>
+      <li>触发预缓存起始日志补充 base date 校准信息，便于排查跨天推进问题</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.26.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.27.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

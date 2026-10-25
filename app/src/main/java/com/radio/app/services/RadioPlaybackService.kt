@@ -555,6 +555,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // Issue 3: 切换节目后强制更新通知的标志位，绕过 contentHash 去重检查
     @Volatile
     private var forceNotificationUpdate: Boolean = false
+    // v3.2.27-fix: 预缓存下载失败黑名单（按文件名记录）——连续失败的目标跳过，
+    // 避免 continueChain 死循环反复重试同一个不可下载的节目（precache.log 佐证：
+    // 同一 NEXT 目标 sijiache_20250718_2100_2400.mp4 被扫描 2934 次、每 150ms 一轮、
+    // 无任何下载推进，预缓存卡死且日志爆炸）。播放日期变化时清空，给旧目标重试机会。
+    private val failedPreCacheTargets = mutableSetOf<String>()
 
     // v3.1.133: 后续计划播放列表（当前节目之后的5个节目），每次切换节目后更新
     private val futurePlannedEpisodes = mutableListOf<Episode>()
@@ -1397,6 +1402,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         var skipDisliked = 0
         var skipNoPreprocess = 0
         var skipInvalidUrl = 0
+        // v3.2.27-fix: 下载失败黑名单——连续失败的目标跳过，避免 continueChain 死循环
+        // 反复重试同一个不可下载的节目（precache.log 佐证：同一 NEXT 目标 2934 次、
+        // 每 150ms 一轮、无任何下载推进，预缓存卡死且日志爆炸）。
+        var skipFailed = 0
 
         // 构建扫描顺序：近期节目在前，非近期节目在后
         val scanIndices = if (recentDateRange != null) {
@@ -1433,6 +1442,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 skipInvalidUrl++
                 continue
             }
+            // v3.2.27-fix: 下载失败黑名单——失败过的目标直接跳过，让预缓存推进到下一个可下载节目
+            if (fileName in failedPreCacheTargets) {
+                skipFailed++
+                continue
+            }
             neededCount++
             if (fileName in cachedNames) {
                 futureCachedCount++
@@ -1442,7 +1456,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             }
             if (neededCount >= targetCount) break
         }
-        writePreCacheLog("findPreCacheTarget: neededCount=$neededCount, futureCachedCount=$futureCachedCount, targetCount=$targetCount, skipped(disliked=$skipDisliked, noPreprocess=$skipNoPreprocess, invalidUrl=$skipInvalidUrl)")
+        writePreCacheLog("findPreCacheTarget: neededCount=$neededCount, futureCachedCount=$futureCachedCount, targetCount=$targetCount, skipped(disliked=$skipDisliked, noPreprocess=$skipNoPreprocess, invalidUrl=$skipInvalidUrl, failed=$skipFailed)")
         return nextToDownload to futureCachedCount
     }
 
@@ -1522,6 +1536,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         val baseDate = currentEp.broadcastAt?.take(10) ?: pcPrefs.getString("current_date", null) ?: ""
         val lastBaseDate = pcPrefs.getString("last_precache_date", null) ?: ""
         if (lastBaseDate != baseDate) {
+            // v3.2.27-fix: 播放日期变化时清空失败黑名单，给旧失败目标重新尝试的机会
+            failedPreCacheTargets.clear()
             pcPrefs.edit()
                 .putInt("days_fetched", 0)
                 .putString("last_precache_date", baseDate)
@@ -2525,12 +2541,22 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }, 5_000)
     }
 
+    // v3.2.27-fix: 记录预缓存下载失败目标进黑名单，findPreCacheTarget 将跳过它，
+    // 避免 continueChain 死循环反复重试同一个不可下载的节目
+    private fun markPreCacheFailed(fileName: String, episode: Episode) {
+        if (fileName.isNotBlank() && fileName != "unknown.mp4") {
+            failedPreCacheTargets.add(fileName)
+        }
+        writePreCacheLog("markPreCacheFailed: blacklisted file=$fileName, ep=${episode.id}, failedPreCacheTargets.size=${failedPreCacheTargets.size}")
+    }
+
     private fun downloadPreCacheEpisode(episode: Episode) {
         val url = episode.audioUrl
         if (url == null || url.isBlank() || !url.startsWith("http")) {
             Log.w(TAG, "Pre-cache: invalid URL for ${episode.title}, skipping: $url")
+            markPreCacheFailed(extractCacheFileName(url ?: ""), episode)
             isPrecaching = false
-            Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
+            Handler(Looper.getMainLooper()).postDelayed({ triggerPreCache(continueChain = true) }, 3_000)
             return
         }
         val fileName = extractCacheFileName(url)
@@ -2556,10 +2582,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 connection.setRequestProperty("Referer", "https://www.hndt.com/")
                 connection.connect()
                 if (connection.responseCode != 200) {
-                    Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode}")
+                    Log.e(TAG, "Pre-cache download failed: HTTP ${connection.responseCode} for $fileName")
+                    // v3.2.27-fix: 失败目标进黑名单 + 延迟续链，避免立即重试同一目标死循环
+                    markPreCacheFailed(fileName, episode)
                     // Download failed, release guard and schedule next pre-cache check
                     isPrecaching = false
-                    Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
+                    Handler(Looper.getMainLooper()).postDelayed({ triggerPreCache(continueChain = true) }, 3_000)
                     return@launch
                 }
                 val expectedSize = connection.contentLengthLong
@@ -2584,6 +2612,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 Log.d(TAG, "Pre-cache: downloaded ${targetFile.length()} bytes to ${targetFile.name}")
                 // 预缓存下载成功，递增计数，记录文件名
                 precacheCompletedCount++
+                // v3.2.27-fix: 下载成功后从失败黑名单移除（此前可能因临时网络故障被误列入）
+                failedPreCacheTargets.remove(fileName)
                 synchronized(precacheCompletedFileNames) {
                     precacheCompletedFileNames.add(fileName)
                 }
@@ -2625,9 +2655,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     writeServiceLog("notification", "DELETING file: ${targetFile.absolutePath}, size=${targetFile.length()} (pre-cache download error)")
                     targetFile.delete()
                 }
+                // v3.2.27-fix: 失败目标进黑名单 + 延迟续链，避免立即重试同一目标死循环
+                markPreCacheFailed(fileName, episode)
                 // Download error, release guard and schedule next pre-cache check
                 isPrecaching = false
-                Handler(Looper.getMainLooper()).post { triggerPreCache(continueChain = true) }
+                Handler(Looper.getMainLooper()).postDelayed({ triggerPreCache(continueChain = true) }, 3_000)
             }
         }
     }
