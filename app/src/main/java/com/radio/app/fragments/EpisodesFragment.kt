@@ -446,12 +446,24 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
             // 1) Try DB first
             if (!forceRefresh) {
                 try {
-                    val cached = RadioDatabaseHelper.getInstance(requireContext())
-                        .getEpisodesByDateAndStation(stationId, dateStr)
+                    val dbHelper = RadioDatabaseHelper.getInstance(requireContext())
+                    val cached = dbHelper.getEpisodesByDateAndStation(stationId, dateStr)
                     if (cached.isNotEmpty()) {
+                        // v3.2.29-fix: 清理被真实节目覆盖的占位残留（《节目》21:00-24:00
+                        // 刷新不掉的根因：构造版条目 episode_id 与 API 真实节目不同，手动刷新
+                        // 只覆盖同 ID 记录，虚假条目永久残留 DB），并过滤显示——
+                        // 即使 DB 尚有旧残留，节目单也不再显示它。
+                        try {
+                            val realForClean = cached.filter { ep ->
+                                !ep.title.isNullOrBlank() && ep.title != "节目" && ep.title != "未知节目" &&
+                                    !(ep.title ?: "").startsWith("广播节目录音")
+                            }
+                            dbHelper.deleteCoveredFakeEpisodes(stationId, dateStr, realForClean)
+                        } catch (_: Exception) {}
+                        val filtered = dbHelper.filterCoveredFakeEpisodes(cached)
                         mainHandler.post {
                             episodes.clear()
-                            episodes.addAll(cached)
+                            episodes.addAll(filtered)
                             adapter?.notifyDataSetChanged()
                             progressBar?.visibility = View.GONE
                         }
@@ -489,6 +501,13 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                             try {
                                 RadioDatabaseHelper.getInstance(requireContext()).saveEpisodeInfos(unsortedList)
                             } catch (_: Exception) {}
+                            // v3.2.29-fix: 刷新后清理该日期被真实节目完全覆盖的占位构造残留
+                            //（如 21:00-24:00《节目》——episode_id 与 API 真实节目不同，
+                            // saveEpisodeInfos 只覆盖同 ID 记录，必须显式删除才能消失）
+                            try {
+                                RadioDatabaseHelper.getInstance(requireContext())
+                                    .deleteCoveredFakeEpisodes(stationId, dateStr, unsortedList)
+                            } catch (_: Exception) {}
                             mainHandler.post {
                                 progressBar?.visibility = View.GONE
                                 episodes.clear()
@@ -503,8 +522,10 @@ class EpisodesFragment : Fragment(), EpisodeAdapter.OnEpisodeClickListener {
                             progressBar?.visibility = View.GONE
                             // [v2.2.4] Try DB as fallback on API error
                             try {
-                                val cached = RadioDatabaseHelper.getInstance(requireContext())
-                                    .getEpisodesByDateAndStation(stationId, dateStr)
+                                val dbHelper = RadioDatabaseHelper.getInstance(requireContext())
+                                // v3.2.29-fix: 刷新失败回退 DB 时同样过滤被覆盖的占位残留
+                                val cached = dbHelper.filterCoveredFakeEpisodes(
+                                    dbHelper.getEpisodesByDateAndStation(stationId, dateStr))
                                 if (cached.isNotEmpty()) {
                                     episodes.clear()
                                     episodes.addAll(cached)

@@ -837,6 +837,87 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         } catch (_: Exception) {}
     }
 
+    /**
+     * v3.2.29: 判断一个节目条目是否被某组真实节目完全覆盖（用于清理/过滤占位构造条目）。
+     * 覆盖判定两段式：
+     *  1) 完全覆盖：真实节目 startTime <= target.startTime 且 endTime >= target.endTime（endTime 有效）；
+     *  2) 兜底覆盖：target 开始时间不早于"该日期最后一个真实节目"的开始时间，且该真实节目
+     *     endTime 无效（视为延续到末尾）或 endTime 晚于 target 开始时间。
+     * 场景：07-18《听朗读》19:00-24:00 为 5 小时整段长节目，若 API 仅返回 beginTime 导致
+     * endTime 无效，兜底规则仍能识别其后 21:00-24:00 的占位《节目》为虚假条目。
+     */
+    fun isCoveredByRealEpisode(target: Episode, realEpisodes: List<Episode>): Boolean {
+        if (target.startTime <= 0 || target.endTime <= target.startTime) return false
+        // 1) 完全覆盖
+        if (realEpisodes.any { o ->
+                o.audioUrl != target.audioUrl && o.startTime > 0 && o.endTime > o.startTime &&
+                    o.startTime <= target.startTime && o.endTime >= target.endTime
+            }) return true
+        // 2) 兜底：target 开始时间 >= 当天最后真实节目开始时间
+        val lastReal = realEpisodes.filter { it.audioUrl != target.audioUrl && it.startTime > 0 }
+            .maxByOrNull { it.startTime }
+        if (lastReal != null && lastReal.startTime > 0 && target.startTime >= lastReal.startTime) {
+            if (lastReal.endTime <= 0 || lastReal.endTime > target.startTime) return true
+        }
+        return false
+    }
+
+    // v3.2.29-fix: 删除该日期下被真实节目完全覆盖的占位构造条目。
+    // 根因：预缓存 URL 构造（如 21:00-24:00《节目》）直接落库（episode_id 为
+    // "stationId-date-slotIdx"），手动刷新（forceRefresh）用 API 真实节目
+    // saveEpisodeInfos 只覆盖同 episode_id 记录，不同 ID 的虚假条目永远残留，
+    // 导致"多次手动刷新后仍然存在"。
+    fun deleteCoveredFakeEpisodes(stationId: String, dateStr: String, realEpisodes: List<Episode>) {
+        try {
+            if (realEpisodes.isEmpty()) return
+            val db = writableDatabase
+            val cursor = db.query(TABLE_EPISODE_INFO, null, "station_id = ? AND date = ?",
+                arrayOf(stationId, dateStr), null, null, null)
+            val toDelete = mutableListOf<String>()
+            val realUrls = realEpisodes.mapNotNull { it.audioUrl }.toSet()
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(cursor.getColumnIndexOrThrow("episode_id")) ?: ""
+                val title = cursor.getString(cursor.getColumnIndexOrThrow("title")) ?: ""
+                val audioUrl = cursor.getString(cursor.getColumnIndexOrThrow("audio_url")) ?: ""
+                val startTime = cursor.getLong(cursor.getColumnIndexOrThrow("start_time"))
+                val endTime = cursor.getLong(cursor.getColumnIndexOrThrow("end_time"))
+                if (id.isBlank() || isEffectiveTitle(title)) continue
+                if (startTime <= 0 || endTime <= startTime) continue
+                if (audioUrl in realUrls) continue
+                val target = Episode(
+                    id = id, title = title, audioUrl = audioUrl,
+                    startTime = startTime, endTime = endTime
+                )
+                if (isCoveredByRealEpisode(target, realEpisodes)) toDelete.add(id)
+            }
+            cursor.close()
+            for (id in toDelete) {
+                db.delete(TABLE_EPISODE_INFO, "episode_id = ?", arrayOf(id))
+            }
+            if (toDelete.isNotEmpty()) {
+                Log.d("RadioDatabaseHelper", "deleteCoveredFakeEpisodes: deleted ${toDelete.size} covered fake episodes for $stationId $dateStr: $toDelete")
+            }
+        } catch (_: Exception) {}
+    }
+
+    // v3.2.29-fix: 过滤被同列表真实节目完全覆盖的占位条目（显示层用，不落库）
+    fun filterCoveredFakeEpisodes(list: List<Episode>): List<Episode> {
+        if (list.size < 2) return list
+        val realList = list.filter { isEffectiveTitle(it.title) }
+        if (realList.isEmpty()) return list
+        return list.filter { ep ->
+            if (isEffectiveTitle(ep.title)) return@filter true
+            if (ep.startTime <= 0 || ep.endTime <= ep.startTime) return@filter true
+            !isCoveredByRealEpisode(ep, realList)
+        }
+    }
+
+    fun deleteEpisodeInfo(episodeId: String): Int {
+        return try {
+            writableDatabase.delete(TABLE_EPISODE_INFO, "episode_id = ?", arrayOf(episodeId))
+        } catch (_: Exception) { 0 }
+    }
+
     fun getEpisodeInfo(episodeId: String): Episode? {
         try {
             val db = readableDatabase
