@@ -20,16 +20,16 @@
   3. 禁止 `<a href`、`<img`、`![图片]` 等任何 HTML/图片链接语法；
   4. 说明文字不得包含任何文件路径；
   5. 若发现任一违规，必须先删除该处再发出，禁止直接交付。
-- **硬校验的边界（必须认清）**：构建期 `verifyApkDelivery` 只能保证"产物就位 + 发布页干净 + 输出模板"，它永远读不到交付回复本身；回复是否纯净、是否唯一链接，只能靠上一条"全文本链接审计"在交付时刻兜底。两者缺一不可，不能以"硬校验通过了"为由跳过回复审计。
+- **硬校验的边界（必须认清）**：构建期 `verifyApkDelivery` 只能保证"产物就位 + 输出模板"，它永远读不到交付回复本身；回复是否纯净、是否唯一链接，只能靠上一条"全文本链接审计"在交付时刻兜底。两者缺一不可，不能以"硬校验通过了"为由跳过回复审计。
 - 若确需向用户说明改动涉及的文件（如源码位置），**不得放在交付 APK 的同一条回复里**：改用纯文字描述文件路径（不用可点击链接格式），或留到后续单独回复中说明。
 - **交付回复必须是一个"纯文本回合"（v3.2.15 新增，用户实测教训）**：发出 `computer://` 交付链接的那条回复，其所属回合不得包含任何文件类工具调用（Read/Edit/Write/Glob/Grep/LS/DeleteFile 等）或文件路径引用。实测：即使交付文本本身只有唯一一个 `computer://` 链接，只要该回合读写过文件，客户端也会自动把该回合涉及的文件渲染成"N code files"聚合卡片，且该卡片会覆盖/淹没 `computer://` 链接（点击异常跳转 Trae 欢迎页，看不到文件内容，无法安装 APK）。因此必须：先在同一回合完成全部文件操作、构建、提交；**随后另起一条不含任何工具调用的纯文本回复**单独发出交付链接。
-- **交付回合不得出现 `releases/index.html` 的任何引用（v3.2.16 新增，移动端实测教训）**：移动端能点击的只有聚合卡片或 .md 文件。实测：当交付相关的回合中出现 `index.html` 引用（链接、路径、Read/Edit 该文件等）时，客户端会把"APK 链接 + index.html"混合渲染成聚合卡片，点击异常跳转，无法安装。因此：①发布页更新必须在交付前的独立回合完成，且该回合不得同时发出交付链接；②交付回合（含说明文字、文件操作）中不得出现 `index.html` 的任何形式引用（连纯文字路径也不得写出）；③今后交付一律不再发送 index.html 相关内容。
+- **发布页 `releases/index.html` 已从交付流程彻底移除（v3.2.30 升级原 v3.2.16 规则，网页版实测教训）**：用户上传网页版（Edge）交付聚合卡片截图，确认卡片内含 `releases/index.html` 条目（如"RadioApp v3.2.28 安装"）导致聚合卡片异常跳转，已判定引导安装的 index.html 为元凶。因此：①文件已删除并从 Git 移除（`git rm releases/index.html`）；②`verifyApkDelivery` 已移除发布页校验，不再更新/校验任何发布页；③今后交付流程（构建、提交、交付回合）一律**不得出现** `index.html` 的任何形式引用（路径、链接、Read/Edit 该文件等），连纯文字路径也不得写出；④交付只以唯一 `computer://` APK 链接为准。
 - **禁止**使用其他任何方式交付 APK：不得用 GitHub Release、不得用 GitHub 链接、不得用 `releases/` 目录路径、不得只贴文件路径、不得只写文字说明"APK 在 XX 目录"。
 - **每次交付都必须附上该链接，无任何例外。**
 - **代码级硬校验（与本文互为双保险，防遗忘的最终兜底）**：`app/build.gradle` 已固化 `verifyApkDelivery` 任务，每次 `./gradlew assembleRelease` 自动执行——
   1. 构建产物强制复制到工作区根目录 `/workspace/RadioApp-v<版本号>.apk`（computer:// 链接的唯一来源）；
-  2. 校验 `releases/index.html` 下载链接必须唯一且指向当前版本；
-  3. 输出唯一允许的交付链接模板 `[下载安装](computer:///workspace/RadioApp-vX.Y.Z.apk)`。
+  2. 输出唯一允许的交付链接模板 `[下载安装](computer:///workspace/RadioApp-vX.Y.Z.apk)`。
+  （v3.2.30：发布页校验已移除，交付不再依赖任何网页/HTML 文件）
   任何一项校验失败，构建直接失败（FAILED）。**交付回复必须采用该校验输出的唯一链接模板，且该链接必须是回复中唯一可点击链接。**
 
 ## 链接交付经验（2026-10-07 用户实测总结，后续沿用）
@@ -58,7 +58,7 @@
 - 凡是对本项目代码/配置/页面做了任何修改，都必须立刻运行 `./gradlew assembleRelease` 编译出对应版本的 Release APK。
 - 产出路径：`/workspace/radioapp/app/build/outputs/apk/release/RadioApp-v<版本号>.apk`。
 - 编译成功后，把新 APK 复制到工作区根目录：`/workspace/RadioApp-v<版本号>.apk`。
-- 同步更新 `/workspace/radioapp/releases/index.html`：版本号、更新说明、下载链接 `href` 全部改为新版本。
+- 发布页 `releases/index.html` 已废弃（v3.2.30）：不再更新、不再提交、交付回合不得引用。
 
 ## 铁律 2：每次改动代码 → 备份到 GitHub
 - 每次改完代码/页面，必须在交付前把改动 commit 并 push 到 GitHub（`git add` 相关源码文件 → `git commit` → `git push origin main`）。
@@ -66,7 +66,6 @@
 
 ## 执行顺序
 每次改动后，按此顺序完成后再向用户汇报：
-1. 运行 `./gradlew assembleRelease`（自动执行铁律 000 硬校验 `verifyApkDelivery`：复制 APK 到工作区根目录 `/workspace/RadioApp-v<版本号>.apk` + 校验发布页唯一链接，校验失败构建即失败）
-2. 更新 `releases/index.html`（须在构建前完成，硬校验会核对发布页链接唯一且指向当前版本）
-3. 提交并推送源码到 GitHub
-4. 最后按**铁律 000** 单独交付 APK：**另起一条不含任何文件操作/工具调用的纯文本回复**，除纯文字说明外，只允许出现唯一一个 `computer://` APK 链接，禁止任何其他链接。
+1. 运行 `./gradlew assembleRelease`（自动执行铁律 000 硬校验 `verifyApkDelivery`：复制 APK 到工作区根目录 `/workspace/RadioApp-v<版本号>.apk` + 输出交付模板，校验失败构建即失败）
+2. 提交并推送源码到 GitHub（发布页 `releases/index.html` 已废弃，v3.2.30 起不再更新、不再提交）
+3. 最后按**铁律 000** 单独交付 APK：**另起一条不含任何文件操作/工具调用的纯文本回复**，除纯文字说明外，只允许出现唯一一个 `computer://` APK 链接，禁止任何其他链接。
