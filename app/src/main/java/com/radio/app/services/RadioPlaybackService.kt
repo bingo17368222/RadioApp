@@ -1554,6 +1554,10 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         if (!episodesDir.exists()) episodesDir.mkdirs()
 
         var preCacheList = prunePreCacheList()
+        // v3.2.28-fix: 存量净化——清除被同日期真实节目完全覆盖的占位《节目》构造条目
+        //（如 21:00-24:00《节目》被《听朗读》19:00-24:00 覆盖，该录制文件不存在），
+        // 让"多次手动刷新后仍存在"的虚假节目从预缓存/播放计划中消失。
+        preCacheList = purgeCoveredFakeEpisodes(preCacheList)
         // v3.0.3: 对预缓存列表中的周末节目补标记为无需预处理
         markWeekendEpisodesNoPreprocess(preCacheList)
         Log.d(TAG, "Pre-cache: list has ${preCacheList.size} episodes, current=${currentEp.title}")
@@ -1951,6 +1955,19 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 // patrol could never find them for subtitle generation. Now we only filter by URL
                 // duplicates, disliked status and no-preprocess status — the download logic already skips cached files.
                 // v3.0.5-fix: 恢复“无需预处理”节目的预缓存跳过设置。
+                // v3.2.28-fix: 预筛被同列表更早开始长节目完全覆盖的占位条目（如《听朗读》
+                // 19:00-24:00 覆盖 21:00-24:00《节目》——该录制文件实际不存在，只存在于
+                // API/构造的普通档位猜测中）。被完全覆盖说明该时段已被更早开始的节目占用。
+                val coveredPlaceholderIds = newEpisodes.filter { ep ->
+                    val es = ep.startTime
+                    val ee = ep.endTime
+                    val isPlaceholder = ep.title.isNullOrBlank() || ep.title == "节目" || ep.title == "未知节目"
+                    isPlaceholder && es > 0 && ee > es && newEpisodes.any { other ->
+                        other !== ep && other.audioUrl != ep.audioUrl &&
+                            other.startTime > 0 && other.endTime > other.startTime &&
+                            other.startTime <= es && other.endTime >= ee
+                    }
+                }.mapNotNull { it.id }.toSet()
                 val validNewEpisodes = newEpisodes.filter { ep ->
                     if (ep.audioUrl.isBlank()) {
                         writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - blank audioUrl")
@@ -1960,6 +1977,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         false
                     } else if (!ep.audioUrl.startsWith("http")) {
                         writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - non-http url: ${ep.audioUrl}")
+                        false
+                    } else if (ep.id in coveredPlaceholderIds) {
+                        writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - covered by earlier longer episode (fake slot)")
                         false
                     } else if (settings.isDisliked(ep.id)) {
                         writePreCacheLog("fetchMoreDaysForPreCache: SKIP ${ep.id} (${ep.title}) - disliked by id")
@@ -2005,9 +2025,38 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
             } else {
                 writePreCacheLog("fetchMoreDaysForPreCache: no episodes for $targetDate, trying URL construction")
+                // v3.2.28-fix: 构造前先查 DB——手动刷新/之前 API 成功时该日期可能已有真实节目入库。
+                // 直接用真实节目兜底，避免按普通档位模板/历史槽位猜测出不存在的录制文件
+                //（如《听朗读》19:00-24:00 整段长节目被拆出 21:00-24:00《节目》，文件并不存在）。
+                var dbRealForDate: List<Episode> = emptyList()
+                try {
+                    dbRealForDate = RadioDatabaseHelper.getInstance(this@RadioPlaybackService)
+                        .getEpisodesByDateAndStation(stationId, targetDate)
+                } catch (_: Exception) {}
+                val dbValid = dbRealForDate.filter {
+                    it.audioUrl?.startsWith("http") == true && it.startTime > 0 && it.endTime > it.startTime
+                }
+                if (dbValid.size >= 2) {
+                    val existingUrlsNow = resultList.map { it.audioUrl }.toSet()
+                    val fresh = dbValid.filter { it.audioUrl !in existingUrlsNow }
+                    if (fresh.isNotEmpty()) {
+                        resultList.addAll(fresh)
+                        addedAny = true
+                        writePreCacheLog("fetchMoreDaysForPreCache: DB fallback ${fresh.size} real episodes for $targetDate (skip URL construction)")
+                    } else {
+                        writePreCacheLog("fetchMoreDaysForPreCache: DB has ${dbValid.size} real episodes for $targetDate but all already covered, skip construction")
+                    }
+                    // 无论 fresh 是否为空，该日期都以 DB 真实数据为准，不再走 URL 构造
+                    continue
+                }
                 // Issue 7 Fix: 网络抓取失败时，根据已保存节目的时间段和 URL 模式构造节目，
                 // 让 preCacheList 能持续增长，避免永远停留在 6 个节目。
                 val savedList = loadEpisodeList()
+                // 已知真实节目（savedList 同日期 + resultList 同日期 + DB 该日期），
+                // 供下方构造时隙覆盖检测：slot 被真实长节目完全覆盖时跳过构造
+                val knownRealForDate = (savedList.filter { it.broadcastAt?.take(10) == targetDate } +
+                        resultList.filter { it.broadcastAt?.take(10) == targetDate } + dbRealForDate)
+                    .filter { it.startTime > 0 && it.endTime > it.startTime }
                 // v3.1.275-fix: 每次循环内重新计算 existingUrls（resultList 随循环增长）
                 val existingUrls = resultList.map { it.audioUrl }.toSet()
                 // 从已保存节目中提取时间段（如 0700_0900），按时间段起始时间排序，
@@ -2050,8 +2099,31 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (stationPart.isBlank()) stationPart = stationId
                 var constructedCount = 0
                 var dupCount = 0
+                var coveredSlotCount = 0
                 var unMappedCounter = 0
                 for ((_, slot) in timeSlots.withIndex()) {
+                    // v3.2.28-fix: 构造时隙覆盖检测——slot 时间段被同日期已知真实节目完全覆盖时
+                    // 跳过构造（如《听朗读》19:00-24:00 覆盖 21:00-24:00：该录制文件不存在，
+                    // 构造出来只会污染节目单并导致预缓存死循环下载失败）。
+                    var slotStartMs = 0L
+                    var slotEndMs = 0L
+                    val slotParts = slot.split("_")
+                    if (slotParts.size == 2 && slotParts[0].length >= 4 && slotParts[1].length >= 4) {
+                        try {
+                            val dfT = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                            dfT.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+                            slotStartMs = dfT.parse("$targetDate ${slotParts[0].substring(0, 2)}:${slotParts[0].substring(2, 4)}")?.time ?: 0L
+                            slotEndMs = dfT.parse("$targetDate ${slotParts[1].substring(0, 2)}:${slotParts[1].substring(2, 4)}")?.time ?: 0L
+                        } catch (_: Exception) {}
+                    }
+                    if (slotStartMs > 0 && slotEndMs > slotStartMs) {
+                        val coveringEp = knownRealForDate.firstOrNull { it.startTime <= slotStartMs && it.endTime >= slotEndMs }
+                        if (coveringEp != null) {
+                            coveredSlotCount++
+                            writePreCacheLog("fetchMoreDaysForPreCache: SKIP construct $slot on $targetDate - covered by real episode '${coveringEp.title}' ${coveringEp.startTime}~${coveringEp.endTime}")
+                            continue
+                        }
+                    }
                     val constructedUrl = "$pathPrefix/jmd_$newDateStr/${stationPart}_${newDateStr}_$slot.mp4"
                     if (constructedUrl in existingUrls) {
                         // v3.1.275-fix: 该时段 URL 已存在（此前已构造过/API 已有）→ 视为已覆盖，跳过
@@ -2149,9 +2221,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 }
                 if (constructedCount > 0) {
                     addedAny = true
-                    writePreCacheLog("fetchMoreDaysForPreCache: constructed $constructedCount new episodes for $targetDate ($dupCount slots already covered)")
+                    writePreCacheLog("fetchMoreDaysForPreCache: constructed $constructedCount new episodes for $targetDate ($dupCount slots already covered, $coveredSlotCount slots covered by real episodes)")
                 } else {
-                    writePreCacheLog("fetchMoreDaysForPreCache: URL construction produced no new episodes for $targetDate ($dupCount slots already covered), trying next day")
+                    writePreCacheLog("fetchMoreDaysForPreCache: URL construction produced no new episodes for $targetDate ($dupCount slots already covered, $coveredSlotCount slots covered by real episodes), trying next day")
                 }
             }
                 lastAttemptedOffset = attemptOffset
@@ -2380,6 +2452,54 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             writePreCacheLog("prunePreCacheList: ${original.size} -> ${pruned.size} (dropped ${original.size - pruned.size})")
         }
         return pruned
+    }
+
+    // v3.2.28-fix: 存量净化——删除被同日期真实节目完全覆盖的占位构造条目。
+    // 场景（precache.log + 用户反馈佐证）：《听朗读》19:00-24:00 为 5 小时整段长节目，
+    // 但普通档位模板/历史槽位会构造出 21:00-24:00《节目》（占位标题），该录制文件
+    // 实际不存在，进入 preCacheList/DB 后污染节目单且预缓存永远下载失败。
+    // 规则：仅清理"占位标题 + 时间段被同日期另一条（DB 真实节目或列表内条目）
+    // 完全覆盖"的条目，不触碰任何真实节目。
+    private fun purgeCoveredFakeEpisodes(list: List<Episode>): List<Episode> {
+        if (list.size < 2) return list
+        val dbHelper = RadioDatabaseHelper.getInstance(this)
+        val removeIdx = mutableSetOf<Int>()
+        for ((idx, ep) in list.withIndex()) {
+            val date = ep.broadcastAt?.take(10) ?: continue
+            if (date.length != 10) continue
+            // 只清理占位标题（构造《节目》/未知节目/空标题）
+            val title = ep.title ?: ""
+            val isPlaceholder = title.isBlank() || title == "节目" || title == "未知节目" || title.startsWith("广播节目录音")
+            if (!isPlaceholder) continue
+            val es = ep.startTime
+            val ee = ep.endTime
+            if (es <= 0 || ee <= es) continue
+            // 覆盖源 1：DB 中该日期同电台的真实节目
+            val dbReal = try {
+                dbHelper.getEpisodesByDateAndStation(ep.stationId ?: "", date)
+            } catch (_: Exception) { emptyList() }
+            val coveredByDb = dbReal.any { other ->
+                other.id != ep.id && other.audioUrl != ep.audioUrl &&
+                    other.startTime > 0 && other.endTime > other.startTime &&
+                    other.startTime <= es && other.endTime >= ee
+            }
+            // 覆盖源 2：preCacheList 内同日期条目
+            val coveredByList = list.any { other ->
+                other.id != ep.id && other.audioUrl != ep.audioUrl &&
+                    other.broadcastAt?.take(10) == date &&
+                    other.startTime > 0 && other.endTime > other.startTime &&
+                    other.startTime <= es && other.endTime >= ee
+            }
+            if (coveredByDb || coveredByList) {
+                removeIdx.add(idx)
+                writePreCacheLog("purgeCoveredFakeEpisodes: REMOVE fake ep=${ep.id}, title='$title', $date ${es}~${ee} (covered by real episode)")
+            }
+        }
+        if (removeIdx.isEmpty()) return list
+        val purged = list.filterIndexed { i, _ -> i !in removeIdx }
+        savePreCacheList(purged)
+        writePreCacheLog("purgeCoveredFakeEpisodes: ${list.size} -> ${purged.size} (removed ${removeIdx.size} covered fake episodes)")
+        return purged
     }
 
     private fun loadEpisodeList(): List<Episode> {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.27 安装</title>
+<title>RadioApp v3.2.28 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.27</div>
+  <div class="version">v3.2.28</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.27</h3>
+    <h3>更新内容 v3.2.28</h3>
     <ul>
-      <li>修复预缓存死循环：某个节目下载失败后 continueChain 立即重试同一目标（precache.log 佐证同一目标被扫描 2934 次、14 分钟刷几千条日志、预缓存永远不推进），现在失败目标进入黑名单跳过、失败后续链延迟 3 秒，预缓存推进到下一个可下载节目</li>
-      <li>新增失败黑名单日志计数（findPreCacheTarget 汇总增加 failed 字段），失败原因一眼可见；播放日期变化时自动清空黑名单，旧失败目标有机会重新尝试，下载成功后也会从黑名单移除</li>
-      <li>触发预缓存起始日志补充 base date 校准信息，便于排查跨天推进问题</li>
+      <li>修复虚假节目：07-18 真实最后节目《听朗读》19:00-24:00 为 5 小时整段长节目，但预缓存按普通档位模板/历史槽位猜测 VOD 文件名，构造出不存在录制文件的 21:00-24:00《节目》（占位标题），进入节目单后多次手动刷新也无法删除（ID 不同，db.replace 只覆盖同 ID 记录）</li>
+      <li>新增三重防护：构造前先查 DB 真实节目兜底（同日期已有 ≥2 条真实节目时直接用 DB 数据、跳过 URL 猜测）；构造循环中时隙被同日期真实长节目完全覆盖时跳过构造（covered 计数）；写入前预筛被更早长节目完全覆盖的占位条目</li>
+      <li>新增存量净化：预缓存启动时自动清除已被同日期真实节目完全覆盖的占位《节目》条目（purgeCoveredFakeEpisodes），已污染的节目单与预缓存列表自动恢复干净</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.27.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.28.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
