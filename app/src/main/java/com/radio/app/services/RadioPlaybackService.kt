@@ -568,7 +568,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
      //     与 FUTURE_PLAN_COUNT（同为实例可读）保持一致，方便统一调整。
      // v3.1.258: 上界由6天放宽到15天。原因：国庆等长假可能连续十几天没有有效节目，
      // 预缓存过窄会导致长假期间"无后续可播节目"。15天可覆盖春节/国庆等"双周级"长假。
-     private val MAX_PRELOAD_FUTURE_DAYS = 15
+     // v3.2.26: 上界由15天放宽到30天（与播放计划保满 PLAN_FILL_MAX_FUTURE_DAYS 对齐），
+     // 覆盖"月级"长假/停播；同时 fetchMoreDaysForPreCache 不再以 days_fetched 达上限
+     // 提前返回卡死（days_fetched 仅作断点位置），上限只作为"远端持续无节目"时的
+     // 防无界扫描保护，杜绝预缓存"到达上限后彻底停止"。
+     private val MAX_PRELOAD_FUTURE_DAYS = 30
      // v3.1.257: 播放计划"保满"的最大跨天补拉天数（天）。
      // 与 MAX_PRELOAD_FUTURE_DAYS 是两码事：预缓存队列收窄到15天是为了防止未来节目堆积成数百条、
      // 拖垮预缓存/属巡逻任务；而播放计划保满的目的恰恰是"始终能re-roll出后续可播节目"，
@@ -1877,11 +1881,11 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // v3.1.257-fix: 上限由 30 收紧到 MAX_PRELOAD_FUTURE_DAYS，避免为凑够 targetCount 个
         // "有效(非disliked/no-preprocess)可下载节目"而把未来30天×每天12档全拉进 preCacheList，
         // 造成 preCacheList 累积到数百条、预缓存/播放计划任务被未来节目占满(耗尽)。
+        // v3.2.26-fix: 删除"days_fetched 达上限即提前返回卡死"。days_fetched 仅作为扫描断点
+        // 位置（offset 起始），不再是停止开关；否则预缓存到达上限后彻底停止（日志表现为
+        // 一直 "limit reached"，预缓存不再推进）。上限只在 while 循环兜底：远端持续无节目时
+        // 最多往后扫 MAX_PRELOAD_FUTURE_DAYS 天即静默停下，防止无界扫描刷日志/刷请求。
         val maxDays = MAX_PRELOAD_FUTURE_DAYS
-        if (daysFetched >= maxDays) {
-            writePreCacheLog("fetchMoreDaysForPreCache: limit reached ($daysFetched days)")
-            return existingList
-        }
 
         val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
         dateFormat.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
@@ -2335,7 +2339,9 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             if (d.length != 10) return@filter true // 无法解析日期，保守保留
             val ms = try { df.parse(d)?.time } catch (_: Exception) { null } ?: return@filter true
             val diffDays = (refMs - ms) / dayMs
-            diffDays > -MAX_PRELOAD_FUTURE_DAYS && diffDays < 30L
+            // v3.2.26: 边界同步放宽为 ±MAX_PRELOAD_FUTURE_DAYS(30天)，与 fetchMoreDaysForPreCache
+            // 扫描上限一致，避免"拉进来的节目又被 prune 清掉"的浪费。
+            diffDays > -MAX_PRELOAD_FUTURE_DAYS && diffDays < MAX_PRELOAD_FUTURE_DAYS.toLong()
         }
         if (pruned.size < original.size) {
             // 直接写原始存储，绕过 savePreCacheList 的防截断防护（净化已污染大列表）
@@ -7426,7 +7432,7 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         // 每次重建都必然补满，彻底消除"计划耗尽→跨天"的路径。
                         // v3.1.257-fix: 保满补拉覆盖放宽到 PLAN_FILL_MAX_FUTURE_DAYS(30天)，确保"后续播放计划"始终能
                         // 从远端未来足够的天数内补出可播节目，杜绝界面提示"暂无后续播放计划"。
-                        // （预缓存队列仍限 MAX_PRELOAD_FUTURE_DAYS=15天，二者解耦，互不影响。）
+                        // （预缓存队列仍限 MAX_PRELOAD_FUTURE_DAYS=30天，二者解耦，互不影响。）
                         for (dayOffset in 1..PLAN_FILL_MAX_FUTURE_DAYS) {
                             if (nextPlanned.size >= FUTURE_PLAN_COUNT) break
                             try {
