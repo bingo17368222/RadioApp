@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.34 安装</title>
+<title>RadioApp v3.2.35 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.34</div>
+  <div class="version">v3.2.35</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.34</h3>
+    <h3>更新内容 v3.2.35</h3>
     <ul>
-      <li>自动指纹列表新增"匹配总次数"与"累计节约时间"：第一层每次命中都累计次数，节约时间按命中区间时长累计（该区间不再走第二层 YAMNet 推理与第三层金标准召回，等于真实省下的处理时长）</li>
-      <li>每条自动指纹显示：时长 · 创建日期 · 匹配 N 次 · 节约 X 分钟，配合"上次匹配"日期，可直观看出哪些自动指纹在持续节约时间</li>
-      <li>数据库新增 match_count / saved_time_ms 字段（自动升级，历史匹配数据从安装后开始累计）</li>
+      <li>修复自动指纹"匹配N次 · 节约X分钟"显示不完整：统计信息从首行移出，改为条目的独立一行（上次匹配下方），独占整行完整显示</li>
+      <li>首行恢复"时长 · 创建日期"简洁格式，条目信息更清爽</li>
+      <li>匹配次数 = 第一层命中累计；节约时间 = 命中区间时长累计（该区间不再走 YAMNet 与第三层召回）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.34.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.35.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

@@ -67,6 +67,20 @@
         android:maxLines="1"
         android:ellipsize="end" />
 
+    <!-- v3.2.35: 自动指纹匹配统计（独立行，避免与首行 meta 挤在一起被截断）。
+         仅自动指纹适配器使用，默认 GONE；人工指纹条目不受影响。 -->
+    <TextView
+        android:id="@+id/tv_fingerprint_match_stats"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="匹配0次 · 节约0秒"
+        android:textColor="#9E9E9E"
+        android:textSize="11sp"
+        android:visibility="gone"
+        android:maxLines="1"
+        android:ellipsize="end" />
+
     <!-- v3.1.3: 备注输入框 -->
     <EditText
         android:id="@+id/et_fingerprint_note"
