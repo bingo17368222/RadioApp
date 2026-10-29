@@ -44,7 +44,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 17
+        private const val DATABASE_VERSION = 18
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -92,7 +92,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.2.33-fix: CREATE TABLE 补齐 is_gold_standard/last_matched_at 列。
         // 原建表不含这两列，只靠 onUpgrade 的 ALTER 添加——全新安装(onCreate 不经过 onUpgrade)
         // 会得到缺列的表，所有指纹查询抛 SQLiteException、正式库读空、匹配全部失效。
-        db.execSQL("CREATE TABLE $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '', is_gold_standard INTEGER DEFAULT 1, last_matched_at INTEGER DEFAULT 0)")
+        // v3.2.34: 增加 match_count/saved_time_ms 列（自动指纹匹配统计）
+        db.execSQL("CREATE TABLE $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '', is_gold_standard INTEGER DEFAULT 1, last_matched_at INTEGER DEFAULT 0, match_count INTEGER DEFAULT 0, saved_time_ms INTEGER DEFAULT 0)")
         db.execSQL("CREATE INDEX idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
 
         // v3.1.7: 指纹分组管理表（增加note列）
@@ -146,7 +147,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.0.2: Add audio_fingerprints table for water segment fingerprint management.
         if (oldVersion < 11) {
             // v3.2.33-fix: 同 onCreate 补齐 is_gold_standard/last_matched_at 列
-            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '', is_gold_standard INTEGER DEFAULT 1, last_matched_at INTEGER DEFAULT 0)")
+            // v3.2.34: 增加 match_count/saved_time_ms 列
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '', is_gold_standard INTEGER DEFAULT 1, last_matched_at INTEGER DEFAULT 0, match_count INTEGER DEFAULT 0, saved_time_ms INTEGER DEFAULT 0)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
         }
         // v3.1.3: Add note column to audio_fingerprints for user remarks.
@@ -177,6 +179,11 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.1.185: Add version_name column to segment_analysis_info
         if (oldVersion < 17) {
             try { db.execSQL("ALTER TABLE $TABLE_SEGMENT_ANALYSIS_INFO ADD COLUMN version_name TEXT DEFAULT ''") } catch (_: Exception) {}
+        }
+        // v3.2.34: Add match_count/saved_time_ms columns to audio_fingerprints (auto fingerprint match statistics)
+        if (oldVersion < 18) {
+            try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN match_count INTEGER DEFAULT 0") } catch (_: Exception) {}
+            try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN saved_time_ms INTEGER DEFAULT 0") } catch (_: Exception) {}
         }
     }
 
@@ -1109,30 +1116,28 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     // v3.1.41: 更新指纹最后匹配时间（第一层指纹快筛命中时调用）
-    fun updateFingerprintLastMatched(fingerprintId: Long) {
+    // v3.2.34: 同时累计匹配次数 match_count 与节约时间 saved_time_ms（命中区间时长）
+    fun updateFingerprintLastMatched(fingerprintId: Long, savedMs: Long = 0L) {
         try {
             val db = writableDatabase
             val now = System.currentTimeMillis()
-            val values = ContentValues().apply {
-                put("last_matched_at", now)
-                put("updated_at", now)
-            }
-            db.update(TABLE_AUDIO_FINGERPRINTS, values, "id = ?", arrayOf(fingerprintId.toString()))
+            // v3.2.34: 单条 SQL 自增匹配次数与累计节约时间
+            db.execSQL(
+                "UPDATE $TABLE_AUDIO_FINGERPRINTS SET last_matched_at = $now, updated_at = $now, match_count = match_count + 1, saved_time_ms = saved_time_ms + $savedMs WHERE id = $fingerprintId"
+            )
         } catch (_: Exception) {}
     }
 
     // v3.1.41: 根据指纹ID批量更新最后匹配时间（第一层滑动窗口批量命中时调用）
-    fun batchUpdateFingerprintLastMatched(fingerprintIds: List<Long>) {
+    // v3.2.34: 同时累计匹配次数与节约时间
+    fun batchUpdateFingerprintLastMatched(fingerprintIds: List<Long>, savedMs: Long = 0L) {
         if (fingerprintIds.isEmpty()) return
         try {
             val db = writableDatabase
             val now = System.currentTimeMillis()
-            val values = ContentValues().apply {
-                put("last_matched_at", now)
-                put("updated_at", now)
-            }
-            val placeholders = fingerprintIds.joinToString(",") { "?" }
-            db.update(TABLE_AUDIO_FINGERPRINTS, values, "id IN ($placeholders)", fingerprintIds.map { it.toString() }.toTypedArray())
+            db.execSQL(
+                "UPDATE $TABLE_AUDIO_FINGERPRINTS SET last_matched_at = $now, updated_at = $now, match_count = match_count + 1, saved_time_ms = saved_time_ms + $savedMs WHERE id IN (${fingerprintIds.joinToString(",") { it.toString() }})"
+            )
         } catch (_: Exception) {}
     }
 
@@ -1180,7 +1185,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = readableDatabase
             val cursor = db.query(
                 TABLE_AUDIO_FINGERPRINTS,
-                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at"),
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at", "match_count", "saved_time_ms"),
                 "episode_id = ?",
                 arrayOf(episodeId),
                 null, null,
@@ -1200,7 +1205,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = readableDatabase
             val cursor = db.query(
                 TABLE_AUDIO_FINGERPRINTS,
-                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at"),
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at", "match_count", "saved_time_ms"),
                 null, null, null, null,
                 "created_at DESC"
             )
@@ -1220,7 +1225,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = readableDatabase
             val cursor = db.query(
                 TABLE_AUDIO_FINGERPRINTS,
-                arrayOf("id", "episode_id", "start_ms", "end_ms", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at"),
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at", "match_count", "saved_time_ms"),
                 null, null, null, null,
                 "created_at DESC"
             )
@@ -1235,6 +1240,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 val note = cursor.getString(7) ?: ""
                 val isGoldStandard = cursor.getInt(8) == 1
                 val lastMatchedAt = cursor.getLong(9)
+                val matchCount = cursor.getInt(10)
+                val savedTimeMs = cursor.getLong(11)
                 list.add(AudioFingerprint(
                     id = id, episodeId = episodeId,
                     startMs = startMs, endMs = endMs,
@@ -1242,7 +1249,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                     durationMs = durationMs,
                     createdAt = createdAt, updatedAt = updatedAt,
                     note = note, isGoldStandard = isGoldStandard,
-                    lastMatchedAt = lastMatchedAt
+                    lastMatchedAt = lastMatchedAt,
+                    matchCount = matchCount, savedTimeMs = savedTimeMs
                 ))
             }
             cursor.close()
@@ -1264,10 +1272,13 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     // v3.1.3: 读取 note 列（兼容旧数据库无该列的情况）
     // v3.2.2: 读取 is_gold_standard 列（兼容旧数据库无该列的情况）
     // v3.1.41: 读取 last_matched_at 列
+    // v3.2.34: 读取 match_count/saved_time_ms 列
     private fun cursorToAudioFingerprint(c: Cursor): AudioFingerprint {
         val noteIdx = c.getColumnIndex("note")
         val goldIdx = c.getColumnIndex("is_gold_standard")
         val matchedIdx = c.getColumnIndex("last_matched_at")
+        val matchCountIdx = c.getColumnIndex("match_count")
+        val savedTimeIdx = c.getColumnIndex("saved_time_ms")
         return AudioFingerprint(
             id = c.getLong(c.getColumnIndexOrThrow("id")),
             episodeId = c.getString(c.getColumnIndexOrThrow("episode_id")),
@@ -1279,7 +1290,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             updatedAt = c.getLong(c.getColumnIndexOrThrow("updated_at")),
             note = if (noteIdx >= 0) c.getString(noteIdx) ?: "" else "",
             isGoldStandard = if (goldIdx >= 0) c.getInt(goldIdx) == 1 else true,
-            lastMatchedAt = if (matchedIdx >= 0) c.getLong(matchedIdx) else 0
+            lastMatchedAt = if (matchedIdx >= 0) c.getLong(matchedIdx) else 0,
+            matchCount = if (matchCountIdx >= 0) c.getInt(matchCountIdx) else 0,
+            savedTimeMs = if (savedTimeIdx >= 0) c.getLong(savedTimeIdx) else 0
         )
     }
 
@@ -1484,7 +1497,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = readableDatabase
             val cursor = db.query(
                 TABLE_AUDIO_FINGERPRINTS,
-                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at"),
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at", "match_count", "saved_time_ms"),
                 "is_gold_standard = 1",
                 null, null, null,
                 "created_at DESC"
@@ -1507,7 +1520,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = readableDatabase
             val cursor = db.query(
                 TABLE_AUDIO_FINGERPRINTS,
-                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at"),
+                arrayOf("id", "episode_id", "start_ms", "end_ms", "fingerprint", "duration_ms", "created_at", "updated_at", "note", "is_gold_standard", "last_matched_at", "match_count", "saved_time_ms"),
                 "is_gold_standard = 0",
                 null, null, null,
                 "created_at DESC"
@@ -1850,6 +1863,7 @@ data class FingerprintGroupMember(
 // v3.0.2: 音频指纹数据类
 // v3.1.3: 增加 note 字段，支持用户备注
 // v3.2.2: 增加 isGoldStandard 字段，区分人工录入金标准与自动晋升指纹
+// v3.2.34: 增加 matchCount/savedTimeMs——自动指纹匹配总次数与累计节约时间
 data class AudioFingerprint(
     val id: Long = 0,
     val episodeId: String,
@@ -1861,5 +1875,7 @@ data class AudioFingerprint(
     val updatedAt: Long = System.currentTimeMillis(),
     val note: String = "",
     val isGoldStandard: Boolean = true,
-    val lastMatchedAt: Long = 0  // v3.1.41: 最后匹配时间，用于过期删除
+    val lastMatchedAt: Long = 0,  // v3.1.41: 最后匹配时间，用于过期删除
+    val matchCount: Int = 0,      // v3.2.34: 晋升后第一层命中总次数
+    val savedTimeMs: Long = 0     // v3.2.34: 累计节约时间（命中区间时长之和，毫秒）
 )

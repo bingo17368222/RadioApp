@@ -99,7 +99,10 @@ class AutomaticFingerprintAdapter : RecyclerView.Adapter<AutomaticFingerprintAda
         // 自动标签 + 时长 + 日期
         val durationSec = fp.durationMs / 1000
         val dateStr = dateFormat.format(Date(fp.createdAt))
-        holder.tvMeta.text = "[自动] 时长 ${durationSec}s · $dateStr"
+        // v3.2.34: 显示匹配总次数与累计节约时间（节约 = 命中区间时长之和，即不再走YAMNet/第三层召回的时长）
+        val savedMin = fp.savedTimeMs / 60000
+        val savedText = if (savedMin >= 1) "${savedMin}分钟" else "${fp.savedTimeMs / 1000}秒"
+        holder.tvMeta.text = "[自动] 时长 ${durationSec}s · $dateStr · 匹配${fp.matchCount}次 · 节约$savedText"
 
         // v3.2.33-fix: 绑定"上次匹配"显示。此前自动适配器从不设置 tvLastMatched，
         // 布局默认文案"上次匹配: 从未匹配"每行静态显示 → 即使 last_matched_at 已被

@@ -4454,12 +4454,14 @@ object SegmentGenerator {
                         Log.i(TAG, fpHitMsg)
                         writeFingerprintLog(context, fpHitMsg)
                         // 更新该指纹（及同去重key指纹）的last_matched_at，与窗口循环批量更新口径一致
+                        // v3.2.34: 传入命中区间时长作为节约时间（该区间不再走第二层YAMNet/第三层召回）
                         if (dbHelper != null) {
                             try {
                                 val allIds = dedupKeyToIds[entry.originalFp]
                                 if (allIds != null && allIds.isNotEmpty()) {
-                                    if (allIds.size == 1) dbHelper.updateFingerprintLastMatched(allIds[0])
-                                    else dbHelper.batchUpdateFingerprintLastMatched(allIds)
+                                    val savedMs = endMs - startMs
+                                    if (allIds.size == 1) dbHelper.updateFingerprintLastMatched(allIds[0], savedMs)
+                                    else dbHelper.batchUpdateFingerprintLastMatched(allIds, savedMs)
                                 }
                             } catch (_: Exception) {}
                         }
@@ -4596,10 +4598,12 @@ object SegmentGenerator {
                                 null
                             }
                             if (allMatchedIds != null && allMatchedIds.isNotEmpty()) {
+                                // v3.2.34: 节约时间 = 命中窗口区间时长（不再走第二层YAMNet/第三层召回）
+                                val savedMs = endMs - startMs
                                 if (allMatchedIds.size == 1) {
-                                    dbHelper.updateFingerprintLastMatched(allMatchedIds[0])
+                                    dbHelper.updateFingerprintLastMatched(allMatchedIds[0], savedMs)
                                 } else {
-                                    dbHelper.batchUpdateFingerprintLastMatched(allMatchedIds)
+                                    dbHelper.batchUpdateFingerprintLastMatched(allMatchedIds, savedMs)
                                     // v3.2.7: 日志跟踪同去重key的多条指纹（含自动指纹）匹配更新
                                     if (allMatchedIds.size > 1) {
                                         Log.d(TAG, "第一层滑动窗口: 1次命中更新${allMatchedIds.size}条指纹的last_matched_at（含被去重淘汰的自动指纹）, 窗口区间=${startMs/1000}s-${endMs/1000}s")
