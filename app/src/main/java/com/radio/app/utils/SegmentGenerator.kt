@@ -159,8 +159,15 @@ object SegmentGenerator {
     //   中段裁剪探测0.88~0.93可恢复命中，与生产日志观察池命中82~86%区间完全对应。）
     // 修复：全长对齐未达阈值时，对指纹中段做 90%/80%/70% 多尺度裁剪，
     // 裁剪掉首尾污染帧后仅对比核心内容，在"全长最佳对齐位置+裁剪起始偏移"附近精扫恢复命中。
+    // v3.2.32-fix: 裁剪档位增加到 60%/50%。
+    // 根因（用户三报"晋升后从不匹配"的残余机制）：观察池用 compareFingerprints 的 minLen 全滑动，
+    // 只比较较短一方（=真实核心内容），完全忽略边界污染；晋升后预扫对"全长等长"对比，
+    // 污染帧逐帧计入误差，原 90/80/70% 裁剪最多只能隔离 ~30% 的边界污染。
+    // 对边界污染占比 >30%（核心只占中段 50%~60%）的晋升指纹，观察池能命中（核心对核心）而预扫永远无法匹配。
+    // 增加 60%/50% 档位后，中段裁剪可隔离高达 50% 的边界污染，补齐"观察池命中口径"与
+    // "晋升后预扫口径"的覆盖差（决定性实验：随机数据等长 raw 最高约 0.55，50% 裁剪命中 0.82 不会误报）。
     private const val CROP_PROBE_FINE_RADIUS = 8             // 裁剪探测精扫半径（帧），覆盖相位抖动
-    private val CROP_PROBE_SCALES = floatArrayOf(0.9f, 0.8f, 0.7f) // 中段保留比例（100%已由全长对比覆盖）
+    private val CROP_PROBE_SCALES = floatArrayOf(0.9f, 0.8f, 0.7f, 0.6f, 0.5f) // 中段保留比例（100%已由全长对比覆盖）
     // v3.1.265-fix: 观察池"重复判定/命中+1"统一阈值=0.82。
     // 原内外两道门都误用了 POOL_DUPLICATE_THRESHOLD(0.92)，而同一水段在跨节目/跨设备的指纹提取
     // 仅 82%~91% 相似，导致：
@@ -4619,7 +4626,10 @@ object SegmentGenerator {
         Log.i(TAG, fpMsgLoop)
         writeFingerprintLog(context, fpMsgLoop)
         // v3.2.24-fix: 自动指纹匹配汇总（窗口循环+长指纹预扫），验证晋升后自动指纹是否恢复匹配
-        val fpMsgAuto = "自动指纹匹配汇总: 长指纹预扫 ${longFpAutoMatchedCount}/${longFpAutoCandidateCount} 条命中，窗口循环命中 ${windowAutoMatchedCount} 条，合计命中 ${longFpAutoMatchedCount + windowAutoMatchedCount} 条自动晋升指纹 for episode=$episodeId"
+        // v3.2.32-fix: 文案说明"窗口循环命中 0 条"是设计使然——自动晋升指纹均为长指纹
+        // （观察池最低15秒>15秒窗口），窗口循环按设计跳过（v3.2.10-fix），由预扫1帧粒度全覆盖。
+        // 避免用户误读为"晋升后从不匹配"。
+        val fpMsgAuto = "自动指纹匹配汇总: 长指纹预扫 ${longFpAutoMatchedCount}/${longFpAutoCandidateCount} 条命中，窗口循环命中 ${windowAutoMatchedCount} 条（长指纹均由预扫覆盖，0为正常），合计命中 ${longFpAutoMatchedCount + windowAutoMatchedCount} 条自动晋升指纹 for episode=$episodeId"
         Log.i(TAG, fpMsgAuto)
         writeFingerprintLog(context, fpMsgAuto)
 

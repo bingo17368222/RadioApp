@@ -1133,6 +1133,13 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
     }
 
     // v3.1.41: 清理过期指纹（连续两个月零匹配的人工指纹，且last_matched_at > 0表示已记录过匹配）
+    // v3.2.32-fix: 清理范围扩展到自动晋升指纹。
+    // 根因（用户三报"自动指纹晋升后从不匹配"）：观察池晋升的广告/片头内容会随排期下架，
+    // 旧自动指纹内容不再播出 → 永久零匹配；而原清理只删金标准(is_gold_standard=1)，
+    // 自动指纹(is_gold_standard=0)永不清理 → 死指纹无限累积（正式库469→476还在涨），
+    // 每集"X/60命中"里大量是永不复播的死指纹，表现为"全部长时间从未匹配"。
+    // 修复：自动指纹同样按2个月零匹配清理——从未匹配过(last_matched_at=0)的按创建时间兜底，
+    // 新晋升指纹(created_at<2个月)不会被立即删除。
     fun cleanupExpiredFingerprints(): Int {
         var deleted = 0
         try {
@@ -1147,8 +1154,15 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 "is_gold_standard = 1 AND last_matched_at > 0 AND last_matched_at < ?",
                 arrayOf(twoMonthsAgo.toString())
             )
+            // v3.2.32-fix: 自动晋升指纹（is_gold_standard=0）：
+            // 创建已满2个月 且 2个月内零匹配（last_matched_at < 2个月前，0=从未匹配也满足）→ 清理
+            deleted += db.delete(
+                TABLE_AUDIO_FINGERPRINTS,
+                "is_gold_standard = 0 AND created_at < ? AND last_matched_at < ?",
+                arrayOf(twoMonthsAgo.toString(), twoMonthsAgo.toString())
+            )
             if (deleted > 0) {
-                Log.i("RadioDatabaseHelper", "cleanupExpiredFingerprints: 删除了$deleted 个过期人工指纹（2个月未匹配）")
+                Log.i("RadioDatabaseHelper", "cleanupExpiredFingerprints: 删除了$deleted 个过期指纹（2个月未匹配，含自动晋升）")
             }
         } catch (e: Exception) {
             Log.e("RadioDatabaseHelper", "cleanupExpiredFingerprints failed: ${e.message}")
