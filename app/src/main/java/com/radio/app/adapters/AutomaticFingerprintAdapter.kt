@@ -101,6 +101,25 @@ class AutomaticFingerprintAdapter : RecyclerView.Adapter<AutomaticFingerprintAda
         val dateStr = dateFormat.format(Date(fp.createdAt))
         holder.tvMeta.text = "[自动] 时长 ${durationSec}s · $dateStr"
 
+        // v3.2.33-fix: 绑定"上次匹配"显示。此前自动适配器从不设置 tvLastMatched，
+        // 布局默认文案"上次匹配: 从未匹配"每行静态显示 → 即使 last_matched_at 已被
+        // 第一层命中更新，自动指纹也永远显示"从未匹配"（用户反馈：晋升后有匹配记录
+        // 但全部显示从未匹配）。现与人工指纹适配器同口径绑定实际匹配日期。
+        val twoMonthsAgo = System.currentTimeMillis() - 60L * 24 * 60 * 60 * 1000
+        if (fp.lastMatchedAt == 0L) {
+            holder.tvLastMatched.text = "上次匹配: 从未匹配"
+            holder.tvLastMatched.setTextColor(holder.itemView.context.resources.getColor(android.R.color.darker_gray, null))
+        } else {
+            val matchedDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(fp.lastMatchedAt))
+            if (fp.lastMatchedAt < twoMonthsAgo) {
+                holder.tvLastMatched.text = "上次匹配: $matchedDateStr (已过期)"
+                holder.tvLastMatched.setTextColor(holder.itemView.context.resources.getColor(android.R.color.holo_red_dark, null))
+            } else {
+                holder.tvLastMatched.text = "上次匹配: $matchedDateStr"
+                holder.tvLastMatched.setTextColor(holder.itemView.context.resources.getColor(android.R.color.darker_gray, null))
+            }
+        }
+
         Log.d(TAG, "onBindViewHolder pos=$position time='$timeText' episode='${fp.episodeId}' meta='${holder.tvMeta.text}'")
 
         // 绑定备注
@@ -152,6 +171,7 @@ class AutomaticFingerprintAdapter : RecyclerView.Adapter<AutomaticFingerprintAda
         val btnRefresh: Button = view.findViewById(R.id.btn_refresh_fingerprint)
         val btnDelete: Button = view.findViewById(R.id.btn_delete_fingerprint)
         val etNote: EditText = view.findViewById(R.id.et_fingerprint_note)
+        val tvLastMatched: TextView = view.findViewById(R.id.tv_fingerprint_last_matched)
 
         private var currentFp: AudioFingerprint? = null
         private var isBinding = false

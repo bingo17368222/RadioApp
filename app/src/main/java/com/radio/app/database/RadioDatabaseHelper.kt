@@ -89,7 +89,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE $TABLE_EPISODE_INFO (episode_id TEXT PRIMARY KEY, date TEXT NOT NULL, title TEXT, broadcast_at TEXT, duration INTEGER, start_time INTEGER DEFAULT 0, end_time INTEGER DEFAULT 0, audio_url TEXT, station_id TEXT, station_name TEXT, updated_at INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX idx_episode_info_date_station ON $TABLE_EPISODE_INFO(date, station_id)")
         // v3.0.2: 音频指纹表
-        db.execSQL("CREATE TABLE $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '')")
+        // v3.2.33-fix: CREATE TABLE 补齐 is_gold_standard/last_matched_at 列。
+        // 原建表不含这两列，只靠 onUpgrade 的 ALTER 添加——全新安装(onCreate 不经过 onUpgrade)
+        // 会得到缺列的表，所有指纹查询抛 SQLiteException、正式库读空、匹配全部失效。
+        db.execSQL("CREATE TABLE $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '', is_gold_standard INTEGER DEFAULT 1, last_matched_at INTEGER DEFAULT 0)")
         db.execSQL("CREATE INDEX idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
 
         // v3.1.7: 指纹分组管理表（增加note列）
@@ -142,7 +145,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         }
         // v3.0.2: Add audio_fingerprints table for water segment fingerprint management.
         if (oldVersion < 11) {
-            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '')")
+            // v3.2.33-fix: 同 onCreate 补齐 is_gold_standard/last_matched_at 列
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_AUDIO_FINGERPRINTS (id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, fingerprint TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, note TEXT DEFAULT '', is_gold_standard INTEGER DEFAULT 1, last_matched_at INTEGER DEFAULT 0)")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_audio_fingerprints_episode ON $TABLE_AUDIO_FINGERPRINTS(episode_id)")
         }
         // v3.1.3: Add note column to audio_fingerprints for user remarks.

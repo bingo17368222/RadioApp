@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.32 安装</title>
+<title>RadioApp v3.2.33 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.32</div>
+  <div class="version">v3.2.33</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.32</h3>
+    <h3>更新内容 v3.2.33</h3>
     <ul>
-      <li>排查"自动指纹晋升后从不匹配"：确认预扫算法已正常（-9 档节目每集命中 17~22/59 条自动指纹，相似度 0.83~0.98），"窗口循环命中 0"是设计使然（自动指纹均为长指纹，由预扫 1 帧粒度全覆盖）</li>
-      <li>中段裁剪探测档位从 90%/80%/70% 增加到 60%/50%：补齐"观察池 minLen 滑动命中口径"与"晋升后全长对比口径"的覆盖差，边界污染超 30% 的晋升指纹晋升后也能恢复命中</li>
-      <li>过期指纹清理扩展到自动晋升指纹：2 个月内零匹配的自动指纹（内容随广告排期下架）与金标准一样自动清理，不再无限累积死指纹</li>
-      <li>自动指纹匹配汇总日志补充说明，避免"窗口循环 0"被误读为"未匹配"</li>
+      <li>修复"所有自动指纹显示从未匹配"根因：自动指纹列表页的适配器从未绑定"上次匹配"控件，每行静态显示布局默认文案"从未匹配"——即使第一层已命中并更新了数据库的匹配时间，界面也永远显示"从未匹配"（纯显示 bug，匹配算法与落库正常）</li>
+      <li>自动指纹页现与人工指纹页同口径显示真实匹配日期：命中即显示日期，2 个月未匹配标红"已过期"</li>
+      <li>修复全新安装数据库缺列问题：audio_fingerprints 建表语句补齐 is_gold_standard / last_matched_at 列（此前仅靠升级路径 ALTER 添加，全新安装的表缺列会导致指纹查询失败、正式库读空、匹配全部失效）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.32.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.33.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
