@@ -44,7 +44,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 18
+        private const val DATABASE_VERSION = 19
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -102,7 +102,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE INDEX idx_fp_group_members_group ON $TABLE_FINGERPRINT_GROUP_MEMBERS(group_id)")
         db.execSQL("CREATE INDEX idx_fp_group_members_fp ON $TABLE_FINGERPRINT_GROUP_MEMBERS(fingerprint_id)")
         // v3.2.2: 候选指纹观察池表
-        db.execSQL("CREATE TABLE $TABLE_FINGERPRINT_OBSERVATION_POOL (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, episode_id TEXT NOT NULL, duration_ms INTEGER NOT NULL, similarity REAL NOT NULL DEFAULT 0.82, hit_count INTEGER DEFAULT 1, last_hit_time INTEGER NOT NULL, expired_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE $TABLE_FINGERPRINT_OBSERVATION_POOL (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, episode_id TEXT NOT NULL, duration_ms INTEGER NOT NULL, start_ms INTEGER DEFAULT 0, end_ms INTEGER DEFAULT 0, similarity REAL NOT NULL DEFAULT 0.82, hit_count INTEGER DEFAULT 1, last_hit_time INTEGER NOT NULL, expired_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX idx_fp_obs_pool_hash ON $TABLE_FINGERPRINT_OBSERVATION_POOL(fingerprint_hash)")
     }
 
@@ -169,7 +169,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         // v3.2.2: Add is_gold_standard column to audio_fingerprints and observation pool table
         if (oldVersion < 15) {
             try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN is_gold_standard INTEGER DEFAULT 1") } catch (_: Exception) {}
-            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_FINGERPRINT_OBSERVATION_POOL (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, episode_id TEXT NOT NULL, duration_ms INTEGER NOT NULL, similarity REAL NOT NULL DEFAULT 0.82, hit_count INTEGER DEFAULT 1, last_hit_time INTEGER NOT NULL, expired_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS $TABLE_FINGERPRINT_OBSERVATION_POOL (id INTEGER PRIMARY KEY AUTOINCREMENT, fingerprint_hash TEXT NOT NULL, fingerprint TEXT NOT NULL, episode_id TEXT NOT NULL, duration_ms INTEGER NOT NULL, start_ms INTEGER DEFAULT 0, end_ms INTEGER DEFAULT 0, similarity REAL NOT NULL DEFAULT 0.82, hit_count INTEGER DEFAULT 1, last_hit_time INTEGER NOT NULL, expired_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
             try { db.execSQL("CREATE INDEX IF NOT EXISTS idx_fp_obs_pool_hash ON $TABLE_FINGERPRINT_OBSERVATION_POOL(fingerprint_hash)") } catch (_: Exception) {}
         }
         // v3.1.41: Add last_matched_at column to audio_fingerprints for expiration mechanism
@@ -184,6 +184,13 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         if (oldVersion < 18) {
             try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN match_count INTEGER DEFAULT 0") } catch (_: Exception) {}
             try { db.execSQL("ALTER TABLE $TABLE_AUDIO_FINGERPRINTS ADD COLUMN saved_time_ms INTEGER DEFAULT 0") } catch (_: Exception) {}
+        }
+        // v3.2.36: Add start_ms/end_ms columns to observation pool.
+        // 候选指纹此前只存 duration_ms 不存起止；晋升时 promoteObservationPoolToFormalLibrary
+        // 只能写死 start_ms=0/end_ms=duration_ms，导致所有自动指纹开始时间显示为 0 分 0 秒。
+        if (oldVersion < 19) {
+            try { db.execSQL("ALTER TABLE $TABLE_FINGERPRINT_OBSERVATION_POOL ADD COLUMN start_ms INTEGER DEFAULT 0") } catch (_: Exception) {}
+            try { db.execSQL("ALTER TABLE $TABLE_FINGERPRINT_OBSERVATION_POOL ADD COLUMN end_ms INTEGER DEFAULT 0") } catch (_: Exception) {}
         }
     }
 
@@ -1567,6 +1574,9 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         val fingerprint: String = "",
         val episodeId: String = "",
         val durationMs: Long = 0,
+        // v3.2.36: 候选指纹的原始起止时间（晋升时写入正式库，替代写死的 start_ms=0）
+        val startMs: Long = 0,
+        val endMs: Long = 0,
         val similarity: Float = 0.82f,
         val hitCount: Int = 1,
         val lastHitTime: Long = System.currentTimeMillis(),
@@ -1597,6 +1607,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             put("fingerprint", candidate.fingerprint)
             put("episode_id", candidate.episodeId)
             put("duration_ms", candidate.durationMs)
+            put("start_ms", candidate.startMs)
+            put("end_ms", candidate.endMs)
             put("similarity", candidate.similarity)
             put("hit_count", candidate.hitCount)
             put("last_hit_time", candidate.lastHitTime)
@@ -1703,7 +1715,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val db = writableDatabase
             val cursor = db.query(
                 TABLE_FINGERPRINT_OBSERVATION_POOL,
-                arrayOf("fingerprint", "episode_id", "duration_ms"),
+                arrayOf("fingerprint", "episode_id", "duration_ms", "start_ms", "end_ms"),
                 "id = ?", arrayOf(poolId.toString()),
                 null, null, null
             )
@@ -1711,14 +1723,22 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             val fingerprint = cursor.getString(0)
             val episodeId = cursor.getString(1)
             val durationMs = cursor.getLong(2)
+            // v3.2.36: 晋升写入候选的原始起止时间（此前无 start/end 列，只能写死 0~duration，
+            // 导致自动指纹开始时间全部显示 0 分 0 秒）；旧候选两列为 0 时回退原行为。
+            var startMs = cursor.getLong(3)
+            var endMs = cursor.getLong(4)
+            if (endMs <= startMs) {
+                startMs = 0L
+                endMs = durationMs
+            }
             cursor.close()
 
             // 添加到正式指纹库（is_gold_standard = 0）
             val now = System.currentTimeMillis()
             val values = ContentValues().apply {
                 put("episode_id", episodeId)
-                put("start_ms", 0L)
-                put("end_ms", durationMs)
+                put("start_ms", startMs)
+                put("end_ms", endMs)
                 put("fingerprint", fingerprint)
                 put("duration_ms", durationMs)
                 put("created_at", now)
@@ -1833,6 +1853,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             fingerprint = c.getString(c.getColumnIndexOrThrow("fingerprint")) ?: "",
             episodeId = c.getString(c.getColumnIndexOrThrow("episode_id")) ?: "",
             durationMs = c.getLong(c.getColumnIndexOrThrow("duration_ms")),
+            startMs = c.getLong(c.getColumnIndexOrThrow("start_ms")),
+            endMs = c.getLong(c.getColumnIndexOrThrow("end_ms")),
             similarity = c.getFloat(c.getColumnIndexOrThrow("similarity")),
             hitCount = c.getInt(c.getColumnIndexOrThrow("hit_count")),
             lastHitTime = c.getLong(c.getColumnIndexOrThrow("last_hit_time")),

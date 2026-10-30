@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.35 安装</title>
+<title>RadioApp v3.2.36 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.35</div>
+  <div class="version">v3.2.36</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.35</h3>
+    <h3>更新内容 v3.2.36</h3>
     <ul>
-      <li>修复自动指纹"匹配N次 · 节约X分钟"显示不完整：统计信息从首行移出，改为条目的独立一行（上次匹配下方），独占整行完整显示</li>
-      <li>首行恢复"时长 · 创建日期"简洁格式，条目信息更清爽</li>
-      <li>匹配次数 = 第一层命中累计；节约时间 = 命中区间时长累计（该区间不再走 YAMNet 与第三层召回）</li>
+      <li>候选指纹列表新增"时间"行，显示该水段的真实起止区间（如 0:00 - 5:03）</li>
+      <li>修复自动指纹开始时间全部显示 0 分 0 秒：观察池候选此前不存起止时间，晋升时只能写死 0~时长；本次观察池表新增 start_ms/end_ms，候选入库即记录原始区间，晋升时写入真实起止</li>
+      <li>已晋升的存量自动指纹起止仍为旧值（无法追溯），此后新晋升的自动指纹将显示真实时间范围</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.35.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.36.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

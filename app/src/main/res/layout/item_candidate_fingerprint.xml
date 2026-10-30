@@ -68,6 +68,18 @@
             android:ellipsize="end" />
     </LinearLayout>
 
+    <!-- v3.2.36: 起止时间（候选指纹原始区间，晋升后即自动指纹的时间范围） -->
+    <TextView
+        android:id="@+id/tv_candidate_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="时间: 0:00 - 0:00"
+        android:textColor="?attr/appTextMuted"
+        android:textSize="11sp"
+        android:maxLines="1"
+        android:ellipsize="end" />
+
     <!-- 第三行：最后命中时间 -->
     <TextView
         android:id="@+id/tv_candidate_last_hit_time"

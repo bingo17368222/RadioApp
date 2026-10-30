@@ -86,6 +86,9 @@ class CandidateFingerprintAdapter : RecyclerView.Adapter<CandidateFingerprintAda
         // 时长格式化: "X秒" 或 "X分X秒"
         holder.tvDuration.text = formatDuration(candidate.durationMs)
 
+        // v3.2.36: 起止时间（候选指纹原始区间）
+        holder.tvTime.text = "时间: ${formatClock(candidate.startMs)} - ${formatClock(candidate.endMs)}"
+
         // 相似度: "XX.X%"
         holder.tvSimilarity.text = String.format("相似度: %.1f%%", candidate.similarity * 100f)
 
@@ -147,9 +150,20 @@ class CandidateFingerprintAdapter : RecyclerView.Adapter<CandidateFingerprintAda
         }
     }
 
+    /**
+     * v3.2.36: 起止时间格式化 "分:秒"（候选最长600秒，分钟无进位问题）。
+     */
+    private fun formatClock(ms: Long): String {
+        val totalSec = (ms / 1000).toInt()
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        return String.format("%d:%02d", min, sec)
+    }
+
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val tvEpisode: TextView = view.findViewById(R.id.tv_candidate_episode)
         val tvDuration: TextView = view.findViewById(R.id.tv_candidate_duration)
+        val tvTime: TextView = view.findViewById(R.id.tv_candidate_time)
         val tvSimilarity: TextView = view.findViewById(R.id.tv_candidate_similarity)
         val tvHitCount: TextView = view.findViewById(R.id.tv_candidate_hit_count)
         val tvLastHitTime: TextView = view.findViewById(R.id.tv_candidate_last_hit_time)

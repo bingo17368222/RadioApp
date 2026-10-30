@@ -5013,6 +5013,9 @@ object SegmentGenerator {
                         fingerprint = fingerprint,
                         episodeId = episodeId,
                         durationMs = durationMs,
+                        // v3.2.36: 保存原始起止时间，供候选列表展示、晋升时写入正式库
+                        startMs = waterSeg.start,
+                        endMs = waterSeg.end,
                         similarity = maxSimilarity,
                         hitCount = 1,
                         lastHitTime = now,
