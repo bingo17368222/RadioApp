@@ -168,15 +168,22 @@ object SegmentGenerator {
     // "晋升后预扫口径"的覆盖差（决定性实验：随机数据等长 raw 最高约 0.55，50% 裁剪命中 0.82 不会误报）。
     private const val CROP_PROBE_FINE_RADIUS = 8             // 裁剪探测精扫半径（帧），覆盖相位抖动
     private val CROP_PROBE_SCALES = floatArrayOf(0.9f, 0.8f, 0.7f, 0.6f, 0.5f) // 中段保留比例（100%已由全长对比覆盖）
-    // v3.1.265-fix: 观察池"重复判定/命中+1"统一阈值=0.82。
+    // v3.1.265-fix: 观察池"命中+1"阈值=0.82。
     // 原内外两道门都误用了 POOL_DUPLICATE_THRESHOLD(0.92)，而同一水段在跨节目/跨设备的指纹提取
     // 仅 82%~91% 相似，导致：
     //  1) 外层"是否重复"门禁(0.92)：82~91% 的跨节目重复全被判为"新水段"，每次各自新建候选
     //     → 观察池无限膨胀(152→157)、hit_count 卡在1、永不晋升；
     //  2) 内层"命中+1"(0.92)：即便进了门配到候选也 +1 不了。
-    // 统一降到 0.82，与"进池召回(0.82)/整段复核(0.82)"识别口径一致。
-    // （用户反馈：自动指纹全部长时间从未匹配。）
+    // 命中+1 降到 0.82，与"进池召回(0.82)/整段复核(0.82)"识别口径一致。
+    // v3.2.37-fix: "正式库判重"恢复 0.92（POOL_DUPLICATE_THRESHOLD）。
+    // 根因（用户反馈：很久没有生成新的候选指纹）：v3.1.265 把"是否重复"门禁也降到 0.82，
+    // 而候选进池门禁是"与金标准相似度≥0.82"——任何达到进池门槛的片段必然与金标准>0.82，
+    // 被 isDuplicateFingerprint(0.82) 判为重复 → 观察池永不新增候选（日志恒定7个候选、无"新候选入库"）。
+    // 修复：观察池内判重(0.82)只负责"命中已有候选+1"；与正式库(金标准+自动晋升)的重复判定恢复 0.92，
+    // 仅"几乎完全相同"才视为已被正式库覆盖跳过，其余达到进池门槛的片段正常入库。
     private const val POOL_HIT_THRESHOLD = 0.82f
+    // v3.2.37-fix: 正式库重复判定阈值（新候选 vs 金标准/自动晋升）。几乎完全相同才判重跳过。
+    private const val POOL_DUPLICATE_THRESHOLD = 0.92f
     // 观察池候选最小/最大时长
     private const val POOL_MIN_DURATION_MS = 15_000L   // 15秒
     private const val POOL_MAX_DURATION_MS = 600_000L  // 600秒
@@ -4960,53 +4967,50 @@ object SegmentGenerator {
                         continue
                     }
 
-                    // 前置过滤3: 检查是否与正式库或观察池重复。
-                    // v3.1.265-fix: 重复判定阈值由 0.92 放宽到统一口径 0.82（POOL_HIT_THRESHOLD）。
-                    // 原 0.92 门禁太高：同一水段跨节目重复仅 82~91% 相似，全被判为"新水段"，
-                    // 导致每次重复都新建候选而永不 +1，是自动指纹从不晋升/匹配的根因。
-                    if (dbHelper.isDuplicateFingerprint(fingerprint, POOL_HIT_THRESHOLD)) {
-                        val hash = fingerprintHash(fingerprint)
-                        val existing = dbHelper.findObservationPoolCandidateByHash(hash)
-                        if (existing != null) {
-                            dbHelper.incrementObservationPoolHit(
-                                existing.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT
-                            )
-                            val fpMsg = "观察池: 候选指纹#${existing.id}跨节目命中（节目ID=$episodeId），hit_count=${existing.hitCount + 1}"
-                            Log.i(TAG, fpMsg)
-                            writeFingerprintLog(context, fpMsg)
-                        } else {
-                            // v3.1.134: hash不匹配时fallback到全量对比，因为指纹字符串前64字符可能不稳定
-                            // 同一段音频在不同节目中的指纹提取可能有微小差异，导致hash不同。
-                            var matchedCandidate: RadioDatabaseHelper.ObservationPoolCandidate? = null
-                            var maxSim = 0f
-                            try {
-                                val allCandidates = dbHelper.getAllObservationPoolCandidates()
-                                for (cand in allCandidates) {
-                                    val sim = ChromaprintExtractor.compareFingerprints(fingerprint, cand.fingerprint)
-                                    if (sim > POOL_HIT_THRESHOLD && sim > maxSim) {
-                                        maxSim = sim
-                                        matchedCandidate = cand
-                                    }
+                    // 前置过滤3: 重复判定与命中+1。
+                    // v3.1.265-fix: 命中+1 阈值 0.82（跨节目重复 82~91% 也命中已有候选，不再各自新建候选）。
+                    // v3.2.37-fix: 观察池判重(0.82)与正式库判重(0.92)拆开——
+                    // 原 v3.1.265 把正式库判重也降到 0.82，与进池门禁(0.82)重合：任何达到进池门槛的
+                    // 片段必然与金标准>0.82 被判重，观察池永不新增候选（用户反馈：很久没有新候选，
+                    // 日志恒定 7 个候选、只有"重复但hash未匹配且无fallback匹配，跳过"）。
+                    // 现在：与观察池候选>0.82 → 命中+1；与正式库>0.92（几乎相同）→ 已被覆盖跳过；其余入库。
+                    val hash = fingerprintHash(fingerprint)
+                    val existing = dbHelper.findObservationPoolCandidateByHash(hash)
+                    var matchedCandidate: RadioDatabaseHelper.ObservationPoolCandidate? = existing
+                    var poolSim = 0f
+                    if (existing == null) {
+                        // v3.1.134: hash不匹配时fallback到全量对比，因为指纹字符串前64字符可能不稳定
+                        // 同一段音频在不同节目中的指纹提取可能有微小差异，导致hash不同。
+                        try {
+                            val allCandidates = dbHelper.getAllObservationPoolCandidates()
+                            for (cand in allCandidates) {
+                                val sim = ChromaprintExtractor.compareFingerprints(fingerprint, cand.fingerprint)
+                                if (sim > POOL_HIT_THRESHOLD && sim > poolSim) {
+                                    poolSim = sim
+                                    matchedCandidate = cand
                                 }
-                            } catch (_: Exception) {}
-                            if (matchedCandidate != null) {
-                                dbHelper.incrementObservationPoolHit(
-                                    matchedCandidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT
-                                )
-                                val fpMsg = "观察池: 候选指纹#${matchedCandidate.id}跨节目命中（hash fallback，相似度${"%.0f".format(maxSim*100)}%，节目ID=$episodeId），hit_count=${matchedCandidate.hitCount + 1}"
-                                Log.i(TAG, fpMsg)
-                                writeFingerprintLog(context, fpMsg)
-                            } else {
-                                val fpMsg = "观察池: 重复但hash未匹配且无fallback匹配（节目ID=$episodeId），跳过"
-                                Log.d(TAG, fpMsg)
-                                writeFingerprintLog(context, fpMsg)
                             }
-                        }
+                        } catch (_: Exception) {}
+                    }
+                    if (matchedCandidate != null) {
+                        dbHelper.incrementObservationPoolHit(
+                            matchedCandidate.id, episodeId, POOL_PROMOTION_THRESHOLD_DEFAULT
+                        )
+                        val hitWay = if (existing != null) "" else "（hash fallback，相似度${"%.0f".format(poolSim*100)}%）"
+                        val fpMsg = "观察池: 候选指纹#${matchedCandidate.id}跨节目命中$hitWay（节目ID=$episodeId），hit_count=${matchedCandidate.hitCount + 1}"
+                        Log.i(TAG, fpMsg)
+                        writeFingerprintLog(context, fpMsg)
+                        continue
+                    }
+                    // 与正式库（金标准/自动晋升）几乎完全相同(>0.92)才视为已被覆盖，跳过
+                    if (dbHelper.isDuplicateFingerprint(fingerprint, POOL_DUPLICATE_THRESHOLD)) {
+                        val fpMsg = "观察池: 与正式库几乎相同(>0.92)，已被覆盖跳过（节目ID=$episodeId）"
+                        Log.d(TAG, fpMsg)
+                        writeFingerprintLog(context, fpMsg)
                         continue
                     }
 
                     // 全部条件满足，进入观察池
-                    val hash = fingerprintHash(fingerprint)
                     val now = System.currentTimeMillis()
                     val candidate = RadioDatabaseHelper.ObservationPoolCandidate(
                         fingerprintHash = hash,
