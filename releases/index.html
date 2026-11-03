@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.39 安装</title>
+<title>RadioApp v3.2.41 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.39</div>
+  <div class="version">v3.2.41</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.39</h3>
+    <h3>更新内容 v3.2.41</h3>
     <ul>
-      <li>修复连续干货分段之间的空白区域：此类静音间隙现在划分为独立"水分分段"并标记"静音"，不再被并入干货段，也不再显示为空白</li>
-      <li>静音段仅并入相邻水分段（恢复 v3.1.125 行为）；干段之间的静音保留为水分·静音段，时间轴全覆盖</li>
-      <li>需重新生成受影响节目的分段才会生效（历史分段数据为旧版产物）</li>
+      <li>修复静音标记算法误差：补洞前对音频做真实能量检测（RMS），只有能量真正低的间隙才标记为"静音"；有内容的间隙（如带背景音乐的主持人讲话）不再被误标为静音——短间隙并入相邻分段，长间隙标记为"音乐"水分段</li>
+      <li>干段之间的水分段保持独立分段，保留原始分类标签（歌曲/片头等），不统一改标</li>
+      <li>恢复干段内部静音并入干货段，干段保持完整（修复分段数暴涨问题）</li>
+      <li>需重新生成受影响节目的分段才会生效</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.39.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.41.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

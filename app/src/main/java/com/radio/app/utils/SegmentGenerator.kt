@@ -501,7 +501,58 @@ object SegmentGenerator {
      */
     private val LARGE_GAP_THRESHOLD_MS = 180000L // 3分钟
 
-    private fun fillSilenceGaps(segments: MutableList<VoiceSegment>, totalDurationMs: Long, context: Context? = null): Int {
+    // v3.2.41: 有内容的短洞（非静音）直接并入前一段的时长上限。
+    // 根因（用户反馈：静音标记算法存在很大误差，很多被标"静音"的段实际有内容，
+    // 如带背景音乐的主持人讲话）：fillSilenceGaps 此前把一切段间隙无脑标为"静音"。
+    private const val CONTENT_GAP_MERGE_MAX_MS = 60_000L // 60秒
+
+    /**
+     * v3.2.41: 检测 PCM 区间是否为真实静音（低能量）。
+     * 根因（用户反馈：静音标记算法存在很大误差）：fillSilenceGaps 把段间隙一律标"静音"，
+     * 但大量间隙实际有内容（讲话/背景音乐）。补洞前读取 PCM 计算 RMS，
+     * 能量低于阈值才判为真静音；无 PCM 或读取失败时保守返回 true（按静音处理，不改变行为）。
+     * PCM 为 16kHz mono int16，满幅 32767；RMS≈300（约 -40dBFS）以下视为静音。
+     */
+    private fun isPcmRangeSilent(pcmFile: File?, startMs: Long, endMs: Long): Boolean {
+        if (pcmFile == null || !pcmFile.exists() || endMs <= startMs) return true
+        try {
+            val bytesPerMs = 32L // 16kHz * 2字节 / 1000ms
+            val startByte = startMs * bytesPerMs
+            val totalLen = (endMs - startMs) * bytesPerMs
+            val buffer = ByteArray(65536)
+            var sumSq = 0.0
+            var count = 0L
+            java.io.RandomAccessFile(pcmFile, "r").use { raf ->
+                raf.seek(startByte)
+                var remaining = totalLen
+                while (remaining > 0) {
+                    val readLen = minOf(buffer.size.toLong(), remaining).toInt()
+                    val n = raf.read(buffer, 0, readLen)
+                    if (n < 0) break
+                    var j = 0
+                    while (j < n - 1) {
+                        val sample = ((buffer[j + 1].toInt() shl 8) or (buffer[j].toInt() and 0xFF)).toShort().toInt()
+                        sumSq += sample.toDouble() * sample
+                        count++
+                        j += 2
+                    }
+                    remaining -= n
+                }
+            }
+            if (count == 0L) return true
+            val rms = Math.sqrt(sumSq / count)
+            return rms < 300.0
+        } catch (_: Exception) {
+            return true
+        }
+    }
+
+    private fun fillSilenceGaps(
+        segments: MutableList<VoiceSegment>,
+        totalDurationMs: Long,
+        context: Context? = null,
+        pcmFile: File? = null
+    ): Int {
         if (segments.isEmpty()) return 0
         segments.sortBy { it.start }
         var fillCount = 0
@@ -521,11 +572,13 @@ object SegmentGenerator {
             var chunkStart = start
             while (chunkStart < end) {
                 val chunkEnd = minOf(chunkStart + CHUNK_SIZE_MS, end)
+                // v3.2.41: 逐块能量检测——静音块标"静音"，有内容块标"音乐"（不再一律"静音"）
+                val isSilent = isPcmRangeSilent(pcmFile, chunkStart, chunkEnd)
                 chunks.add(VoiceSegment().apply {
                     this.start = chunkStart
                     this.end = chunkEnd
                     hasVoice = false
-                    label = "静音"
+                    label = if (isSilent) "静音" else "音乐"
                     isSimulated = false
                 })
                 chunkStart = chunkEnd
@@ -540,16 +593,17 @@ object SegmentGenerator {
             val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
             if (isLargeGap) {
                 // v3.1.137: 大间隙拆分为小段
-                // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
                 val chunks = splitGapIntoChunks(0, firstSeg.start)
                 segments.addAll(0, chunks)
                 fillCount += chunks.size
             } else {
+                // v3.2.41: 能量检测——有内容小洞标"音乐"而非"静音"
+                val isSilent = isPcmRangeSilent(pcmFile, 0, firstSeg.start)
                 segments.add(0, VoiceSegment().apply {
                     start = 0L
                     end = firstSeg.start
                     hasVoice = false
-                    label = "静音"
+                    label = if (isSilent) "静音" else "音乐"
                     isSimulated = false
                 })
                 fillCount++
@@ -566,17 +620,24 @@ object SegmentGenerator {
                 val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
                 if (isLargeGap) {
                     // v3.1.137: 大间隙拆分为小段
-                    // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
                     val chunks = splitGapIntoChunks(curr.end, next.start)
                     segments.addAll(i + 1, chunks)
                     fillCount += chunks.size
                     i += chunks.size + 1
                 } else {
+                    // v3.2.41: 能量检测——有内容的短洞（≤60秒）直接并入前一段，
+                    // 不再创建假"静音"段（如带背景音乐的主持人讲话被误标为静音/歌曲）
+                    val isSilent = isPcmRangeSilent(pcmFile, curr.end, next.start)
+                    if (!isSilent && gapMs <= CONTENT_GAP_MERGE_MAX_MS) {
+                        curr.end = next.start
+                        i++
+                        continue
+                    }
                     segments.add(i + 1, VoiceSegment().apply {
                         start = curr.end
                         end = next.start
                         hasVoice = false
-                        label = "静音"
+                        label = if (isSilent) "静音" else "音乐"
                         isSimulated = false
                     })
                     fillCount++
@@ -594,16 +655,17 @@ object SegmentGenerator {
             val isLargeGap = gapMs >= LARGE_GAP_THRESHOLD_MS
             if (isLargeGap) {
                 // v3.1.137: 大间隙拆分为小段
-                // v3.1.138: 移除isDry参数，大间隙段始终标记为"静音"
                 val chunks = splitGapIntoChunks(lastSeg.end, totalDurationMs)
                 segments.addAll(chunks)
                 fillCount += chunks.size
             } else {
+                // v3.2.41: 能量检测——有内容小洞标"音乐"而非"静音"
+                val isSilent = isPcmRangeSilent(pcmFile, lastSeg.end, totalDurationMs)
                 segments.add(VoiceSegment().apply {
                     start = lastSeg.end
                     end = totalDurationMs
                     hasVoice = false
-                    label = "静音"
+                    label = if (isSilent) "静音" else "音乐"
                     isSimulated = false
                 })
                 fillCount++
@@ -621,9 +683,11 @@ object SegmentGenerator {
      * v3.1.125: 将静音段合并到相邻水分段。
      * v3.1.126: 同时将相邻静音段合并到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"
      * 三种碎片化模式，让干货保持连续大段而非被静音分割。
-     * v3.2.39: 撤销 v3.1.126 的"静音并入干货"。用户规则：干段之间的静音间隙必须保留为
-     * 独立"水分分段"并标记"静音"，不得并入干货吞没边界（此前并入干段导致历史分段中
-     * 连续干货段之间出现空白区域）。静音段只并入相邻"水分"段（v3.1.125 行为）。
+     * v3.2.39: 撤销 v3.1.126 的"静音并入干货"，干段间静音保留为独立水分·静音段。
+     * v3.2.40: 恢复 v3.1.126。用户反馈：v3.2.39 导致干段内部自然静音不再并入干货，
+     * 干段被静音拆碎（如干段1 被拆为三个、整集段数 74→108）。干段内部静音必须继续并入干货，
+     * 保持干段完整；干段之间的短水分段改标"静音"改由 relabelWaterBetweenDryAsSilence 在
+     * 最终阶段统一处理（不再通过合并/保留机制区分）。
      * fillSilenceGaps填充的静音段位于两个段之间，或紧邻段时，
      * 只要相邻有非静音段（无论水/干），都应合并而非保留孤立静音段。
      * 具体规则：
@@ -652,34 +716,35 @@ object SegmentGenerator {
             val nextIsNonSilence = hasNext && segments[i+1].label != "静音"
 
             if (prevIsNonSilence) {
-                // v3.2.39: 静音段只并入相邻"水分"段；相邻为干货段时保留为独立水分·静音段
-                // （用户规则：干段之间的静音间隙必须显示为"水分分段·标记静音"，不得并入干货吞没边界）
-                if (!isWaterLabel(segments[i-1].label)) {
-                    i++
-                    continue
-                }
                 // v3.1.135: 如果合并后水段长度超过最大长度，不合并
-                if (seg.end - segments[i-1].start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                if (isWaterLabel(segments[i-1].label) && seg.end - segments[i-1].start >= MAX_WATER_SEGMENT_LENGTH_MS) {
                     i++
                     continue
                 }
-                // 合并到前一个水分段
+                // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
+                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)，避免静音延伸出十几分钟巨干段
+                if (segments[i-1].hasVoice && seg.end - segments[i-1].start >= DRY_MERGE_CAP_MS) {
+                    i++
+                    continue
+                }
+                // 合并到前一个非静音段（无论水/干）
                 segments[i-1].end = seg.end
                 segments.removeAt(i)
                 mergeCount++
                 // 不移i，因为removeAt后当前元素后移
             } else if (nextIsNonSilence) {
-                // v3.2.39: 同上，仅并入相邻水分段；相邻为干货段时保留静音为独立水分·静音段
-                if (!isWaterLabel(segments[i+1].label)) {
-                    i++
-                    continue
-                }
                 // v3.1.135: 如果合并后水段长度超过最大长度，不合并
-                if (segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                if (isWaterLabel(segments[i+1].label) && segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
                     i++
                     continue
                 }
-                // 合并到后一个水分段
+                // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
+                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)
+                if (segments[i+1].hasVoice && segments[i+1].end - seg.start >= DRY_MERGE_CAP_MS) {
+                    i++
+                    continue
+                }
+                // 合并到后一个非静音段（无论水/干）
                 segments[i+1].start = seg.start
                 segments.removeAt(i)
                 mergeCount++
@@ -3566,7 +3631,7 @@ object SegmentGenerator {
         // 剩余10.7%的静音间隙未被任何段覆盖，导致播放器显示时间不连续。
         // 拼图合并仅覆盖pending∩VAD区域，VAD非活动区域完全缺失。
         // 方法：对最终段按start排序，在相邻段间填充"静音"段。
-        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs, context)
+        val gapFillCount = fillSilenceGaps(finalSegments, effectiveDurationMs, context, pcmSourceFile)
         if (gapFillCount > 0) {
             writeFingerprintLog(context, "三层架构: 填充${gapFillCount}个静音间隙，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
         }
@@ -3678,7 +3743,7 @@ object SegmentGenerator {
         // 不可变规则（R1时间轴连续/R2无同类型碎段/R3长度上限/R4标签合法），并对可自动修正项就地修复。
         // 这是"永久规则不依赖记忆"的兜底：只要本函数在 generateJiuAiTingSegments 中被调用，
         // 每次运行到这里必然执行一遍，任何新处理步骤加入也不会绕过。无法自动修复的违规统一上报一次。
-        val hardIssue = enforceHardRules(finalSegments, effectiveDurationMs, context)
+        val hardIssue = enforceHardRules(finalSegments, effectiveDurationMs, context, pcmSourceFile)
         if (hardIssue != null) {
             writeFingerprintLog(context, "硬校验: 存在无法自动修复的违规—— $hardIssue for episode=$episodeId")
             Log.w(TAG, "硬校验: 无法自动修复—— $hardIssue for episode=$episodeId")
@@ -5125,7 +5190,8 @@ object SegmentGenerator {
     private fun enforceHardRules(
         segments: MutableList<VoiceSegment>,
         durationMs: Long,
-        context: Context
+        context: Context,
+        pcmFile: File? = null
     ): String? {
         if (segments.isEmpty()) {
             return "硬校验: 分段结果为空"
@@ -5162,7 +5228,7 @@ object SegmentGenerator {
         }
 
         // ---------- R1: 时间轴连续性（塞入静音补洞；仅记录无法覆盖首尾边界） ----------
-        val gapFillHard = fillSilenceGaps(segments, durationMs, context)
+        val gapFillHard = fillSilenceGaps(segments, durationMs, context, pcmFile)
         if (gapFillHard > 0) {
             fixLog.append("R1补${gapFillHard}个时间洞; ")
         }
