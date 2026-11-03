@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.37 安装</title>
+<title>RadioApp v3.2.39 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.37</div>
+  <div class="version">v3.2.39</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.37</h3>
+    <h3>更新内容 v3.2.39</h3>
     <ul>
-      <li>修复很久没有生成新的候选指纹：观察池入库的重复判定阈值此前与"进池门槛"同为 0.82，任何达到进池门槛（与金标准相似度≥0.82）的水段必然被判为重复而跳过，候选永远无法新增</li>
-      <li>拆开两道判定：与观察池候选相似度&gt;0.82 → 命中已有候选计数+1；与正式库几乎相同（&gt;0.92）→ 已被覆盖跳过；其余达到进池门槛的片段正常入库成为新候选</li>
-      <li>日志新增"与正式库几乎相同(&gt;0.92)，已被覆盖跳过"与正常"新候选入库"记录，便于观察观察池动态</li>
+      <li>修复连续干货分段之间的空白区域：此类静音间隙现在划分为独立"水分分段"并标记"静音"，不再被并入干货段，也不再显示为空白</li>
+      <li>静音段仅并入相邻水分段（恢复 v3.1.125 行为）；干段之间的静音保留为水分·静音段，时间轴全覆盖</li>
+      <li>需重新生成受影响节目的分段才会生效（历史分段数据为旧版产物）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.37.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.39.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

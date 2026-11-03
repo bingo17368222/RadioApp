@@ -621,6 +621,9 @@ object SegmentGenerator {
      * v3.1.125: 将静音段合并到相邻水分段。
      * v3.1.126: 同时将相邻静音段合并到干货段，消除"静音+干货+静音"、"静音+干货"、"干货+静音"
      * 三种碎片化模式，让干货保持连续大段而非被静音分割。
+     * v3.2.39: 撤销 v3.1.126 的"静音并入干货"。用户规则：干段之间的静音间隙必须保留为
+     * 独立"水分分段"并标记"静音"，不得并入干货吞没边界（此前并入干段导致历史分段中
+     * 连续干货段之间出现空白区域）。静音段只并入相邻"水分"段（v3.1.125 行为）。
      * fillSilenceGaps填充的静音段位于两个段之间，或紧邻段时，
      * 只要相邻有非静音段（无论水/干），都应合并而非保留孤立静音段。
      * 具体规则：
@@ -649,35 +652,34 @@ object SegmentGenerator {
             val nextIsNonSilence = hasNext && segments[i+1].label != "静音"
 
             if (prevIsNonSilence) {
+                // v3.2.39: 静音段只并入相邻"水分"段；相邻为干货段时保留为独立水分·静音段
+                // （用户规则：干段之间的静音间隙必须显示为"水分分段·标记静音"，不得并入干货吞没边界）
+                if (!isWaterLabel(segments[i-1].label)) {
+                    i++
+                    continue
+                }
                 // v3.1.135: 如果合并后水段长度超过最大长度，不合并
-                if (isWaterLabel(segments[i-1].label) && seg.end - segments[i-1].start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                if (seg.end - segments[i-1].start >= MAX_WATER_SEGMENT_LENGTH_MS) {
                     i++
                     continue
                 }
-                // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
-                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)，避免静音延伸出十几分钟巨干段
-                if (segments[i-1].hasVoice && seg.end - segments[i-1].start >= DRY_MERGE_CAP_MS) {
-                    i++
-                    continue
-                }
-                // 合并到前一个非静音段（无论水/干）
+                // 合并到前一个水分段
                 segments[i-1].end = seg.end
                 segments.removeAt(i)
                 mergeCount++
                 // 不移i，因为removeAt后当前元素后移
             } else if (nextIsNonSilence) {
+                // v3.2.39: 同上，仅并入相邻水分段；相邻为干货段时保留静音为独立水分·静音段
+                if (!isWaterLabel(segments[i+1].label)) {
+                    i++
+                    continue
+                }
                 // v3.1.135: 如果合并后水段长度超过最大长度，不合并
-                if (isWaterLabel(segments[i+1].label) && segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
+                if (segments[i+1].end - seg.start >= MAX_WATER_SEGMENT_LENGTH_MS) {
                     i++
                     continue
                 }
-                // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
-                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)
-                if (segments[i+1].hasVoice && segments[i+1].end - seg.start >= DRY_MERGE_CAP_MS) {
-                    i++
-                    continue
-                }
-                // 合并到后一个非静音段（无论水/干）
+                // 合并到后一个水分段
                 segments[i+1].start = seg.start
                 segments.removeAt(i)
                 mergeCount++
