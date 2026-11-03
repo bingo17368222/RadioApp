@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.41 安装</title>
+<title>RadioApp v3.2.42 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.41</div>
+  <div class="version">v3.2.42</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.41</h3>
+    <h3>更新内容 v3.2.42</h3>
     <ul>
-      <li>修复静音标记算法误差：补洞前对音频做真实能量检测（RMS），只有能量真正低的间隙才标记为"静音"；有内容的间隙（如带背景音乐的主持人讲话）不再被误标为静音——短间隙并入相邻分段，长间隙标记为"音乐"水分段</li>
-      <li>干段之间的水分段保持独立分段，保留原始分类标签（歌曲/片头等），不统一改标</li>
-      <li>恢复干段内部静音并入干货段，干段保持完整（修复分段数暴涨问题）</li>
+      <li>修复分段数偏高（08-15 节目 v3.2.41 为 100 段）：能量检测把有内容的长洞标记为"音乐"后不再被吸入相邻段，独立保留导致段数回升；现在"音乐"补洞段同"静音"一样并入相邻段，段数回降至七十几水平</li>
+      <li>YAMNet 分类的"歌曲"段不受影响（真实内容段，保持独立显示）</li>
+      <li>静音/内容洞的标记与合并机制：真静音标"静音"、有内容短洞并入前段、有内容长洞标"音乐"后并入相邻段</li>
       <li>需重新生成受影响节目的分段才会生效</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.41.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.42.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

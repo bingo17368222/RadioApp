@@ -694,7 +694,13 @@ object SegmentGenerator {
      * - 静音段前面是非静音 → 静音段合并到前一个非静音段（延长end）
      * - 静音段后面是非静音且前面不是 → 静音段合并到后一个非静音段（前移start）
      * - 静音段前后都是非静音 → 静音段合并到前一个非静音段，后一个非静音段延后吸收
-     * @return 合并的静音段数量
+     * v3.2.42: 处理范围扩展——fillSilenceGaps 能量检测把有内容的长洞标为"音乐"
+     * （v3.2.41 起，不再一律标"静音"）。"音乐"补洞段同样属于段间隙产物，
+     * 必须像"静音"一样并入相邻段，否则独立保留会把分段数抬高
+     * （实测：08-15 节目 v3.2.41 补洞标"音乐"后不再被吸入，总段数 100；
+     * v3.2.37 时这些洞标"静音"被吸入，段数约 70+）。YAMNet 分类的"歌曲"段
+     * 不受影响（真实内容段，保持独立）。
+     * @return 合并的静音/音乐段数量
      */
     private fun mergeSilenceToAdjacentWater(segments: MutableList<VoiceSegment>): Int {
         if (segments.size <= 1) return 0
@@ -705,15 +711,15 @@ object SegmentGenerator {
         var i = 0
         while (i < segments.size) {
             val seg = segments[i]
-            // 只处理静音段
-            if (seg.label != "静音") {
+            // v3.2.42: 处理"静音"与"音乐"两类补洞段（fillSilenceGaps 产物）
+            if (seg.label != "静音" && seg.label != "音乐") {
                 i++
                 continue
             }
             val hasPrev = i > 0
             val hasNext = i < segments.size - 1
-            val prevIsNonSilence = hasPrev && segments[i-1].label != "静音"
-            val nextIsNonSilence = hasNext && segments[i+1].label != "静音"
+            val prevIsNonSilence = hasPrev && segments[i-1].label != "静音" && segments[i-1].label != "音乐"
+            val nextIsNonSilence = hasNext && segments[i+1].label != "静音" && segments[i+1].label != "音乐"
 
             if (prevIsNonSilence) {
                 // v3.1.135: 如果合并后水段长度超过最大长度，不合并
