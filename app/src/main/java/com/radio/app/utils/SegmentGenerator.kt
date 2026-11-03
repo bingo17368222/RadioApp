@@ -804,6 +804,12 @@ object SegmentGenerator {
     // 即使后续 reabsorb/归并也只压回 158 段。收紧到 3s 后 10 秒主持人讲话(目标段)不受影响，
     // 但几秒内的杂音/口癖/停顿不再被挖出，从源头降低分段总数。
     private const val PCMS_RUN_MIN_MS = 3000L         // 短讲话最少时长
+
+    // v3.2.43: 水段碎段并入阈值（9秒）。低于此值的水段（歌曲/水货/片头等）并入相邻干段，
+    // 不再独立成段——把切歌/指纹切出等产生的极碎水段收回干货，显著降低分段数
+    // （08-15 节目 v3.2.42 为 99 段，用户要求降回七十几）。9 秒整的用户段（38:42-38:51，
+    // 带背景音乐的主持人讲话）≥ 阈值，不受影响仍独立显示。干段碎段阈值仍为 PCMS_RUN_MIN_MS。
+    private const val WATER_FRAGMENT_MERGE_MS = 9000L
     private const val PCMS_RUN_MAX_MS = 20000L        // 短讲话最多时长（防止误切长段音乐）
     private const val PCMS_MERGE_GAP_MS = 2500L       // v3.2.4-fix: 相邻讲话run间隔<=此值合并为一段（一句连贯讲话的停顿/换气间隙，避免同一句话被切碎）
     private const val PCMS_PER_WATER_MAX = 200        // 每个水段最多抢救数（v3.1.226提高以不丢尾部讲话）
@@ -5271,7 +5277,10 @@ object SegmentGenerator {
         var i = 0
         while (i < segments.size) {
             val cur = segments[i]
-            if (cur.end - cur.start >= PCMS_RUN_MIN_MS) { i++; continue }
+            // v3.2.43: 水段碎段阈值提高到 WATER_FRAGMENT_MERGE_MS(9秒)，干段保持 PCMS_RUN_MIN_MS。
+            // 切歌/指纹切出等产生的极碎水段（<9s）并入相邻干段，降低分段数；≥9s 的水段保留独立。
+            val minMs = if (cur.hasVoice) PCMS_RUN_MIN_MS else WATER_FRAGMENT_MERGE_MS
+            if (cur.end - cur.start >= minMs) { i++; continue }
             // 找左右相邻段
             val left = if (i > 0) segments[i - 1] else null
             val right = if (i < segments.size - 1) segments[i + 1] else null
