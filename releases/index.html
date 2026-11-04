@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.43 安装</title>
+<title>RadioApp v3.2.44 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,17 +95,17 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.43</div>
+  <div class="version">v3.2.44</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.43</h3>
+    <h3>更新内容 v3.2.44</h3>
     <ul>
-      <li>降低分段数：小于 9 秒的碎水段（歌曲/水货等）并入相邻干货段，不再独立成段（08-15 节目从 99 段降至约 85）</li>
-      <li>分段数偏高的主因是"歌曲/片头切出"与"指纹区间切出"（此前要求的功能）把干段细化，本次仅收回 9 秒以下的极碎水段，较长切出保留</li>
-      <li>9 秒整的用户段（38:42-38:51，带背景音乐的主持人讲话）不受影响，仍独立显示</li>
+      <li>进一步降低分段数：碎水段并入阈值放宽到 15 秒，15 秒以下的歌曲/水货碎段并入相邻段（含 9 秒段，按您确认不再独立；合并目标按"同类型相邻段优先"，不强制并入前段）</li>
+      <li>15 秒以上的歌曲/广告/片头切出仍保留独立显示</li>
+      <li>干段保持完整，碎水段并入相邻段，分段数进一步下降（08-15 节目预计降至 75-80）</li>
       <li>需重新生成受影响节目的分段才会生效</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.43.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.44.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
