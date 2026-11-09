@@ -2,6 +2,7 @@ package com.radio.app.adapters
 
 import android.content.Context
 import android.graphics.Color
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -91,7 +92,18 @@ class EpisodeAdapter(
                     dbHelper.updateEpisodeSegmentCount(episode.id ?: "", segments)
                 }
             }
-        } catch (_: Exception) {}
+            // v3.2.53-fix: 第4级兜底读 episode_info.segment_count。
+            // 该字段在每条分段完成路径（preSegmentAudio/postSegmentKeyword/PlayerActivity）
+            // 都会同步写入，是 v2.4.44 设计的节目单显示字段，但适配器此前从未读取；
+            // 上面两表任一查询失败或数据缺失时它仍可用，补上最后一级保证有分段必显示。
+            if (segments == 0) {
+                segments = dbHelper.getEpisodeSegmentCount(episode.id ?: "")
+            }
+        } catch (e: Exception) {
+            // v3.2.53-fix: 异常原样静默吞掉 → 有分段也显示0且无从定位（用户报 09-16-9
+            // "只显示已缓存"时无法判断是查询异常还是数据缺失）。记录日志便于复现时定位。
+            Log.w("EpisodeAdapter", "load segment info failed: id=${episode.id}, ${e.message}")
+        }
         if (segments == 0) {
             // Fallback to episode's in-memory segments if DB is empty
             segments = episode.voiceSegments?.size ?: 0
