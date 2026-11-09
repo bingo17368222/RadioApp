@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.49 安装</title>
+<title>RadioApp v3.2.50 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.49</div>
+  <div class="version">v3.2.50</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.49</h3>
+    <h3>更新内容 v3.2.50</h3>
     <ul>
-      <li>修复启动时"是否继续播放上次的节目"提示的双重书名号问题：节目标题本身含书名号时不再叠加外层书名号，显示《旅行大玩家》而非《《旅行大玩家》》；标题无书名号时仍自动补上</li>
+      <li>修复连续水分段不合并：水段合并上限由 5 分钟放宽到 10 分钟（与干货对齐）——此前两个相邻水段合并后超 5 分钟即被拒绝，各自又都低于上限，结果永久并排残留</li>
+      <li>修复分段顺序倒置（近节目被跳过、先分段更远的次日节目）：巡逻遇到近节目缺音频或缺 PCM 时触发预缓存/预生成后停止本轮扫描，等其就绪后按顺序分段，不再跳过；近期窗口起点前移 1 天，回听前一天节目时不再被判为"非近期"排后；PCM 失败窗口内的节目仍让位避免卡死</li>
+      <li>修复播放通知栏消失：删除与进度通知并存且从不取消的"预处理PCM"冗余通知（原硬编码 ID=2001），预生成进度改为固定单条通知，通知不再连续堆积挤出播放通知</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.49.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.50.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

@@ -125,7 +125,11 @@ object SegmentGenerator {
 
     // v3.1.239-fix: 类级水段最大长度上限（供 mergeConsecutiveSameTypeSegments 最终归并使用）。
     // 与 mergeSilenceToAdjacentWater / mergeAdjacentSegments 内的局部 5 分钟上限保持一致。
-    private const val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
+    // v3.2.50-fix: 5分钟→10分钟。根因（用户报"仍然存在连续水分分段不合并"）：
+    // 两个相邻水段（如 200s+150s）合并后 350s ≥ 300s 上限即被拒绝合并，
+    // 而每个水段自身又都低于上限，结果两段永久并排残留（与干段 6 分钟拒绝是同一机制的水版）。
+    // 放宽到 10 分钟与干段 DRY_MERGE_CAP_MS 对齐，覆盖绝大多数真实广告/歌曲块的归并需求。
+    private const val MAX_WATER_SEGMENT_LENGTH_MS = 600_000L // 10分钟
 
     // v3.2.2: 三层架构参数
     // 第一层指纹快筛阈值（正式库匹配）
@@ -706,7 +710,8 @@ object SegmentGenerator {
         if (segments.size <= 1) return 0
         segments.sortBy { it.start }
         // v3.1.135: 最大水段长度限制，与mergeAdjacentSegments一致
-        val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
+        // v3.2.50: 5分钟→10分钟，与类常量对齐（修复连续水分段合并拒绝）
+        val MAX_WATER_SEGMENT_LENGTH_MS = 600_000L // 10分钟
         var mergeCount = 0
         var i = 0
         while (i < segments.size) {
@@ -1756,7 +1761,7 @@ object SegmentGenerator {
      *  - 同属"水"：both 均为水标签，合并为一个连续水段。
      * 绝不在干/水之间合并（不推翻既有分类）。合并受最大长度上限约束：
      *  - 干段：不超 DRY_MERGE_CAP_MS（10分钟，v3.2.47 由6分钟放宽，修复连续干货不合并）
-     *  - 水段：不超 MAX_WATER_SEGMENT_LENGTH_MS（5分钟）
+     *  - 水段：不超 MAX_WATER_SEGMENT_LENGTH_MS（10分钟，v3.2.50 由5分钟放宽，修复连续水分段不合并）
      * @return 合并次数
      */
     private fun mergeConsecutiveSameTypeSegments(segments: MutableList<VoiceSegment>): Int {
@@ -2038,7 +2043,8 @@ object SegmentGenerator {
         // 根因：YAMNet可能将12-16分钟的主持人讲话误分类为水，或YAMNet层被跳过，
         // 导致mergeAdjacentSegments Pass 2将相邻水段无限合并，吞没讲话区域。
         // 5分钟（300秒）是一个合理的上限——正常水段（纯音乐/广告）不会超过5分钟。
-        val MAX_WATER_SEGMENT_LENGTH_MS = 300000L // 5分钟
+        // v3.2.50: 5分钟→10分钟，与类常量对齐（修复相邻水段合并拒绝残留）。
+        val MAX_WATER_SEGMENT_LENGTH_MS = 600_000L // 10分钟
 
         // Pass 1: 合并相邻同类型片段（原有合并逻辑）
         // v3.1.135: 对水段增加MAX_WATER_SEGMENT_LENGTH_MS限制，防止YAMNet水段与指纹水段相邻合并导致超长

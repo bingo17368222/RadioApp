@@ -98,7 +98,6 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         const val ACTION_CANCEL_PCM_PREGEN = "com.radio.app.CANCEL_PCM_PREGEN"
 
         val pcmPregenCancelFlags: MutableMap<String, Boolean> = ConcurrentHashMap()
-        private val pcmPregenNotifIdCounter = java.util.concurrent.atomic.AtomicInteger(2000)
 
         // v3.1.262: PCM生成失败时间戳缓存（key=episodeId → 最近一次PCM生成失败时间）。
         // 巡逻"补全PCM"机制依据它把失败的节目优先排到下一轮扫描最前，尽快再次重试生成PCM，
@@ -1389,8 +1388,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
             val cal = java.util.Calendar.getInstance()
             cal.time = sdf.parse(lastPlayedDate) ?: return null
-            val startDate = sdf.format(cal.time) // 最后播放日期
-            cal.add(java.util.Calendar.DAY_OF_YEAR, 3)
+            // v3.2.50-fix: 近期窗口起点由"最后播放日期"前移1天。
+            // 根因（用户报"20250917下班路上被跳过、优先分段第2天早间节目"）：
+            // 最后播放的是 09-18 节目时窗口为 [09-18..09-21]，用户回听前一天的 09-17-9，
+            // 该节目被判为"非近期"排到第二遍扫描，分段顺序倒置为 09-18-1 优先。
+            // 前移1天后 [09-17..09-21] 两者都在近期窗口内，保持列表（日期升序）顺序，
+            // 09-17-9 恒排在 09-18-1 之前。
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+            val startDate = sdf.format(cal.time) // 最后播放日期-1天（覆盖回听前一天节目）
+            cal.add(java.util.Calendar.DAY_OF_YEAR, 4)
             val endDate = sdf.format(cal.time) // 最后播放日期+3天
             return startDate to endDate
         } catch (_: Exception) {
@@ -3545,11 +3551,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     }
 
     /**
-     * Generate a unique notification ID for PCM pre-generation progress of a given episode.
-     * Uses the episode ID hash to produce an ID in the range [2000, 2999].
+     * v3.2.50-fix: PCM 预生成进度通知固定使用单一通知 ID。
+     * 根因：原实现每个节目递增一个新 ID（2000, 2001, 2002...），当前播放节目 PCM 重试
+     * 反复取消队列任务并启动新任务，旧任务通知若未及时 cancel，多个"预生成PCM"通知
+     * 连续堆积（ongoing 不可被用户清除），超出系统每应用活跃通知配额后，
+     * 最早发出的播放通知（ID=1）被系统挤出 → 播放通知栏消失。
+     * 改为固定单条：新任务进度直接覆盖旧任务通知，同屏永远最多一条预生成通知，不堆积。
      */
     private fun getPcmPregenNotificationId(episodeId: String): Int {
-        return pcmPregenNotifIdCounter.getAndIncrement()
+        return 2000
     }
 
     /**
@@ -3706,8 +3716,13 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             if (!isPrecaching) {
                                 try { serviceScope.launch { triggerPreCache() } } catch (_: Exception) {}
                             }
-                            // 触发预缓存后继续扫描已缓存的节目，不停止巡逻
-                            continue
+                            // v3.2.50-fix: 触发预缓存后停止本轮扫描（原为 continue，v2.4.188"减少空轮次"）。
+                            // 根因（用户报"09-17-9 下班路上被跳过、优先分段了第2天早间节目"）：
+                            // 近节目缺音频/PCM 时继续向后扫，更远的已缓存节目先被分段，
+                            // 分段顺序倒置。改为停止本轮，等近节目就绪后下轮从头按顺序处理，
+                            // 保证分段顺序与播放计划/列表顺序一致。
+                            writePreCacheLog("patrolSubtitle:  ${ep.id} 等待预缓存，停止本轮扫描（顺序优先，不跳过近节目）")
+                            return@launch
                         }
                         // v3.2.31-fix: SKIP 明细降为 logcat（不写文件），巡逻完成仍有汇总计数
                         Log.d(TAG, "patrolSubtitle: SKIP ep=${ep.id}, audio NOT cached (beyond target range #$validEpisodeCounter > $targetCount)")
@@ -3834,44 +3849,29 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                         // Found a cached episode without PCM — trigger PCM generation.
                         writePreCacheLog("patrolSubtitle: ${com.radio.app.RadioApplication.appVersionTag()} found cached episode without PCM: ${ep.title} (${ep.id})")
                         startPreCachePcmGeneration(ep)
-                        try {
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                                if (nm.getNotificationChannel("subtitle_patrol_channel") == null) {
-                                    nm.createNotificationChannel(NotificationChannel("subtitle_patrol_channel", "预处理", NotificationManager.IMPORTANCE_LOW))
-                                }
-                            }
-                            val epDateStr = when {
-                                ep.startTime > 0 && ep.endTime > ep.startTime -> {
-                                    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                                    fmt.format(java.util.Date(ep.startTime)) + "-" + fmt.format(java.util.Date(ep.endTime)).substringAfter(' ')
-                                }
-                                ep.broadcastAt.length >= 16 -> {
-                                    ep.broadcastAt.substring(0, 10) + " " + ep.broadcastAt.substring(11, 16)
-                                }
-                                ep.broadcastAt.length >= 10 -> {
-                                    ep.broadcastAt.substring(0, 10)
-                                }
-                                else -> {
-                                    val dateMatch = Regex("(\\d{4}-\\d{2}-\\d{2})").find(ep.id)
-                                    dateMatch?.value ?: "未知日期"
-                                }
-                            }
-                            val notif = NotificationCompat.Builder(this@RadioPlaybackService, "subtitle_patrol_channel")
-                                .setSmallIcon(android.R.drawable.ic_media_ff)
-                                .setContentTitle("预处理PCM [${ep.title ?: ep.id}]")
-                                .setContentText("$epDateStr · 正在生成PCM文件...")
-                                .setAutoCancel(true)
-                                .build()
-                            val notifManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-                            notifManager.notify(2001, notif)
-                        } catch (_: Exception) {}
+                        // v3.2.50-fix: 删除此处额外弹出的"预处理PCM"通知（原硬编码 notify(2001) 且从不 cancel）。
+                        // 该通知与 startPreCachePcmGeneration 内部的进度通知（ID=2000）并存，
+                        // 造成"连续出现多个预生成PCM通知"；且本轮扫描结束后 2001 常驻不清，
+                        // 通知栏堆积最终把最早的播放通知挤出系统通知配额。
+                        // startPreCachePcmGeneration 自身已在 0% 时显示进度通知并负责完成/失败时 cancel。
                         processedCount++
                         if (processedCount >= settings.preloadCacheCount) {
                             writePreCacheLog("patrolSubtitle:  reached batch limit ($processedCount), will continue next patrol")
                             return@launch
                         }
-                        continue
+                        // v3.2.50-fix: 触发 PCM 生成后停止本轮扫描（原为 continue）。
+                        // 根因（用户报 09-17-9 被跳过）：近节目 PCM 未就绪时继续向后扫，
+                        // 更远的已就绪节目（如次日 09-18-1）先被分段，顺序倒置。
+                        // 失败窗口内的节目除外——继续让位，避免永久失败节目卡死后续队列。
+                        val pcmFailT = pcmGenFailTimestamps[ep.id]
+                        val inFailWindow = pcmFailT != null &&
+                            System.currentTimeMillis() - pcmFailT < PCM_FAIL_RETRY_WINDOW_MS
+                        if (inFailWindow) {
+                            writePreCacheLog("patrolSubtitle:  ${ep.id} PCM生成失败窗口内，本轮让位后续节目（窗口过期后优先重试）")
+                            continue
+                        }
+                        writePreCacheLog("patrolSubtitle:  ${ep.id} PCM已排队，停止本轮扫描（顺序优先，等其就绪后按计划顺序分段）")
+                        return@launch
                     }
 
                     // v2.4.123: When subtitles are disabled, skip subtitle-specific checks.
