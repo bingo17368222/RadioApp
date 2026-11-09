@@ -22,12 +22,9 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.radio.app.R
-import com.radio.app.adapters.AudioFingerprintAdapter
 import com.radio.app.database.AudioFingerprint
 import com.radio.app.database.RadioDatabaseHelper
 import com.radio.app.models.AppSettings
@@ -58,10 +55,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
     private lateinit var settings: AppSettings
     private lateinit var tvTitle: TextView
     private lateinit var btnBack: ImageButton
-    private lateinit var recyclerFingerprints: RecyclerView
-    private lateinit var fingerprintAdapter: AudioFingerprintAdapter
     private lateinit var tvFingerprintCount: TextView
-    private lateinit var tvFingerprintsEmpty: TextView
 
     // 水货分段开头/结尾组合管理（保留，供字幕提取水货组合使用）
     private lateinit var etCombinationStart: EditText
@@ -183,79 +177,10 @@ class KeywordSettingsActivity : AppCompatActivity() {
     // ==================== 音频指纹管理 ====================
 
     private fun initFingerprintList() {
-        recyclerFingerprints = findViewById(R.id.recycler_audio_fingerprints)
         tvFingerprintCount = findViewById(R.id.tv_fingerprint_count)
-        tvFingerprintsEmpty = findViewById(R.id.tv_fingerprints_empty)
 
-        fingerprintAdapter = AudioFingerprintAdapter()
-        recyclerFingerprints.layoutManager = LinearLayoutManager(this)
-        recyclerFingerprints.adapter = fingerprintAdapter
-
-        fingerprintAdapter.setOnDeleteListener { fp ->
-            AlertDialog.Builder(this)
-                .setTitle("删除音频指纹")
-                .setMessage("确定删除该水分音频指纹素材吗？")
-                .setPositiveButton("删除") { _, _ ->
-                    try {
-                        RadioDatabaseHelper.getInstance(this).deleteAudioFingerprint(fp.id)
-                        // 同步删除对应的水印 PCM 文件
-                        PcmSegmentExtractor.getWatermarkPcmFile(this, fp.episodeId, fp.startMs, fp.endMs)
-                            .delete()
-                        Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
-                        loadFingerprints()
-                    } catch (e: Exception) {
-                        Toast.makeText(this, "删除失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                .setNegativeButton("取消", null)
-                .show()
-        }
-
-        fingerprintAdapter.setOnRefreshListener { fp ->
-            // 修正：以原起止时间重新截取片段、提取指纹并更新数据库
-            AudioFingerprintService.startAddFingerprint(
-                this,
-                episodeId = fp.episodeId,
-                startMs = fp.startMs,
-                endMs = fp.endMs,
-                episodeTitle = null
-            )
-            Toast.makeText(this, "已开始修正指纹，请查看通知栏进度", Toast.LENGTH_SHORT).show()
-            // 延迟刷新列表，等待后台服务完成
-            reloadRunnable?.let { uiHandler.removeCallbacks(it) }
-            reloadRunnable = Runnable { loadFingerprints() }
-            uiHandler.postDelayed(reloadRunnable!!, 3000)
-        }
-
-        fingerprintAdapter.setOnPlayListener { fp ->
-            playFingerprintPcm(fp)
-        }
-
-        // v3.0.9: 绑定停止播放逻辑，播放按钮点击“停止”时真正停止
-        fingerprintAdapter.setOnStopListener {
-            releaseAudioTrack()
-            fingerprintAdapter.stopPlaying()
-        }
-
-        // v3.0.9: 点击条目可高亮选中，方便用户确认当前操作对象
-        fingerprintAdapter.setOnItemClickListener { fp, _ ->
-            val fpSize = ChromaprintExtractor.parseFingerprint(fp.fingerprint).size
-            Toast.makeText(this, "已选中：${fp.episodeId}\n指纹点数：$fpSize", Toast.LENGTH_SHORT).show()
-        }
-
-        fingerprintAdapter.setOnTestListener { fp ->
-            showFingerprintTestDialog(fp)
-        }
-
-        // v3.1.3: 备注失焦自动保存
-        fingerprintAdapter.setOnNoteUpdateListener { fp, note ->
-            try {
-                RadioDatabaseHelper.getInstance(this).updateFingerprintNote(fp.id, note)
-                Toast.makeText(this, "备注已保存", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                Toast.makeText(this, "备注保存失败: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
+        // v3.2.45: 移除首页"音频指纹素材列表"（adapter/RecyclerView 及播放、删除、备注、测试监听），
+        // 仅保留指纹数量统计与下方管理入口按钮。
 
         // v3.1.2: 批量测试按钮
         findViewById<android.widget.Button>(R.id.btn_test_all_fingerprints)?.setOnClickListener {
@@ -276,15 +201,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
     private fun loadFingerprints() {
         try {
             val fingerprints = RadioDatabaseHelper.getInstance(this).getAllAudioFingerprints()
-            fingerprintAdapter.setItems(fingerprints)
             tvFingerprintCount.text = "已保存 ${fingerprints.size} 条指纹"
-            if (fingerprints.isEmpty()) {
-                tvFingerprintsEmpty.visibility = TextView.VISIBLE
-                recyclerFingerprints.visibility = RecyclerView.GONE
-            } else {
-                tvFingerprintsEmpty.visibility = TextView.GONE
-                recyclerFingerprints.visibility = RecyclerView.VISIBLE
-            }
         } catch (e: Exception) {
             Toast.makeText(this, "加载指纹失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
@@ -485,7 +402,6 @@ class KeywordSettingsActivity : AppCompatActivity() {
                         audioTrack?.release()
                     } catch (_: Exception) {}
                     audioTrack = null
-                    uiHandler.post { fingerprintAdapter.stopPlaying() }
                     uiHandler.post { dialog.dismiss() }
                 }
             }.apply { start() }
