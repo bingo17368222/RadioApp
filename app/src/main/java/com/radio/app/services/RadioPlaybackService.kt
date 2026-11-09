@@ -8541,7 +8541,43 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         writeServiceLog("notification", "notifyNextEpisode: searching for next of curId=$curId, preCacheList.size=${preCacheList.size}, savedList.size=${savedList.size}")
         writeServiceLog("notification", "notifyNextEpisode: preCacheList episodes: ${preCacheList.map { "${it.id}:${it.title}" }.take(5)}")
         writeServiceLog("notification", "notifyNextEpisode: curId in preCacheList: ${preCacheList.any { it.id == curId }}, curId in savedList: ${savedList.any { it.id == curId }}")
-        var nextEpisode = findNextInList(preCacheList, curId, settings)
+
+        // v3.2.48-fix: "下一片段"跨节目优先按播放计划队列切换（与节目自然播完的
+        // autoPlayNextEpisode 同源），修复"不按播放计划切换节目"。
+        // 根因：本函数原先只在 preCacheList/savedList 中按列表顺序 findNextInList，
+        // 完全不读取 buildPlaybackSchedule 构建的播放计划 futurePlannedEpisodes，
+        // 与 autoPlayNextEpisode 走两条不同路径。列表查找遇到当前节目不在预缓存列表
+        // （如跨天构造节目）、列表被旧数据污染、或同日找不到项时走独立的 cross-day 获取，
+        // 选出的节目与播放计划显示的下一个不一致。
+        // 现在与 autoPlayNextEpisode 一致：从播放计划队列取（取走即删除、跳过早于当前
+        // 日期的旧数据、跳过不喜欢/免预处理节目）；队列为空时回退原有列表查找逻辑。
+        val plannedFromQueue: Episode? = synchronized(futurePlannedEpisodes) {
+            val iterator = futurePlannedEpisodes.iterator()
+            val curDateCmp = currentEpisode?.broadcastAt?.take(10)
+            var found: Episode? = null
+            while (iterator.hasNext()) {
+                val ep = iterator.next()
+                iterator.remove()
+                val epDateCmp = ep.broadcastAt?.take(10)
+                // 队列残留的更早日期旧数据直接丢弃（与 autoPlayNextEpisode 同防线）
+                if (curDateCmp != null && epDateCmp != null && epDateCmp < curDateCmp) continue
+                // 防环：计划队列基准过时导致取到当前节目自己
+                if (ep.id == curId) continue
+                if (!settings.isDisliked(ep.id ?: "") && !settings.isDislikedByTitle(ep.stationId, ep.title)
+                    && !settings.isNoPreprocess(ep.id ?: "")) {
+                    found = ep
+                    writeServiceLog("notification", "notifyNextEpisode: 播放计划队列 -> ${ep.title} (${ep.id}) (date=${ep.broadcastAt?.take(10)})")
+                    break
+                }
+            }
+            found
+        }
+        var nextEpisode: Episode? = plannedFromQueue
+        // Fallback: 播放计划队列不可用时，回退原有 preCacheList/savedList 列表查找
+        if (nextEpisode == null) {
+            writeServiceLog("notification", "notifyNextEpisode: 播放计划队列为空，回退列表查找")
+            nextEpisode = findNextInList(preCacheList, curId, settings)
+        }
         // Fallback to saved episode list
         if (nextEpisode == null) {
             nextEpisode = findNextInList(savedList, curId, settings)
