@@ -719,6 +719,27 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         return 0
     }
 
+    // v3.2.54-fix: 按 audio_url 反查同节目另一版本的 episode_id。
+    // 根因（用户报 09-16-9 节目单只显示已缓存、同页 09-17-1 正常）：
+    // 同一音频在 episode_info 可能存在构造版（预缓存序号）与 API 版两条记录，
+    // audioUrl 相同但 ID 序号不同（去重注释 v3.1.279 实证）。分段数据存的是
+    // 触发分段那个版本的 ID（预缓存序号），节目单去重择优保留的可能是另一版 ID，
+    // 按行 ID 查分段三级全空 → 有分段却显示 0。用 audioUrl 关联找到另一版 ID 兜底。
+    fun getEpisodeIdByAudioUrl(audioUrl: String, excludeId: String?): String? {
+        try {
+            val db = readableDatabase
+            val cursor = db.query(
+                TABLE_EPISODE_INFO, arrayOf("episode_id"),
+                "audio_url = ? AND episode_id != ?",
+                arrayOf(audioUrl, excludeId ?: ""), null, null, null, "1"
+            )
+            cursor.use {
+                if (it.moveToFirst()) return it.getString(0)
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
     // ===== Episode Info (v2.2.4) =====
 
     // [Fix] Returns the effective broadcastAt and title for an episode, filling in the

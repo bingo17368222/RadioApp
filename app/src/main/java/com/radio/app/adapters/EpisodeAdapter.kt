@@ -99,6 +99,28 @@ class EpisodeAdapter(
             if (segments == 0) {
                 segments = dbHelper.getEpisodeSegmentCount(episode.id ?: "")
             }
+            // v3.2.54-fix: 第5级——同音频另一版本 ID 兜底（ID 断层根因修复）。
+            // 同一音频在 episode_info 可能存在构造版（预缓存序号）与 API 版两条记录、
+            // audioUrl 相同但 ID 序号不同（如 09-16 下班路上：分段存 -9、节目单去重后
+            // 行是 API 版序号）。按行 ID 四级全空时，用 audioUrl 找到另一版本 ID 再查
+            // 分段，读到后回写主 ID 的段数，下次第4级直接命中。
+            if (segments == 0) {
+                val url = episode.audioUrl
+                if (!url.isNullOrBlank()) {
+                    val altId = dbHelper.getEpisodeIdByAudioUrl(url, episode.id)
+                    if (!altId.isNullOrEmpty()) {
+                        val altAnalysis = dbHelper.getSegmentAnalysisInfo(altId)
+                        if (altAnalysis != null && altAnalysis.segmentCount > 0) {
+                            segments = altAnalysis.segmentCount
+                        } else {
+                            segments = dbHelper.getVoiceSegments(altId).filter { !it.isSimulated }.size
+                        }
+                        if (segments > 0) {
+                            dbHelper.updateEpisodeSegmentCount(episode.id ?: "", segments)
+                        }
+                    }
+                }
+            }
         } catch (e: Exception) {
             // v3.2.53-fix: 异常原样静默吞掉 → 有分段也显示0且无从定位（用户报 09-16-9
             // "只显示已缓存"时无法判断是查询异常还是数据缺失）。记录日志便于复现时定位。

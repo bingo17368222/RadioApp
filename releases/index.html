@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.53 安装</title>
+<title>RadioApp v3.2.54 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.53</div>
+  <div class="version">v3.2.54</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.53</h3>
+    <h3>更新内容 v3.2.54</h3>
     <ul>
-      <li>排查节目单分段数显示：显示链为"分段分析→真实分段表→内存"三级回退，配合分段完成广播与返回页面自动刷新，逻辑完备；09-16-9 的分段是 11-09 晚 21:53 才首次生成（v3.2.44），此前显示"已缓存"是正确行为</li>
-      <li>加固显示链：新增第 4 级兜底读取 episode_info 段数（每条分段完成路径都同步写入的原始显示字段，此前从未被列表利用），前两级查询失败也能显示</li>
-      <li>查询异常由静默吞掉改为记录日志：若新版仍有分段不显示，logcat 搜 EpisodeAdapter 可直接定位失败环节与原因</li>
+      <li>修复节目单分段数不显示的根因：同一音频在库中存在构造版与 API 版两条记录、音频链接相同但 ID 序号不同，分段数据存的是触发分段版本的 ID，节目单去重后行用另一版 ID 按行查询全空，导致 09-16-9 有三层分段却显示"已缓存"；同页 09-17-1 两版序号一致所以正常</li>
+      <li>显示链新增第 5 级兜底：按音频链接反查同节目另一版本 ID 补查分段，读到后回写本行段数，下次直接命中</li>
+      <li>v3.2.53 的第 4 级段数兜底与查询异常日志继续保留</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.53.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.54.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
