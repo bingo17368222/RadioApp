@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.51 安装</title>
+<title>RadioApp v3.2.52 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,15 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.51</div>
+  <div class="version">v3.2.52</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.51</h3>
+    <h3>更新内容 v3.2.52</h3>
     <ul>
-      <li>修复 20250916 下班路上等旧分段节目被跳过三层分段：巡逻发现已有分段即跳过，旧关键词/YAMNet 引擎生成的分段永远得不到三层架构处理；现检测分段引擎，非三层产出自动清除并重新执行三层分段</li>
-      <li>修复切换节目后播放计划不更新（仍是旧节目的计划）：合并列表缺当前节目日期时，原主线程守卫直接放弃网络补拉，计划只能跨天凑出旧列表的节目；现改为异步补拉当日节目并自动重建，手动切换与自动切换后播放计划都跟随更新</li>
+      <li>修复播放计划节目数时多时少（有时只有 1 个、有时 2 个 0908 后接 3 个更晚日期）：计划的跨天补凑只在本地列表已含后续日期时才生效，列表仅含当日时当日后续多为不喜欢的节目就只剩 1 个；现补拉窗口扩为当日+后续 3 天，计划数据基础稳定</li>
+      <li>回滚 3.2.51 的"旧引擎分段清除重做"：三层无结果时回退 VAD+YAMNet 的分段（如 09-16-9 下班路上 3.2.44 版）被误判为旧引擎清除，重做窗口期列表页无分段可显示只显示"已缓存"，造成"被跳过分段"的误判；现保留已有分段不再清除</li>
+      <li>加固节目单分段数显示：分段分析记录存在但段数为 0 时回退读真实分段表并回写，有分段就一定显示片段数</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.51.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.52.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

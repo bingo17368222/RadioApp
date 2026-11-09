@@ -77,7 +77,12 @@ class EpisodeAdapter(
             val analysis = dbHelper.getSegmentAnalysisInfo(episode.id ?: "")
             if (analysis != null && analysis.segmentCount > 0) {
                 segments = analysis.segmentCount
-            } else {
+            }
+            // v3.2.52-fix: analysis 记录存在但 segmentCount=0（清理/写入中断残留）时，
+            // 原逻辑不再回退读 voiceSegments → segments=0，节目单页有分段却不显示片段数
+            // （用户报 09-16-9"只显示已缓存"）。改为只要 analysis 没给出有效数就回退
+            // 读 voiceSegments 真实分段，读到后回写 episode_info。
+            if (segments == 0) {
                 // 2. 从voiceSegments表读取真实分段（非模拟）
                 val dbSegments = dbHelper.getVoiceSegments(episode.id)
                 segments = dbSegments.filter { !it.isSimulated }.size

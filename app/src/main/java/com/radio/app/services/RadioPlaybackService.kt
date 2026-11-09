@@ -3797,27 +3797,12 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                  dbHelper.deleteSegmentAnalysisInfo(ep.id)
                                  hasRealSegs = false
                              }
-                            // v3.2.51-fix: 已有真实分段但由非三层引擎产出时，同样清除并重新三层分段。
-                            // 根因（用户报"被跳过分段的是 20250916 下班路上全程娱乐"）：该节目已有早期
-                            // 关键词/YAMNet 时代生成的 36 个真实分段，巡逻仅以"有无真实分段"判定是否跳过，
-                            // 于是它永远得不到三层架构分段；而无分段的次日节目（09-17/09-18）先做了三层，
-                            // 造成"跳过 09-16、优先分段更晚节目"的观感。
-                            // 三层架构产出的引擎名必含"三层"/"滑动窗口指纹"/"就AI听"，
-                            // 其余（关键词、VAD+YAMNet 独立算法等）视为旧引擎重新分段。
-                            if (hasRealSegs) {
-                                val oldEngine = try {
-                                    dbHelper.getSegmentAnalysisInfo(ep.id)?.engineName
-                                } catch (_: Exception) { null }
-                                val isThreeLayerEngine = !oldEngine.isNullOrEmpty() &&
-                                    (oldEngine.contains("三层") || oldEngine.contains("滑动窗口指纹") ||
-                                     oldEngine.contains("就AI听"))
-                                if (!isThreeLayerEngine) {
-                                    writePreCacheLog("patrolSubtitle:  ${ep.id} 现有分段由旧引擎「${oldEngine ?: "未知"}」生成，清除并重新执行三层架构分段")
-                                    dbHelper.clearVoiceSegments(ep.id)
-                                    dbHelper.deleteSegmentAnalysisInfo(ep.id)
-                                    hasRealSegs = false
-                                }
-                            }
+                            // v3.2.51-fix 的"旧引擎分段清除重做"逻辑已回滚（v3.2.52）。
+                            // 用户纠正：09-16-9 并非被跳过分段——它已有 3.2.44 产出的完整分段。
+                            // 误判根因：preSegmentAudio 三层无结果时回退 VAD+YAMNet，engineName="VAD+YAMNet"
+                            // 不含"三层"关键词，被旧引擎检测误杀清除重做，重做窗口期节目单列表页
+                            // 无分段可显示（只显示"已缓存"），被误认为跳过分段。
+                            // 有真实分段即视为已处理，不再按引擎名清除。
                             if (!hasRealSegs) {
                                 // v3.1.270-fix: 统一时长解析（URL时间范围优先，兼容秒/毫秒单位）
                                 val durMs = resolveEpisodeDurationMs(ep)
@@ -7312,31 +7297,48 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
             val curStation1 = currentEpisode?.stationId
             val curDate1 = currentEpisode?.broadcastAt?.take(10)
             if (curStation1 != null && curDate1 != null) {
-                val hasCurDay = combinedList.any { (it.broadcastAt?.take(10) ?: "") == curDate1 }
-                if (!hasCurDay) {
+                // v3.2.52-fix: 补拉窗口从"仅当日"扩为"当日+后续3天"。
+                // 根因（schedule.log 01:47:01 实证）：combinedList 仅含 09-08 当日 11 个节目时，
+                // 09-08 后续 6 个 disliked、剩 1 个可用 → 播放计划只有 1 个节目；
+                // preCacheList=73（含后续天）时同样起点却凑出 5 个 → 计划数随预缓存/保存列表
+                // 快照内容时变。跨天补凑只在"列表内已有晚于当日的节目"时才生效，列表缺后续日期
+                // 无从跨天。现对当日与后续 3 天逐日检查，缺失的日期补拉后合并，保证计划数据基础稳定。
+                val curDateCal = try {
+                    java.util.Calendar.getInstance().apply {
+                        time = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(curDate1)!!
+                    }
+                } catch (_: Exception) { null }
+                val needDates = if (curDateCal != null) {
+                    (0..3).map { off ->
+                        val c = curDateCal.clone() as java.util.Calendar
+                        c.add(java.util.Calendar.DAY_OF_MONTH, off)
+                        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(c.time)
+                    }.filter { d -> combinedList.none { (it.broadcastAt?.take(10) ?: "") == d } }
+                } else {
+                    if (combinedList.none { (it.broadcastAt?.take(10) ?: "") == curDate1 }) listOf(curDate1) else emptyList()
+                }
+                if (needDates.isNotEmpty()) {
                     try {
                         // v3.2.29-fix: 主线程守卫，同分支1——避免播放/切歌路径 ANR
                         // v3.2.51-fix: 主线程不再放弃补拉，改为异步补拉后重建计划。
-                        // 根因（schedule.log 01:10:45 实证）：从 09-17 手动切换到 09-08，主线程触发
-                        // buildPlaybackSchedule，合并列表只有 09-17 的 9 个节目、缺当前日 09-08，
-                        // 原守卫直接跳过网络补拉 → combinedList 无 09-08 → 起点 fallback 全 -1 →
-                        // 跨天凑数仍从 09-17 列表选 → 播放计划仍是 09-17 的，不随切换更新。
-                        // 现改为：IO 协程异步补拉当日节目，成功后重建一次播放计划
-                        // （重建时非主线程，走同步补拉分支），保证手动/自动切换后计划始终跟新。
+                        // v3.2.52-fix: 补拉范围扩为 needDates（当日+后续3天缺失日）。
                         val fresh1 = if (Looper.myLooper() == Looper.getMainLooper()) {
-                            writeServiceLog("schedule", "buildPlaybackSchedule: main thread, async top-up for missing current day $curDate1 (rebuild after fetch)")
+                            writeServiceLog("schedule", "buildPlaybackSchedule: main thread, async top-up for missing dates $needDates (rebuild after fetch)")
                             if (scheduleDayTopUpInFlight.compareAndSet(false, true)) {
                                 serviceScope.launch {
                                     try {
-                                        val fetched = com.radio.app.network.EpisodeApiService.getInstance()
-                                            .fetchEpisodesByDateSync(curStation1, curDate1)
-                                        val fetchedHasCurDay = !fetched.isNullOrEmpty() &&
-                                            fetched.any { (it.broadcastAt?.take(10) ?: "") == curDate1 }
-                                        if (fetchedHasCurDay) {
-                                            writeServiceLog("schedule", "buildPlaybackSchedule: async top-up fetched ${fetched?.size} eps for $curDate1, rebuilding schedule")
+                                        val fetchedAll = needDates.flatMap { d ->
+                                            com.radio.app.network.EpisodeApiService.getInstance()
+                                                .fetchEpisodesByDateSync(curStation1, d) ?: emptyList()
+                                        }
+                                        val anyCurDayFetched = fetchedAll.any {
+                                            needDates.contains(it.broadcastAt?.take(10) ?: "")
+                                        }
+                                        if (anyCurDayFetched) {
+                                            writeServiceLog("schedule", "buildPlaybackSchedule: async top-up fetched ${fetchedAll.size} eps for $needDates, rebuilding schedule")
                                             buildPlaybackSchedule()
                                         } else {
-                                            writeServiceLog("schedule", "buildPlaybackSchedule: async top-up got no valid eps for $curDate1, no rebuild")
+                                            writeServiceLog("schedule", "buildPlaybackSchedule: async top-up got no valid eps for $needDates, no rebuild")
                                         }
                                     } catch (e: Exception) {
                                         writeServiceLog("schedule", "buildPlaybackSchedule: async top-up failed: ${e.message}")
@@ -7347,17 +7349,20 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                             }
                             emptyList()
                         } else {
-                            com.radio.app.network.EpisodeApiService.getInstance().fetchEpisodesByDateSync(curStation1, curDate1)
+                            needDates.flatMap { d ->
+                                com.radio.app.network.EpisodeApiService.getInstance()
+                                    .fetchEpisodesByDateSync(curStation1, d) ?: emptyList()
+                            }
                         }
                         if (!fresh1.isNullOrEmpty()) {
                             val merged1 = (combinedList + fresh1).distinctBy { it.id }
                             if (merged1.size > combinedList.size) {
                                 combinedList = merged1
-                                writeServiceLog("schedule", "buildPlaybackSchedule: 合并列表缺当前日${curDate1}，同步补拉${fresh1.size}个节目入样（combinedList ${combinedList.size}）")
+                                writeServiceLog("schedule", "buildPlaybackSchedule: 合并列表缺失日期$needDates，补拉${fresh1.size}个节目入样（combinedList ${combinedList.size}）")
                             }
                         }
                     } catch (e: Exception) {
-                        writeServiceLog("schedule", "buildPlaybackSchedule: 补拉当前归属日失败: ${e.message}")
+                        writeServiceLog("schedule", "buildPlaybackSchedule: 补拉缺失日期失败: ${e.message}")
                     }
                 }
             }
