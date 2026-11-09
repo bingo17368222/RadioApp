@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.50 安装</title>
+<title>RadioApp v3.2.51 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,15 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.50</div>
+  <div class="version">v3.2.51</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.50</h3>
+    <h3>更新内容 v3.2.51</h3>
     <ul>
-      <li>修复连续水分段不合并：水段合并上限由 5 分钟放宽到 10 分钟（与干货对齐）——此前两个相邻水段合并后超 5 分钟即被拒绝，各自又都低于上限，结果永久并排残留</li>
-      <li>修复分段顺序倒置（近节目被跳过、先分段更远的次日节目）：巡逻遇到近节目缺音频或缺 PCM 时触发预缓存/预生成后停止本轮扫描，等其就绪后按顺序分段，不再跳过；近期窗口起点前移 1 天，回听前一天节目时不再被判为"非近期"排后；PCM 失败窗口内的节目仍让位避免卡死</li>
-      <li>修复播放通知栏消失：删除与进度通知并存且从不取消的"预处理PCM"冗余通知（原硬编码 ID=2001），预生成进度改为固定单条通知，通知不再连续堆积挤出播放通知</li>
+      <li>修复 20250916 下班路上等旧分段节目被跳过三层分段：巡逻发现已有分段即跳过，旧关键词/YAMNet 引擎生成的分段永远得不到三层架构处理；现检测分段引擎，非三层产出自动清除并重新执行三层分段</li>
+      <li>修复切换节目后播放计划不更新（仍是旧节目的计划）：合并列表缺当前节目日期时，原主线程守卫直接放弃网络补拉，计划只能跨天凑出旧列表的节目；现改为异步补拉当日节目并自动重建，手动切换与自动切换后播放计划都跟随更新</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.50.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.51.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

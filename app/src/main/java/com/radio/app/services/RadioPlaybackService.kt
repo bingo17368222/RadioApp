@@ -603,6 +603,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
+    // v3.2.51-fix: 播放计划缺当前日时的异步补拉防重入标志（主线程切歌路径触发）
+    private val scheduleDayTopUpInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     override fun onCreate() {
         super.onCreate()
@@ -3795,6 +3797,27 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                                  dbHelper.deleteSegmentAnalysisInfo(ep.id)
                                  hasRealSegs = false
                              }
+                            // v3.2.51-fix: 已有真实分段但由非三层引擎产出时，同样清除并重新三层分段。
+                            // 根因（用户报"被跳过分段的是 20250916 下班路上全程娱乐"）：该节目已有早期
+                            // 关键词/YAMNet 时代生成的 36 个真实分段，巡逻仅以"有无真实分段"判定是否跳过，
+                            // 于是它永远得不到三层架构分段；而无分段的次日节目（09-17/09-18）先做了三层，
+                            // 造成"跳过 09-16、优先分段更晚节目"的观感。
+                            // 三层架构产出的引擎名必含"三层"/"滑动窗口指纹"/"就AI听"，
+                            // 其余（关键词、VAD+YAMNet 独立算法等）视为旧引擎重新分段。
+                            if (hasRealSegs) {
+                                val oldEngine = try {
+                                    dbHelper.getSegmentAnalysisInfo(ep.id)?.engineName
+                                } catch (_: Exception) { null }
+                                val isThreeLayerEngine = !oldEngine.isNullOrEmpty() &&
+                                    (oldEngine.contains("三层") || oldEngine.contains("滑动窗口指纹") ||
+                                     oldEngine.contains("就AI听"))
+                                if (!isThreeLayerEngine) {
+                                    writePreCacheLog("patrolSubtitle:  ${ep.id} 现有分段由旧引擎「${oldEngine ?: "未知"}」生成，清除并重新执行三层架构分段")
+                                    dbHelper.clearVoiceSegments(ep.id)
+                                    dbHelper.deleteSegmentAnalysisInfo(ep.id)
+                                    hasRealSegs = false
+                                }
+                            }
                             if (!hasRealSegs) {
                                 // v3.1.270-fix: 统一时长解析（URL时间范围优先，兼容秒/毫秒单位）
                                 val durMs = resolveEpisodeDurationMs(ep)
@@ -7293,8 +7316,35 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 if (!hasCurDay) {
                     try {
                         // v3.2.29-fix: 主线程守卫，同分支1——避免播放/切歌路径 ANR
+                        // v3.2.51-fix: 主线程不再放弃补拉，改为异步补拉后重建计划。
+                        // 根因（schedule.log 01:10:45 实证）：从 09-17 手动切换到 09-08，主线程触发
+                        // buildPlaybackSchedule，合并列表只有 09-17 的 9 个节目、缺当前日 09-08，
+                        // 原守卫直接跳过网络补拉 → combinedList 无 09-08 → 起点 fallback 全 -1 →
+                        // 跨天凑数仍从 09-17 列表选 → 播放计划仍是 09-17 的，不随切换更新。
+                        // 现改为：IO 协程异步补拉当日节目，成功后重建一次播放计划
+                        // （重建时非主线程，走同步补拉分支），保证手动/自动切换后计划始终跟新。
                         val fresh1 = if (Looper.myLooper() == Looper.getMainLooper()) {
-                            writeServiceLog("schedule", "buildPlaybackSchedule: main thread, skip network top-up for missing current day (avoid ANR)")
+                            writeServiceLog("schedule", "buildPlaybackSchedule: main thread, async top-up for missing current day $curDate1 (rebuild after fetch)")
+                            if (scheduleDayTopUpInFlight.compareAndSet(false, true)) {
+                                serviceScope.launch {
+                                    try {
+                                        val fetched = com.radio.app.network.EpisodeApiService.getInstance()
+                                            .fetchEpisodesByDateSync(curStation1, curDate1)
+                                        val fetchedHasCurDay = !fetched.isNullOrEmpty() &&
+                                            fetched.any { (it.broadcastAt?.take(10) ?: "") == curDate1 }
+                                        if (fetchedHasCurDay) {
+                                            writeServiceLog("schedule", "buildPlaybackSchedule: async top-up fetched ${fetched?.size} eps for $curDate1, rebuilding schedule")
+                                            buildPlaybackSchedule()
+                                        } else {
+                                            writeServiceLog("schedule", "buildPlaybackSchedule: async top-up got no valid eps for $curDate1, no rebuild")
+                                        }
+                                    } catch (e: Exception) {
+                                        writeServiceLog("schedule", "buildPlaybackSchedule: async top-up failed: ${e.message}")
+                                    } finally {
+                                        scheduleDayTopUpInFlight.set(false)
+                                    }
+                                }
+                            }
                             emptyList()
                         } else {
                             com.radio.app.network.EpisodeApiService.getInstance().fetchEpisodesByDateSync(curStation1, curDate1)
