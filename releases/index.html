@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.48 安装</title>
+<title>RadioApp v3.2.49 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.48</div>
+  <div class="version">v3.2.49</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.48</h3>
+    <h3>更新内容 v3.2.49</h3>
     <ul>
-      <li>修复"下一片段"播放到最后一个分段时跨节目不按播放计划切换的问题：此前手动跨节目只按节目列表顺序查找、完全不读播放计划，遇到当前节目不在预缓存列表、列表数据陈旧或同日找不到项时会走独立的跨天获取，选出与计划不同的节目</li>
-      <li>现在手动跨节目与节目自然播完走同一条播放计划队列（含不喜欢/免预处理过滤与旧日期数据防护），切换结果与播放计划显示的下一个节目一致</li>
-      <li>播放计划队列不可用时回退原有列表查找逻辑，兼容冷启动场景</li>
+      <li>修复启动时"是否继续播放上次的节目"提示的双重书名号问题：节目标题本身含书名号时不再叠加外层书名号，显示《旅行大玩家》而非《《旅行大玩家》》；标题无书名号时仍自动补上</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.48.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.49.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

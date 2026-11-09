@@ -86,10 +86,13 @@ class MainActivity : AppCompatActivity() {
         val settings = AppSettings.getInstance(this)
         if (!settings.rememberLastEpisode) return
         val lastEpisode = RadioPlaybackService.getLastEpisode(this) ?: return
-        val title = lastEpisode.title ?: "未知节目"
+        val rawTitle = lastEpisode.title ?: "未知节目"
+        // v3.2.49-fix: 节目标题本身常含书名号（如《旅行大玩家》），
+        // 无条件再包一层会产生《《旅行大玩家》》双重书名号；仅在标题无书名号时才补。
+        val title = if (rawTitle.contains('《')) rawTitle else "《$rawTitle》"
         AlertDialog.Builder(this)
             .setTitle("继续播放")
-            .setMessage("是否继续播放上次的节目《${title}》？")
+            .setMessage("是否继续播放上次的节目$title？")
             .setPositiveButton("继续播放") { _, _ ->
                 val intent = Intent(this, PlayerActivity::class.java).apply {
                     putExtra("episode", lastEpisode)
