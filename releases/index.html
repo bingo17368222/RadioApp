@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.46 安装</title>
+<title>RadioApp v3.2.47 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.46</div>
+  <div class="version">v3.2.47</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.46</h3>
+    <h3>更新内容 v3.2.47</h3>
     <ul>
-      <li>移除音频指纹管理首页的"水货分段开头/结尾组合管理"模块（标题、输入框、添加按钮、组合标签全部移除），页面进一步简化</li>
-      <li>首页现仅保留指纹数量统计与三个管理入口（批量测试、指纹分组管理、指纹分类管理）</li>
-      <li>底层组合数据保留，字幕提取水货判定不受影响</li>
+      <li>修复连续干货分段不合并（根因1）：干段合并上限由 6 分钟放宽到 10 分钟——此前相邻干货合并后超 6 分钟即被拒绝（有节目两段合并 360064ms 仅超限 64ms 就被拒），导致 UI 显示连续干货段</li>
+      <li>修复连续水分段不合并（根因2）：补洞步骤在合并步骤之后执行，短洞被并入前段后两段已首尾相接，但合并已跑完错过机会；现在补洞后再执行一轮合并，歌曲/水货相邻段归并（5 分钟水段上限内）</li>
+      <li>需重新生成受影响节目的分段才会生效</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.46.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.47.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

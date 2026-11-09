@@ -121,7 +121,7 @@ object SegmentGenerator {
     // mergeConsecutiveSameTypeSegments 对干段合并只设 30 分钟上限，片花与讲话均 hasVoice=true，
     // 于是被无脑连成超长干段。收紧后达到该长度即停止吸附、保留既有边界，
     // 使主持人讲话/小节交界处能保留为独立干段；MAX_DRY_SEGMENT_LENGTH_MS(30分钟)仍作绝对兜底。
-    private const val DRY_MERGE_CAP_MS = 360_000L // 6分钟（连续干段合并上限）
+    private const val DRY_MERGE_CAP_MS = 600_000L // 10分钟（连续干段合并上限，v3.2.47 由6分钟放宽——6分钟导致相邻干货无法归并、UI显示连续干货段）
 
     // v3.1.239-fix: 类级水段最大长度上限（供 mergeConsecutiveSameTypeSegments 最终归并使用）。
     // 与 mergeSilenceToAdjacentWater / mergeAdjacentSegments 内的局部 5 分钟上限保持一致。
@@ -728,7 +728,7 @@ object SegmentGenerator {
                     continue
                 }
                 // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
-                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)，避免静音延伸出十几分钟巨干段
+                // v3.1.255: 干段上限 DRY_MERGE_CAP_MS（v3.2.47 放宽为10分钟），避免静音延伸出十几分钟巨干段
                 if (segments[i-1].hasVoice && seg.end - segments[i-1].start >= DRY_MERGE_CAP_MS) {
                     i++
                     continue
@@ -745,7 +745,7 @@ object SegmentGenerator {
                     continue
                 }
                 // v3.2.4-fix: 如果合并后干货段长度超过最大长度，不合并
-                // v3.1.255: 干段上限收紧到 DRY_MERGE_CAP_MS(6分钟)
+                // v3.1.255: 干段上限 DRY_MERGE_CAP_MS（v3.2.47 放宽为10分钟）
                 if (segments[i+1].hasVoice && segments[i+1].end - seg.start >= DRY_MERGE_CAP_MS) {
                     i++
                     continue
@@ -1755,7 +1755,7 @@ object SegmentGenerator {
      *  - 同属"干"：both.hasVoice == true，合并为一个连续干货段（主持人或歌曲人声的连续讲话）。
      *  - 同属"水"：both 均为水标签，合并为一个连续水段。
      * 绝不在干/水之间合并（不推翻既有分类）。合并受最大长度上限约束：
-     *  - 干段：不超 MAX_DRY_SEGMENT_LENGTH_MS（30分钟）
+     *  - 干段：不超 DRY_MERGE_CAP_MS（10分钟，v3.2.47 由6分钟放宽，修复连续干货不合并）
      *  - 水段：不超 MAX_WATER_SEGMENT_LENGTH_MS（5分钟）
      * @return 合并次数
      */
@@ -2054,7 +2054,7 @@ object SegmentGenerator {
                     // v3.1.135: 水段合并检查长度限制
                     if (isWaterLabel(curr.label) && (next.end - curr.start) >= MAX_WATER_SEGMENT_LENGTH_MS) continue
                     // v3.2.4-fix: 干货段合并检查长度限制，防止VAD回退连续干段合并为1个巨段
-                    // v3.1.255: 干段合并上限收紧到 DRY_MERGE_CAP_MS(6分钟)，防止片花/讲话被连成十几分钟巨段
+                    // v3.1.255: 干段合并上限 DRY_MERGE_CAP_MS（v3.2.47 放宽为10分钟），防止片花/讲话被连成十几分钟巨段
                     if (curr.hasVoice && (next.end - curr.start) >= DRY_MERGE_CAP_MS) continue
                     curr.end = maxOf(curr.end, next.end)
                     sorted.removeAt(i + 1)
@@ -5244,6 +5244,18 @@ object SegmentGenerator {
         val gapFillHard = fillSilenceGaps(segments, durationMs, context, pcmFile)
         if (gapFillHard > 0) {
             fixLog.append("R1补${gapFillHard}个时间洞; ")
+        }
+
+        // v3.2.47-fix 根因2: 补洞后再执行一轮 R2 合并。
+        // 根因：fillSilenceGaps（v3.2.41 起）把"有内容的短洞"直接并入前段（curr.end=next.start），
+        // 两个同类型段在上面第一次 R2 合并时还隔着小洞、不满足"无缝"条件被跳过；
+        // 补洞后它们变成首尾相接，但第一次 R2 已执行完毕 → 产生"连续水货/歌曲不合并"残留
+        // （日志实证：08-26-9 歌曲+歌曲 299990ms<5分钟本应合并、08-27-3 水货+水货 159456ms，
+        //   当次硬校验 R2合并计数为 0 或远少于实际相邻数）。
+        // 此处补洞后再归并一次，确保补洞产生的相邻同类型段不漏网。
+        val mergeCountAfterGap = mergeConsecutiveSameTypeSegments(segments)
+        if (mergeCountAfterGap > 0) {
+            fixLog.append("R1后R2合并${mergeCountAfterGap}处相邻同类型连续段; ")
         }
 
         // ---------- R3: 长度上限校验（此条无法自动修复，如实上报） ----------
