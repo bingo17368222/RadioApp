@@ -488,6 +488,140 @@ class SettingsFragment : Fragment() {
         binding.tvAbout.setOnClickListener {
             showAboutDialog()
         }
+        binding.tvLauncherIcon.setOnClickListener {
+            showLauncherIconDialog()
+        }
+        updateLauncherIconDesc()
+    }
+
+    // ===== v3.2.57: 可切换桌面图标 =====
+    private data class LauncherIconOption(
+        val key: String,
+        val label: String,
+        val iconRes: Int,
+        val aliasClass: String?
+    )
+
+    private val launcherIconOptions = listOf(
+        LauncherIconOption("d", "广播塔（默认）", R.mipmap.ic_launcher_d, null),
+        LauncherIconOption("a", "耳机声波", R.mipmap.ic_launcher_a, "com.radio.app.activities.MainActivityAliasA"),
+        LauncherIconOption("b", "复古收音机", R.mipmap.ic_launcher_b, "com.radio.app.activities.MainActivityAliasB"),
+        LauncherIconOption("c", "分段波形", R.mipmap.ic_launcher_c, "com.radio.app.activities.MainActivityAliasC")
+    )
+
+    private fun getLauncherIconPref(): String {
+        return requireContext().getSharedPreferences("launcher_icon", Context.MODE_PRIVATE)
+            .getString("selected", "d") ?: "d"
+    }
+
+    private fun updateLauncherIconDesc() {
+        val cur = getLauncherIconPref()
+        val opt = launcherIconOptions.firstOrNull { it.key == cur } ?: launcherIconOptions[0]
+        binding.tvLauncherIconDesc.text = "当前：${opt.label}（更换后桌面图标数秒内刷新）"
+    }
+
+    private fun showLauncherIconDialog() {
+        val ctx = requireContext()
+        val cur = getLauncherIconPref()
+        val dm = resources.displayMetrics.density
+        val pad = (14 * dm).toInt()
+        val iconSize = (56 * dm).toInt()
+
+        val container = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+        }
+        var selectedKey = cur
+        val rows = mutableListOf<Pair<android.widget.LinearLayout, LauncherIconOption>>()
+
+        fun refreshRows() {
+            for ((row, opt) in rows) {
+                row.setBackgroundColor(
+                    if (opt.key == selectedKey) android.graphics.Color.parseColor("#22667EEA")
+                    else android.graphics.Color.TRANSPARENT
+                )
+            }
+        }
+
+        for (opt in launcherIconOptions) {
+            val row = android.widget.LinearLayout(ctx).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(pad, pad / 2, pad, pad / 2)
+                val iv = android.widget.ImageView(ctx).apply {
+                    setImageResource(opt.iconRes)
+                    layoutParams = android.widget.LinearLayout.LayoutParams(iconSize, iconSize)
+                }
+                val tv = android.widget.TextView(ctx).apply {
+                    text = opt.label
+                    textSize = 15f
+                    setPadding(pad, 0, 0, 0)
+                }
+                addView(iv)
+                addView(tv)
+                setOnClickListener {
+                    selectedKey = opt.key
+                    refreshRows()
+                }
+            }
+            rows.add(row to opt)
+            container.addView(row)
+        }
+        refreshRows()
+
+        AlertDialog.Builder(ctx)
+            .setTitle("选择应用图标")
+            .setView(container)
+            .setPositiveButton("应用") { _, _ ->
+                if (selectedKey != cur) {
+                    applyLauncherIcon(selectedKey)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun applyLauncherIcon(key: String) {
+        val ctx = requireContext().applicationContext
+        val pm = ctx.packageManager
+        val pkg = ctx.packageName
+        val selected = launcherIconOptions.firstOrNull { it.key == key } ?: return
+        try {
+            // 禁用所有 alias
+            for (opt in launcherIconOptions) {
+                val alias = opt.aliasClass ?: continue
+                pm.setComponentEnabledSetting(
+                    android.content.ComponentName(pkg, alias),
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP
+                )
+            }
+            if (selected.aliasClass != null) {
+                // 选 A/B/C：禁用 MainActivity 启动组件，启用所选 alias
+                pm.setComponentEnabledSetting(
+                    android.content.ComponentName(pkg, "com.radio.app.activities.MainActivity"),
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP
+                )
+                pm.setComponentEnabledSetting(
+                    android.content.ComponentName(pkg, selected.aliasClass),
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP
+                )
+            } else {
+                // 选 D（默认）：恢复 MainActivity 默认启用状态
+                pm.setComponentEnabledSetting(
+                    android.content.ComponentName(pkg, "com.radio.app.activities.MainActivity"),
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
+                    android.content.pm.PackageManager.DONT_KILL_APP
+                )
+            }
+            ctx.getSharedPreferences("launcher_icon", Context.MODE_PRIVATE)
+                .edit().putString("selected", key).apply()
+            updateLauncherIconDesc()
+            android.widget.Toast.makeText(ctx, "桌面图标已切换，数秒内生效", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(ctx, "切换图标失败: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** Issue 14: app version shown in the About dialog */
