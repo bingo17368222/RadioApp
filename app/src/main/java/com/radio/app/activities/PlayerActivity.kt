@@ -315,6 +315,8 @@ class PlayerActivity : AppCompatActivity() {
             if (pos > 0 && dur > 0) {
                 updateCurrentPositionHighlight()
             }
+            // v3.2.59: 分段色块条刷新（视图内部有脏检查，数据未变不会重绘）
+            binding.segmentStrip.setSegments(voiceSegments, dur)
             positionUpdateHandler.postDelayed(this, 500)
         }
     }
@@ -2870,11 +2872,18 @@ class PlayerActivity : AppCompatActivity() {
                 if (fromUser) {
                     val dur = seekBar?.max ?: 0
                     binding.tvCurrentTime.text = "${formatTime(progress)} / ${formatTime(dur)}"
+                    // v3.2.59: 拖动预览气泡——目标时间 + 目标段类型（干货/水货）
+                    updateSeekBubble(seekBar, progress)
                 }
             }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) { isDragging = true; isUserSeeking = true }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                isDragging = true; isUserSeeking = true
+                binding.tvSeekBubble.visibility = View.VISIBLE
+                seekBar?.let { updateSeekBubble(it, it.progress) }
+            }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 isDragging = false
+                binding.tvSeekBubble.visibility = View.GONE
                 // v2.4.41: Set seek target to lock position during buffering
                 seekBar?.let {
                     val targetPos = it.progress.toLong()
@@ -2888,6 +2897,27 @@ class PlayerActivity : AppCompatActivity() {
                 window.decorView.postDelayed(resetSeekRunnable, 5000L)
             }
         })
+    }
+
+    /** v3.2.59: 定位并更新拖动预览气泡（时间 + 段类型），横向跟随滑块并防止出屏 */
+    private fun updateSeekBubble(seekBar: SeekBar?, progress: Int) {
+        seekBar ?: return
+        val bubble = binding.tvSeekBubble
+        val dur = seekBar.max
+        val typeLabel = binding.segmentStrip.segmentTypeAt(progress.toLong())
+        bubble.text = if (typeLabel != null) {
+            "${formatTime(progress)} / ${formatTime(dur)} · $typeLabel"
+        } else {
+            "${formatTime(progress)} / ${formatTime(dur)}"
+        }
+        bubble.post {
+            val trackStart = seekBar.left + seekBar.paddingLeft
+            val trackWidth = seekBar.width - seekBar.paddingLeft - seekBar.paddingRight
+            val thumbX = if (dur > 0) trackStart + trackWidth * progress / dur else trackStart
+            val parentWidth = (bubble.parent as? View)?.width ?: seekBar.width
+            val x = (thumbX - bubble.width / 2).coerceIn(0, (parentWidth - bubble.width).coerceAtLeast(0))
+            bubble.translationX = x.toFloat()
+        }
     }
 
     private fun bindPlaybackService() {

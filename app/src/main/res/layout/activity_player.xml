@@ -76,21 +76,56 @@
         android:orientation="vertical"
         android:layout_marginBottom="8dp">
 
-        <SeekBar
-            android:id="@+id/seek_bar"
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:progressDrawable="@drawable/seekbar_progress"
-            android:thumb="@drawable/seekbar_thumb" />
-        <SeekBar
-            android:id="@+id/seek_bar_cache"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:progressDrawable="@drawable/seekbar_cache_progress"
-            android:thumb="@null"
-            android:clickable="false"
-            android:alpha="0.5"
-            android:layout_marginTop="-8dp" />
+            android:layout_height="wrap_content">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingTop="30dp">
+
+                <com.radio.app.views.SegmentStripView
+                    android:id="@+id/segment_strip"
+                    android:layout_width="match_parent"
+                    android:layout_height="8dp"
+                    android:layout_marginStart="14dp"
+                    android:layout_marginEnd="14dp"
+                    android:layout_marginBottom="2dp"
+                    android:visibility="gone" />
+
+                <SeekBar
+                    android:id="@+id/seek_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:progressDrawable="@drawable/seekbar_progress"
+                    android:thumb="@drawable/seekbar_thumb" />
+                <SeekBar
+                    android:id="@+id/seek_bar_cache"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:progressDrawable="@drawable/seekbar_cache_progress"
+                    android:thumb="@null"
+                    android:clickable="false"
+                    android:alpha="0.5"
+                    android:layout_marginTop="-16dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tv_seek_bubble"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:background="@drawable/bg_seek_bubble"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="4dp"
+                android:text=""
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:visibility="gone" />
+        </FrameLayout>
         <ProgressBar
             android:id="@+id/progress_buffer"
             style="?android:attr/progressBarStyleHorizontal"
