@@ -1428,8 +1428,7 @@ class PlayerActivity : AppCompatActivity() {
                     binding.subtitleView.setCurrentPosition(position)
                 } else if (playbackService?.isLive() == true) {
                     binding.tvCurrentTime.text = "直播 ${formatTime(pos)}"
-                    binding.seekBarCache.visibility = View.GONE
-                    binding.tvCacheProgress.visibility = View.GONE
+                    binding.layoutCacheRow.visibility = View.GONE
                 } else {
                     binding.tvCurrentTime.text = "播放: ${formatTime(pos)}"
                 }
@@ -1535,8 +1534,7 @@ class PlayerActivity : AppCompatActivity() {
                 if (dur <= 0) {
                     runOnUiThread {
                         if (_binding == null) return@runOnUiThread
-                        binding.seekBarCache.visibility = View.GONE
-                        binding.tvCacheProgress.visibility = View.GONE
+                        binding.layoutCacheRow.visibility = View.GONE
                     }
                     cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
                     return@Runnable
@@ -1547,9 +1545,8 @@ class PlayerActivity : AppCompatActivity() {
                     if (_binding == null) return@runOnUiThread
                     binding.seekBarCache.max = dur.toInt()
                     binding.seekBarCache.progress = ((dur * cachePct) / 100).toInt()
-                    binding.tvCacheProgress.text = "缓存: ${cachePct}%"
-                    binding.tvCacheProgress.visibility = View.VISIBLE
-                    binding.seekBarCache.visibility = View.VISIBLE
+                    binding.tvCacheProgress.text = "${cachePct}%"
+                    binding.layoutCacheRow.visibility = View.VISIBLE
                     // v3.2.60-fix: 已完全缓存时不存在网络缓冲，
                     // 强制隐藏缓冲细条（onBufferUpdate 停发会导致其卡在 <100% 常驻）
                     if (cachePct >= 100) {
@@ -1744,12 +1741,10 @@ class PlayerActivity : AppCompatActivity() {
             val cacheFileName = extractCacheFileName(audioUrl)
             binding.tvCacheUrl.text = "本地缓存: ${com.radio.app.RadioApplication.getEpisodesCacheDir(this).absolutePath}/$cacheFileName"
             binding.tvCacheUrl.visibility = View.VISIBLE
-            binding.tvCacheProgress.visibility = View.VISIBLE
-            binding.seekBarCache.visibility = View.VISIBLE
+            binding.layoutCacheRow.visibility = View.VISIBLE
         } else {
             binding.tvCacheUrl.visibility = View.GONE
-            binding.tvCacheProgress.visibility = View.GONE
-            binding.seekBarCache.visibility = View.GONE
+            binding.layoutCacheRow.visibility = View.GONE
         }
         binding.tvLiveIndicator.text = "准备播放..."
         binding.tvLiveIndicator.visibility = View.VISIBLE
@@ -1779,7 +1774,7 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         binding.tvTotalTime.text = "00:00"
-        binding.tvCacheProgress.text = "缓存: 0%"
+        binding.tvCacheProgress.text = "0%"
         binding.progressBuffer.visibility = View.GONE
         binding.layoutBufferRow.visibility = View.GONE
         binding.tvAiProgress.visibility = View.GONE
@@ -3345,8 +3340,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         // 更新缓存进度
         if (playbackService?.isLive() == true) {
-            binding.tvCacheProgress.visibility = View.GONE
-            binding.seekBarCache.visibility = View.GONE
+            binding.layoutCacheRow.visibility = View.GONE
         }
     }
 
