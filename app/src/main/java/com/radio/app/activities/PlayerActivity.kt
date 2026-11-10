@@ -1445,7 +1445,9 @@ class PlayerActivity : AppCompatActivity() {
                 binding.tvAiProgress.text = "播放: ${percent}%"
                 binding.tvAiProgress.visibility = if (percent >= 100) View.INVISIBLE else View.VISIBLE
                 binding.progressBuffer.progress = percent
-                binding.progressBuffer.visibility = if (percent >= 100) View.INVISIBLE else View.VISIBLE
+                // v3.2.60-fix: >=100 用 GONE 彻底隐藏（原 INVISIBLE 仍占位）；
+                // 且回调停发导致的常驻问题由缓存巡检在缓存满时强制清除
+                binding.progressBuffer.visibility = if (percent >= 100) View.GONE else View.VISIBLE
             }
         }
 
@@ -1548,6 +1550,12 @@ class PlayerActivity : AppCompatActivity() {
                     binding.tvCacheProgress.text = "缓存: ${cachePct}%"
                     binding.tvCacheProgress.visibility = View.VISIBLE
                     binding.seekBarCache.visibility = View.VISIBLE
+                    // v3.2.60-fix: 已完全缓存时不存在网络缓冲，
+                    // 强制隐藏缓冲细条（onBufferUpdate 停发会导致其卡在 <100% 常驻）
+                    if (cachePct >= 100) {
+                        binding.progressBuffer.visibility = View.GONE
+                        binding.tvAiProgress.visibility = View.GONE
+                    }
                 }
             } catch (_: Exception) {}
             cacheProgressHandler?.postDelayed(cacheProgressRunnable!!, 2000)
