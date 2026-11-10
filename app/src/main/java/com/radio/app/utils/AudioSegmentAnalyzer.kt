@@ -2565,7 +2565,7 @@ object AudioSegmentAnalyzer {
     // v3.1.220-fix: 强语音保护。若YAMNet已给出明确的人声概率（speech/narration>=0.40），
     // 则要求音乐必须显著主导才判水，防止"无背景音乐的短主持人讲话"被 backgroundMusic/music
     // 的微弱概率（YAMNet对广播语音/台呼常见误报）吞并成水分段末尾。
-    private fun isStrongSpeech(speechScore: Float): Boolean = speechScore >= 0.40f
+    private fun isStrongSpeech(speechScore: Float): Boolean = speechScore >= 0.55f
 
     // 歌曲类判据（song/pop/backgroundMusic）。强语音时收紧，弱语音时维持宽松以保底歌曲后半段。
     private fun songWaterRule(songScore: Float, speechScore: Float): Boolean {
@@ -2611,9 +2611,11 @@ object AudioSegmentAnalyzer {
             return FrameType.WATER
         }
 
-        // v3.1.99: 频谱比值 > 0.20 → DRY（人声频谱前置检测，豁免水分）
-        // v3.1.182: 从0.16恢复到0.20，防止片头音乐含部分人声频谱能量被误判为DRY
-        if (enableSpectrumCheck && yamnet.spectrumRatio > 0.20f) {
+        // v3.2.55-fix: 取消频谱比值一票判干。BGM大时中高频能量灌入人声频带，
+        // spectrumRatio轻松过0.20直接短路后续音乐判据，是"BGM大误判干货"的最大入口。
+        // 改为仅当同时满足：频谱比值>0.20 且 speech>0.15 时才允许DRY，
+        // 让低speech高音乐段仍有机会被后续水判据捕获。
+        if (enableSpectrumCheck && yamnet.spectrumRatio > 0.20f && yamnet.speech > 0.15f) {
             return FrameType.DRY
         }
 

@@ -3201,21 +3201,21 @@ object SegmentGenerator {
                                                 start = chunkStart
                                                 end = chunkEnd
                                                 hasVoice = true
-                                                label = "干货"
+                                                label = "水货"
                                                 isSimulated = false
                                             })
                                             chunkStart = chunkEnd
                                         }
-                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，拆分为${(intervalDuration + CHUNK_MS - 1) / CHUNK_MS}个10分钟小段保留为干货 for episode=$episodeId")
+                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，拆分为${(intervalDuration + CHUNK_MS - 1) / CHUNK_MS}个10分钟小段保留为水货 for episode=$episodeId")
                                     } else {
                                         vadFallbackSegments.add(VoiceSegment().apply {
                                             start = interval.first
                                             end = interval.second
                                             hasVoice = true
-                                            label = "干货"
+                                            label = "水货"
                                             isSimulated = false
                                         })
-                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为干货 for episode=$episodeId")
+                                        Log.i(TAG, "三层架构: VAD回退: 区间${interval.first/1000}~${interval.second/1000}秒(${intervalDuration/1000}s) YAMNet无产出，保留为水货 for episode=$episodeId")
                                     }
                                 }
                             }

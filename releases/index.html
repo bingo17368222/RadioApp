@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.54 安装</title>
+<title>RadioApp v3.2.55 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.54</div>
+  <div class="version">v3.2.55</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.54</h3>
+    <h3>更新内容 v3.2.55</h3>
     <ul>
-      <li>修复节目单分段数不显示的根因：同一音频在库中存在构造版与 API 版两条记录、音频链接相同但 ID 序号不同，分段数据存的是触发分段版本的 ID，节目单去重后行用另一版 ID 按行查询全空，导致 09-16-9 有三层分段却显示"已缓存"；同页 09-17-1 两版序号一致所以正常</li>
-      <li>显示链新增第 5 级兜底：按音频链接反查同节目另一版本 ID 补查分段，读到后回写本行段数，下次直接命中</li>
-      <li>v3.2.53 的第 4 级段数兜底与查询异常日志继续保留</li>
+      <li>修复背景音乐大被误判干货：取消频谱比值一票判干，改为同时要求频谱比值>0.20且语音概率>0.15才判干货，低语音高音乐段不再被BGM能量短路</li>
+      <li>修复背景音乐大被误判干货：强语音保护门槛从0.40提到0.55，BGM大时speech分被抬过0.40即触发保护导致水段漏判，现需更高speech才保护</li>
+      <li>修复YAMNet失败默认干货：VAD回退段不再强制标干货，改标水货，消除"推理失败=干货"的系统性偏置</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.54.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.55.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
