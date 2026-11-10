@@ -126,21 +126,52 @@
                 android:textSize="12sp"
                 android:visibility="gone" />
         </FrameLayout>
-        <ProgressBar
-            android:id="@+id/progress_buffer"
-            style="?android:attr/progressBarStyleHorizontal"
+        <LinearLayout
+            android:id="@+id/layout_buffer_row"
             android:layout_width="match_parent"
-            android:layout_height="4dp"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
             android:layout_marginTop="2dp"
-            android:max="100"
-            android:progress="0"
-            android:visibility="gone" />
+            android:visibility="gone">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="缓冲"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="11sp" />
+            <ProgressBar
+                android:id="@+id/progress_buffer"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="8dp"
+                android:layout_marginStart="6dp"
+                android:layout_marginEnd="6dp"
+                android:max="100"
+                android:progress="0" />
+            <TextView
+                android:id="@+id/tv_buffer_percent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0%"
+                android:textColor="?attr/appTextSecondary"
+                android:textSize="11sp" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:layout_marginTop="4dp">
+            <TextView
+                android:id="@+id/tv_cache_progress"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="缓存: 0%"
+                android:textColor="?attr/appSuccess"
+                android:textSize="11sp"
+                android:visibility="gone" />
             <TextView
                 android:id="@+id/tv_network_url"
                 android:layout_width="match_parent"
@@ -165,14 +196,6 @@
                 android:scrollbars="horizontal"
                 android:visibility="gone"
                 android:textIsSelectable="true" />
-            <TextView
-                android:id="@+id/tv_cache_progress"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="缓存: 0%"
-                android:textColor="?attr/appSuccess"
-                android:textSize="11sp"
-                android:visibility="gone" />
 
             <LinearLayout
                 android:layout_width="match_parent"
