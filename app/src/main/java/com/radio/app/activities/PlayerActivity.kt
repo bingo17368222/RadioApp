@@ -406,6 +406,8 @@ class PlayerActivity : AppCompatActivity() {
                     currentEpisode = ep
                     val newIdx = episodeList.indexOfFirst { it.id == ep.id }
                     if (newIdx >= 0) currentEpisodeIndex = newIdx
+                    // v3.2.67: 切换节目保留分段任务——刷新分段 UI 归属（脱离旧界面/恢复新界面）。
+                    syncSegmentUiForCurrentEpisode()
                     clearSubtitles()
                     // v2.4.160: Load DB segments first; only generate simulated if DB has none.
                     ensureSegmentsForCurrentEpisode()
@@ -464,28 +466,28 @@ class PlayerActivity : AppCompatActivity() {
         getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
             putBoolean("subtitle_processing", subtitleProcessing)
             putBoolean("segment_processing", segmentProcessing)
-            putString("processing_episode_id", currentEpisode?.id ?: "")
+            // v3.2.67: 持久化任务所属节目，而非当前节目——切换后任务归属保持稳定。
+            putString("processing_episode_id", if (segmentProcessing) (segmentTaskEpisodeId ?: currentEpisode?.id ?: "") else "")
         }.apply()
     }
 
     private fun restoreProcessingState() {
         val prefs = getSharedPreferences("player_processing_state", MODE_PRIVATE)
         val savedEpisodeId = prefs.getString("processing_episode_id", "")
-        val currentId = currentEpisode?.id ?: ""
         // v2.4.138: AI segmentation runs in a background Thread that survives Activity destruction.
         // Do NOT clear segmentProcessing automatically when the user exits/re-enters the player;
         // otherwise the UI appears cancelled even though the task is still running.
         subtitleProcessing = prefs.getBoolean("subtitle_processing", false)
         segmentProcessing = prefs.getBoolean("segment_processing", false)
-        // v2.4.156: The saved segment task belongs to a specific episode. If the user has
-        // switched to a different episode (or the task was for a different one), do not
-        // show its progress on the current episode.
-        segmentTaskEpisodeId = if (segmentProcessing && savedEpisodeId == currentId) {
-            currentId
+        // v3.2.67: 任务归属恢复——只要保存了任务节目 id，就归属该节目（即使已切换到别的节目），
+        // 任务继续在后台运行；UI 是否显示进度由"任务节目==当前节目"决定。
+        segmentTaskEpisodeId = if (segmentProcessing && !savedEpisodeId.isNullOrBlank()) {
+            savedEpisodeId
         } else {
             null
         }
-        if (segmentProcessing && savedEpisodeId != currentId) {
+        // 任务有归属但保存的归属为空（陈旧无主状态）才清除。
+        if (segmentProcessing && segmentTaskEpisodeId == null) {
             segmentProcessing = false
             lastSegmentProgress = 0
         }
@@ -496,23 +498,26 @@ class PlayerActivity : AppCompatActivity() {
         val isComplete = progressPrefs.getBoolean(segmentCompleteKey(currentEpisodeId), false)
         // v2.4.152: Segment progress is now stored as 0-1000 permille.
         lastSegmentProgress = if (isComplete) 1000 else progressPrefs.getInt(segmentProgressKey(currentEpisodeId), 0)
-        if (isComplete) segmentProcessing = false
+        // v3.2.67: 完成标记只允许结束归属本节目的任务，不误杀其他节目的后台任务。
+        if (isComplete && (segmentTaskEpisodeId == null || segmentTaskEpisodeId == currentEpisodeId)) segmentProcessing = false
         // v3.1.4: 安全检查 — 如果 segmentProcessing 为 true 但进度长时间未更新（超过60秒仍为0），
         // 说明之前的任务已取消但状态未正确保存，清除状态释放按钮
         // v3.1.16: 修复 getString 读取 Long 值的类型转换崩溃
-        if (segmentProcessing && currentEpisodeId != null) {
-            val segmentStartTime = progressPrefs.getLong(segmentStartKey(currentEpisodeId), 0L)
+        // v3.2.67: 陈旧检查按任务所属节目判断（任务可能属于其他节目）。
+        val taskEpId = segmentTaskEpisodeId
+        if (segmentProcessing && taskEpId != null) {
+            val segmentStartTime = progressPrefs.getLong(segmentStartKey(taskEpId), 0L)
             if (segmentStartTime > 0 && segmentStartTime < System.currentTimeMillis() - 60_000L && lastSegmentProgress == 0) {
                 android.util.Log.w("PlayerActivity", "restoreProcessingState: stale segment task detected (started=${segmentStartTime}, now=${System.currentTimeMillis()}, progress=$lastSegmentProgress), clearing")
                 segmentProcessing = false
                 segmentTaskEpisodeId = null
                 lastSegmentProgress = 0
                 progressPrefs.edit()
-                    .putInt(segmentProgressKey(currentEpisodeId), 0)
-                    .putBoolean(segmentCompleteKey(currentEpisodeId), false)
-                    .remove(segmentStartKey(currentEpisodeId))
-                    .remove(segmentElapsedKey(currentEpisodeId))
-                    .remove(segmentEtaKey(currentEpisodeId))
+                    .putInt(segmentProgressKey(taskEpId), 0)
+                    .putBoolean(segmentCompleteKey(taskEpId), false)
+                    .remove(segmentStartKey(taskEpId))
+                    .remove(segmentElapsedKey(taskEpId))
+                    .remove(segmentEtaKey(taskEpId))
                     .apply()
                 saveProcessingState()
             }
@@ -1512,6 +1517,8 @@ class PlayerActivity : AppCompatActivity() {
                 clearSubtitles()
                 val newIdx = episodeList.indexOfFirst { it.id == episode.id }
                 if (newIdx >= 0) currentEpisodeIndex = newIdx
+                // v3.2.67: 切换节目保留分段任务——刷新分段 UI 归属（脱离旧界面/恢复新界面）。
+                syncSegmentUiForCurrentEpisode()
                 saveLastEpisode()
                 // v2.4.160: Load DB segments first; only generate simulated if DB has none.
                 ensureSegmentsForCurrentEpisode()
@@ -1930,7 +1937,8 @@ class PlayerActivity : AppCompatActivity() {
         }
         if (dbSegments.isNotEmpty()) {
             // v3.1.59: 如果DB中已有真实分段，清除可能残留的segmentProcessing状态
-            if (segmentProcessing) {
+            // v3.2.67: 只清理"无主或属于当前节目"的残留状态；属于其他节目的后台任务保留继续运行。
+            if (segmentProcessing && (segmentTaskEpisodeId == null || segmentTaskEpisodeId == currentEpisode?.id)) {
                 segmentProcessing = false
                 segmentTaskEpisodeId = null
                 lastSegmentProgress = 0
@@ -2522,7 +2530,8 @@ class PlayerActivity : AppCompatActivity() {
                                     com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct)
 
                                     runOnUiThread {
-                                        if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId) {
+                                        if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId
+                                            && episodeIdForProgress == currentEpisode?.id) {
                                             // v2.4.150: Show elapsed + ETA so the UI doesn't look frozen at one percent.
                                             // v2.4.152: Display x.x% from permille.
                                             val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
@@ -2561,13 +2570,15 @@ class PlayerActivity : AppCompatActivity() {
                             // v2.4.171: If the user cancelled, don't show an error; finish gracefully.
                             if (com.radio.app.utils.AudioSegmentAnalyzer.isAnalysisCancelled()) {
                                 runOnUiThread {
-                                    finishAiProcessing("segment")
+                                    // v3.2.67: 取消接收器可能已先收尾（含切换后在别的节目上取消的场景），
+                                    // 仅在任务状态仍在时收尾，避免把完成标记错写到当前节目。
+                                    if (segmentProcessing) finishAiProcessing("segment")
                                     Toast.makeText(this, "AI分段已取消", Toast.LENGTH_SHORT).show()
                                 }
                             } else {
                                 val elapsed = System.currentTimeMillis() - segStartTime
                                 runOnUiThread {
-                                    if (_binding != null) {
+                                    if (_binding != null && episode.id == currentEpisode?.id) {
                                         // v2.4.144: Show engine + elapsed time even on failure so the user sees it finished
                                         binding.tvAiStatus.text = "AI分段失败：$segEngineName (耗时: ${com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsed)}) — ${e.javaClass.simpleName}"
                                         binding.tvAiStatus.visibility = View.VISIBLE
@@ -2617,7 +2628,8 @@ class PlayerActivity : AppCompatActivity() {
                                         val pct = if (total > 0) current * 1000 / total else 0
                                         writeJitterLog(" btnAiSegment: MNN progress $current/$total (${pct/10}%) response='${mnnResponse.take(60)}'")
                                         runOnUiThread {
-                                            if (_binding != null) {
+                                            // v3.2.67: 切换节目后任务继续后台运行——进度文字/进度条只在任务节目==当前节目时刷新
+                                            if (_binding != null && segmentProcessing && episode.id == segmentTaskEpisodeId && episode.id == currentEpisode?.id) {
                                                 // v2.4.77: Show MNN response in status text
                                                 val responsePreview = if (mnnResponse.isNotBlank()) " → ${mnnResponse.take(30)}" else ""
                                                 val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
@@ -2708,7 +2720,8 @@ class PlayerActivity : AppCompatActivity() {
                                     val etaText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(etaMs)
                                     com.radio.app.utils.SegmentNotificationHelper.update(appCtx, episodeIdForProgress, notifTitle, pct)
                                     runOnUiThread {
-                                        if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId) {
+                                        if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId
+                                            && episodeIdForProgress == currentEpisode?.id) {
                                             val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
                                             binding.tvAiStatus.text = "音频分段分析中(${segEngineName}) ${percentText}% (已用 $elapsedText，预计剩余 $etaText)"
                                             binding.progressAi.progress = pct
@@ -2792,6 +2805,28 @@ class PlayerActivity : AppCompatActivity() {
                             com.radio.app.utils.SegmentNotificationHelper.cancel(applicationContext)
                             return@runOnUiThread
                         }
+                        // v3.2.67: 切换节目不再取消分段任务——任务在后台跑完且结果已存库（上方）。
+                        // 此时只收尾任务状态、把任务节目标记完成，
+                        // 不把旧节目的分段结果/完成标记/Toast写到当前（新）节目界面。
+                        if (episode.id != currentEpisode?.id) {
+                            writeJitterLog(" segment task finished in background: ${episode.id} (current=${currentEpisode?.id})")
+                            segmentProcessing = false
+                            segmentTaskEpisodeId = null
+                            stopSegmentProgressPoller()
+                            lastSegmentProgress = 0
+                            getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
+                                .putInt(segmentProgressKey(episode.id), 1000)
+                                .putBoolean(segmentCompleteKey(episode.id), true)
+                                .apply()
+                            saveProcessingState()
+                            if (_binding != null) {
+                                binding.btnAiSegment.isEnabled = true
+                                binding.progressAi.visibility = View.GONE
+                                if (isSegmentProgressText()) binding.tvAiStatus.visibility = View.GONE
+                            }
+                            com.radio.app.utils.SegmentNotificationHelper.cancel(applicationContext)
+                            return@runOnUiThread
+                        }
                         // v2.4.45: Always call finishAiProcessing even if _binding==null
                         // (otherwise notification stays visible forever)
                         if (_binding == null) {
@@ -2851,8 +2886,11 @@ class PlayerActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     writeJitterLog(" btnAiSegment ERROR: ${e.message}")
                     runOnUiThread {
-                        finishAiProcessing("segment")
-                        Toast.makeText(this, "AI分段错误: ${e.message}", Toast.LENGTH_SHORT).show()
+                        // v3.2.67: 若已被取消接收器收尾（任务状态已清），不再重复收尾/提示
+                        if (segmentProcessing) {
+                            finishAiProcessing("segment")
+                            Toast.makeText(this, "AI分段错误: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 } finally {
                     // v2.4.150: Always cancel the notification when the segment thread ends,
@@ -3082,8 +3120,14 @@ class PlayerActivity : AppCompatActivity() {
             // progress UI immediately so it does not get stuck visible or race to 100%.
             // [v2.0.59] Don't show error here - the error broadcast will handle it.
             // But if no broadcast was received, the process was killed before sending one.
-            if (subtitleProcessing || segmentProcessing) {
+            // v3.2.67: 字幕服务断开只清理字幕状态；分段任务独立于该服务，继续后台运行。
+            if (subtitleProcessing) {
+                val keepSeg = segmentProcessing
+                val keepTaskId = segmentTaskEpisodeId
                 cancelAiProcessing()
+                segmentProcessing = keepSeg
+                segmentTaskEpisodeId = keepTaskId
+                if (keepSeg) saveProcessingState()
             }
         }
     }
@@ -3356,26 +3400,11 @@ class PlayerActivity : AppCompatActivity() {
             Toast.makeText(this, "播放服务未连接，无法切换", Toast.LENGTH_SHORT).show()
             return
         }
-        // v2.4.155: When switching episodes, cancel any in-progress segment UI/notification
-        // so the old episode's progress does not leak onto the new one.
+        // v3.2.67: 切换节目时保留分段任务继续在后台运行，不再取消分析器/清除进度。
+        // 旧任务的界面脱离与新节目界面的恢复由切换入口（episodeChangedReceiver /
+        // onEpisodeChanged）统一处理，完成时按任务所属节目收尾（见完成门控分支）。
         if (segmentProcessing) {
-            val oldEpisodeId = segmentTaskEpisodeId
-            writeJitterLog(" playEpisodeAtIndex: cancelling segmentProcessing for oldEpisode=$oldEpisodeId before switch")
-            // v2.4.156: Interrupt the analyzer thread so the old task ends quickly.
-            com.radio.app.utils.AudioSegmentAnalyzer.cancelCurrentAnalysis()
-            segmentProcessing = false
-            segmentTaskEpisodeId = null
-            lastSegmentProgress = 0
-            stopSegmentProgressPoller()
-            cancelSegmentNotification()
-            if (!oldEpisodeId.isNullOrBlank()) {
-                getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
-                    .remove(segmentProgressKey(oldEpisodeId))
-                    .remove(segmentCompleteKey(oldEpisodeId))
-                    .remove(segmentElapsedKey(oldEpisodeId))
-                    .remove(segmentEtaKey(oldEpisodeId))
-                    .apply()
-            }
+            writeJitterLog(" playEpisodeAtIndex: KEEP segment task ${segmentTaskEpisodeId} running in background (oldEpisode=${segmentTaskEpisodeId}, index=$index)")
         }
         var targetIdx = index
         var targetEpisode = episodeList[targetIdx]
@@ -3400,6 +3429,8 @@ class PlayerActivity : AppCompatActivity() {
         Toast.makeText(this, "切换到: ${targetEpisode.title}", Toast.LENGTH_SHORT).show()
         currentEpisodeIndex = targetIdx
         currentEpisode = targetEpisode
+        // v3.2.67: 手动切换节目也刷新分段 UI 归属（幂等，广播路径会再次同步）。
+        syncSegmentUiForCurrentEpisode()
         // v2.4.159: Refresh episode nav buttons immediately when switching episodes.
         updateEpisodeNavVisibility()
         // Issue 10 Fix 2: clear old subtitles when switching episodes
@@ -4280,15 +4311,19 @@ class PlayerActivity : AppCompatActivity() {
             segmentProcessing = false
             // v2.4.148: Mark this episode as complete instead of resetting to 0. Keeping 1000‰
             // in prefs prevents a recreated Activity from briefly showing 0% before the result UI.
-            val currentEpisodeId = currentEpisode?.id
+            // v3.2.67: 完成标记写给任务所属节目——切换节目后任务节目≠当前节目，
+            // 避免把后台任务的完成标记错写到当前节目；界面只在任务节目==当前节目时收尾。
+            val taskEpisodeId = segmentTaskEpisodeId
+            val uiOwner = taskEpisodeId == null || taskEpisodeId == currentEpisode?.id
+            val currentEpisodeId = taskEpisodeId ?: currentEpisode?.id
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
                 .putInt(segmentProgressKey(currentEpisodeId), 1000)
                 .putBoolean(segmentCompleteKey(currentEpisodeId), true)
                 .apply()
-            lastSegmentProgress = 1000
+            if (uiOwner) lastSegmentProgress = 1000
             // v2.4.147: Stop the progress poller.
             stopSegmentProgressPoller()
-            if (_binding != null) {
+            if (_binding != null && uiOwner) {
                 binding.progressAi.visibility = View.GONE
                 binding.tvAiStatus.visibility = if (voiceSegments.isNotEmpty()) View.VISIBLE else View.GONE
                 binding.btnAiSegment.isEnabled = true
@@ -4365,7 +4400,10 @@ class PlayerActivity : AppCompatActivity() {
                 // v2.4.156: Interrupt the analyzer thread so the long-running decode/classify stops.
                 com.radio.app.utils.AudioSegmentAnalyzer.cancelCurrentAnalysis()
                 val cancelledEpisodeId = segmentTaskEpisodeId
-                segmentProcessing = false
+                // v3.2.67: 先按任务节目收尾（finish 内部读取 segmentTaskEpisodeId 作为标记对象），
+                // 再清除任务归属——否则切换节目后在新节目上取消后台任务，
+                // 完成标记会错写到当前（新）节目。
+                finishAiProcessing("segment")
                 segmentTaskEpisodeId = null
                 stopSegmentProgressPoller()
                 cancelSegmentNotification()
@@ -4377,7 +4415,6 @@ class PlayerActivity : AppCompatActivity() {
                         .remove(segmentEtaKey(cancelledEpisodeId))
                         .apply()
                 }
-                finishAiProcessing("segment")
                 Toast.makeText(this@PlayerActivity, "AI分段已取消", Toast.LENGTH_SHORT).show()
             }
         }
@@ -4396,8 +4433,10 @@ class PlayerActivity : AppCompatActivity() {
         // v2.4.186: Tag updates with the episode ID so stale sessions cannot take over
         // the shared notification while a newer task is running.
         val episodeId = segmentTaskEpisodeId ?: currentEpisode?.id ?: return
+        // v3.2.67: 通知标题取任务所属节目（切换节目后 currentEpisode 已是新节目）
+        val notifyEpisode = episodeList.find { it.id == episodeId } ?: currentEpisode
         com.radio.app.utils.SegmentNotificationHelper.update(
-            this, episodeId, buildSegmentNotificationTitle(currentEpisode), progress
+            this, episodeId, buildSegmentNotificationTitle(notifyEpisode), progress
         )
     }
 
@@ -4433,6 +4472,40 @@ class PlayerActivity : AppCompatActivity() {
         saveProcessingState()
     }
 
+    // v3.2.67: 状态文本是否为分段任务进度文本（用于切换节目时安全隐藏，不误伤字幕状态）。
+    private fun isSegmentProgressText(): Boolean {
+        if (_binding == null) return false
+        val t = binding.tvAiStatus.text?.toString() ?: return false
+        return t.startsWith("AI分段") || t.startsWith("音频分段分析中") || t.startsWith("MNN分析中")
+    }
+
+    // v3.2.67: 切换节目后统一刷新分段相关 UI——任务继续后台运行：
+    // 任务属于当前节目 → 恢复进度条/状态/按钮禁用并续跑轮询；
+    // 任务属于其他节目（或无任务） → 界面脱离（隐藏进度、启用按钮），任务在后台跑完。
+    private fun syncSegmentUiForCurrentEpisode() {
+        if (_binding == null) return
+        val taskEpId = segmentTaskEpisodeId
+        if (segmentProcessing && !taskEpId.isNullOrBlank() && taskEpId == currentEpisode?.id) {
+            lastSegmentProgress = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+                .getInt(segmentProgressKey(taskEpId), 0)
+            binding.progressAi.visibility = View.VISIBLE
+            binding.progressAi.progress = lastSegmentProgress
+            binding.tvAiStatus.visibility = View.VISIBLE
+            binding.tvAiStatus.text = buildStatusText("segment", lastSegmentProgress)
+            binding.btnAiSegment.isEnabled = false
+            startSegmentProgressPoller()
+        } else {
+            stopSegmentProgressPoller()
+            lastSegmentProgress = 0
+            binding.progressAi.visibility = View.GONE
+            if (isSegmentProgressText()) binding.tvAiStatus.visibility = View.GONE
+            binding.btnAiSegment.isEnabled = true
+            if (segmentProcessing && !taskEpId.isNullOrBlank()) {
+                writeJitterLog(" syncSegmentUi: task ${taskEpId} kept in background, UI detached (current=${currentEpisode?.id})")
+            }
+        }
+    }
+
     private fun buildStatusText(taskType: String, progress: Int): String {
         val modelLabel = if (taskType == "segment") getCurrentAiModelLabel() else getCurrentAsrLabel()
         // v2.4.152: progress is now 0-1000 permille (0.1% steps). Display as x.x%.
@@ -4445,7 +4518,7 @@ class PlayerActivity : AppCompatActivity() {
         playbackService?.forceSaveCurrentPosition()
         getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
             putBoolean("subtitle_processing", false)
-            putBoolean("segment_processing", false)
+            // v3.2.67: 切换节目不清除 segment_processing，保留后台分段任务状态。
         }.apply()
 
         val settings = AppSettings.getInstance(this)
@@ -4514,7 +4587,7 @@ class PlayerActivity : AppCompatActivity() {
         playbackService?.forceSaveCurrentPosition()
         getSharedPreferences("player_processing_state", MODE_PRIVATE).edit().apply {
             putBoolean("subtitle_processing", false)
-            putBoolean("segment_processing", false)
+            // v3.2.67: 切换节目不清除 segment_processing，保留后台分段任务状态。
         }.apply()
 
         val settings = AppSettings.getInstance(this)
@@ -5336,7 +5409,8 @@ class PlayerActivity : AppCompatActivity() {
             } else {
                 binding.btnGenerateSubtitle.isEnabled = true
             }
-            if (segmentProcessing) {
+            // v3.2.67: 只有任务属于当前节目才恢复进度 UI；否则任务在后台继续，界面脱离。
+            if (segmentProcessing && !segmentTaskEpisodeId.isNullOrBlank() && segmentTaskEpisodeId == currentEpisode?.id) {
                 binding.btnAiSegment.isEnabled = false
                 binding.progressAi.visibility = View.VISIBLE
                 binding.progressAi.progress = lastSegmentProgress
@@ -5359,6 +5433,12 @@ class PlayerActivity : AppCompatActivity() {
                 updateSegmentNotification(lastSegmentProgress, restoreElapsedText, restoreEtaText)
                 // v2.4.147: Start polling persisted progress in case the original callback was lost.
                 startSegmentProgressPoller()
+            } else if (segmentProcessing) {
+                // v3.2.67: 任务属于其他节目——后台继续跑，当前界面不显示其进度。
+                lastSegmentProgress = 0
+                binding.btnAiSegment.isEnabled = true
+                binding.progressAi.visibility = View.GONE
+                if (isSegmentProgressText()) binding.tvAiStatus.visibility = View.GONE
             } else {
                 binding.btnAiSegment.isEnabled = true
                 // v2.4.148: Ensure completed episode's progress UI is hidden even if prefs

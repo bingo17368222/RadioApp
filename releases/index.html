@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.66 安装</title>
+<title>RadioApp v3.2.67 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.66</div>
+  <div class="version">v3.2.67</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.66</h3>
+    <h3>更新内容 v3.2.67</h3>
     <ul>
-      <li>修复"上一个节目"跨天误跳：从 20250918《下班路上》按上一个节目却跳到 20250917 同名节目——当前节目不在播放列表（历史跳转/重启恢复后索引过期）时，上一个/下一个会立即越界误入跨天分支；现在先按当前节目自身日期重建列表、定位真实位置，再切换相邻节目，跨天只在真正到达当天边界时发生</li>
+      <li>切换节目时保留 AI 分段任务继续运行：手动/自动切换节目不再取消正在后台分析的分段任务，任务跑完后结果照常存库并标记完成；进度条与通知按节目隔离，切换后旧任务进度不再泄漏到新节目界面，切回原节目即可看到其进度与结果</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.66.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.67.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
