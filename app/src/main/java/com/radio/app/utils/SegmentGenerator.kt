@@ -900,6 +900,17 @@ object SegmentGenerator {
         return false
     }
 
+    /**
+     * v3.2.64-fix: 判断抢救块是否贴水段边缘（距段首或段尾 <= INTRO_FP_EDGE_SLACK_MS(3s)）。
+     * 与 isDeepInFingerprintWater 的"距区间两端均>=3s才算深埋"完全互补：深埋抑制拦中部、
+     * 本判据豁免边缘，落实 v3.2.22 "贴边人声照常救回"的设计。
+     * 用途：贴边块豁免 isMusicLikePcm 非音乐确认——带BGM的主持人讲话响度常超 SONG_RMS_MIN(4200)，
+     * 被误判音乐而拒救，表现为"指纹水货分段末尾是几秒/十几秒主持人讲话"
+     * （用户反馈 20250918 下班路上全城娱乐 1:58:00~1:58:14，v3.2.63 前多版未彻底解决）。
+     */
+    private fun atSegEdge(startMs: Long, endMs: Long, seg: VoiceSegment): Boolean =
+        (startMs - seg.start) <= INTRO_FP_EDGE_SLACK_MS || (seg.end - endMs) <= INTRO_FP_EDGE_SLACK_MS
+
     /** v3.1.230-fix: 填充 isSpeech 里长度<=maxHole 的非语音洞（消除句内停顿导致的同句切分）。 */
     private fun fillSpeechHoles(isSpeech: MutableList<Boolean>, maxHole: Int) {
         if (isSpeech.size <= 2) return
@@ -1187,7 +1198,9 @@ object SegmentGenerator {
                 .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
                 // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
                 // 做二次确认，凡整段偏"音乐/歌唱"(强谐波占比高)一律不抢救，护住完整歌曲不被切成十几段。
-                .filter { (a, b) -> !isMusicLikePcm(pcmFile, a, b) }
+                // v3.2.64-fix: 贴边块豁免该确认——水段首/尾(<=3s)的带BGM主持人讲话响度超标被误判音乐拒救，
+                // 表现为"指纹水货分段末尾是几秒/十几秒讲话"；中部仍需非音乐确认护歌。
+                .filter { (a, b) -> atSegEdge(a, b, seg) || !isMusicLikePcm(pcmFile, a, b) }
                 .sortedBy { it.first }
                 // v3.2.4-fix: 合并间隔<=PCMS_MERGE_GAP_MS的相邻讲话run，
                 // 把"同一句话因短暂停顿/呼吸被切成多段"重新连成一段，消除碎片；
@@ -1689,7 +1702,11 @@ object SegmentGenerator {
      * - 满足则把该干段并回左侧水段（还原为歌曲的一部分）
      * @return 还原次数
      */
-    private fun reabsorbTinyIsolatedSpeech(segments: MutableList<VoiceSegment>, pcmFile: File?): Int {
+    private fun reabsorbTinyIsolatedSpeech(
+        segments: MutableList<VoiceSegment>,
+        layer2SpeechRuns: List<VoiceSegment>,
+        pcmFile: File?
+    ): Int {
         if (segments.size <= 2) return 0
         segments.sortBy { it.start }
         var reabsorbed = 0
@@ -1699,6 +1716,16 @@ object SegmentGenerator {
             val cur = segments[i]
             val right = segments[i + 1]
             val curDur = cur.end - cur.start
+            // v3.2.64-fix: 模型锚点豁免——抢救出的干段若与第二层YAMNet语音锚点重叠>=2秒，
+            // 视为真实主持讲话（含带BGM讲话：isCleanSpeechSegment 因响度超标判 false 会误吞），
+            // 不还原回水。根因（用户反馈 20250918 1:58:00~1:58:14 讲话被吞入指纹水货段末尾）：
+            // 抢救线切出14s讲话(isSimulated=true、<=60s、两侧皆水)后，带BGM讲话响度>SONG_RMS_MIN
+            // → isCleanSpeechSegment 判"非清声讲话" → !false=true → 被当歌曲人声块吞回水段。
+            // 歌曲人声块 YAMNet 通常判 Music、锚点不覆盖，仍照常还原护歌。
+            val modelSpeechOverlap = layer2SpeechRuns.any { d ->
+                d.hasVoice && d.start < cur.end && d.end > cur.start &&
+                    (minOf(d.end, cur.end) - maxOf(d.start, cur.start)) >= 2000L
+            }
             val isolated =
                 // v3.1.238-fix: 在"来源门控"之上新增"内容门控"，避免误吞真实主持讲话。
                 // 根因回顾：
@@ -1711,10 +1738,13 @@ object SegmentGenerator {
                 //  后者经 PCM 扫描抢救时本就满足 低过零率+低平坦度(干净讲话) 特征；
                 //  因此还原前用 PCM 内容复核：仅当该干段"不是干净清声讲话"(带音乐/噪声)时才还原进歌。
                 //  这样：真讲话(低zcr/flat)→保留独立成段；歌曲人声块(高zcr/flat)→还原，护住歌曲并降段数。
+                //  v3.2.64-fix: 响度复核对"带BGM主持人讲话"失效(BGM抬高rms→判非清声→误吞)，
+                //  叠加 YAMNet 锚点豁免兜底（见上方 modelSpeechOverlap）。
                 cur.hasVoice &&
                     cur.isSimulated &&
                     curDur in 1..PCMS_TINY_DRY_MS &&
                     !isCleanSpeechSegment(pcmFile, cur.start, cur.end) &&
+                    !modelSpeechOverlap &&
                     !left.hasVoice && !right.hasVoice
             if (isolated) {
                 // v3.1.233-fix: 把左侧水段扩展到右侧水段的末尾，一次性把
@@ -1863,8 +1893,10 @@ object SegmentGenerator {
             // v3.2.12-fix: 对候选做频谱"非音乐"确认（与 VAD 抢救线对齐）。
             // MAX_SPEECH_RESCUE_MS 放宽到 15s 后，用 isMusicLikePcm 过滤掉被 YAMNet 误判为干段
             // 的歌曲人声/乐音片段，护住完整歌曲不被切成上百块口播碎段。
+            // v3.2.64-fix: 贴边块豁免该确认——带BGM主持人讲话响度超标被误判音乐而拒救，
+            // 是"指纹水货分段末尾几秒/十几秒讲话未被抢救"的主根因之一（三处同修）。
             val confirmed = if (pcmFile != null && pcmFile.exists()) {
-                embedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
+                embedded.filter { atSegEdge(it.start, it.end, seg) || !isMusicLikePcm(pcmFile, it.start, it.end) }
             } else {
                 embedded
             }
@@ -1934,7 +1966,8 @@ object SegmentGenerator {
             val outsideFpEmbedded = embedded.filter { !isDeepInFingerprintWater(it.start, it.end) }
             if (outsideFpEmbedded.isEmpty()) { i--; continue }
             // 频谱"非音乐"确认：过滤掉强谐波(音乐/歌唱)的VAD窗口，只抢救真正的无BGM短讲话
-            val confirmed = outsideFpEmbedded.filter { !isMusicLikePcm(pcmFile, it.start, it.end) }
+            // v3.2.64-fix: 贴边块豁免——带BGM讲话响度超标被误判音乐拒救（三处同修之一）。
+            val confirmed = outsideFpEmbedded.filter { atSegEdge(it.start, it.end, seg) || !isMusicLikePcm(pcmFile, it.start, it.end) }
             if (confirmed.isEmpty()) { i--; continue }
             // 每个水段最多抢救N个，防止过度切开整段歌曲的口播
             val rescuedDry = confirmed.take(VAD_RESCUE_PER_WATER_MAX)
@@ -3711,7 +3744,7 @@ object SegmentGenerator {
         // 场景：歌曲内带人声片段被误判为短讲话抢救成 1.5~4s 干段，深埋两段长歌曲之间，
         // 或被相邻归并(干-短水-干)吞成长干段。此处优先将其并回水段，避免被归并逻辑固化。
         // v3.1.233: 先于 mergeAdjacentSpeechFragments 执行，防止歌内干段被归并吸收成难还原的长干段。
-        val reabsorbCount = reabsorbTinyIsolatedSpeech(finalSegments, pcmSourceFile)
+        val reabsorbCount = reabsorbTinyIsolatedSpeech(finalSegments, layer2SpeechRuns, pcmSourceFile)
         if (reabsorbCount > 0) {
             writeFingerprintLog(context, "三层架构: 还原${reabsorbCount}个孤立微段为水(歌曲人声还原)，总段数: ${finalSegments.size}段(干${finalSegments.count { it.hasVoice }}/水${finalSegments.count { !it.hasVoice }})")
             Log.i(TAG, "三层架构: 还原${reabsorbCount}个孤立微段为水 for episode=$episodeId")
