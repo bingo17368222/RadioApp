@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.64 安装</title>
+<title>RadioApp v3.2.65 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.64</div>
+  <div class="version">v3.2.65</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.64</h3>
+    <h3>更新内容 v3.2.65</h3>
     <ul>
-      <li>修复"指纹水货分段末尾残留几秒~十几秒主持人讲话"（如 20250918 下班路上全城娱乐 1:58:00~1:58:14）：带背景音乐的主持人讲话响度常超歌曲判定线，被三条抢救线的"非音乐确认"误判拒救、或切出后被"孤立微段还原"误吞回水段。现贴水段边缘（首尾3秒内）的候选块豁免非音乐确认（深埋抑制仍保护中部片头/歌曲不被挖碎），还原环节新增 YAMNet 语音锚点豁免——模型判为语音的块不再被吞回。歌曲主体仍受中部非音乐确认保护</li>
+      <li>继续修复"指纹水货分段末尾残留主持人讲话"（20250918 下班路上 1:58:00 起 17 秒路况播报）：①层1命中区间不进第二层 YAMNet，锚点线无锚点可用，VAD 抢救线的 15 秒重叠上限把 17 秒讲话确定性拒救——上限提升到 30 秒；②深埋抑制判据只看指纹区间不看水段，区间中部的判定会错误拦下贴水段末尾的讲话——贴水段边缘（首尾 3 秒内）的候选豁免深埋，段中部片头/歌曲保护不变</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.64.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.65.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

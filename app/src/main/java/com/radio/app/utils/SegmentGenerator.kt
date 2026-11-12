@@ -778,7 +778,11 @@ object SegmentGenerator {
     // 原 8s 上限使 >8s 的讲话在 rescueShortSpeechInWater / rescueSpeechByVadAndPcmInWater
     // 两条锚点线上都不被抢救，仍留在指纹水段内。放宽到 15s 覆盖此场景；
     // 歌曲/强谐波仍由调用处的 isMusicLikePcm 频谱确认拦下，护住整段歌不被切碎。
-    private val MAX_SPEECH_RESCUE_MS = 15000L // 15秒
+    // v3.2.65-fix: 15秒→30秒。根因（用户反馈 20250918 下班路上 1:58:00 起17秒路况播报讲话
+    // 留在指纹水货段末尾）：层1命中区间按 v3.2.34 不再进第2层YAMNet（锚点线无锚点可用），
+    // 剩余 VAD 抢救线对重叠>15秒的讲话一律拒救——17秒>15秒被确定性拦死。
+    // 提到30秒：覆盖真实播报/串场讲话（17~30秒）；超30秒的重叠仍拒，护歌保留。
+    private val MAX_SPEECH_RESCUE_MS = 30000L // 30秒
 
     // v3.1.224-fix: VAD抢救锚点最小持续（秒级以下视为杂音/音乐碎片，不抢救）
     // v3.2.16-fix: 1s -> 2s，跳过 1~2s 的 VAD 微碎窗口（口癖/换气/音乐碎片），降低分段总数；
@@ -1194,7 +1198,10 @@ object SegmentGenerator {
             // 照常救回，14s音乐片头的正确拆分由 cutByFingerprintWaterRanges 兜底。
             val rescued = allRuns
                 .map { r -> maxOf(r.first, seg.start) to minOf(r.second, seg.end) }
-                .filter { (a, b) -> !isDeepInFingerprintWater(a, b) }
+                // v3.2.65-fix: 贴水段边缘的run豁免深埋抑制——深埋判据只看指纹区间（区间可远长于
+                // 当前水段），run可能"距区间两端>=3s"却贴着水段末尾（如17秒路况播报在段尾），
+                // 被错误拦下。贴段边(<=3s)即救，与片头口播的深埋保护（段中部）不冲突。
+                .filter { (a, b) -> atSegEdge(a, b, seg) || !isDeepInFingerprintWater(a, b) }
                 .filter { (a, b) -> (b - a) in PCMS_RUN_MIN_MS..PCMS_RUN_MAX_MS_V3 }
                 // v3.1.230-fix: 谐波比上界已让 findSpeechRunsInPcm 不判乐音；再以 isMusicLikePcm
                 // 做二次确认，凡整段偏"音乐/歌唱"(强谐波占比高)一律不抢救，护住完整歌曲不被切成十几段。
@@ -1963,7 +1970,9 @@ object SegmentGenerator {
             // v3.2.22-fix: 恢复 v3.2.18 的指纹水区抑制（深埋判据，见 isDeepInFingerprintWater）。
             // 仅过滤"完全落在>=15s指纹区间内、且距两端均>=3s"的VAD锚点（真实台标/片头/歌曲），
             // 防止抢救线把片头内部口播挖成干段后被归并线吞入大干段；贴边人声照常救回。
-            val outsideFpEmbedded = embedded.filter { !isDeepInFingerprintWater(it.start, it.end) }
+            // v3.2.65-fix: 贴水段边缘(<=3s)的锚点豁免深埋——深埋判据看指纹区间而非水段，
+            // 段尾的17秒路况播报可能距区间两端>=3s被错误拦下（区间可远长于水段）。
+            val outsideFpEmbedded = embedded.filter { atSegEdge(it.start, it.end, seg) || !isDeepInFingerprintWater(it.start, it.end) }
             if (outsideFpEmbedded.isEmpty()) { i--; continue }
             // 频谱"非音乐"确认：过滤掉强谐波(音乐/歌唱)的VAD窗口，只抢救真正的无BGM短讲话
             // v3.2.64-fix: 贴边块豁免——带BGM讲话响度超标被误判音乐拒救（三处同修之一）。
