@@ -4454,6 +4454,13 @@ class PlayerActivity : AppCompatActivity() {
 
         // Ensure currentEpisodeIndex is correct
         val actualIdx = episodes.indexOfFirst { it.id == currentEpisode?.id }
+        // v3.2.66-fix: 当前节目不在列表中（从播放历史跳转、或服务恢复后索引过期）时，
+        // 用过期索引扫描会立刻越界、误入跨天分支——在 20250918《下班路上》按"上一个节目"
+        // 却直接跳到 20250917 同名节目的根因。先按当前节目自身日期重建列表定位，再继续切换。
+        if (actualIdx < 0 && currentEpisode != null) {
+            repairEpisodeListForCurrent { playNextEpisode() }
+            return
+        }
         if (actualIdx >= 0) currentEpisodeIndex = actualIdx
         android.util.Log.d("PlayerActivity", "playNextEpisode: currentIdx=$currentEpisodeIndex, listSize=${episodes.size}")
 
@@ -4516,6 +4523,12 @@ class PlayerActivity : AppCompatActivity() {
 
         // Ensure currentEpisodeIndex is correct
         val actualIdx = episodes.indexOfFirst { it.id == currentEpisode?.id }
+        // v3.2.66-fix: 同 playNextEpisode——当前节目不在列表时禁止用过期索引扫描，
+        // 先按其日期重建列表定位真实位置，避免"上一个节目"直接误跳到前一天。
+        if (actualIdx < 0 && currentEpisode != null) {
+            repairEpisodeListForCurrent { playPrevEpisode() }
+            return
+        }
         if (actualIdx >= 0) currentEpisodeIndex = actualIdx
         android.util.Log.d("PlayerActivity", "playPrevEpisode: currentIdx=$currentEpisodeIndex, listSize=${episodes.size}")
 
@@ -4571,6 +4584,66 @@ class PlayerActivity : AppCompatActivity() {
         if (idx < 0) return null
         val targetIdx = idx + direction
         return if (targetIdx in episodes.indices) episodes[targetIdx] else null
+    }
+
+    /**
+     * v3.2.66-fix: 修复"上一个/下一个节目"跨天误跳（2026-11-13 日志实证）。
+     * 根因：从播放历史点击进入的节目可能不在 episodeList 中（列表仍是别天的），
+     * 或服务恢复时 indexOfFirst 找不到被 coerce 成 0；playPrev/Next 拿过期索引扫描
+     * 会立刻越界并误入 fetchAndPlayCrossDayEpisode——在 20250918《下班路上》按
+     * "上一个节目"却跳到 20250917 同名节目。
+     * 此处按当前节目自身日期重新拉取当日列表（保留当前节目自身），定位到真实索引后
+     * 才回调 afterRepair；失败时只提示、不回调，保证既不递归、也不再误跳别天。
+     */
+    private fun repairEpisodeListForCurrent(afterRepair: () -> Unit) {
+        val episode = currentEpisode
+        if (episode == null) {
+            Toast.makeText(this, "无法定位当前节目，无法切换", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val stationId = episode.stationId
+        val broadcastAt = episode.broadcastAt ?: ""
+        val dateStr = if (broadcastAt.length >= 10) broadcastAt.substring(0, 10) else ""
+        if (stationId.isBlank() || dateStr.isBlank()) {
+            Toast.makeText(this, "无法定位当前节目日期，无法切换", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "正在定位相邻节目...", Toast.LENGTH_SHORT).show()
+        android.util.Log.w("PlayerActivity", "repairEpisodeListForCurrent: current=${episode.id} not in list(size=${episodeList.size}), rebuilding from $dateStr")
+        Thread {
+            try {
+                val apiService = com.radio.app.network.EpisodeApiService.getInstance()
+                val settings = AppSettings.getInstance(this@PlayerActivity)
+                val dayEpisodes = apiService.fetchEpisodesByDateSync(stationId, dateStr)
+                val valid = dayEpisodes?.filter { it.audioUrl.isNotBlank() && it.audioUrl.startsWith("http") } ?: emptyList()
+                // 保留当前节目自身（即使被标记不喜欢/无需预处理），其余沿用连续播放的过滤规则
+                val repaired = valid.filter {
+                    it.id == episode.id ||
+                        (!settings.isDisliked(it.id) && !settings.isDislikedByTitle(it.stationId, it.title)
+                            && !settings.isNoPreprocess(it.id ?: ""))
+                }
+                runOnUiThread {
+                    if (_binding == null) return@runOnUiThread
+                    val idx = repaired.indexOfFirst { it.id == episode.id }
+                    if (idx < 0) {
+                        android.util.Log.w("PlayerActivity", "repairEpisodeListForCurrent: ${episode.id} not found on $dateStr, abort switch")
+                        Toast.makeText(this@PlayerActivity, "未找到当前节目所在日期的列表，无法切换", Toast.LENGTH_SHORT).show()
+                        return@runOnUiThread
+                    }
+                    episodeList = ArrayList(repaired)
+                    saveEpisodeListToPrefs()
+                    currentEpisodeIndex = idx
+                    android.util.Log.d("PlayerActivity", "repairEpisodeListForCurrent: rebuilt ${repaired.size} episodes on $dateStr, currentIdx=$idx")
+                    afterRepair()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("PlayerActivity", "repairEpisodeListForCurrent failed", e)
+                runOnUiThread {
+                    if (_binding == null) return@runOnUiThread
+                    Toast.makeText(this@PlayerActivity, "获取节目列表失败，无法切换", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     /**

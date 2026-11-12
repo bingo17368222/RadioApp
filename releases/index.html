@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.65 安装</title>
+<title>RadioApp v3.2.66 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.65</div>
+  <div class="version">v3.2.66</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.65</h3>
+    <h3>更新内容 v3.2.66</h3>
     <ul>
-      <li>继续修复"指纹水货分段末尾残留主持人讲话"（20250918 下班路上 1:58:00 起 17 秒路况播报）：①层1命中区间不进第二层 YAMNet，锚点线无锚点可用，VAD 抢救线的 15 秒重叠上限把 17 秒讲话确定性拒救——上限提升到 30 秒；②深埋抑制判据只看指纹区间不看水段，区间中部的判定会错误拦下贴水段末尾的讲话——贴水段边缘（首尾 3 秒内）的候选豁免深埋，段中部片头/歌曲保护不变</li>
+      <li>修复"上一个节目"跨天误跳：从 20250918《下班路上》按上一个节目却跳到 20250917 同名节目——当前节目不在播放列表（历史跳转/重启恢复后索引过期）时，上一个/下一个会立即越界误入跨天分支；现在先按当前节目自身日期重建列表、定位真实位置，再切换相邻节目，跨天只在真正到达当天边界时发生</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.65.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.66.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
