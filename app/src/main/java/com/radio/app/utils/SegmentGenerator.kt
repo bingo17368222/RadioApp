@@ -1758,9 +1758,10 @@ object SegmentGenerator {
      * 根因与作用见调用处注释。本函数作为整条后处理链路最后一环，把相邻且首尾相接
      * （时间上无缝，gap<=10ms容差）的同类型段合并为一段：
      *  - 同属"干"：both.hasVoice == true，合并为一个连续干货段（主持人或歌曲人声的连续讲话）。
-     *  - 同属"水"：both 均为水标签，合并为一个连续水段。
+     *  - 同属"水"：两个非干段（hasVoice=false，含水货/指纹水货/歌曲/音乐/静音等一切应跳过内容）。
      * 绝不在干/水之间合并（不推翻既有分类）。合并受最大长度上限约束：
-     *  - 干段：不超 DRY_MERGE_CAP_MS（10分钟，v3.2.47 由6分钟放宽，修复连续干货不合并）
+     *  - 干段：不超 MAX_DRY_SEGMENT_LENGTH_MS（30分钟，v3.2.63 由 DRY_MERGE_CAP_MS 10分钟
+     *    对齐到 R3 硬规则上限，修复连续干货不合并——与"水段合并上限==R3水段上限"的对称模式一致）
      *  - 水段：不超 MAX_WATER_SEGMENT_LENGTH_MS（10分钟，v3.2.50 由5分钟放宽，修复连续水分段不合并）
      * @return 合并次数
      */
@@ -1774,15 +1775,31 @@ object SegmentGenerator {
             val b = segments[i + 1]
             val contiguous = b.start <= a.end + 10
             val sameDry = a.hasVoice && b.hasVoice
-            val sameWater = !a.hasVoice && !b.hasVoice &&
-                isWaterLabel(a.label) && isWaterLabel(b.label)
+            // v3.2.63-fix 根因2: 水侧合并不再要求两侧都是 isWaterLabel。
+            // 此前 "歌曲/音乐" 标签不在 isWaterLabel 内（仅水货/指纹水货/水货(漏判召回)），
+            // 导致 "歌曲+水货"、"指纹水货+歌曲" 等两个非干段（都应跳过）因标签不同被判为
+            // 不同类型而永不合并。日志实证（最终结果中并排残留，合并后均<10分钟上限）：
+            //  09-19-3 指纹水货173.8s+歌曲82.9s、09-19-10 歌曲28.9s+指纹水货323.1s、
+            //  09-26-3 歌曲241.3s+水货188.2s。
+            // 现统一按 hasVoice 分型：两个非干段即同类型，可合并（仍受水段上限约束）。
+            val sameWater = !a.hasVoice && !b.hasVoice
             val sameType = sameDry || sameWater
             if (contiguous && sameType) {
                 val newEnd = maxOf(a.end, b.end)
                 // 长度上限检查，避免合并成超长巨段
                 val newLen = newEnd - a.start
                 val tooLong = if (sameDry) {
-                    newLen >= DRY_MERGE_CAP_MS
+                    // v3.2.63-fix 根因1: 干段合并上限由 DRY_MERGE_CAP_MS(10分钟) 对齐到
+                    // R3 硬规则上限 MAX_DRY_SEGMENT_LENGTH_MS(30分钟)——与水段合并上限
+                    // == R3 水段上限 的既有对称模式一致。此前 10 分钟上限使两个各自合法
+                    // 的相邻干货段合计超 10 分钟即被拒、并排残留：
+                    //  日志实证 09-22-1 5255104~5832960(9.6分钟)+5832960~5894784(61.8秒)
+                    //  =10.66分钟被拒；09-17-1 871744~920960(49秒)+920960~1572948(10.9分钟)
+                    //  =11.7分钟被拒。
+                    // 超 30 分钟的合并仍被拒绝（由 R3 如实上报）；片花/歌曲边界由其后的
+                    // cutSongByLoudnessJump / cutByFingerprintWaterRanges 切出为"歌曲"段
+                    // （类型变化）保留，而不是保留无意义的干货内部分界。
+                    newLen >= MAX_DRY_SEGMENT_LENGTH_MS
                 } else {
                     newLen >= MAX_WATER_SEGMENT_LENGTH_MS
                 }
@@ -1791,7 +1808,10 @@ object SegmentGenerator {
                     continue
                 }
                 segments.removeAt(i + 1)
-                segments[i] = a.copy(end = newEnd)
+                // v3.2.63: 跨标签合并（歌曲+水货、静音+水货等）时保留较长一侧的标签，
+                // 由占时更长的内容决定显示名，避免短片段标签覆盖主体内容。
+                val keepLabel = if (b.end - b.start > a.end - a.start) b.label else a.label
+                segments[i] = a.copy(end = newEnd, label = keepLabel)
                 merged++
                 // 不递增：新的合并段可能与下一个同类型段再次构成连续段
             } else {
