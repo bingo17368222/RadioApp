@@ -2012,10 +2012,11 @@ class PlayerActivity : AppCompatActivity() {
     // 标记后更新 VoiceSegment.hasVoice 字段并通知 adapter 刷新。
     private fun showSegmentMarkDialog(position: Int, segment: VoiceSegment) {
         val options = arrayOf("标记为干货", "标记为水货", "添加为水分指纹")
+        // v3.2.73: 判水原因并入标题——setMessage 与 setItems 共存时菜单列表不显示
+        // （v3.2.70 引入），现回归标题+菜单的原组合，判水原因仍随对话框展示。
+        val markTitle = "手动标记分段 · ${segment.label ?: "无"}·${segment.judgementReason() ?: "无（干货段）"}"
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("手动标记分段")
-            // v3.2.70: 分段详情标注判水原因（指纹命中/模型判水/漏判召回/手动标记）
-            .setMessage("当前标签：${segment.label ?: "无"}，判水原因：${segment.judgementReason() ?: "无（干货段）"}")
+            .setTitle(markTitle)
             .setItems(options) { dialog, which ->
                 when (which) {
                     0, 1 -> {
