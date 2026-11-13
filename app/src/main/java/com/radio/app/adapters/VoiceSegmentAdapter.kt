@@ -1,10 +1,14 @@
 package com.radio.app.adapters
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.radio.app.R
@@ -68,6 +72,22 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
         val reason = if (isDry) null else segment.judgementReason()
         holder.tvType.text = if (isDry) "干货" else "水分·${reason ?: "未知"}"
 
+        // v3.2.71: 指纹命中素材去重key——显示截断预览，点击复制完整key（分段日志里可对照命中时间轴）
+        val hitKey = segment.hitKey
+        if (!isDry && !hitKey.isNullOrBlank()) {
+            holder.tvHitKey.visibility = View.VISIBLE
+            val simPart = if (segment.hitSim > 0) " 相似度${segment.hitSim}%" else ""
+            holder.tvHitKey.text = "指纹去重key: ${hitKey.take(16)}…${simPart} 点击复制"
+            holder.tvHitKey.setOnClickListener { v ->
+                val cm = v.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("指纹去重key", hitKey))
+                Toast.makeText(v.context, "去重key已复制，可到指纹管理搜索试听", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            holder.tvHitKey.visibility = View.GONE
+            holder.tvHitKey.setOnClickListener(null)
+        }
+
         val ctx = holder.itemView.context
         val typedValue = android.util.TypedValue()
         val theme = ctx.theme
@@ -117,5 +137,6 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
         val tvLabel: TextView = view.findViewById(R.id.tv_label)
         val tvType: TextView = view.findViewById(R.id.tv_type)
         val ivManualMark: ImageView = view.findViewById(R.id.iv_manual_mark)
+        val tvHitKey: TextView = view.findViewById(R.id.tv_hit_key)
     }
 }

@@ -4453,6 +4453,10 @@ object SegmentGenerator {
         Log.i(TAG, fpGroupMsg)
         writeFingerprintLog(context, fpGroupMsg)
 
+        // v3.2.71: 第一层指纹命中记录——生成水段时把命中素材去重key挂到对应分段，
+        // 片段列表显示"去重key=xxx 点击复制"，拿key到指纹管理搜索试听
+        data class Layer1Hit(val key: String, val sim: Int, val start: Long, val end: Long)
+        val hitRecords = mutableListOf<Layer1Hit>()
         val matchedRanges = mutableListOf<Pair<Long, Long>>()
         val hitDetails = mutableListOf<String>()
         var totalWindows = 0
@@ -4608,6 +4612,8 @@ object SegmentGenerator {
                         val startMs = (hitStartP * msPerFrame).toLong()
                         val endMs = ((hitStartP + tl) * msPerFrame).toLong()
                         matchedRanges.add(startMs to endMs)
+                        // v3.2.71: 记录命中素材去重key+相似度，生成水段时挂载
+                        hitRecords.add(Layer1Hit(entry.originalFp, (bestRawSim * 100).toInt(), startMs, endMs))
                         longFpMatchedCount++
                         if (entry.isAuto) longFpAutoMatchedCount++
                         // v3.2.24-fix: ID级命中日志——区分自动晋升/金标准指纹与命中方式，
@@ -4737,6 +4743,8 @@ object SegmentGenerator {
                     val startMs = hitStartMs
                     val endMs = hitEndMs
                     matchedRanges.add(startMs to endMs)
+                    // v3.2.71: 记录命中素材去重key+相似度，生成水段时挂载
+                    hitRecords.add(Layer1Hit(matchedDedupKey ?: "", (bestSim * 100).toInt(), startMs, endMs))
                     matchedWindows++
                     if (matchedWindows <= 20 || matchedWindows % 10 == 0) {
                         hitDetails.add("${startMs/1000}秒(相似度:${"%.0f".format(bestSim*100)}%)")
@@ -4832,12 +4840,18 @@ object SegmentGenerator {
                     isSimulated = false
                 })
             }
+            // v3.2.71: 把第一层命中素材去重key挂到重叠的水段——取重叠命中中相似度最高的
+            val bestHit = hitRecords.filter { it.key.isNotEmpty() && it.end > waterRange.first && it.start < waterRange.second }.maxByOrNull { it.sim }
             segments.add(VoiceSegment().apply {
                 start = waterRange.first
                 end = waterRange.second
                 hasVoice = false
                 label = "指纹水货"
                 isSimulated = false
+                if (bestHit != null) {
+                    hitKey = bestHit.key
+                    hitSim = bestHit.sim
+                }
             })
             currentPos = waterRange.second
         }
@@ -4955,6 +4969,9 @@ object SegmentGenerator {
                 if (matched) {
                     seg.hasVoice = false
                     seg.label = "水货(漏判召回)"
+                    // v3.2.71: 召回段挂命中素材去重key与相似度（片段列表显示+复制）
+                    seg.hitKey = matchedGoldKey
+                    seg.hitSim = (matchedSimilarity * 100).toInt()
                     recallCount++
                     // v3.2.70: 召回记录带mm:ss时间轴(日志搜"1:58"直接定位)+命中素材去重key(指纹管理按此搜索试听)
                     recallDetails.add("${fmtLogMmSs(seg.start)}-${fmtLogMmSs(seg.end)}(${seg.start/1000}-${seg.end/1000}s,相似度:${"%.0f".format(matchedSimilarity*100)}%,去重key=${matchedGoldKey ?: "unknown"})")
@@ -5053,6 +5070,9 @@ object SegmentGenerator {
                 if (matched) {
                     seg.hasVoice = false
                     seg.label = "水货(漏判召回)"
+                    // v3.2.71: 召回段挂命中素材去重key与相似度（片段列表显示+复制）
+                    seg.hitKey = matchedGoldKey
+                    seg.hitSim = (matchedSimilarity * 100).toInt()
                     recallCount++
                     // v3.2.70: 召回记录带mm:ss时间轴(日志搜"1:58"直接定位)+命中素材去重key(指纹管理按此搜索试听)
                     recallDetails.add("${fmtLogMmSs(seg.start)}-${fmtLogMmSs(seg.end)}(${seg.start/1000}-${seg.end/1000}s,相似度:${"%.0f".format(matchedSimilarity*100)}%,去重key=${matchedGoldKey ?: "unknown"})")

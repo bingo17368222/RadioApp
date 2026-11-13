@@ -11,7 +11,11 @@ data class VoiceSegment(
     var label: String? = null,
     var isManuallyMarked: Boolean = false,
     var isSkipThisTime: Boolean = false,
-    var isSimulated: Boolean = false
+    var isSimulated: Boolean = false,
+    // v3.2.71: 第一层指纹命中素材的去重key与相似度百分比(0-100)——
+    // 片段列表显示去重key并支持点击复制，拿去重key到指纹管理搜索试听
+    var hitKey: String? = null,
+    var hitSim: Int = 0
 ) : Parcelable, Serializable {
 
     constructor(parcel: Parcel) : this(
@@ -21,7 +25,9 @@ data class VoiceSegment(
         label = parcel.readString(),
         isManuallyMarked = parcel.readByte() != 0.toByte(),
         isSkipThisTime = parcel.readByte() != 0.toByte(),
-        isSimulated = parcel.readByte() != 0.toByte()
+        isSimulated = parcel.readByte() != 0.toByte(),
+        hitKey = parcel.readString(),
+        hitSim = parcel.readInt()
     )
 
     override fun writeToParcel(parcel: Parcel, flags: Int) {
@@ -32,6 +38,8 @@ data class VoiceSegment(
         parcel.writeByte(if (isManuallyMarked) 1 else 0)
         parcel.writeByte(if (isSkipThisTime) 1 else 0)
         parcel.writeByte(if (isSimulated) 1 else 0)
+        parcel.writeString(hitKey)
+        parcel.writeInt(hitSim)
     }
 
     override fun describeContents(): Int = 0

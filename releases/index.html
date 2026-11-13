@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.70 安装</title>
+<title>RadioApp v3.2.71 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.70</div>
+  <div class="version">v3.2.71</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.70</h3>
+    <h3>更新内容 v3.2.71</h3>
     <ul>
-      <li>指纹命中写入分段日志：命中时记录素材去重key + mm:ss 命中时间轴 + 相似度（第一层长指纹/窗口命中与第三层漏判召回全覆盖），重新分段后在日志搜 1:58 这样的时间点即可看到命中素材的去重key</li>
-      <li>分段详情标注判水原因：水分段显示"水分·指纹命中/模型判水/漏判召回/手动标记"，长按分段对话框同步展示当前判水原因</li>
-      <li>指纹管理新增搜索框：粘贴分段日志中的去重key（指纹字符串）即可定位素材试听，也支持按备注、节目ID过滤</li>
+      <li>播放页片段列表显示命中素材去重key：水分段下方展示"指纹去重key+相似度"，点击即可复制完整key，粘贴到指纹管理搜索框直接定位素材试听</li>
+      <li>指纹命中信息随分段持久化：重新分段后去重key保留在分段数据中，切换节目/重启不丢失</li>
+      <li>第一层长指纹/滑动窗口命中与第三层漏判召回命中的分段均带去重key</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.70.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.71.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
