@@ -558,7 +558,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // 避免 continueChain 死循环反复重试同一个不可下载的节目（precache.log 佐证：
     // 同一 NEXT 目标 sijiache_20250718_2100_2400.mp4 被扫描 2934 次、每 150ms 一轮、
     // 无任何下载推进，预缓存卡死且日志爆炸）。播放日期变化时清空，给旧目标重试机会。
-    private val failedPreCacheTargets = mutableSetOf<String>()
+    // v3.2.68-fix: 值改为拉黑时间戳（fileName -> 拉黑时刻），30 分钟 TTL 自动过期重试——
+    // 此前黑名单在播放日期不变时永不失效，配合巡逻"顺序优先等待"形成互等死锁
+    // （precache.log 佐证：09-24-9 拉黑后 141 轮巡逻原地打转 9 小时+，后续节目
+    // PCM 预生成整条队列停摆）。
+    private val failedPreCacheTargets = mutableMapOf<String, Long>()
+    private val PRECACHE_FAIL_TTL_MS = 30 * 60_000L  // 拉黑30分钟后自动给重试机会
+
+    // v3.2.68-fix: 判断文件当前是否处于有效失败黑名单（超时自动过期并移除）
+    private fun isPreCacheFailedNow(fileName: String): Boolean {
+        if (fileName.isBlank()) return false
+        val t = failedPreCacheTargets[fileName] ?: return false
+        if (System.currentTimeMillis() - t > PRECACHE_FAIL_TTL_MS) {
+            failedPreCacheTargets.remove(fileName)
+            writePreCacheLog("isPreCacheFailedNow: blacklist entry expired after ${PRECACHE_FAIL_TTL_MS/60_000}min, removed $fileName")
+            return false
+        }
+        return true
+    }
 
     // v3.1.133: 后续计划播放列表（当前节目之后的5个节目），每次切换节目后更新
     private val futurePlannedEpisodes = mutableListOf<Episode>()
@@ -1463,7 +1480,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                 continue
             }
             // v3.2.27-fix: 下载失败黑名单——失败过的目标直接跳过，让预缓存推进到下一个可下载节目
-            if (fileName in failedPreCacheTargets) {
+            // v3.2.68-fix: 改用带 TTL 的有效性判断（超时过期自动重试）
+            if (isPreCacheFailedNow(fileName)) {
                 skipFailed++
                 continue
             }
@@ -2729,7 +2747,8 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
     // 避免 continueChain 死循环反复重试同一个不可下载的节目
     private fun markPreCacheFailed(fileName: String, episode: Episode) {
         if (fileName.isNotBlank() && fileName != "unknown.mp4") {
-            failedPreCacheTargets.add(fileName)
+            // v3.2.68-fix: 记录拉黑时刻（30分钟TTL），而非永久黑名单
+            failedPreCacheTargets[fileName] = System.currentTimeMillis()
         }
         writePreCacheLog("markPreCacheFailed: blacklisted file=$fileName, ep=${episode.id}, failedPreCacheTargets.size=${failedPreCacheTargets.size}")
     }
@@ -3710,6 +3729,21 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
                     // Check if audio is cached
                     val fileName = extractCacheFileName(ep.audioUrl)
                     if (fileName !in cachedNames) {
+                        // v3.2.68-fix: 死锁修复——目标节目音频已被下载失败黑名单锁定时，
+                        // 预缓存永远不会再下载它（findPreCacheTarget 跳过黑名单目标），
+                        // 在此"等待预缓存"会形成互等死锁：巡逻等它下载好才继续，
+                        // 预缓存又永远不下载它（precache.log 佐证：09-24-9 拉黑后
+                        // 141 轮巡逻原地打转 9 小时+，后续节目 PCM 预生成整条队列停摆）。
+                        // 与 PCM 失败窗口让位逻辑一致：跳过该节目，继续处理后续已缓存节目。
+                        if (isPreCacheFailedNow(fileName)) {
+                            writePreCacheLog("patrolSubtitle:  ${ep.id} 音频下载失败已拉黑（TTL内），跳过等待继续本轮（不阻塞后续节目PCM/分段）")
+                            continue
+                        }
+                        // v3.2.68-fix: 非法URL同理——预缓存侧永远选不中它，等待只会死锁
+                        if (!ep.audioUrl.startsWith("http")) {
+                            writePreCacheLog("patrolSubtitle:  ${ep.id} 非法音频URL，跳过等待继续本轮（预缓存不下载此类目标）")
+                            continue
+                        }
                         withoutAudio++
                         // v3.1.2: 如果该未缓存节目在预缓存目标范围内，停止巡逻并触发预缓存，
                         // 避免跳过临近节目去处理更远的已缓存节目。

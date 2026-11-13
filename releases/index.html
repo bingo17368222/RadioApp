@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.67 安装</title>
+<title>RadioApp v3.2.68 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,14 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.67</div>
+  <div class="version">v3.2.68</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.67</h3>
+    <h3>更新内容 v3.2.68</h3>
     <ul>
-      <li>切换节目时保留 AI 分段任务继续运行：手动/自动切换节目不再取消正在后台分析的分段任务，任务跑完后结果照常存库并标记完成；进度条与通知按节目隔离，切换后旧任务进度不再泄漏到新节目界面，切回原节目即可看到其进度与结果</li>
+      <li>修复预生成 PCM 长时间停止工作：某节目音频下载失败被拉黑后，巡逻"顺序优先"永远等它、预缓存又永远跳过它，互等死锁导致后续节目 PCM/分段停摆 9 小时以上——现在巡逻跳过已拉黑节目继续推进，失败黑名单 30 分钟自动过期重试</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.67.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.68.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
