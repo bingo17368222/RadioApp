@@ -14,6 +14,24 @@
         android:textColor="?attr/appTextPrimary"
         android:textSize="14sp" />
 
+    <!-- v3.2.70: 去重key搜索——粘贴分段日志中的"去重key=..."直接定位素材试听 -->
+    <EditText
+        android:id="@+id/et_fingerprint_search"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="2dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="4dp"
+        android:hint="搜索：去重key / 备注 / 节目ID（可粘贴分段日志中的去重key）"
+        android:imeOptions="actionSearch"
+        android:inputType="text"
+        android:maxLines="1"
+        android:padding="10dp"
+        android:textColor="?attr/appTextPrimary"
+        android:textColorHint="?attr/appTextMuted"
+        android:textSize="13sp" />
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recycler_fingerprints"
         android:layout_width="match_parent"

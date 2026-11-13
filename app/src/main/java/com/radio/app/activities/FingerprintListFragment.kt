@@ -65,6 +65,11 @@ class FingerprintListFragment : Fragment() {
     }
 
     private var fingerprintType: String = "manual"
+
+    // v3.2.70: 指纹搜索状态——非空时 loadData 走 searchDataSync（含fingerprint列，按去重key过滤）
+    private var searchQuery: String = ""
+    private val searchDebounceHandler = Handler(Looper.getMainLooper())
+    private var searchDebounceRunnable: Runnable? = null
     private lateinit var dbHelper: RadioDatabaseHelper
     private lateinit var recyclerView: RecyclerView
     private lateinit var tvEmpty: TextView
@@ -100,6 +105,22 @@ class FingerprintListFragment : Fragment() {
         recyclerView = view.findViewById(R.id.recycler_fingerprints)
         tvEmpty = view.findViewById(R.id.tv_fingerprints_empty)
         tvCount = view.findViewById(R.id.tv_fingerprint_count)
+        // v3.2.70: 搜索框——粘贴分段日志中的去重key(指纹字符串)直接定位素材试听，
+        // 也支持按备注/节目ID过滤（350ms防抖，输入清空恢复默认列表）。
+        val etSearch = view.findViewById<android.widget.EditText>(R.id.et_fingerprint_search)
+        etSearch.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                searchDebounceRunnable?.let { searchDebounceHandler.removeCallbacks(it) }
+                val r = Runnable {
+                    searchQuery = s?.toString()?.trim() ?: ""
+                    if (view != null && isAdded) loadData()
+                }
+                searchDebounceRunnable = r
+                searchDebounceHandler.postDelayed(r, 350)
+            }
+        })
         return view
     }
 
@@ -541,7 +562,8 @@ class FingerprintListFragment : Fragment() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 try {
-                    loadDataSync()
+                    // v3.2.70: 搜索态走含fingerprint列的全量查询并按去重key/备注/节目ID过滤
+                    if (searchQuery.isNotEmpty()) searchDataSync(searchQuery) else loadDataSync()
                 } catch (e: Exception) {
                     Log.e(TAG, "loadData failed for type=$fingerprintType: ${e.message}")
                     null
@@ -595,6 +617,37 @@ class FingerprintListFragment : Fragment() {
                 val all = dbHelper.getAudioFingerprintsForList()
                 val auto = all.filter { !it.isGoldStandard }
                 AutomaticResult(auto)
+            }
+            else -> ManualResult(emptyList())
+        }
+    }
+
+    /**
+     * v3.2.70: 按去重key（整指纹字符串）搜索——配合分段日志中的"去重key=..."记录：
+     * 粘贴日志里的去重key即可命中该素材（也匹配备注与节目ID）。
+     * 搜索需读取被列表查询排除的fingerprint列，故走getAllAudioFingerprints（仅搜索时全量加载）。
+     */
+    private fun searchDataSync(query: String): Any {
+        return when (fingerprintType) {
+            "manual" -> {
+                val all = dbHelper.getAllAudioFingerprints()
+                ManualResult(all.filter {
+                    it.isGoldStandard && (it.fingerprint.contains(query, true) ||
+                        it.note.contains(query, true) || it.episodeId.contains(query, true))
+                })
+            }
+            "candidate" -> {
+                val candidates = dbHelper.getAllObservationPoolCandidates()
+                CandidateResult(candidates.filter {
+                    it.fingerprint.contains(query, true) || it.episodeId.contains(query, true)
+                })
+            }
+            "automatic" -> {
+                val all = dbHelper.getAllAudioFingerprints()
+                AutomaticResult(all.filter {
+                    !it.isGoldStandard && (it.fingerprint.contains(query, true) ||
+                        it.note.contains(query, true) || it.episodeId.contains(query, true))
+                })
             }
             else -> ManualResult(emptyList())
         }

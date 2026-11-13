@@ -2014,6 +2014,8 @@ class PlayerActivity : AppCompatActivity() {
         val options = arrayOf("标记为干货", "标记为水货", "添加为水分指纹")
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("手动标记分段")
+            // v3.2.70: 分段详情标注判水原因（指纹命中/模型判水/漏判召回/手动标记）
+            .setMessage("当前标签：${segment.label ?: "无"}，判水原因：${segment.judgementReason() ?: "无（干货段）"}")
             .setItems(options) { dialog, which ->
                 when (which) {
                     0, 1 -> {

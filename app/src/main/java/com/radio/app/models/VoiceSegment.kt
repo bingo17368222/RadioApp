@@ -42,6 +42,20 @@ data class VoiceSegment(
     }
 
     /**
+     * v3.2.70: 判水原因——供分段详情展示，把内部标签翻译为用户可读的原因：
+     * 指纹命中（第一层指纹匹配）/ 模型判水（第二层模型判定）/
+     * 漏判召回（第三层金标准指纹召回）/ 手动标记。干货段返回 null。
+     */
+    fun judgementReason(): String? {
+        if (isManuallyMarked) return "手动标记"
+        return when (label) {
+            "指纹水货" -> "指纹命中"
+            "水货(漏判召回)" -> "漏判召回"
+            else -> if (!hasVoice) "模型判水" else null
+        }
+    }
+
+    /**
      * Effective dry check: manually marked takes highest priority.
      * If manually marked as dry -> dry. If manually marked as water -> water.
      * Otherwise, fall back to AI-detected hasVoice.

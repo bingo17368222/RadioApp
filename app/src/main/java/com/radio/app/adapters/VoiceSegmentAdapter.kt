@@ -64,7 +64,9 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
         holder.tvLabel.text = segment.label ?: ""
 
         val isDry = segment.isEffectiveDry()
-        holder.tvType.text = if (isDry) "干货" else "水分"
+        // v3.2.70: 分段详情标注判水原因——水分段显示"水分·指纹命中/模型判水/漏判召回/手动标记"
+        val reason = if (isDry) null else segment.judgementReason()
+        holder.tvType.text = if (isDry) "干货" else "水分·${reason ?: "未知"}"
 
         val ctx = holder.itemView.context
         val typedValue = android.util.TypedValue()

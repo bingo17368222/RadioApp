@@ -221,6 +221,13 @@ object SegmentGenerator {
         }
     }
 
+    // v3.2.70: 毫秒→"mm:ss"（如 01:58）——分段日志命中记录用此格式写时间轴，
+    // 用户重新分段后可直接按 1:58 这样的时间点搜索指纹命中记录。
+    private fun fmtLogMmSs(ms: Long): String {
+        val s = (ms / 1000).toInt().coerceAtLeast(0)
+        return "%02d:%02d".format(s / 60, s % 60)
+    }
+
     // v3.1.98: 耗时格式化：将毫秒转为"X分Y秒Z毫秒"格式
     private fun formatDuration(ms: Long): String {
         if (ms <= 0) return "0秒"
@@ -4605,7 +4612,9 @@ object SegmentGenerator {
                         if (entry.isAuto) longFpAutoMatchedCount++
                         // v3.2.24-fix: ID级命中日志——区分自动晋升/金标准指纹与命中方式，
                         // 直接回答"晋升后是否匹配"（此前仅打印区间+相似度，无法定位到指纹）。
-                        val fpHitMsg = "长指纹预扫命中: 指纹#${entry.id}(${if (entry.isAuto) "自动晋升" else "金标准"}${if (entry.note.isNotEmpty()) "/${entry.note}" else ""}), 方式=${hitVia}, 长度=${tl}帧, 相似度=${"%.2f".format(bestRawSim)}, 区间=${startMs/1000}-${endMs/1000}s for episode=$episodeId"
+                        // v3.2.70: 补写去重key(整指纹字符串)+mm:ss时间轴——拿到去重key后可到
+                        // 指纹管理按去重key搜索定位该素材试听；搜日志中"1:58"即可看到命中。
+                        val fpHitMsg = "长指纹预扫命中: 指纹#${entry.id}(${if (entry.isAuto) "自动晋升" else "金标准"}${if (entry.note.isNotEmpty()) "/${entry.note}" else ""}), 去重key=${entry.originalFp}, 方式=${hitVia}, 长度=${tl}帧, 相似度=${"%.2f".format(bestRawSim)}, 区间=${fmtLogMmSs(startMs)}-${fmtLogMmSs(endMs)}(${startMs/1000}-${endMs/1000}s) for episode=$episodeId"
                         Log.i(TAG, fpHitMsg)
                         writeFingerprintLog(context, fpHitMsg)
                         // 更新该指纹（及同去重key指纹）的last_matched_at，与窗口循环批量更新口径一致
@@ -4734,10 +4743,12 @@ object SegmentGenerator {
                     }
                     // v3.2.24-fix: ID级命中日志——窗口循环命中时区分自动晋升/金标准指纹，
                     // 与长指纹预扫日志共同覆盖所有匹配路径。
+                    // v3.2.70: 补写去重key+mm:ss时间轴——日志搜"1:58"可见命中素材的去重key，
+                    // 拿去重key到指纹管理搜索定位试听。
                     val winHitFp = candidates.firstOrNull { it.id == matchedFpId }
                     if (winHitFp != null) {
                         if (winHitFp.isAuto) windowAutoMatchedCount++
-                        val fpHitMsg = "窗口匹配: 指纹#${winHitFp.id}(${if (winHitFp.isAuto) "自动晋升" else "金标准"}${if (winHitFp.note.isNotEmpty()) "/${winHitFp.note}" else ""}), 长度=${winHitFp.parsed.size}帧, 相似度=${"%.2f".format(bestSim)}, 区间=${startMs/1000}-${endMs/1000}s for episode=$episodeId"
+                        val fpHitMsg = "窗口匹配: 指纹#${winHitFp.id}(${if (winHitFp.isAuto) "自动晋升" else "金标准"}${if (winHitFp.note.isNotEmpty()) "/${winHitFp.note}" else ""}), 去重key=${winHitFp.originalFp}, 长度=${winHitFp.parsed.size}帧, 相似度=${"%.2f".format(bestSim)}, 区间=${fmtLogMmSs(startMs)}-${fmtLogMmSs(endMs)}(${startMs/1000}-${endMs/1000}s) for episode=$episodeId"
                         Log.i(TAG, fpHitMsg)
                         writeFingerprintLog(context, fpHitMsg)
                     }
@@ -4926,6 +4937,7 @@ object SegmentGenerator {
 
                 var matched = false
                 var matchedSimilarity = 0f
+                var matchedGoldKey: String? = null // v3.2.70: 命中金标准素材的去重key(指纹字符串)
                 for (goldFp in goldStandardFingerprints) {
                     val durationRatio = minOf(seg.end - seg.start, goldFp.durationMs).toFloat() /
                             maxOf(seg.end - seg.start, goldFp.durationMs).toFloat()
@@ -4935,6 +4947,7 @@ object SegmentGenerator {
                     if (sim >= LAYER3_RECALL_THRESHOLD) {
                         matched = true
                         matchedSimilarity = sim
+                        matchedGoldKey = goldFp.fingerprint // v3.2.70: 记录命中素材去重key供日志
                         break
                     }
                 }
@@ -4943,7 +4956,8 @@ object SegmentGenerator {
                     seg.hasVoice = false
                     seg.label = "水货(漏判召回)"
                     recallCount++
-                    recallDetails.add("${seg.start/1000}秒-${seg.end/1000}秒(相似度:${"%.0f".format(matchedSimilarity*100)}%)")
+                    // v3.2.70: 召回记录带mm:ss时间轴(日志搜"1:58"直接定位)+命中素材去重key(指纹管理按此搜索试听)
+                    recallDetails.add("${fmtLogMmSs(seg.start)}-${fmtLogMmSs(seg.end)}(${seg.start/1000}-${seg.end/1000}s,相似度:${"%.0f".format(matchedSimilarity*100)}%,去重key=${matchedGoldKey ?: "unknown"})")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "第三层指纹漏判召回: 片段${seg.start/1000}秒异常: ${e.message}")
@@ -5021,6 +5035,7 @@ object SegmentGenerator {
 
                 var matched = false
                 var matchedSimilarity = 0f
+                var matchedGoldKey: String? = null // v3.2.70: 命中金标准素材的去重key(指纹字符串)
                 for (goldFp in goldStandardFingerprints) {
                     val durationRatio = minOf(seg.end - seg.start, goldFp.durationMs).toFloat() /
                             maxOf(seg.end - seg.start, goldFp.durationMs).toFloat()
@@ -5030,6 +5045,7 @@ object SegmentGenerator {
                     if (sim >= LAYER3_RECALL_THRESHOLD) {
                         matched = true
                         matchedSimilarity = sim
+                        matchedGoldKey = goldFp.fingerprint // v3.2.70: 记录命中素材去重key供日志
                         break
                     }
                 }
@@ -5038,7 +5054,8 @@ object SegmentGenerator {
                     seg.hasVoice = false
                     seg.label = "水货(漏判召回)"
                     recallCount++
-                    recallDetails.add("${seg.start/1000}秒-${seg.end/1000}秒(相似度:${"%.0f".format(matchedSimilarity*100)}%)")
+                    // v3.2.70: 召回记录带mm:ss时间轴(日志搜"1:58"直接定位)+命中素材去重key(指纹管理按此搜索试听)
+                    recallDetails.add("${fmtLogMmSs(seg.start)}-${fmtLogMmSs(seg.end)}(${seg.start/1000}-${seg.end/1000}s,相似度:${"%.0f".format(matchedSimilarity*100)}%,去重key=${matchedGoldKey ?: "unknown"})")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "第三层指纹漏判召回: 片段${seg.start/1000}秒异常: ${e.message}")

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.69 安装</title>
+<title>RadioApp v3.2.70 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,14 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.69</div>
+  <div class="version">v3.2.70</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.69</h3>
+    <h3>更新内容 v3.2.70</h3>
     <ul>
-      <li>更换"复古收音机"桌面图标：原图标只是个播放按钮、没有收音机感，现改为木质复古收音机造型（喇叭网、调刻度盘、双铜旋钮、天线），五档分辨率同步更新</li>
+      <li>指纹命中写入分段日志：命中时记录素材去重key + mm:ss 命中时间轴 + 相似度（第一层长指纹/窗口命中与第三层漏判召回全覆盖），重新分段后在日志搜 1:58 这样的时间点即可看到命中素材的去重key</li>
+      <li>分段详情标注判水原因：水分段显示"水分·指纹命中/模型判水/漏判召回/手动标记"，长按分段对话框同步展示当前判水原因</li>
+      <li>指纹管理新增搜索框：粘贴分段日志中的去重key（指纹字符串）即可定位素材试听，也支持按备注、节目ID过滤</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.69.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.70.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>
