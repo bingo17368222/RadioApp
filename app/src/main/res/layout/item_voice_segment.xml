@@ -25,11 +25,13 @@
 
         <!-- v3.2.71: 指纹命中素材去重key——点击复制完整key，到指纹管理搜索试听 -->
         <TextView android:id="@+id/tv_hit_key"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textSize="10sp"
             android:textColor="?attr/appTextMuted"
             android:layout_marginTop="2dp"
+            android:maxLines="1"
+            android:ellipsize="end"
             android:visibility="gone" />
     </LinearLayout>
 

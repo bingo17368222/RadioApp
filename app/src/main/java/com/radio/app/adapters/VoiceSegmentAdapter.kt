@@ -83,9 +83,21 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
                 cm.setPrimaryClip(ClipData.newPlainText("指纹去重key", hitKey))
                 Toast.makeText(v.context, "去重key已复制，可到指纹管理搜索试听", Toast.LENGTH_SHORT).show()
             }
+            // v3.2.72: 修复长按菜单失灵——key行可点击后会吸收长按事件、不再冒泡到itemView，
+            // 导致水分段长按落点在key行区域时弹不出标记菜单。此处按与itemView相同的优先级
+            // 规则手动分发：OnItemLongClickListener优先、回退旧回调。
+            holder.tvHitKey.setOnLongClickListener {
+                if (itemLongClickListener != null) {
+                    itemLongClickListener?.onItemLongClick(position, segment)
+                } else {
+                    listener?.onSegmentLongClick(position, segment)
+                }
+                true
+            }
         } else {
             holder.tvHitKey.visibility = View.GONE
             holder.tvHitKey.setOnClickListener(null)
+            holder.tvHitKey.setOnLongClickListener(null)
         }
 
         val ctx = holder.itemView.context
