@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.77 安装</title>
+<title>RadioApp v3.2.78 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.77</div>
+  <div class="version">v3.2.78</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.77</h3>
+    <h3>更新内容 v3.2.78</h3>
     <ul>
-      <li>修复连续干货/连续水分段不合并：同类相邻段间的时间缝容忍放宽到1.5秒，短碎段夹在两个同型段之间时直接删除并合并两侧</li>
-      <li>指纹去重key改到长按菜单：长按分段弹出菜单新增"复制指纹去重key"项，点击复制完整key，到指纹管理搜索定位试听</li>
-      <li>片段列表不再显示去重key行，列表更清爽，长按菜单操作更集中</li>
+      <li>修复"正在处理中，请稍候"却看不到进度条的假死：分段任务增加心跳检测，进程被杀/任务中断后自动识别死任务并清理状态，按钮立即可重新发起分段</li>
+      <li>点击AI分段按钮时按任务归属提示：死任务直接重新开始，活任务属于当前节目时强制刷新进度条，属于其他节目时提示节目名</li>
+      <li>进度条兜底显示：任务运行期间每次进度更新都会强制显示进度条与状态文本，不再出现有任务无进度的干等</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.77.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.78.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

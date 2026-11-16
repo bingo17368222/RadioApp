@@ -134,6 +134,17 @@ class PlayerActivity : AppCompatActivity() {
     private fun segmentStartKey(episodeId: String?) = "${KEY_EPISODE_START_PREFIX}${episodeId ?: "unknown"}"
     private fun segmentElapsedKey(episodeId: String?) = "${KEY_EPISODE_ELAPSED_PREFIX}${episodeId ?: "unknown"}"
     private fun segmentEtaKey(episodeId: String?) = "${KEY_EPISODE_ETA_PREFIX}${episodeId ?: "unknown"}"
+    // v3.2.78: 任务心跳key——任务线程每次进度回调刷新时间戳；用于检测任务是否真实存活
+    // （进程被杀/线程中断后 prefs 里的 segment_processing=true 是陈旧残留，会永久卡住按钮）。
+    private fun segmentBeatKey(episodeId: String?) = "beat_${episodeId ?: "unknown"}"
+    // v3.2.78: 心跳超过该时长未跳动即判定任务已死亡（第三层等无进度阶段的最长盲区考虑）。
+    private val SEGMENT_TASK_BEAT_TIMEOUT_MS = 5 * 60_000L
+    private fun isSegmentTaskBeatDead(episodeId: String?): Boolean {
+        val epId = episodeId ?: return true
+        val pp = getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE)
+        val beat = maxOf(pp.getLong(segmentBeatKey(epId), 0L), pp.getLong(segmentStartKey(epId), 0L))
+        return beat > 0L && System.currentTimeMillis() - beat > SEGMENT_TASK_BEAT_TIMEOUT_MS
+    }
     // v2.4.147: Poll persisted progress so a recreated Activity can keep up with a running segment task.
     private var segmentProgressPoller: Handler? = null
     private var segmentProgressRunnable: Runnable? = null
@@ -505,6 +516,15 @@ class PlayerActivity : AppCompatActivity() {
         // v3.1.16: 修复 getString 读取 Long 值的类型转换崩溃
         // v3.2.67: 陈旧检查按任务所属节目判断（任务可能属于其他节目）。
         val taskEpId = segmentTaskEpisodeId
+        // v3.2.78: 心跳死亡检测——进程/线程被杀后 segment_processing=true 是陈旧残留，
+        // 死任务会让按钮永久弹"正在处理中，请稍候"且无进度条可看。beat 超过5分钟未跳动即清。
+        if (segmentProcessing && taskEpId != null && isSegmentTaskBeatDead(taskEpId)) {
+            android.util.Log.w("PlayerActivity", "restoreProcessingState: segment task heartbeat dead, clearing stale state (task=$taskEpId)")
+            segmentProcessing = false
+            segmentTaskEpisodeId = null
+            lastSegmentProgress = 0
+            saveProcessingState()
+        }
         if (segmentProcessing && taskEpId != null) {
             val segmentStartTime = progressPrefs.getLong(segmentStartKey(taskEpId), 0L)
             if (segmentStartTime > 0 && segmentStartTime < System.currentTimeMillis() - 60_000L && lastSegmentProgress == 0) {
@@ -2443,8 +2463,27 @@ class PlayerActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             if (segmentProcessing) {
-                Toast.makeText(this, "正在处理中，请稍候", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
+                // v3.2.78: 点击时校验任务心跳——任务已死（进程曾被杀/线程中断）则清状态放行
+                // 新任务，根除"一直显示正在处理中但看不到进度条、也开不了新分段"的假死；
+                // 活任务按归属提示，属于当前节目时强制刷新进度UI（防进度条曾被隐藏而干等）。
+                val taskEp = segmentTaskEpisodeId
+                if (taskEp == null || isSegmentTaskBeatDead(taskEp)) {
+                    writeJitterLog(" btnAiSegment: stale segment task cleared on click (taskEp=$taskEp)")
+                    segmentProcessing = false
+                    segmentTaskEpisodeId = null
+                    stopSegmentProgressPoller()
+                    saveProcessingState()
+                    Toast.makeText(this, "之前的分段任务已中断，重新开始", Toast.LENGTH_SHORT).show()
+                    // 继续向下启动新任务
+                } else if (taskEp == episode.id) {
+                    syncSegmentUiForCurrentEpisode()
+                    Toast.makeText(this, "正在处理中，进度条已刷新", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                } else {
+                    val taskName = episodeList.find { it.id == taskEp }?.title ?: "其他节目"
+                    Toast.makeText(this, "正在为《$taskName》分段，切换后可查看进度", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
             }
 
             // [v2.4.23] AI分段: use existing subtitles for content-based segmentation
@@ -2537,6 +2576,8 @@ class PlayerActivity : AppCompatActivity() {
                                         .putBoolean(segmentCompleteKey(episodeIdForProgress), false)
                                         .putLong(segmentElapsedKey(episodeIdForProgress), elapsedMs)
                                         .putLong(segmentEtaKey(episodeIdForProgress), etaMs)
+                                        // v3.2.78: 刷新任务心跳，供点击/恢复时判定任务真实存活
+                                        .putLong(segmentBeatKey(episodeIdForProgress), System.currentTimeMillis())
                                         .apply()
 
                                     // v2.4.150: Update notification directly on the analyzer thread
@@ -2552,6 +2593,10 @@ class PlayerActivity : AppCompatActivity() {
                                             && episodeIdForProgress == currentEpisode?.id) {
                                             // v2.4.150: Show elapsed + ETA so the UI doesn't look frozen at one percent.
                                             // v2.4.152: Display x.x% from permille.
+                                            // v3.2.78: 进度条兜底显示——任务在跑但进度条曾被切换/恢复路径隐藏时，
+                                            // 每次进度更新强制拉回可见，用户不再只见提示不见进度。
+                                            if (binding.progressAi.visibility != View.VISIBLE) binding.progressAi.visibility = View.VISIBLE
+                                            if (binding.tvAiStatus.visibility != View.VISIBLE) binding.tvAiStatus.visibility = View.VISIBLE
                                             val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
                                             binding.tvAiStatus.text = "音频分段分析中($segEngineName) ${percentText}% (已用 $elapsedText，预计剩余 $etaText)"
                                             binding.progressAi.progress = pct
@@ -2733,6 +2778,8 @@ class PlayerActivity : AppCompatActivity() {
                                         .putBoolean(segmentCompleteKey(episodeIdForProgress), false)
                                         .putLong(segmentElapsedKey(episodeIdForProgress), elapsedMs)
                                         .putLong(segmentEtaKey(episodeIdForProgress), etaMs)
+                                        // v3.2.78: 刷新任务心跳，供点击/恢复时判定任务真实存活
+                                        .putLong(segmentBeatKey(episodeIdForProgress), System.currentTimeMillis())
                                         .apply()
                                     val elapsedText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(elapsedMs)
                                     val etaText = com.radio.app.utils.AudioSegmentAnalyzer.formatDurationMs(etaMs)
@@ -2740,6 +2787,9 @@ class PlayerActivity : AppCompatActivity() {
                                     runOnUiThread {
                                         if (!isDestroyed && !isFinishing && _binding != null && segmentProcessing && episodeIdForProgress == segmentTaskEpisodeId
                                             && episodeIdForProgress == currentEpisode?.id) {
+                                            // v3.2.78: 进度条兜底显示——防切换/恢复路径隐藏后只见提示不见进度。
+                                            if (binding.progressAi.visibility != View.VISIBLE) binding.progressAi.visibility = View.VISIBLE
+                                            if (binding.tvAiStatus.visibility != View.VISIBLE) binding.tvAiStatus.visibility = View.VISIBLE
                                             val percentText = String.format(java.util.Locale.US, "%.1f", pct / 10f)
                                             binding.tvAiStatus.text = "音频分段分析中(${segEngineName}) ${percentText}% (已用 $elapsedText，预计剩余 $etaText)"
                                             binding.progressAi.progress = pct
@@ -2821,6 +2871,13 @@ class PlayerActivity : AppCompatActivity() {
                         // skip UI/notification updates for the old episode.
                         if (episode.id != segmentTaskEpisodeId) {
                             com.radio.app.utils.SegmentNotificationHelper.cancel(applicationContext)
+                            // v3.2.78: 归属已被清/换——收尾残留状态，防止 segmentProcessing 卡 true
+                            // 导致按钮永久弹"正在处理中"。
+                            if (segmentProcessing) {
+                                segmentProcessing = false
+                                stopSegmentProgressPoller()
+                                saveProcessingState()
+                            }
                             return@runOnUiThread
                         }
                         // v3.2.67: 切换节目不再取消分段任务——任务在后台跑完且结果已存库（上方）。
@@ -4278,6 +4335,8 @@ class PlayerActivity : AppCompatActivity() {
             // integer percent stays the same (e.g. stuck at 34% for a while on long audio).
             getSharedPreferences(SEGMENT_PROGRESS_PREFS, MODE_PRIVATE).edit()
                 .putLong(segmentStartKey(currentEpisodeId), System.currentTimeMillis())
+                // v3.2.78: 启动即写入心跳
+                .putLong(segmentBeatKey(segmentTaskEpisodeId ?: currentEpisodeId), System.currentTimeMillis())
                 .apply()
             // v2.4.147: Start polling persisted progress for this task.
             startSegmentProgressPoller()
