@@ -72,6 +72,8 @@ class PlayerActivity : AppCompatActivity() {
     private var hasErrorToastShown = false
     private var episodeList: ArrayList<Episode> = ArrayList()
     private var currentEpisodeIndex = -1
+    // v3.2.79: 正在后台生成分段（含指纹审核）的节目id集合，防并发重复审核；线程安全。
+    private val segBgGenEpisodeIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     // Issue 4: 持有节目列表对话框的适配器引用，便于切歌后刷新高亮
     private var episodeListAdapter: EpisodeListAdapter? = null
     private var isDragging = false
@@ -1999,19 +2001,38 @@ class PlayerActivity : AppCompatActivity() {
                 updateSegmentsUI()
                 restoreSegmentModelInfo()
             } else {
-                val simulated = try {
-                    generateSimulatedSegments()
-                } catch (e: Throwable) {
-                    writeJitterLog(" ensureSegmentsForCurrentEpisode: generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}")
-                    val sw = java.io.StringWriter()
-                    val pw = java.io.PrintWriter(sw)
-                    e.printStackTrace(pw)
-                    writeFingerprintLog("ensureSegmentsForCurrentEpisode generateSimulatedSegments 崩溃: ${e.javaClass.name}: ${e.message}\n${sw.toString().take(500)}")
-                    emptyList()
-                }
-                if (simulated.isNotEmpty()) {
-                    voiceSegments = simulated
+                // v3.2.79: 指纹审核可能耗时数分钟（固定分段×全量指纹库比对+伸缩匹配），
+                // 此前在主线程同步执行导致界面完全无响应（播放不受影响因在服务线程），
+                // 且该节目DB无真实分段时每次进入都复现。修复：
+                //   ① 主线程先放快速固定分段占位（毫秒级），列表立刻可见；
+                //   ② 完整内容分段+指纹审核移到后台线程，完成后回填（同节目门控）。
+                val mainDur = try { playbackService?.getDuration()?.toInt() ?: 0 } catch (_: Exception) { 0 }
+                val placeholder = try { buildFixedPlaceholderSegments(mainDur) } catch (_: Throwable) { emptyList() }
+                if (placeholder.isNotEmpty()) {
+                    voiceSegments = placeholder
                     updateSegmentsUI()
+                }
+                val bgEpisodeId = currentEpisode?.id
+                if (!bgEpisodeId.isNullOrBlank() && !segBgGenEpisodeIds.contains(bgEpisodeId)) {
+                    segBgGenEpisodeIds.add(bgEpisodeId)
+                    writeJitterLog(" ensureSegmentsForCurrentEpisode: 指纹审核移至后台线程 (episode=$bgEpisodeId, dur=$mainDur)")
+                    Thread {
+                        val full = try {
+                            generateSimulatedSegments(mainDur)
+                        } catch (e: Throwable) {
+                            writeJitterLog(" ensureSegmentsForCurrentEpisode: 后台分段生成失败: ${e.javaClass.name}: ${e.message}")
+                            emptyList<VoiceSegment>()
+                        }
+                        segBgGenEpisodeIds.remove(bgEpisodeId)
+                        runOnUiThread {
+                            if (_binding == null || bgEpisodeId != currentEpisode?.id) return@runOnUiThread
+                            if (full.isNotEmpty()) {
+                                voiceSegments = full
+                                updateSegmentsUI()
+                                writeJitterLog(" ensureSegmentsForCurrentEpisode: 后台分段完成回填 ${full.size}段")
+                            }
+                        }
+                    }.start()
                 }
             }
         }
@@ -4964,8 +4985,8 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun generateSimulatedSegments(): List<VoiceSegment> {
-        val dur = playbackService?.getDuration()?.toInt() ?: 0
+    private fun generateSimulatedSegments(durationMs: Int): List<VoiceSegment> {
+        val dur = durationMs
         if (dur <= 0) return emptyList()
 
         // [v2.4.21] If complete subtitles exist, use content-based AI segmentation
@@ -4977,6 +4998,13 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         // Fallback: fixed 5-minute segments
+        return buildFixedPlaceholderSegments(dur)
+    }
+
+    // v3.2.79: 快速占位固定分段（毫秒级，无指纹审核）——用于把耗时的内容分段+指纹审核
+    // 移到后台线程前先让列表立刻可见，主线程不再被审核卡死。
+    private fun buildFixedPlaceholderSegments(dur: Int): List<VoiceSegment> {
+        if (dur <= 0) return emptyList()
         val segmentDuration = 300 // 5分钟一段
         val count = minOf((dur / 1000 / segmentDuration).coerceAtLeast(3), 20)
         val segments = mutableListOf<VoiceSegment>()
