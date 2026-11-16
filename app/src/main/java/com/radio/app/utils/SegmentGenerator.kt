@@ -3623,14 +3623,14 @@ object SegmentGenerator {
                         audioEngineName = "三层架构(仅第一层)"
                     }
                 } else {
-                    val fpMsgPcmFail = "三层架构: PCM重新生成失败，使用第1层结果"
+                    val fpMsgPcmFail = "三层架构: PCM重新生成失败，使用第1层结果 (audioFile=${audioFile?.name}, size=${audioFile?.length()}B)"
                     Log.w(TAG, fpMsgPcmFail)
                     writeFingerprintLog(context, fpMsgPcmFail)
                     mergedAfterLayer2 = mergedAfterLayer1
                     audioEngineName = "三层架构(仅第一层)"
                 }
             } else {
-                val fpMsgNoAudio = "三层架构: 音频文件不存在，无法重新生成PCM for episode=$episodeId"
+                val fpMsgNoAudio = "三层架构: 音频文件不存在或过小(${audioFile?.name}, size=${audioFile?.length()}B)，无法重新生成PCM for episode=$episodeId"
                 Log.w(TAG, fpMsgNoAudio)
                 writeFingerprintLog(context, fpMsgNoAudio)
                 mergedAfterLayer2 = mergedAfterLayer1
@@ -3835,6 +3835,35 @@ object SegmentGenerator {
         if (hardIssue != null) {
             writeFingerprintLog(context, "硬校验: 存在无法自动修复的违规—— $hardIssue for episode=$episodeId")
             Log.w(TAG, "硬校验: 无法自动修复—— $hardIssue for episode=$episodeId")
+        }
+
+        // v3.2.74: 超上限巨段兜底切分——硬校验后仍存在超过30分钟上限的分段时
+        // （典型场景：PCM缺失/再生失败 → 固定分段兜底全标干货 → 相邻同类型合并成
+        // 覆盖整节目的单个巨段，硬校验报"无法自动修复"），按上限等分切开，
+        // 保证界面不会显示"整节目一个分段"。
+        if (finalSegments.any { (it.end - it.start) > 1_800_000L }) {
+            val repaired = ArrayList<VoiceSegment>()
+            var oversizedCount = 0
+            finalSegments.forEach { seg ->
+                val len = seg.end - seg.start
+                if (len <= 1_800_000L) {
+                    repaired.add(seg)
+                } else {
+                    oversizedCount++
+                    val parts = ((len + 1_799_999L) / 1_800_000L).toInt()
+                    val partLen = len / parts
+                    var s = seg.start
+                    for (i in 0 until parts) {
+                        val e = if (i == parts - 1) seg.end else s + partLen
+                        repaired.add(seg.copy(start = s, end = e))
+                        s = e
+                    }
+                }
+            }
+            finalSegments.clear()
+            finalSegments.addAll(repaired)
+            writeFingerprintLog(context, "兜底保护: 切分${oversizedCount}个超30分钟上限巨段，切后共${repaired.size}段 for episode=$episodeId")
+            Log.w(TAG, "兜底保护: 切分${oversizedCount}个超上限巨段 for episode=$episodeId")
         }
 
         // v3.1.135: 额外输出12~16分钟（720~960秒）区域的最终分段结果，便于调试主持人讲话被合并问题

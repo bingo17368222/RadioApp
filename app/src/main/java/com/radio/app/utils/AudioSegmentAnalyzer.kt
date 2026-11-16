@@ -1243,7 +1243,9 @@ object AudioSegmentAnalyzer {
         startOffsetBytes: Long = 0,
         maxDecodeDurationMs: Long = 0,
         progressCallback: ((Int) -> Unit)? = null,
-        onDecoderName: ((String) -> Unit)? = null  // v3.1.77: 解码器名称回调，用于日志
+        onDecoderName: ((String) -> Unit)? = null,  // v3.1.77: 解码器名称回调，用于日志
+        localFile: File? = null,
+        allowRedownload: Boolean = true
     ): File? {
         val pcmGenStartTime = System.currentTimeMillis()
         try {
@@ -1253,8 +1255,9 @@ object AudioSegmentAnalyzer {
             } ?: emptyList()
 
             // v2.4.99: Find audio file by URL-based filename first
-            var audioFile: File? = null
-            if (audioUrl != null) {
+            // v3.2.74: localFile 用于损坏文件重下载后的重试，优先于一切搜索
+            var audioFile: File? = localFile
+            if (audioFile == null && audioUrl != null) {
                 val urlFileName = try {
                     val path = java.net.URL(audioUrl).path
                     path.substringAfterLast("/")
@@ -1332,8 +1335,23 @@ object AudioSegmentAnalyzer {
                 }
             }
             if (audioTrackIndex < 0) {
-                Log.e(TAG, "decodeAudioToPcm: no audio track found")
+                Log.e(TAG, "decodeAudioToPcm: no audio track found in ${audioFile.name} (length=${audioFile.length()})")
+                vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: no audio track in ${audioFile.name} (length=${audioFile.length()}) — local cache corrupt")
                 extractor.release()
+                // v3.2.74: 本地缓存文件 MediaExtractor 解析不出任何音轨 = 损坏文件。
+                // 隔离损坏缓存并从服务器重新下载后重试一次。此前直接返回 null，
+                // 损坏缓存会让 PCM 再生永远失败，分段退化为"整节目1个分段"。
+                if (allowRedownload && !audioUrl.isNullOrBlank()) {
+                    val corruptName = audioFile.name
+                    val corruptFile = File(audioFile.absolutePath + ".corrupt")
+                    try { if (!audioFile.renameTo(corruptFile)) audioFile.delete() } catch (_: Exception) { try { audioFile.delete() } catch (_: Exception) {} }
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: quarantined corrupt cache $corruptName, redownloading from URL")
+                    val redl = File(episodesDir, corruptName)
+                    if (downloadAudioFile(audioUrl, redl) && redl.exists() && redl.length() > 1024) {
+                        vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: redownloaded ${redl.length()} bytes, retrying decode")
+                        return decodeAudioToPcm(context, episodeId, outputDir, audioUrl, durationMs, 0L, maxDecodeDurationMs, progressCallback, onDecoderName, redl, false)
+                    }
+                }
                 return null
             }
             extractor.selectTrack(audioTrackIndex)
@@ -1571,6 +1589,32 @@ object AudioSegmentAnalyzer {
             val elapsedMs = System.currentTimeMillis() - pcmGenStartTime
             Log.e(TAG, "decodeAudioToPcm failed after ${elapsedMs}ms: ${e.message}")
             Log.e(TAG, "decodeAudioToPcm:   episodeId=$episodeId audioUrl=$audioUrl durationMs=$durationMs")
+            // v3.2.74: 异常发生在解码起步阶段（如 setDataSource 解析容器失败）且本地缓存存在时，
+            // 同样按损坏文件处理：隔离并重下载后重试一次。
+            if (allowRedownload && elapsedMs < 5000 && !audioUrl.isNullOrBlank()) {
+                val episodesDirC = com.radio.app.RadioApplication.getEpisodesCacheDir(context)
+                val urlFileNameC = try {
+                    java.net.URL(audioUrl).path.substringAfterLast("/")
+                } catch (_: Exception) {
+                    audioUrl.substringAfterLast("/")
+                }
+                val localC = if (urlFileNameC.isNotBlank()) {
+                    episodesDirC.listFiles()?.firstOrNull {
+                        it.isFile && it.length() > 1024 &&
+                            (it.name == urlFileNameC || it.name.startsWith(urlFileNameC.substringBeforeLast(".")))
+                    }
+                } else null
+                if (localC != null) {
+                    val corruptNameC = localC.name
+                    val corruptFileC = File(localC.absolutePath + ".corrupt")
+                    try { if (!localC.renameTo(corruptFileC)) localC.delete() } catch (_: Exception) { try { localC.delete() } catch (_: Exception) {} }
+                    vadLog("[${com.radio.app.RadioApplication.appVersionTag()}] decodeAudioToPcm: early exception (${e.message}), quarantined $corruptNameC, redownloading from URL")
+                    val redlC = File(episodesDirC, corruptNameC)
+                    if (downloadAudioFile(audioUrl, redlC) && redlC.exists() && redlC.length() > 1024) {
+                        return decodeAudioToPcm(context, episodeId, outputDir, audioUrl, durationMs, 0L, maxDecodeDurationMs, progressCallback, onDecoderName, redlC, false)
+                    }
+                }
+            }
             return null
         }
     }
