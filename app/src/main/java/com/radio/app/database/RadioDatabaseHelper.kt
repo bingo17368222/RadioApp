@@ -44,7 +44,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
 
     companion object {
         private const val DATABASE_NAME = "radio_app.db"
-        private const val DATABASE_VERSION = 20
+        private const val DATABASE_VERSION = 21
         private const val TABLE_PLAY_PROGRESS = "play_progress"
         private const val TABLE_TRANSCRIPTS = "transcripts"
         private const val TABLE_DISLIKED_EPISODES = "disliked_episodes"
@@ -80,7 +80,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         db.execSQL("CREATE TABLE IF NOT EXISTS transcript_engine (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, generated_at INTEGER NOT NULL, is_complete INTEGER DEFAULT 0, processing_time_ms INTEGER DEFAULT 0, audio_duration_ms INTEGER DEFAULT 0)")
         db.execSQL("CREATE TABLE $TABLE_DISLIKED_EPISODES (episode_id TEXT PRIMARY KEY, title TEXT, station_name TEXT, created_at INTEGER)")
         db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_MANUAL (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, PRIMARY KEY(episode_id, segment_start))")
-        db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, hit_key TEXT, hit_sim INTEGER DEFAULT 0, PRIMARY KEY(episode_id, segment_start))")
+        db.execSQL("CREATE TABLE $TABLE_VOICE_SEGMENTS_AI (episode_id TEXT, segment_start INTEGER, segment_end INTEGER, has_voice INTEGER, label TEXT, is_simulated INTEGER, hit_key TEXT, hit_sim INTEGER DEFAULT 0, fallback_split INTEGER DEFAULT 0, PRIMARY KEY(episode_id, segment_start))")
         // v2.4.150: Persist audio segmentation engine and timing per episode.
         // v3.1.185: 添加version_name字段，记录分段时的版本号
         db.execSQL("CREATE TABLE $TABLE_SEGMENT_ANALYSIS_INFO (episode_id TEXT PRIMARY KEY, engine_name TEXT NOT NULL, version_name TEXT DEFAULT '', generated_at INTEGER NOT NULL, processing_time_ms INTEGER DEFAULT 0, audio_duration_ms INTEGER DEFAULT 0, segment_count INTEGER DEFAULT 0, dry_count INTEGER DEFAULT 0, water_count INTEGER DEFAULT 0)")
@@ -197,6 +197,10 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         if (oldVersion < 20) {
             try { db.execSQL("ALTER TABLE $TABLE_VOICE_SEGMENTS_AI ADD COLUMN hit_key TEXT") } catch (_: Exception) {}
             try { db.execSQL("ALTER TABLE $TABLE_VOICE_SEGMENTS_AI ADD COLUMN hit_sim INTEGER DEFAULT 0") } catch (_: Exception) {}
+        }
+        // v3.2.75: 分段表加兜底切分标记列——兜底等分切开的段在片段列表特殊标注
+        if (oldVersion < 21) {
+            try { db.execSQL("ALTER TABLE $TABLE_VOICE_SEGMENTS_AI ADD COLUMN fallback_split INTEGER DEFAULT 0") } catch (_: Exception) {}
         }
     }
 
@@ -535,6 +539,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
             // v3.2.71: 持久化指纹命中去重key与相似度（片段列表显示+复制）
             put("hit_key", segment.hitKey)
             put("hit_sim", segment.hitSim)
+            // v3.2.75: 持久化兜底切分标记
+            put("fallback_split", if (segment.isFallbackSplit) 1 else 0)
         }
         db.replace(TABLE_VOICE_SEGMENTS_AI, null, values)
     }
@@ -555,6 +561,11 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                     put("has_voice", if (segment.hasVoice) 1 else 0)
                     put("label", segment.label ?: "")
                     put("is_simulated", if (segment.isSimulated) 1 else 0)
+                    // v3.2.75-fix: 批量保存此前漏写 hit_key/hit_sim（v3.2.71 只加在单条路径），
+                    // 主路径走的是本批量函数，导致去重key持久化失效；一并补上并新增兜底切分标记
+                    put("hit_key", segment.hitKey)
+                    put("hit_sim", segment.hitSim)
+                    put("fallback_split", if (segment.isFallbackSplit) 1 else 0)
                 }
                 db.insert(TABLE_VOICE_SEGMENTS_AI, null, values)
             }
@@ -576,7 +587,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                 label = cursor.getString(cursor.getColumnIndexOrThrow("label")),
                 isSimulated = cursor.getInt(cursor.getColumnIndexOrThrow("is_simulated")) == 1,
                 hitKey = if (cursor.getColumnIndex("hit_key") >= 0) cursor.getString(cursor.getColumnIndexOrThrow("hit_key")) else null,
-                hitSim = if (cursor.getColumnIndex("hit_sim") >= 0) cursor.getInt(cursor.getColumnIndexOrThrow("hit_sim")) else 0
+                hitSim = if (cursor.getColumnIndex("hit_sim") >= 0) cursor.getInt(cursor.getColumnIndexOrThrow("hit_sim")) else 0,
+                isFallbackSplit = cursor.getColumnIndex("fallback_split") >= 0 && cursor.getInt(cursor.getColumnIndexOrThrow("fallback_split")) == 1
             )
             segments.add(seg)
         }
@@ -596,7 +608,7 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
         if (episodeIdPrefix.isBlank() || timeRange.isBlank()) return segments
         val db = readableDatabase
         val sql = """
-            SELECT s.segment_start, s.segment_end, s.has_voice, s.label, s.is_simulated, s.hit_key, s.hit_sim
+            SELECT s.segment_start, s.segment_end, s.has_voice, s.label, s.is_simulated, s.hit_key, s.hit_sim, s.fallback_split
             FROM $TABLE_VOICE_SEGMENTS_AI s
             JOIN $TABLE_EPISODE_INFO e ON s.episode_id = e.episode_id
             WHERE s.episode_id LIKE ? AND e.audio_url LIKE ?
@@ -612,7 +624,8 @@ class RadioDatabaseHelper private constructor(context: Context) : SQLiteOpenHelp
                     label = cursor.getString(3),
                     isSimulated = cursor.getInt(4) == 1,
                     hitKey = if (cursor.getColumnIndex("hit_key") >= 0) cursor.getString(5) else null,
-                    hitSim = if (cursor.getColumnIndex("hit_sim") >= 0) cursor.getInt(6) else 0
+                    hitSim = if (cursor.getColumnIndex("hit_sim") >= 0) cursor.getInt(6) else 0,
+                    isFallbackSplit = cursor.getColumnIndex("fallback_split") >= 0 && cursor.getInt(7) == 1
                 ))
             }
             cursor.close()

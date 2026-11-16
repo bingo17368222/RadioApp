@@ -15,7 +15,10 @@ data class VoiceSegment(
     // v3.2.71: 第一层指纹命中素材的去重key与相似度百分比(0-100)——
     // 片段列表显示去重key并支持点击复制，拿去重key到指纹管理搜索试听
     var hitKey: String? = null,
-    var hitSim: Int = 0
+    var hitSim: Int = 0,
+    // v3.2.75: 兜底切分标记——PCM缺失/再生失败导致超30分钟巨段被兜底等分切开时置位，
+    // 片段列表中特殊标注，提示该段未做音频分析
+    var isFallbackSplit: Boolean = false
 ) : Parcelable, Serializable {
 
     constructor(parcel: Parcel) : this(
@@ -27,7 +30,8 @@ data class VoiceSegment(
         isSkipThisTime = parcel.readByte() != 0.toByte(),
         isSimulated = parcel.readByte() != 0.toByte(),
         hitKey = parcel.readString(),
-        hitSim = parcel.readInt()
+        hitSim = parcel.readInt(),
+        isFallbackSplit = parcel.readByte() != 0.toByte()
     )
 
     override fun writeToParcel(parcel: Parcel, flags: Int) {
@@ -40,6 +44,7 @@ data class VoiceSegment(
         parcel.writeByte(if (isSimulated) 1 else 0)
         parcel.writeString(hitKey)
         parcel.writeInt(hitSim)
+        parcel.writeByte(if (isFallbackSplit) 1 else 0)
     }
 
     override fun describeContents(): Int = 0

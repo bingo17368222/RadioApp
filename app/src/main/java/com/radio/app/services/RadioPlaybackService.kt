@@ -4618,7 +4618,24 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         }
     }
 
+    // v3.2.75-fix: saveCurrentPosition 同值去重状态（防连发洪水，见 saveCurrentPosition 内注释）
+    private var lastSavedEpisodeKey: String = ""
+    private var lastSavedPos: Long = -1L
+    private var lastSavedTimeMs: Long = 0L
+
+    // v3.2.75-fix: 保存链只允许存在一条的幂等标志（见 startPositionSaver 注释）
+    private var positionSaverStarted = false
+
     private fun startPositionSaver() {
+        // v3.2.75-fix: 幂等启动——本函数此前在 onCreate 和每次 seek 完成
+        // (onPositionDiscontinuity) 时都被调用，每次都新建 Runnable 并 post 入队，
+        // 旧链永远不取消 → 链条持续累积（实测 42 条：每 5 秒连发 42 次
+        // saveCurrentPosition，间隔 1-3ms）。42 连发造成主线程 Handler 洪水 +
+        // SharedPreferences.apply() 向 QueuedWork 突发塞 42 个写盘任务，
+        // Activity pause/stop 时 QueuedWork.waitToFinish 阻塞主线程等待全部落盘
+        // → 播放期间多次"应用无响应"。修复：首次启动后直接返回，不再重复排链。
+        if (positionSaverStarted) return
+        positionSaverStarted = true
         positionSaveRunnable = Runnable {
             // [v2.4.6] Save position when prepared (not just when playing).
             // Previously only saved when isPlaying==true, which meant if the user
@@ -4697,6 +4714,15 @@ class RadioPlaybackService : Service(), AudioManager.OnAudioFocusChangeListener 
         // same program, causing position to be overwritten when switching between dates.
         val episodeKey = ep.id ?: ""
         if (episodeKey.isBlank()) return
+        // v3.2.75-fix: 同节目同位置 2 秒内去重——即使其他调用源出现连发（实测曾每 5 秒
+        // 42 连发），也不重复 apply()/写日志，双保险压掉 QueuedWork 突发与日志洪水
+        val nowMs = System.currentTimeMillis()
+        if (episodeKey == lastSavedEpisodeKey && pos == lastSavedPos && nowMs - lastSavedTimeMs < 2000) {
+            return
+        }
+        lastSavedEpisodeKey = episodeKey
+        lastSavedPos = pos
+        lastSavedTimeMs = nowMs
         // v2.4.182: Use apply() (asynchronous) instead of commit() to avoid blocking the main
         // thread with synchronous disk I/O during periodic position saves.
         getSharedPreferences("playback_positions", MODE_PRIVATE)

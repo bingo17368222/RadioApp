@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.74 安装</title>
+<title>RadioApp v3.2.75 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.74</div>
+  <div class="version">v3.2.75</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.74</h3>
+    <h3>更新内容 v3.2.75</h3>
     <ul>
-      <li>修复PCM再生失败导致"整节目只有一个分段"：本地缓存音频损坏（MediaExtractor解析不出音轨）时，自动隔离损坏文件并从服务器重新下载后重试解码，不再永远失败</li>
-      <li>兜底保护：分段结果中仍存在超30分钟上限的巨段时按上限等分切开，界面不再出现覆盖整节目的单个分段</li>
-      <li>分段日志补充PCM再生失败的具体原因（音频文件名、大小、容器时长），便于定位</li>
+      <li>修复播放期间多次"无响应"：定位到进度保存链泄漏（每次拖动进度累积一条、实测达42条，每5秒连发42次保存），改为幂等单链+同值去重，主线程与磁盘写入不再被洪水冲击</li>
+      <li>片段列表特殊标记：兜底切分生成的分段显示橙色"兜底切分"标注，提示该段未做音频分析</li>
+      <li>修复分段批量保存漏写去重key的问题（v3.2.71 的指纹去重key此前持久化未生效）</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.74.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.75.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

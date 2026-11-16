@@ -69,8 +69,11 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
 
         val isDry = segment.isEffectiveDry()
         // v3.2.70: 分段详情标注判水原因——水分段显示"水分·指纹命中/模型判水/漏判召回/手动标记"
+        // v3.2.75: 兜底切分段特殊标记——PCM缺失/再生失败时按上限等分切开的段，未做音频分析，
+        // 用橙色文本"+兜底切分"醒目标注，与正常分析段区分
         val reason = if (isDry) null else segment.judgementReason()
-        holder.tvType.text = if (isDry) "干货" else "水分·${reason ?: "未知"}"
+        val baseType = if (isDry) "干货" else "水分·${reason ?: "未知"}"
+        holder.tvType.text = if (segment.isFallbackSplit) "$baseType·兜底切分" else baseType
 
         // v3.2.71: 指纹命中素材去重key——显示截断预览，点击复制完整key（分段日志里可对照命中时间轴）
         val hitKey = segment.hitKey
@@ -105,7 +108,14 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
         val theme = ctx.theme
         val successColor = if (theme.resolveAttribute(R.attr.appSuccess, typedValue, true)) typedValue.data else ContextCompat.getColor(ctx, android.R.color.holo_green_dark)
         val warningColor = if (theme.resolveAttribute(R.attr.appWarning, typedValue, true)) typedValue.data else ContextCompat.getColor(ctx, android.R.color.holo_orange_dark)
-        holder.tvType.setTextColor(if (isDry) successColor else warningColor)
+        // v3.2.75: 兜底切分段强制用警告色（橙），与正常绿(干货)/橙(水分)区分开的醒目提示
+        holder.tvType.setTextColor(
+            when {
+                segment.isFallbackSplit -> warningColor
+                isDry -> successColor
+                else -> warningColor
+            }
+        )
 
         if (segment.isManuallyMarked) {
             holder.ivManualMark.visibility = View.VISIBLE

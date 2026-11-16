@@ -3855,7 +3855,8 @@ object SegmentGenerator {
                     var s = seg.start
                     for (i in 0 until parts) {
                         val e = if (i == parts - 1) seg.end else s + partLen
-                        repaired.add(seg.copy(start = s, end = e))
+                        // v3.2.75: 标记为兜底切分段——片段列表中特殊标注"未做音频分析"
+                        repaired.add(seg.copy(start = s, end = e, isFallbackSplit = true))
                         s = e
                     }
                 }
