@@ -2972,12 +2972,26 @@ object SegmentGenerator {
         var layer2TimeMs = 0L
         var layer3TimeMs = 0L
 
+        // v3.2.76: 统一全局进度上报（0-1000单调链：第1层0-400、第2层-A 400-550、
+        // 第2层-B 550-900、第3层900-950、完成1000），通知与UI进度条同源。
+        // 根除"三层分段进度反复循环"——旧号段每层从头爬（第1层推到1000后第2层
+        // 又从200/150起），通知进度条在层级切换处反复回跳循环。
+        fun reportProgress(globalPermille: Int) {
+            val p = globalPermille.coerceIn(0, 1000)
+            val elapsed = System.currentTimeMillis() - layer1StartTime
+            val eta = if (p in 1..999) (elapsed * (1000L - p) / p).coerceAtLeast(0L) else 0L
+            progressCallback?.invoke(p, elapsed, eta)
+        }
+
         if (pcmSourceFile != null && formalLibrary.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // 滑动窗口指纹匹配，传递进度回调以更新通知
             // v3.1.46: 修复第1层进度值错误——permille本身就是0-1000的千分比，不需要除以10
             // 原代码 permille/10 导致进度始终限制在0-100（即0%-10%），用户看到的进度条永远走不完
+            // v3.2.76: 第1层号段0-400（全局单调链第一段），同时上报UI进度
             val slidingProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
-                SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "第1层指纹快筛")
+                val g = (permille * 400 / 1000).coerceIn(0, 400)
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, g, "第1层指纹快筛")
+                reportProgress(g)
             }
             val slidingResult = applyLayer1SlidingWindow(context, episodeId, pcmSourceFile, effectiveDurationMs, formalLibrary, slidingProgressCallback, fingerprintGroups, groupMembers, dbHelper)
             mergedAfterLayer1 = slidingResult
@@ -2997,7 +3011,10 @@ object SegmentGenerator {
             Log.w(TAG, "三层架构: 第一层滑动窗口跳过（$fallbackReason），运行全量VAD+YAMNet")
 
             val fullVadResult = try {
-                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, effectiveDurationMs, audioUrl, progressCallback)
+                // v3.2.76: 第1层全量进度映射到全局号段0-400（原先0-1000占满，第2层只能回跳）
+                AudioSegmentAnalyzer.analyzeEpisode(context, episodeId, effectiveDurationMs, audioUrl, progressCallback = { permille, elapsedMs, etaMs ->
+                    progressCallback?.invoke((permille * 400 / 1000).coerceIn(0, 400), elapsedMs, etaMs)
+                })
             } catch (e: Exception) {
                 Log.w(TAG, "三层架构: 全量VAD+YAMNet失败: ${e.message}")
                 null
@@ -3045,7 +3062,10 @@ object SegmentGenerator {
                 Log.i(TAG, "三层架构: 第1层被取消且仅1个待处理段，重新运行第1层滑动窗口 for episode=$episodeId")
                 writeFingerprintLog(context, "三层架构: 第1层被取消且仅1个待处理段，重新运行第1层滑动窗口")
                 val retryProgressCallback: ((Int, Long, Long) -> Unit)? = { permille, _, _ ->
-                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, permille, "第1层重试-指纹快筛")
+                    // v3.2.76: 第1层重试同样使用全局号段0-400
+                    val g = (permille * 400 / 1000).coerceIn(0, 400)
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, g, "第1层重试-指纹快筛")
+                    reportProgress(g)
                 }
                 val retryResult = applyLayer1SlidingWindow(
                     context, episodeId, pcmSourceFile, effectiveDurationMs,
@@ -3115,13 +3135,16 @@ object SegmentGenerator {
             Log.i(TAG, "三层架构: 第二层-A VAD + 第二层-B YAMNet（区间推理） for episode=$episodeId")
             try {
                 // ===== 第二层-A：VAD-only，获取全时间轴活动段 =====
-                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 200, "第2层-A VAD活动检测")
+                // v3.2.76: 全局号段400-550
+                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 400, "第2层-A VAD活动检测")
+                reportProgress(400)
                 val vadStartTime = System.currentTimeMillis()
                 var speechRanges = AudioSegmentAnalyzer.runVadOnly(
                     context, pcmSourceFile, effectiveDurationMs
                 ) { permille ->
-                    val mapped = 200 + (permille * 150 / 1000).coerceIn(0, 150)
+                    val mapped = 400 + (permille * 150 / 1000).coerceIn(0, 150)
                     SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
+                    reportProgress(mapped)
                 }
                 // v3.1.193-fix: VAD返回0活动段时重试一次
                 // 根因：预生成时第1层被取消后，VAD可能因模型状态异常返回0个活动段，
@@ -3134,8 +3157,10 @@ object SegmentGenerator {
                     speechRanges = AudioSegmentAnalyzer.runVadOnly(
                         context, pcmSourceFile, effectiveDurationMs
                     ) { permille ->
-                        val mapped = 200 + (permille * 150 / 1000).coerceIn(0, 150)
+                        // v3.2.76: 全局号段400-550
+                        val mapped = 400 + (permille * 150 / 1000).coerceIn(0, 150)
                         SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD重试")
+                        reportProgress(mapped)
                     }
                     val retryVadTime = System.currentTimeMillis() - retryVadStart
                     Log.i(TAG, "三层架构: VAD重试完成: ${speechRanges.size}个活动段，耗时${formatDuration(retryVadTime)} for episode=$episodeId")
@@ -3214,7 +3239,9 @@ object SegmentGenerator {
                     // 根因：TFLite原生SIGSEGV崩溃会杀死主进程，try-catch无法捕获。
                     // 修复：通过独立进程(:yamnet)隔离TFLite推理，崩溃只影响子进程。
                     // v3.1.xxx: 进入YAMNet处理前更新通知，避免通知栏长时间卡在"2层-A"
-                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, 350, "第2层-B YAMNet分类中")
+                    // v3.2.76: 全局号段550-900
+                    SegmentNotificationHelper.update(context, episodeId, episodeTitle, 550, "第2层-B YAMNet分类中")
+                    reportProgress(550)
                     val yamnetAllSegments = mutableListOf<VoiceSegment>()
                     val totalIntervals = yamnetIntervals.size
                     var yamnetServiceSuccess = false
@@ -3230,9 +3257,10 @@ object SegmentGenerator {
                             context, pcmSourceFile.absolutePath,
                             intervalStarts, intervalEnds,
                             batchProgressCallback = { batchIdx, totalBatches ->
-                                // v3.1.xxx: 每批完成后更新进度通知，进度范围350~800
-                                val batchProgress = 350 + ((batchIdx + 1) * 450 / totalBatches).coerceIn(0, 450)
+                                // v3.2.76: 每批完成后更新进度，全局号段550~900
+                                val batchProgress = 550 + ((batchIdx + 1) * 350 / totalBatches).coerceIn(0, 350)
                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, batchProgress, "第2层-B YAMNet分类中")
+                                reportProgress(batchProgress)
                             }
                         )
                         if (serviceResult != null) {
@@ -3385,14 +3413,18 @@ object SegmentGenerator {
             val fpMsgPcmMissing = "三层架构: 完整PCM文件不存在，重新生成PCM for episode=$episodeId"
             Log.i(TAG, fpMsgPcmMissing)
             writeFingerprintLog(context, fpMsgPcmMissing)
-            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50, "重新生成PCM")
+            // v3.2.76: 全局号段400（第1层结束点）
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 400, "重新生成PCM")
+            reportProgress(400)
 
             val audioFile = AudioSegmentAnalyzer.getCachedAudioFile(context, episodeId, audioUrl)
             if (audioFile != null && audioFile.exists() && audioFile.length() > 1024 * 100) {
                 val regenResult = AudioSegmentAnalyzer.preGeneratePcmFiles(
                     context, episodeId, audioUrl, effectiveDurationMs,
                     progressCallback = { pct ->
-                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 50 + pct / 2, "重新生成PCM ${pct}%")
+                        // v3.2.76: 全局号段400-500
+                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 400 + pct / 10, "重新生成PCM ${pct}%")
+                        reportProgress(400 + pct / 10)
                     }
                 )
                 if (regenResult) {
@@ -3400,7 +3432,9 @@ object SegmentGenerator {
                     val newFullPcm = File(pcmCacheDir, "${episodeId}_full.pcm")
                     if (newFullPcm.exists() && newFullPcm.length() > 0) {
                         Log.i(TAG, "三层架构: PCM重新生成成功，运行优化VAD+YAMNet for episode=$episodeId")
-                        SegmentNotificationHelper.update(context, episodeId, episodeTitle, 100, "PCM生成完成，开始VAD分析")
+                        // v3.2.76: 全局号段500（第2层-A起点）
+            SegmentNotificationHelper.update(context, episodeId, episodeTitle, 500, "PCM生成完成，开始VAD分析")
+            reportProgress(500)
 
                         // v3.2.5-fix: PCM再生后重新执行第一层滑动窗口指纹匹配
                         // 根因：PCM再生路径完全跳过了第一层，导致219条金标准指纹从未参与匹配。
@@ -3439,8 +3473,10 @@ object SegmentGenerator {
                             var speechRanges = AudioSegmentAnalyzer.runVadOnly(
                                 context, newFullPcm, effectiveDurationMs
                             ) { permille ->
-                                val mapped = 150 + (permille * 100 / 1000).coerceIn(0, 100)
+                                // v3.2.76: 全局号段500-650
+                                val mapped = 500 + (permille * 150 / 1000).coerceIn(0, 150)
                                 SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD活动检测")
+                                reportProgress(mapped)
                             }
                             // v3.1.194-fix: PCM再生路径VAD返回0活动段时重试一次
                             if (speechRanges.isEmpty()) {
@@ -3450,8 +3486,10 @@ object SegmentGenerator {
                                 speechRanges = AudioSegmentAnalyzer.runVadOnly(
                                     context, newFullPcm, effectiveDurationMs
                                 ) { permille ->
-                                    val mapped = 150 + (permille * 100 / 1000).coerceIn(0, 100)
+                                    // v3.2.76: 全局号段500-650
+                                    val mapped = 500 + (permille * 150 / 1000).coerceIn(0, 150)
                                     SegmentNotificationHelper.update(context, episodeId, episodeTitle, mapped, "第2层-A VAD重试")
+                                    reportProgress(mapped)
                                 }
                             }
                             val vadDurationMs2 = System.currentTimeMillis() - vadStartTime2
@@ -3514,7 +3552,9 @@ object SegmentGenerator {
                             } else {
                                 // v3.1.155: PCM再生后也使用YamnetService进行YAMNet推理
                                 // v3.1.xxx: 进入YAMNet处理前更新通知，避免通知栏长时间卡在"2层-A"
-                                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 250, "第2层-B YAMNet分类中")
+                                // v3.2.76: 全局号段650（第2层-B起点）
+                                SegmentNotificationHelper.update(context, episodeId, episodeTitle, 650, "第2层-B YAMNet分类中")
+                                reportProgress(650)
                                 val yamnetAllSegments = mutableListOf<VoiceSegment>()
                                 var yamnetRegenSuccess = false
                                 var yamnetRegenError: String? = null
@@ -3528,9 +3568,10 @@ object SegmentGenerator {
                                         context, newFullPcm.absolutePath,
                                         intervalStarts, intervalEnds,
                                         batchProgressCallback = { batchIdx, totalBatches ->
-                                            // v3.1.xxx: 每批完成后更新进度通知，进度范围250~800
-                                            val batchProgress = 250 + ((batchIdx + 1) * 550 / totalBatches).coerceIn(0, 550)
+                                            // v3.2.76: 每批完成后更新进度通知，全局号段650~900
+                                            val batchProgress = 650 + ((batchIdx + 1) * 250 / totalBatches).coerceIn(0, 250)
                                             SegmentNotificationHelper.update(context, episodeId, episodeTitle, batchProgress, "第2层-B YAMNet分类中")
+                                            reportProgress(batchProgress)
                                         }
                                     )
                                     if (serviceResult != null) {
@@ -3660,8 +3701,10 @@ object SegmentGenerator {
 
         // ========== 第三层：指纹漏判召回（仅干货 + 仅金标准） ==========
         // v3.1.46: 添加第三层进度通知栏更新，确保三层分段全程都有进度显示
+        // v3.2.76: 全局号段900-950（三层收尾），同时上报UI进度
         val layer3StartTime = System.currentTimeMillis()
         SegmentNotificationHelper.update(context, episodeId, episodeTitle, 900, "第3层指纹漏判召回")
+        reportProgress(900)
         val layer3Result = if (goldStandardFingerprints.isNotEmpty() && ChromaprintExtractor.ensureLibraryLoaded(context)) {
             // v3.1.95: 使用带计数的召回函数，recallCount 是实际翻转的片段数
             // 原公式 recalled.waterCount - mergedAfterLayer2.waterCount 在合并后可能为负
@@ -3671,6 +3714,7 @@ object SegmentGenerator {
             Log.i(TAG, "三层架构: 第三层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${formatDuration(layer3TimeMs)}")
             writeFingerprintLog(context, "三层架构: 第3层指纹漏判召回完成，召回${layer3RecallCount}个漏判片段，耗时${formatDuration(layer3TimeMs)}")
             SegmentNotificationHelper.update(context, episodeId, episodeTitle, 950, "第3层召回完成，合并结果")
+            reportProgress(950)
             recalled
         } else {
             val fpMsg = "三层架构: 第三层指纹漏判召回跳过（金标准库为空或指纹引擎未就绪）"
@@ -4083,6 +4127,8 @@ object SegmentGenerator {
 
         val allResults = mutableListOf<VoiceSegment>()
         var anySuccess = false
+        // v3.2.76: 连续零产出批熔断计数——保证"始终无法完成"的死循环有出口
+        var failedBatchStreak = 0
         val totalBatches = (totalIntervals + batchSize - 1) / batchSize
 
         Log.i(TAG, "runYamnetServiceWithBatches: ${totalIntervals}个区间，分${totalBatches}批，每批${batchSize}个 for pcm=$pcmPath")
@@ -4148,8 +4194,23 @@ object SegmentGenerator {
                     }
                 }
                 if (retryRecoverCount > 0) {
+                    // v3.2.76: 部分救回说明推理仍在推进，熔断计数归零
+                    failedBatchStreak = 0
                     Log.i(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批逐区间重试救回${retryRecoverCount}/${batchCount}个区间")
                     writeFingerprintLog(context, "runYamnetServiceWithBatches: 逐区间重试救回${retryRecoverCount}/${batchCount}个区间")
+                } else {
+                    // v3.2.76: 连续零产出批熔断——TFLite反复卡死（自杀重启）仍无推进
+                    // （如系统持续过载）时，连续5批零产出即提前结束：已有结果照常返回
+                    // 走完第2/3层，全零则走既有降级（固定分段），
+                    // 保证分段任务永远"能完成"，不再无限循环耗尽用户耐心。
+                    failedBatchStreak++
+                    if (failedBatchStreak >= 5) {
+                        Log.w(TAG, "runYamnetServiceWithBatches: 连续${failedBatchStreak}批零产出，熔断提前结束(已成功${allResults.size}段)")
+                        writeFingerprintLog(context, "runYamnetServiceWithBatches: 连续${failedBatchStreak}批零产出，熔断提前结束(已成功${allResults.size}段)，放弃剩余${totalBatches - batchIndex - 1}批")
+                        break
+                    }
+                    Log.w(TAG, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批逐区间重试零救回(连续第${failedBatchStreak}批)")
+                    writeFingerprintLog(context, "runYamnetServiceWithBatches: 第${batchIndex+1}/${totalBatches}批零救回(连续第${failedBatchStreak}批)")
                 }
             }
         }

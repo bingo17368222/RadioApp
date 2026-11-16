@@ -349,10 +349,21 @@ class YamnetService : Service() {
                                 intervalResult = future.get(INTERVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                             } catch (e: TimeoutException) {
                                 // v3.1.163: TFLite interpreter.run()卡住，标记executorStuck=true
-                                // 后续区间会重建Executor，避免所有区间都超时
+                                // v3.2.76-fix: 僵尸native线程无法回收（shutdownNow无法中断native阻塞），
+                                // 此前"标记stuck→下一区间重建Executor继续"会让僵尸线程与新线程
+                                // 并发使用同一线程不安全的静态Interpreter → SIGSEGV进程崩溃。
+                                // 日志实证(2026-11-16 10-11-2)：超时(60s/45s)雪崩后必崩
+                                // （checkpoint pre_tflite_infer SIGSEGV），僵尸线程累积→CPU饱和
+                                // →超时更频繁的滚雪球，进度反复循环、始终无法完成。
+                                // 修复：立即自杀重启本服务进程——主进程已有"进程死亡→等待重启→
+                                // 逐区间重试"机制接管，干净回收僵尸线程；整批由主进程重试，
+                                // 配合主进程侧连续失败熔断保证任务可完成。
+                                val suicideMsg = "YamnetService: 区间[${i+1}/$total] TFLite卡住超时(${INTERVAL_TIMEOUT_MS / 1000}秒)，自杀重启回收僵尸线程 PID=$pid"
+                                Log.w(TAG, suicideMsg)
+                                writeFingerprintLog(suicideMsg)
+                                try { android.os.Process.killProcess(android.os.Process.myPid()) } catch (_: Exception) {}
+                                // killProcess不会返回；防御性沿用旧逻辑以防调用失败
                                 executorStuck = true
-                                Log.w(TAG, "YamnetService: 区间[${i+1}/$total] 超时(${INTERVAL_TIMEOUT_MS / 1000}秒，TFLite卡住)，跳过")
-                                writeFingerprintLog("YamnetService: 区间[${i+1}/$total] TFLite卡住超时，跳过")
                                 processedCount++
                                 continue
                             } catch (e: Exception) {

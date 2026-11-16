@@ -189,6 +189,13 @@ object SegmentNotificationHelper {
         // same notification between two different percentages.
         if (episodeId != activeEpisodeId) return
 
+        // v3.2.76: 全局进度单调拦截——号段已统一为0-400-550-900-1000递增链，
+        // 任何回跳（旧号段残留/漏改调用点/两任务竞争）一律丢弃，
+        // 根除"三层分段进度反复循环"（旧号段第1层推到1000后第2层从150/200/250重爬）。
+        // lastProgressValue初始为-1（resetProgressState），新任务首个0%更新会归零，
+        // 不影响新任务从头正常推进。
+        if (progress in 1 until lastProgressValue) return
+
         // v3.1.41: 防抖 - 同一层级的进度更新如果变化不大且更新间隔太短，则跳过
         // 解决三层分段过程中三个层级的进度快速循环显示的问题
         // v3.1.47: 当层名变化时（如从第1层切换到第2层）跳过防抖，
