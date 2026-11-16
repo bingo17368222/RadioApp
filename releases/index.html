@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RadioApp v3.2.76 安装</title>
+<title>RadioApp v3.2.77 安装</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -95,16 +95,16 @@ h1 { font-size: 24px; color: #333; margin-bottom: 8px; }
 <div class="card">
   <div class="logo">📻</div>
   <h1>RadioApp</h1>
-  <div class="version">v3.2.76</div>
+  <div class="version">v3.2.77</div>
   <div class="changelog">
-    <h3>更新内容 v3.2.76</h3>
+    <h3>更新内容 v3.2.77</h3>
     <ul>
-      <li>修复三层分段进度反复循环：三层进度号段统一为全程递增链，通知与界面进度同源单调推进，不再在层切换处回跳循环</li>
-      <li>修复YAMNet分析反复崩溃卡死：TFLite推理卡住时自杀重启分析进程，干净回收卡死线程，根除僵尸线程累积导致的连环崩溃</li>
-      <li>保证分段任务能完成：连续5批零产出时自动熔断提前收尾，用已有结果完成分段，不再无限循环跑不完</li>
+      <li>修复连续干货/连续水分段不合并：同类相邻段间的时间缝容忍放宽到1.5秒，短碎段夹在两个同型段之间时直接删除并合并两侧</li>
+      <li>指纹去重key改到长按菜单：长按分段弹出菜单新增"复制指纹去重key"项，点击复制完整key，到指纹管理搜索定位试听</li>
+      <li>片段列表不再显示去重key行，列表更清爽，长按菜单操作更集中</li>
     </ul>
   </div>
-  <a href="RadioApp-v3.2.76.apk" class="download-btn" download>📥 下载安装</a>
+  <a href="RadioApp-v3.2.77.apk" class="download-btn" download>📥 下载安装</a>
   <div class="file-info">33 MB · arm64-v8a · Android 7.0+</div>
   <div class="note">请先开启「允许安装未知来源应用」权限</div>
 </div>

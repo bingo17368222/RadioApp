@@ -75,33 +75,11 @@ class VoiceSegmentAdapter : RecyclerView.Adapter<VoiceSegmentAdapter.ViewHolder>
         val baseType = if (isDry) "干货" else "水分·${reason ?: "未知"}"
         holder.tvType.text = if (segment.isFallbackSplit) "$baseType·兜底切分" else baseType
 
-        // v3.2.71: 指纹命中素材去重key——显示截断预览，点击复制完整key（分段日志里可对照命中时间轴）
-        val hitKey = segment.hitKey
-        if (!isDry && !hitKey.isNullOrBlank()) {
-            holder.tvHitKey.visibility = View.VISIBLE
-            val simPart = if (segment.hitSim > 0) " 相似度${segment.hitSim}%" else ""
-            holder.tvHitKey.text = "指纹去重key: ${hitKey.take(16)}…${simPart} 点击复制"
-            holder.tvHitKey.setOnClickListener { v ->
-                val cm = v.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("指纹去重key", hitKey))
-                Toast.makeText(v.context, "去重key已复制，可到指纹管理搜索试听", Toast.LENGTH_SHORT).show()
-            }
-            // v3.2.72: 修复长按菜单失灵——key行可点击后会吸收长按事件、不再冒泡到itemView，
-            // 导致水分段长按落点在key行区域时弹不出标记菜单。此处按与itemView相同的优先级
-            // 规则手动分发：OnItemLongClickListener优先、回退旧回调。
-            holder.tvHitKey.setOnLongClickListener {
-                if (itemLongClickListener != null) {
-                    itemLongClickListener?.onItemLongClick(position, segment)
-                } else {
-                    listener?.onSegmentLongClick(position, segment)
-                }
-                true
-            }
-        } else {
-            holder.tvHitKey.visibility = View.GONE
-            holder.tvHitKey.setOnClickListener(null)
-            holder.tvHitKey.setOnLongClickListener(null)
-        }
+        // v3.2.77: 去重key不再显示在列表行（用户要求），改为长按菜单"复制指纹去重key"项，
+        // 点击菜单复制。列表行恒隐藏，同时移除该行的点击/长按分发（v3.2.71/v3.2.72 逻辑退役）。
+        holder.tvHitKey.visibility = View.GONE
+        holder.tvHitKey.setOnClickListener(null)
+        holder.tvHitKey.setOnLongClickListener(null)
 
         val ctx = holder.itemView.context
         val typedValue = android.util.TypedValue()

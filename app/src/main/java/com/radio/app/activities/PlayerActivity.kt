@@ -2011,7 +2011,14 @@ class PlayerActivity : AppCompatActivity() {
     // [功能1] 长按分段弹出对话框，手动标记该分段为干货/水货，或添加为水分指纹。
     // 标记后更新 VoiceSegment.hasVoice 字段并通知 adapter 刷新。
     private fun showSegmentMarkDialog(position: Int, segment: VoiceSegment) {
-        val options = arrayOf("标记为干货", "标记为水货", "添加为水分指纹")
+        // v3.2.77: 指纹去重key改为长按菜单项——有命中key时追加"复制指纹去重key"，
+        // 点击复制完整key到剪贴板（列表行显示已退役）。
+        val hasHitKey = !segment.hitKey.isNullOrBlank()
+        val options = if (hasHitKey) {
+            arrayOf("标记为干货", "标记为水货", "添加为水分指纹", "复制指纹去重key")
+        } else {
+            arrayOf("标记为干货", "标记为水货", "添加为水分指纹")
+        }
         // v3.2.73: 判水原因并入标题——setMessage 与 setItems 共存时菜单列表不显示
         // （v3.2.70 引入），现回归标题+菜单的原组合，判水原因仍随对话框展示。
         val markTitle = "手动标记分段 · ${segment.label ?: "无"}·${segment.judgementReason() ?: "无（干货段）"}"
@@ -2048,6 +2055,14 @@ class PlayerActivity : AppCompatActivity() {
                                 currentEpisode?.title
                             )
                         }
+                    }
+                    3 -> {
+                        // v3.2.77: 复制指纹去重key到剪贴板，可到指纹管理搜索定位试听
+                        val key = segment.hitKey ?: ""
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("指纹去重key", key))
+                        val simPart = if (segment.hitSim > 0) " 相似度${segment.hitSim}%" else ""
+                        Toast.makeText(this, "去重key已复制${simPart}，可到指纹管理搜索试听", Toast.LENGTH_SHORT).show()
                     }
                 }
                 dialog.dismiss()

@@ -1817,7 +1817,12 @@ object SegmentGenerator {
         while (i < segments.size - 1) {
             val a = segments[i]
             val b = segments[i + 1]
-            val contiguous = b.start <= a.end + 10
+            // v3.2.77-fix: 同型相邻缝容忍 10ms→1.5秒（R2 碎段同级阈值）。
+            // 用户实测仍见"连续干货/连续水分不合并"：第2层分批产出、填充静音、
+            // 切割重排等环节会在两个同型段之间留下几十~几百毫秒的时间缝，
+            // 10ms 的严格无缝条件拒绝合并，段间缝成为"连续但不合并"的残留。
+            // 缝内无内容（时间轴洞），并入合并段后 R1 覆盖不受影响。
+            val contiguous = b.start <= a.end + 1500
             val sameDry = a.hasVoice && b.hasVoice
             // v3.2.63-fix 根因2: 水侧合并不再要求两侧都是 isWaterLabel。
             // 此前 "歌曲/音乐" 标签不在 isWaterLabel 内（仅水货/指纹水货/水货(漏判召回)），
@@ -5486,13 +5491,31 @@ object SegmentGenerator {
         var i = 0
         while (i < segments.size) {
             val cur = segments[i]
-            // v3.2.43: 水段碎段阈值提高到 WATER_FRAGMENT_MERGE_MS，干段保持 PCMS_RUN_MIN_MS。
-            // 切歌/指纹切出等产生的碎水段并入相邻段，降低分段数；达到阈值的水段保留独立。
+            // v3.2.77-fix: 碎异型段夹在两个同类型段之间（干|碎水/静音|干、水|碎干|水）时，
+            // 直接删除碎段并把左右同型两侧合并为一段——用户实测的"连续干货/连续水分
+            // 分段不合并"多为这种形态。此前该场景走下方"吞并任一相邻"路径：碎段保留
+            // 自身类型、吞掉一侧段时间，留下左右同型段被异型段隔开的并排残留。
+            // 受各自长度上限约束（超限维持原状，由 R3 如实上报）。
             val minMs = if (cur.hasVoice) PCMS_RUN_MIN_MS else WATER_FRAGMENT_MERGE_MS
             if (cur.end - cur.start >= minMs) { i++; continue }
             // 找左右相邻段
             val left = if (i > 0) segments[i - 1] else null
             val right = if (i < segments.size - 1) segments[i + 1] else null
+            if (left != null && right != null &&
+                left.hasVoice == right.hasVoice && cur.hasVoice != left.hasVoice) {
+                val newLen = right.end - left.start
+                val cap = if (left.hasVoice) MAX_DRY_SEGMENT_LENGTH_MS else MAX_WATER_SEGMENT_LENGTH_MS
+                if (newLen < cap) {
+                    // 合并后保留占时更长一侧的标签（与 mergeConsecutiveSameTypeSegments 一致）
+                    val keepLabel = if (right.end - right.start > left.end - left.start) right.label else left.label
+                    segments[i - 1] = left.copy(end = right.end, label = keepLabel)
+                    segments.removeAt(i + 1) // 删 right
+                    segments.removeAt(i)     // 删 cur
+                    weeded++
+                    // i 不递增：重新检查合并段与后继的关系
+                    continue
+                }
+            }
             // 优先并入同类型相邻段：取两侧同类型中更近/更长的其一
             val preferLeft = when {
                 left != null && right != null && left.hasVoice == cur.hasVoice && right.hasVoice == cur.hasVoice ->
